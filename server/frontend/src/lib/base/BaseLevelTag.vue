@@ -40,6 +40,12 @@ const props = defineProps({
   tooltip: {
     type: String,
     default: null
+  },
+  // An importing engine's own level beside the members', drawn outlined with
+  // no ground, as the engine's tier chip is.
+  outlined: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -58,7 +64,7 @@ const autoTooltip = computed(() =>
 </script>
 
 <template>
-  <span v-if="meta" class="level-tag" v-tooltip.top="autoTooltip">
+  <span v-if="meta" class="level-tag" :class="{ outlined }" v-tooltip.top="autoTooltip">
     <span
       :class="['level', `level-${meta.number}`, `level-band-${meta.band}`]"
       :style="{ '--level-color': `var(${meta.token})` }"
@@ -90,5 +96,10 @@ const autoTooltip = computed(() =>
   font-size: 11px;
   font-weight: 600;
   line-height: 1.4;
+}
+/* An engine's own level, beside the members': the border and the word, with
+   no ground, as the engine's tier chip is. */
+.level-tag.outlined .level {
+  background: transparent;
 }
 </style>

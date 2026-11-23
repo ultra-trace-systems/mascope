@@ -5,6 +5,15 @@
 import { formatIsotopeFormula, formatIsotopeLabel } from '@/lib/chem'
 
 /**
+ * A ledger row's height, in px, in both scopes
+ * (docs/dev/assignment_ledger_and_card.md, section 3.3): the virtual
+ * scroller's item size, and the height the style gives every row. The
+ * scroller places rows at one fixed size, so an isotopologue line keeps this
+ * height too and reads as a sub-row by its style alone.
+ */
+export const LEDGER_ROW_HEIGHT = 40
+
+/**
  * A line's nominal mass offset from the M0 it folds under ("M+1", "M+2"):
  * the name of a line nothing else names.
  *

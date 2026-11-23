@@ -42,6 +42,21 @@ const props = defineProps({
   tooltip: {
     type: String,
     default: null
+  },
+  // What holds the tier down, as a mark on the chip: `{ label, tooltip }`,
+  // the reasons named for its accessible name and the hover that says what
+  // each did. The tier chip says where the row stands and the mark says it
+  // was held there; the card says why at length.
+  cap: {
+    type: Object,
+    default: null
+  },
+  // A second reading of the tier beside this server's - an importing
+  // engine's own - drawn outlined, with no ground, so the two chips in one
+  // cell never read as one claim drawn twice.
+  outlined: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -158,7 +173,7 @@ const autoTooltip = computed(() => {
 </script>
 
 <template>
-  <span class="tier-tag" v-tooltip.top="autoTooltip">
+  <span class="tier-tag" :class="{ outlined }" v-tooltip.top="autoTooltip">
     <Tag
       v-if="roleChip"
       :value="label"
@@ -182,6 +197,18 @@ const autoTooltip = computed(() => {
           aria-hidden="true"
         />
       </template>
+      <!-- Inside the chip, after its word: the cap belongs to the tier it
+           holds, not to the row beside it. The default slot stands in for
+           Tag's own label, so the word is drawn here as Tag draws it. -->
+      <span class="p-tag-label">{{ label }}</span>
+      <span
+        v-if="cap"
+        class="pi ph ph-arrow-down cap-mark"
+        role="img"
+        data-testid="tier-reason-mark"
+        :aria-label="cap.label"
+        v-tooltip.top="cap.tooltip"
+      />
     </Tag>
     <span v-if="roleIcon" :class="[roleIcon, 'role-icon']" />
     <span v-if="isDemoted" class="pi ph ph-eraser demoted-icon" data-testid="demoted-mark" />
@@ -199,6 +226,19 @@ const autoTooltip = computed(() => {
   align-items: center;
   gap: 0.3rem;
   white-space: nowrap;
+}
+
+/* The cap's mark, in the chip's own colour, a step smaller than its word. */
+.cap-mark {
+  margin-left: 0.15rem;
+  font-size: 10px;
+}
+
+/* An engine's own tier, beside this server's: the chip's colour on its
+   border and its word, with no ground. */
+.tier-tag.outlined :deep(.p-tag) {
+  background: transparent;
+  border: 1px solid currentColor;
 }
 
 /* The source's and the instrument's peaks, in the role's own token: accounted

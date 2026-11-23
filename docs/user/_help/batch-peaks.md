@@ -4,8 +4,9 @@ as one trace over the batch. Every observed peak folds into exactly one batch
 peak &mdash; unassigned m/z still get a batch-level trend &mdash; and each
 batch peak carries a **consensus formula** and **consensus tier**, an
 evidence-weighted consensus of its member peaks' per-sample assignments, plus
-the number of samples it is seen in and the **highest intensity** it reaches in
-any of them.
+the number of samples it is seen in (**Samples**, as *n/N*) and the **max
+intensity** it reaches in any of them. The rows open brightest first. Click an
+m/z to open the batch peak in its brightest sample.
 
 Above the table, the **search box** finds a formula, a listed name or an m/z
 (within 5 ppm, the window an imported batch result is matched at; a number also

@@ -83,10 +83,18 @@ test.describe('the assignment ledger', () => {
     const count = page.getByTestId('ledger-count')
     await expect(count).toHaveText(/^[\d,]+ batch peaks?$/, { timeout: 30_000 })
     const batchHeaders = await headers(page)
-    for (const name of ['m/z', 'Intensity', 'Formula', 'Listed', 'Tier', 'Samples']) {
+    for (const name of [
+      'm/z',
+      'Compound',
+      'Ion',
+      'Max intensity',
+      'Tier',
+      'Samples',
+      'Across the batch'
+    ]) {
       expect(batchHeaders).toContain(name)
     }
-    expect(batchHeaders).not.toContain('Ionization')
+    expect(batchHeaders).not.toContain('Listed')
 
     // Multi-select in both scopes: two chips on at once.
     const chip = (name) => page.locator('.tier-stat').filter({ hasText: new RegExp(` ${name}$`) })
@@ -99,9 +107,10 @@ test.describe('the assignment ledger', () => {
     await openLedger(page, target, { sample: true })
     await expect(count).toHaveText(/^[\d,]+ peaks?$/, { timeout: 30_000 })
     const sampleHeaders = await headers(page)
-    for (const name of ['m/z', 'Intensity', 'Formula', 'Listed', 'Ionization', 'Tier']) {
+    for (const name of ['m/z', 'Compound', 'Ion', 'Intensity', 'Tier']) {
       expect(sampleHeaders).toContain(name)
     }
+    expect(sampleHeaders).not.toContain('Samples')
     await chip('assigned').click()
     await chip('candidate').click()
     await expect(chip('assigned')).toHaveAttribute('aria-pressed', 'true')
@@ -111,6 +120,54 @@ test.describe('the assignment ledger', () => {
       page.getByRole('button', { name: /Record a verdict|Verification verdict/ }).first()
     ).toBeVisible()
   })
+  // The columns and rows (docs/dev/assignment_ledger_and_card.md, sections 3.2
+  // and 3.3): the batch ledger opens sorted by its max intensity, brightest
+  // first, and a family's caret unfolds its isotopologue lines under it.
+  test('opens the batch ledger sorted by intensity, and unfolds a family', async ({
+    page,
+    api
+  }) => {
+    const target = await findAssignedSample(api)
+    test.skip(!target, 'No demo sample has a completed assignment run')
+
+    await openLedger(page, target)
+    await expect(page.getByTestId('ledger-count')).toHaveText(/^[\d,]+ batch peaks?$/, {
+      timeout: 30_000
+    })
+    // Sorted by intensity, descending, the header says so.
+    const intensity = page.locator('.ledger thead th').filter({ hasText: 'Max intensity' })
+    await expect(intensity).toHaveAttribute('aria-sort', 'descending')
+    // The compact numbers down the first rows, read back, never rise.
+    const values = (await page.getByTestId('intensity-cell').allInnerTexts())
+      .slice(0, 8)
+      .map((text) => {
+        const [, n, unit] = text.trim().match(/^(-?[\d.]+)([kMGT]?)$/) ?? []
+        return Number(n) * 1000 ** ['', 'k', 'M', 'G', 'T'].indexOf(unit ?? '')
+      })
+    expect(values.length).toBeGreaterThan(1)
+    for (let i = 1; i < values.length; i++) expect(values[i]).toBeLessThanOrEqual(values[i - 1])
+
+    // A family unfolds from its caret: its lines show under its row.
+    const caret = page.getByTestId('family-caret').first()
+    const hasFamily = await caret
+      .waitFor({ timeout: 10_000 })
+      .then(() => true)
+      .catch(() => false)
+    test.skip(!hasFamily, 'No batch peak of the demo batch has an isotopologue line')
+    const lines = Number((await caret.innerText()).trim())
+    const subRows = page.locator('.ledger tbody tr.ledger-line')
+    await expect(subRows).toHaveCount(0)
+    await expect(caret).toHaveAttribute('aria-expanded', 'false')
+    await caret.click()
+    await expect(caret).toHaveAttribute('aria-expanded', 'true')
+    await expect(subRows).toHaveCount(lines)
+    // A sub-row carries its label, and no verdict of its own.
+    await expect(subRows.first().getByTestId('line-cell')).toBeVisible()
+    await expect(subRows.first().locator('.verdict-cell')).toHaveCount(0)
+    await caret.click()
+    await expect(subRows).toHaveCount(0)
+  })
+
   // The filter bar's choices are the scope's and outlive the pane: opening a
   // sample swaps the batch ledger out, and coming back finds the search and
   // the chips where they were left, while the sample's ledger keeps its own.

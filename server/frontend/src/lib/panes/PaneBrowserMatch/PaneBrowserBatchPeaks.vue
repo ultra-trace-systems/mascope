@@ -16,9 +16,7 @@ import {
   BaseTierTag
 } from '@/lib/base'
 import { ledgerListing, listingName, targetName, targetOf } from '@/lib/referenceListings'
-import { FORMULA_CELL_MARKS, ledgerMarks, markOf } from '@/lib/evidence/marks'
-import { coVariationLabel, coVariationRank, coVariationTooltip } from '@/lib/batchCoVariation'
-import { checkTags, checksRank, checksTooltip } from '@/lib/batchChecks'
+import { TONE_HOLDS_BACK, ledgerMarks, markOf } from '@/lib/evidence/marks'
 import { isPredicted, stampParentId, stampTooltip } from '@/lib/batchIsotopologues'
 import {
   strippedLinesCount,
@@ -28,15 +26,7 @@ import {
 import { blendOf } from '@/lib/batchBlend'
 import { flatSeriesOf } from '@/lib/batchFlatSeries'
 import { holdingReasons, holdingTooltip } from '@/lib/batchPersistence'
-import {
-  CLAIM_GRADES,
-  continuityLabel,
-  continuityPartial,
-  continuityRank,
-  continuityStale,
-  continuityTooltip
-} from '@/lib/batchContinuity'
-import { bucketOf, bucketRank, engineBucketOf, tierName, tierRank } from '@/lib/tiers'
+import { bucketOf, bucketRank, engineBucketOf, tierName } from '@/lib/tiers'
 import { isLevel, levelMeta, levelRank, memberLevelTooltip } from '@/lib/levels'
 import { VERDICT_META } from '@/lib/verification'
 import {
@@ -49,6 +39,7 @@ import {
   batchLineLabel,
   batchLineName,
   ledgerTierChips,
+  useFamilyFold,
   useLedgerFilters,
   useLedgerSort,
   useLedgerView,
@@ -70,9 +61,10 @@ import BatchPeakContinuityPopover from './BatchPeakContinuityPopover.vue'
  * multi-select table of the batch's batch peaks (cross-sample m/z anchors); the
  * rows the user selects here are exactly what the Assignments chart plots, so
  * the chart never renders 1000+ traces at once. This pane is the scope's
- * configuration: its rows, its extra columns (the batch's readings, the sample
- * count), its strip items (the instrument partition, the history banner, the
- * selection cap) and the capped multiple selection.
+ * configuration: its rows, its own columns (the sample count, and the batch's
+ * readings as badges, Across the batch), its strip items (the instrument
+ * partition, the history banner, the selection cap), its row action (open the
+ * brightest sample) and the capped multiple selection.
  */
 const app = useApp()
 // The row action that opens the brightest sample on this peak.
@@ -250,6 +242,16 @@ const hasMemberLevels = computed(() => shown.value.some((bp) => isLevel(bp.membe
 // as its tier is beside the consensus tier.
 const hasEngineLevels = computed(() => shown.value.some((bp) => isLevel(bp.engine_level)))
 
+// Show > Engine readings: the engine's own tier and level as a second,
+// outlined chip in the Tier and Level cells, where a batch peak carries them
+// (owner's decision of 2026-11-22: the chip, not columns of their own).
+const hasEngineReadings = computed(() => hasEngineTiers.value || hasEngineLevels.value)
+const engineReadings = computed(() => engineView.value && hasEngineReadings.value)
+// The Level column, where any batch peak shown carries a level the cell draws.
+const hasLevelColumn = computed(
+  () => hasMemberLevels.value || (engineReadings.value && hasEngineLevels.value)
+)
+
 // Says whose level the chip is, and whether it agrees with the members'.
 const engineLevelTooltip = (row) => {
   const said = row.engine_claim ? ` - "${row.engine_claim}"` : ''
@@ -292,24 +294,32 @@ const onlyBlends = viewChoice('blends')
 // an origin flag, likely background.
 const hasFlatSeries = computed(() => shown.value.some((bp) => flatSeriesOf(bp) != null))
 const onlyFlatSeries = viewChoice('flatSeries')
-// How a species' trace follows the same compound through the mode's other
-// channels, as a "Read co-variation" run left it.
-const hasCoVariation = computed(() => shown.value.some((bp) => bp.co_variation != null))
-// What a "Read batch checks" run states of a species' reading: the halogen
-// lock, the label twin, the uronium pair.
-const hasBatchChecks = computed(() => shown.value.some((bp) => bp.batch_checks != null))
-// Whether an anchor's related pairs hold their within-sample ratio across the
-// batch, as the continuity pass graded it. An isotope line has a grade of its
-// own, on its pair with the main peak, shown on its row while unfolded.
-const hasContinuity = computed(() => shown.value.some((bp) => bp.continuity != null))
-// stable, drift and unstable say something of the pair and are drawn as a badge;
-// inconclusive and insufficient say it could not be read, and read muted.
-const continuityClaims = (row) => CLAIM_GRADES.includes(row.continuity_grade)
-
-// The one reading a folded isotope line carries a badge for: the heavier line
-// of a water-ladder rung, as its rung's own row does. Its other readings are
-// its family's, on the family's row.
-const CHILD_CELL_MARKS = ['reagent']
+// Across the batch: the batch's readings of a row, one badge each, as the
+// registry draws them (lib/evidence/marks.js). At most three show, the ones
+// that hold the reading back first and the rest in the registry's order, and
+// a "+n" says how many more, naming them on hover. The ratio-stability badge
+// opens the pairs behind its grade.
+const ACROSS_SHOWN = 3
+const acrossMarks = (row) => {
+  const marks = ledgerMarks(row).map((reading) => ({
+    ...reading,
+    holdsBack: markOf(reading.id).tone(reading.record) === TONE_HOLDS_BACK
+  }))
+  return [...marks.filter((m) => m.holdsBack), ...marks.filter((m) => !m.holdsBack)]
+}
+const acrossShown = (row) => acrossMarks(row).slice(0, ACROSS_SHOWN)
+const acrossMore = (row) => acrossMarks(row).slice(ACROSS_SHOWN)
+const acrossMoreTooltip = (row) =>
+  acrossMore(row)
+    .map((reading) => markOf(reading.id).summary(reading.record) || markOf(reading.id).label)
+    .join('\n')
+// The column's sort: the rows with the most that holds them back first, then
+// the most badges; a row with none sorts last.
+const acrossRankOf = (row) => {
+  const marks = acrossMarks(row)
+  if (!marks.length) return null
+  return -(marks.filter((m) => m.holdsBack).length * 100 + marks.length)
+}
 
 // Show > one badge kind at a time: the rows that carry it beside their
 // formula. Offered for the kinds some row shown carries; the blend and the flat
@@ -352,20 +362,12 @@ const decorated = computed(() => {
         batchPeak.consensus_tier,
         batchPeak.consensus_role
       ),
-      engineTierRank: batchPeak.engine_tier != null ? tierRank(batchPeak.engine_tier) : null,
       memberLevelRank: isLevel(batchPeak.member_level) ? levelRank(batchPeak.member_level) : null,
-      engineLevelRank: isLevel(batchPeak.engine_level) ? levelRank(batchPeak.engine_level) : null,
-      // The strongest partner's r.
-      coVariationRank: coVariationRank(batchPeak.co_variation),
-      // Facts holding less facts refuting.
-      checksRank: checksRank(batchPeak.batch_checks),
-      // The grade's place in the order of alarm, unstable first.
-      continuityRank: continuityRank(batchPeak),
+      acrossRank: acrossRankOf(batchPeak),
       verdictRank: verdictRank(verdictFor(batchPeak)),
       parentId: rootParentId(batchPeak, index),
       listing,
-      target,
-      listingName: target ? targetName(target) : listing ? listingName(listing) : null
+      target
     }
   })
 })
@@ -425,6 +427,11 @@ const lineTooltip = (row) => {
 // Fold isotopologues under their M0 by default: an isotopologue carries its family's
 // formula, so unfolded it reads as a second row for one compound.
 const showIsotopologues = viewChoice('isotopologues')
+// The family's caret: how many lines fold under the row, and whether they
+// are unfolded, one family at a time against Show's choice.
+const families = useFamilyFold(showIsotopologues)
+const familyOpen = (row) => families.isOpen(row.batch_peak_id)
+const toggleFamily = (row) => families.toggle(row.batch_peak_id)
 
 // --- Sorting and filtering --------------------------------------------------
 
@@ -504,12 +511,11 @@ const rows = computed(() => {
       (!badge || carriesBadge(row, badge))
   )
   sort(visible, byConfidence)
-  if (!showIsotopologues.value) return visible
 
   const result = []
   for (const parent of visible) {
     result.push(parent)
-    result.push(...(childrenByParent.value.get(parent.batch_peak_id) ?? []))
+    if (familyOpen(parent)) result.push(...(childrenByParent.value.get(parent.batch_peak_id) ?? []))
   }
   return result
 })
@@ -545,8 +551,12 @@ const overflowFrom = ref(0)
 // clicked: a refusal, not a select-all whose tail was cut off.
 const selectionAtCapacity = ref(false)
 
-// The rows "all" means: filtered, sorted and folded as displayed.
-const selectableRows = () => rows.value
+// The rows "all" means: filtered, sorted and folded as displayed, less the
+// isotopologue lines. A line is its family's species, and a sub-row carries no
+// box (docs/dev/assignment_ledger_and_card.md, section 3.3): the family's row
+// is what plots it.
+const isLine = (row) => Boolean(row?.parentId)
+const selectableRows = () => rows.value.filter((row) => !isLine(row))
 
 /**
  * The single write into the ledger selection, capped.
@@ -560,8 +570,11 @@ const selectableRows = () => rows.value
  */
 const applySelection = (selection) => {
   // Shift+Space hands over a bare row rather than an array of one when the
-  // range it would select collapses onto the row already focused.
-  const wanted = Array.isArray(selection) ? selection : [selection]
+  // range it would select collapses onto the row already focused. A click on
+  // a line, or a range across lines, hands them over too: they are not kept.
+  const wanted = (Array.isArray(selection) ? selection : [selection]).filter(
+    (row) => row && !isLine(row)
+  )
   const capped = wanted.slice(0, MAX_SELECTED_BATCH_PEAKS)
   const dropped = wanted.length - capped.length
   // One row over a selection that was already full is a click the cap refused;
@@ -623,18 +636,18 @@ watch(showIsotopologues, () => {
   selectionAtCapacity.value = false
 })
 
-// While folded, no isotopologue is selected.
+// No isotopologue line is selected.
 //
-// A selection is what the chart plots, so an isotopologue left in it while its row
-// is folded away draws a trace with no ticked row behind it, and spends the cap
-// on a row the user can no longer see to release. Only the fold does this - a
-// filter has never cost the selection anything. Written as an invariant rather
-// than as a reaction to the toggle, because the pane remounts folded while the
-// store's selection survives. Unfolding takes nothing back.
+// A selection is what the chart plots, and a line carries no box to tick or
+// untick: one left in the selection draws a trace with no ticked row behind it,
+// and spends the cap on a row the user cannot release. Written as an invariant
+// rather than as a reaction to a gesture, because a selection made before the
+// lines lost their box - the store's selection outlives the pane - can still
+// hold one.
 watch(
-  [showIsotopologues, decorated],
-  ([unfolded]) => {
-    if (unfolded || !ledger.value.selected.length) return
+  [decorated, () => ledger.value.selected],
+  () => {
+    if (!ledger.value.selected.length) return
     const isotopologues = new Set(
       decorated.value.filter((row) => row.parentId).map((row) => row.batch_peak_id)
     )
@@ -690,7 +703,9 @@ const INTENSITY_UNITS = {
 const intensityTooltip = computed(() => {
   const unit = INTENSITY_UNITS[shown.value.find((bp) => bp.intensity_variable)?.intensity_variable]
   return (
-    'Highest intensity this species reaches in any sample of the batch' + (unit ? ` (${unit})` : '')
+    "Max intensity: the brightest sample's, the highest this species reaches in any sample " +
+    'of the batch' +
+    (unit ? ` (${unit})` : '')
   )
 })
 
@@ -700,39 +715,27 @@ const intensityTooltip = computed(() => {
 const HEADER_TOOLTIPS = {
   mz:
     "Anchor m/z of the batch peak: the m/z bin every sample's peak of this species folds " +
-    'into, set by the first peak seen and never redrawn',
+    'into, set by the first peak seen and never redrawn. Click it to open the peak in its ' +
+    'brightest sample',
   formula:
     "Consensus formula: an evidence-weighted vote over the members' per-sample assignments, " +
-    'so a bright, well-fitting member outweighs weak ones',
-  listing:
-    'What a reference list calls the consensus formula: the first name a member matched ' +
-    "from a list, that list, and the list's tags",
+    'so a bright, well-fitting member outweighs weak ones. Under it, what a reference list ' +
+    'or a target names it',
+  ion:
+    'The ion the batch peak is: the consensus formula with its adduct and charge. Two ' +
+    'channels of one compound are two batch peaks, told apart here',
   tier:
     "Consensus tier: an evidence-weighted vote over the members' per-sample tiers, " +
     'assigned only when a weighted majority reach it',
-  engineTier:
-    'The tier the engine that imported this identity stated for it, beside the consensus ' +
-    'this server measured from the members. Nothing sorts, folds or rolls up on it',
   level:
     "Identification level the members' runs stated for the consensus formula, by majority, " +
     'a tie reading as the weaker level: what may be stated of it, from 5 (a measured mass) ' +
     'to 1 (a confirmed structure). The batch states none of its own, and no tier moves on it',
-  engineLevel:
-    'The identification level the engine that imported this identity stated for it, beside ' +
-    "the level the members' runs stated. No tier moves on it",
-  coVariation:
-    "How this species' intensity follows the same compound through the mode's other " +
-    'channels across the batch: Pearson r of the log intensities, reagent-normalised, with ' +
-    "the batch's common mode taken out. 0.6 or more co-varies. No tier moves on it",
-  facts:
-    'What only the batch can state of this reading: a chlorine or bromine line at its exact ' +
-    "spacing, a labelled ion's 14N twin, a uronium compound's two channels moving together. " +
-    'No tier moves on them',
-  samples: 'Number of samples this species is seen in',
-  continuity:
-    "Ratio stability: whether this peak's ratio to its isotope line or its other channel " +
-    'holds flat across the time-ordered batch, as one species keeps it. It never identifies ' +
-    'a species. No tier moves on it',
+  samples: "Samples: how many of the batch's samples this species is seen in",
+  across:
+    "Across the batch: what the batch's own steps read of this species - a series, " +
+    'co-variation, isotope lines, ratio stability, the batch facts, a blend, a flat ' +
+    'series - one badge each, the ones that hold it back first',
   verdict:
     'Batch-level verdict: one judgment per species, covering every sample without a ' +
     'verdict of its own'
@@ -743,9 +746,38 @@ const FIELDS = {
   mz: 'mz',
   intensity: 'max_intensity',
   formula: 'consensus_formula',
-  listing: 'listingName',
+  ion: 'consensus_ion_formula',
   level: 'member_level',
   levelSort: 'memberLevelRank'
+}
+
+// Samples, as n/N: the batch's samples the species is seen in, of all of them.
+const sampleTotal = computed(() => app.data.sample.list?.length || null)
+const samplesLabel = (row) =>
+  row.n_present == null
+    ? ''
+    : sampleTotal.value
+      ? `${row.n_present}/${sampleTotal.value}`
+      : `${row.n_present}`
+
+// The tier chip's cap mark: what the batch's own rules hold the tier down on,
+// named as a run's reasons are.
+const tierCap = (row) => {
+  const reasons = holdingReasons(row.tier_reasons)
+  if (!reasons.length) return null
+  return {
+    label: reasons.map((reason) => reason.label).join(', '),
+    tooltip: holdingTooltip(row.tier_reasons, row.consensus_tier)
+  }
+}
+
+// The bars of the intensity column are drawn over every batch peak shown.
+const intensities = computed(() => shown.value.map((bp) => bp.max_intensity))
+
+// The m/z and the row's action open the batch peak in its brightest sample,
+// with the peak in focus in the inspector.
+const openBrightest = (row) => {
+  if (jump.pendingId == null && row.n_present) jump.jumpToBrightest(row)
 }
 
 // Whatever was in flight, went wrong, or was selected belonged to the previous
@@ -799,7 +831,9 @@ watch(
     errorFallback="Could not load the batch peaks."
     :onRetry="() => ledger.load('retry')"
     :rows="rows"
-    :rowHeight="35.74"
+    :intensities="intensities"
+    intensityLabel="Max intensity"
+    mzAction="Open the brightest sample with this peak in focus"
     v-model:sortField="sortField"
     v-model:sortOrder="sortOrder"
     :fields="FIELDS"
@@ -883,10 +917,12 @@ watch(
         { doc: app.ui.help.docUrl('how-it-works/peak-assignment/#batch-peaks') }
       )
     "
-    :hasEngineTiers="hasEngineTiers"
+    :engineReadings="engineReadings"
     :engineTierTooltip="engineTierTooltip"
-    :engineTierOnLines="false"
-    :hasLevels="hasMemberLevels"
+    :hasLevels="hasLevelColumn"
+    :tierCap="tierCap"
+    :familySize="isotopologueCount"
+    :familyOpen="familyOpen"
     :verdictCell="verdictCell"
     :verdictHelp="{
       title: 'Batch-Level Verdicts',
@@ -911,6 +947,8 @@ watch(
     "
     @toggle-tier="toggleTier"
     @open-verdict="openVerdict"
+    @open-mz="openBrightest"
+    @toggle-family="toggleFamily"
   >
     <template #above-strip>
       <!-- A launch that was refused or failed reports itself here rather than in
@@ -1009,15 +1047,16 @@ watch(
           clearable
         />
       </div>
-      <div v-if="hasEngineTiers" class="menu-section">
+      <div v-if="hasEngineReadings" class="menu-section">
         <span class="menu-heading">Engine readings</span>
         <LedgerViewToggle
           v-model="engineView"
           id="batch-engine-tier-view"
-          label="Engine tier"
-          tooltip="Count and filter the tier chips by the importing engine's own tier, not the consensus"
+          label="Engine tier and level"
+          tooltip="Show the importing engine's own tier and level as a second, outlined chip in the Tier and Level cells, and count and filter the tier chips by its tier"
         />
         <LedgerViewToggle
+          v-if="hasEngineTiers"
           v-model="onlyDisagreements"
           id="batch-engine-disagrees"
           label="Engine disagrees"
@@ -1085,35 +1124,13 @@ watch(
       <Column selectionMode="multiple" style="width: 3rem" />
     </template>
 
-    <!-- The chart's click-through, from the row: with several traces plotted it
-         is not obvious which point to click, and the brightest sample is where
-         the species is best measured. -->
-    <template #intensity="{ data }">
-      <button
-        type="button"
-        class="jump-cell"
-        :disabled="jump.pendingId != null || !data.n_present"
-        aria-label="Open the brightest sample with this peak in focus"
-        v-tooltip.top="'Open the brightest sample with this peak in focus (Sample tab)'"
-        @click.stop="jump.jumpToBrightest(data)"
-      >
-        <span
-          :class="
-            jump.pendingId === data.batch_peak_id
-              ? 'pi pi-spin pi-spinner'
-              : 'pi ph ph-arrow-square-out'
-          "
-        />
-      </button>
-    </template>
-
-    <template #formula="{ data }">
-      <!-- An unfolded isotopologue says what it is rather than repeating its
-           family's formula, which is the whole reason it was folded: its
-           substitution, from the record that names it - in italics where the
-           stamping predicted it rather than the samples' runs finding it, and
-           outlined where the batch stripped the row to the family's line. -->
-      <span v-if="data.parentId" class="child-cell">
+    <!-- An unfolded isotopologue says what it is rather than repeating its
+         family's formula, which is the whole reason it was folded: its
+         substitution, from the record that names it - in italics where the
+         stamping predicted it rather than the samples' runs finding it, and
+         outlined where the batch stripped the row to the family's line. -->
+    <template #line-label="{ data }">
+      <span class="child-cell">
         <span class="child-caret">&#8627;</span>
         <span
           class="child-label"
@@ -1132,206 +1149,141 @@ watch(
           v-tooltip.top="lineTooltip(data)"
           >{{ childLabel(data) }}</span
         >
-        <!-- A heavier line of a water-ladder rung, folded under the rung: the
-             same badge as on the rung's own row. -->
-        <BaseEvidenceBadge
-          v-for="reading in ledgerMarks(data, CHILD_CELL_MARKS)"
-          :key="reading.id"
-          :mark="reading.id"
-          :record="reading.record"
-          :data-testid="`mark-${reading.id}`"
-        />
       </span>
-      <!-- The batch's readings of the row, one badge each, as the registry
-           draws them (lib/evidence/marks.js): the glyph says which reading,
-           the colour what it does to confidence. The isotopologue count rides
-           in the slot, outside what gets copied. -->
+    </template>
+
+    <template #formula="{ data }">
       <BaseCopyableField
-        v-else-if="formulaOf(data)"
+        v-if="formulaOf(data)"
         class="formula"
         :field="formulaOf(data)"
         :tooltip="data.consensus_formula ? null : ION_TOOLTIP"
-      >
-        <BaseEvidenceBadge
-          v-for="reading in ledgerMarks(data, FORMULA_CELL_MARKS)"
-          :key="reading.id"
-          :mark="reading.id"
-          :record="reading.record"
-          :data-testid="`mark-${reading.id}`"
-        />
-        <span
-          v-if="isotopologueCount(data)"
-          class="iso-count"
-          v-tooltip.top="
-            `${isotopologueCount(data)} isotopologue peak${isotopologueCount(data) === 1 ? '' : 's'}`
-          "
-          >+{{ isotopologueCount(data) }}</span
-        >
-      </BaseCopyableField>
-    </template>
-    <template #tier="{ data }">
-      <!-- No number beside this one: a batch peak's consensus tier is a
-           weighted vote over its members' tiers, not a threshold on any single
-           quantity. The role is the chip on an anchor a source role accounts
-           for. -->
-      <BaseTierTag :tier="data.consensus_tier" :role="data.consensus_role" />
-      <!-- What the batch's own rules hold the tier down on, named as a run's
-           reasons are. -->
-      <span
-        v-if="holdingReasons(data.tier_reasons).length"
-        class="pi ph ph-arrow-down tier-reason-mark"
-        role="img"
-        data-testid="tier-reason-mark"
-        :aria-label="
-          holdingReasons(data.tier_reasons)
-            .map((reason) => reason.label)
-            .join(', ')
-        "
-        v-tooltip.top="holdingTooltip(data.tier_reasons, data.consensus_tier)"
       />
     </template>
 
+    <!-- No number beside this one: a batch peak's consensus tier is a
+         weighted vote over its members' tiers, not a threshold on any single
+         quantity. The role is the chip on an anchor a source role accounts
+         for; what the batch's own rules hold the tier down on is the mark on
+         it. -->
+    <template #tier="{ data, cap }">
+      <BaseTierTag :tier="data.consensus_tier" :role="data.consensus_role" :cap="cap" />
+    </template>
+
+    <!-- The members' level, and with Show > Engine readings on, the
+         importing engine's own, outlined beside it. -->
     <template #level="{ data }">
       <BaseLevelTag
         v-if="isLevel(data.member_level)"
         :level="data.member_level"
         :tooltip="memberLevelTooltip(data.member_level, data.member_levels)"
       />
+      <BaseLevelTag
+        v-if="engineReadings && isLevel(data.engine_level)"
+        class="engine-chip"
+        data-testid="engine-level-chip"
+        :level="data.engine_level"
+        :tooltip="engineLevelTooltip(data)"
+        outlined
+      />
     </template>
 
     <template #end-columns>
-      <!-- The importing engine's own level, beside the members' as its tier is
-           beside the consensus. -->
-      <Column v-if="hasEngineLevels" field="engineLevelRank" sortable style="min-width: 7rem">
-        <template #header>
-          <span v-tooltip.top="HEADER_TOOLTIPS.engineLevel">Engine level</span>
-        </template>
-        <template #body="{ data }">
-          <BaseLevelTag
-            v-if="isLevel(data.engine_level) && !data.parentId"
-            :level="data.engine_level"
-            :tooltip="engineLevelTooltip(data)"
-          />
-        </template>
-      </Column>
-
-      <!-- The co-variation reading: the strongest partner channel's r, or that
-           the pair could not be read. -->
-      <Column v-if="hasCoVariation" field="coVariationRank" sortable style="min-width: 6rem">
-        <template #header>
-          <span
-            v-tooltip.top="HEADER_TOOLTIPS.coVariation"
-            v-help.top="{
-              title: 'Co-variation',
-              helpKey: 'batch-co-variation',
-              doc: app.ui.help.docUrl('how-it-works/peak-assignment/#reading-co-variation')
-            }"
-            >Co-variation</span
-          >
-        </template>
-        <template #body="{ data }">
-          <span
-            v-if="data.co_variation"
-            class="co-variation"
-            :class="data.co_variation.verdict"
-            data-testid="co-variation"
-            v-tooltip.top="coVariationTooltip(data.co_variation)"
-            >{{ coVariationLabel(data.co_variation) }}</span
-          >
-        </template>
-      </Column>
-
-      <!-- The batch checks: one tag per fact the batch states of the row's
-           reading, outlined where it refutes and muted where it cannot say. -->
-      <Column v-if="hasBatchChecks" field="checksRank" sortable style="min-width: 7rem">
-        <template #header>
-          <span
-            v-tooltip.top="HEADER_TOOLTIPS.facts"
-            v-help.top="{
-              title: 'Facts',
-              helpKey: 'batch-checks',
-              doc: app.ui.help.docUrl('how-it-works/peak-assignment/#reading-batch-checks')
-            }"
-            >Facts</span
-          >
-        </template>
-        <template #body="{ data }">
-          <span
-            v-if="data.batch_checks"
-            class="batch-checks"
-            data-testid="batch-checks"
-            v-tooltip.top="checksTooltip(data.batch_checks)"
-            ><span
-              v-for="tag in checkTags(data.batch_checks)"
-              :key="tag.key"
-              class="check-tag"
-              :class="tag.tone"
-              data-testid="check-tag"
-              >{{ tag.label }}</span
-            ></span
-          >
-        </template>
-      </Column>
-
-      <Column field="n_present" sortable style="min-width: 6rem">
+      <Column
+        field="n_present"
+        sortable
+        headerClass="col-samples"
+        bodyClass="col-samples"
+        style="min-width: 4.5rem"
+      >
         <template #header>
           <span v-tooltip.top="HEADER_TOOLTIPS.samples">Samples</span>
         </template>
-        <template #body="{ data }">{{ data.n_present }}</template>
+        <template #body="{ data }">
+          <span v-if="!data.parentId" class="samples" data-testid="samples">{{
+            samplesLabel(data)
+          }}</span>
+        </template>
       </Column>
 
-      <!-- Ratio stability: after Samples, since it is evidence about the trace
-           that column counts. The cell is a button that opens the pairs behind
-           the grade. A grade the pass left partial says so beside it, and one
-           the ledger has moved past since is outlined in the warning colour
-           with the out-of-date arrows. -->
-      <Column v-if="hasContinuity" field="continuityRank" sortable style="min-width: 7rem">
+      <!-- Across the batch: the batch's readings, at most three badges, the
+           ones that hold the reading back first, then "+n". -->
+      <Column
+        field="acrossRank"
+        sortable
+        headerClass="col-across"
+        bodyClass="col-across"
+        style="min-width: 6.5rem"
+      >
         <template #header>
           <span
-            v-tooltip.top="HEADER_TOOLTIPS.continuity"
+            v-tooltip.top="HEADER_TOOLTIPS.across"
             v-help.top="{
-              title: 'Ratio Stability',
-              helpKey: 'batch-continuity',
-              doc: app.ui.help.docUrl('how-it-works/peak-assignment/#ratio-stability')
+              title: 'Across the Batch',
+              helpKey: 'assignment-tiers',
+              doc: app.ui.help.docUrl('how-it-works/peak-assignment/#across-the-batch')
             }"
-            >Continuity</span
+            >Across the batch</span
           >
         </template>
         <template #body="{ data }">
-          <button
-            v-if="data.continuity"
-            type="button"
-            class="continuity"
-            :class="[
-              data.continuity_grade ?? 'withdrawn',
-              {
-                claim: continuityClaims(data),
-                partial: continuityPartial(data),
-                stale: continuityStale(data)
-              }
-            ]"
-            data-testid="continuity"
-            :aria-label="`Ratio stability: ${continuityLabel(data)}`"
-            v-tooltip.top="continuityTooltip(data)"
-            @click.stop="openContinuity($event, data)"
-          >
+          <span v-if="!data.parentId" class="across" data-testid="across">
+            <template v-for="reading in acrossShown(data)" :key="reading.id">
+              <!-- Ratio stability opens the pairs behind its grade. -->
+              <button
+                v-if="reading.id === 'ratio'"
+                type="button"
+                class="badge-button"
+                data-testid="continuity"
+                :aria-label="`Ratio stability: open the pairs behind the grade`"
+                @click.stop="openContinuity($event, data)"
+              >
+                <BaseEvidenceBadge
+                  :mark="reading.id"
+                  :record="reading.record"
+                  :data-testid="`mark-${reading.id}`"
+                />
+              </button>
+              <BaseEvidenceBadge
+                v-else
+                :mark="reading.id"
+                :record="reading.record"
+                :data-testid="`mark-${reading.id}`"
+              />
+            </template>
             <span
-              v-if="continuityStale(data)"
-              class="pi ph ph-arrows-clockwise"
-              data-testid="continuity-stale"
-            />
-            {{ continuityLabel(data) }}
-            <!-- On a grade only: an anchor none of whose pairs were graded
-                 already reads "Not graded". -->
-            <span
-              v-if="continuityPartial(data) && data.continuity_grade"
-              class="partial-mark"
-              data-testid="continuity-partial"
-              >partial</span
+              v-if="acrossMore(data).length"
+              class="across-more"
+              data-testid="across-more"
+              v-tooltip.top="acrossMoreTooltip(data)"
+              >+{{ acrossMore(data).length }}</span
             >
-          </button>
+          </span>
         </template>
       </Column>
+    </template>
+
+    <!-- The row's action: the brightest sample, with this peak in focus. With
+         several traces plotted it is not obvious which point of the chart to
+         click, and the brightest sample is where the species is best
+         measured. -->
+    <template #actions="{ data }">
+      <button
+        type="button"
+        class="jump-cell"
+        :disabled="jump.pendingId != null || !data.n_present"
+        aria-label="Open the brightest sample with this peak in focus"
+        v-tooltip.top="'Open the brightest sample with this peak in focus (Sample tab)'"
+        @click.stop="openBrightest(data)"
+      >
+        <span
+          :class="
+            jump.pendingId === data.batch_peak_id
+              ? 'pi pi-spin pi-spinner'
+              : 'pi ph ph-arrow-square-out'
+          "
+        />
+      </button>
     </template>
 
     <template #popovers>
@@ -1379,110 +1331,41 @@ watch(
 .child-label.stripped {
   border-color: var(--p-primary-color);
 }
-.tier-reason-mark {
-  margin-left: 0.3rem;
-  font-size: 0.75rem;
-  opacity: 0.75;
-  vertical-align: middle;
-}
-/* The row's readings beside its formula, each a badge (BaseEvidenceBadge). */
-.formula .evidence-badge,
-.child-cell .evidence-badge {
-  margin-left: 0.25rem;
+/* A line is its family's species and carries no box: the family's row
+   plots it. */
+:deep(tr.ledger-line .p-checkbox) {
+  visibility: hidden;
 }
 
-.co-variation {
-  font-family: var(--font-mono);
-  font-size: 0.86rem;
-  white-space: nowrap;
-}
-/* Display-only, so no tier colour: co-varying reads plain, the rest muted. */
-.co-variation.not_co_varying,
-.co-variation.untestable {
-  opacity: 0.55;
-}
-/* The batch checks: a tag per fact. Display-only, so no tier colour: a fact
-   that holds reads plain, one that refutes is outlined, one that cannot say is
-   muted. */
-.batch-checks {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: 0.25rem;
-}
-.check-tag {
-  padding: 0 0.25rem;
-  border: 1px solid transparent;
-  border-radius: 3px;
-  font-size: 0.74rem;
-  white-space: nowrap;
-}
-.check-tag.refutes {
-  border-color: var(--p-content-border-color);
-}
-.check-tag.unread {
-  opacity: 0.55;
+.samples {
+  font-variant-numeric: tabular-nums;
 }
 
-/* The continuity grade. A claim - stable, drift, unstable - is a small outlined
-   badge in a state colour; inconclusive and insufficient, which say the
-   ratio could not be read, are muted text, as is a batch whose grades were
-   withdrawn. Partial: outlined, with the word, the pass left some of the
-   pairs ungraded. Stale: the warning outline and the out-of-date arrows, the
-   ledger has moved since. Never dashed, which means not yet known. */
-.continuity {
+/* Across the batch: the badges in a row, then the count of the rest. */
+.across {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
-  padding: 0 0.35rem;
-  border: 1px solid transparent;
-  border-radius: 0.25rem;
+}
+.badge-button {
+  display: inline-flex;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
   background: none;
-  color: inherit;
-  font: inherit;
-  font-size: 0.8rem;
-  white-space: nowrap;
   cursor: pointer;
 }
-.continuity.claim {
-  border-color: currentColor;
+.badge-button :deep(.evidence-badge) {
+  cursor: pointer;
 }
-.continuity.stable {
-  color: var(--state-success);
-}
-.continuity.drift {
-  color: var(--state-info);
-}
-/* Unstable holds the reading back, in the warning colour the evidence
-   badges give it (lib/evidence/marks.js): an alarm about the pair, not a
-   failure of the ledger's. */
-.continuity.red {
-  color: var(--state-warning);
-}
-.continuity.inconclusive,
-.continuity.insufficient,
-.continuity.withdrawn {
-  opacity: 0.55;
-}
-.continuity.partial {
-  border-color: currentColor;
-}
-.partial-mark {
-  font-size: 0.62rem;
-  opacity: 0.75;
-}
-.continuity.stale {
-  outline: 1px solid var(--state-warning);
-  outline-offset: 1px;
-}
-.continuity.stale .pi {
-  color: var(--state-warning);
-  font-size: 0.75rem;
+.across-more {
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--p-text-muted-color);
 }
 
-/* The jump beside the intensity: faint until hovered, so the column stays a
-   column of numbers; the spinner marks the one jump in flight. */
+/* The row's action, the jump: the spinner marks the one jump in flight. */
 .jump-cell {
-  margin-left: 0.35rem;
   padding: 0.05rem 0.25rem;
   border: 0;
   border-radius: 4px;
@@ -1490,10 +1373,8 @@ watch(
   color: inherit;
   font: inherit;
   cursor: pointer;
-  opacity: 0.45;
 }
 .jump-cell:hover {
-  opacity: 1;
   background: var(--p-content-hover-background);
 }
 .jump-cell:disabled {

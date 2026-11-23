@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from 'vue'
+import { computed, ref, useAttrs } from 'vue'
 
 import Button from 'primevue/button'
 import Column from 'primevue/column'
@@ -19,6 +19,7 @@ import {
   BaseTierTag
 } from '@/lib/base'
 import { num } from '@/lib/formatters'
+import { tierName } from '@/lib/tiers'
 import { LEVEL_FILTER_OPTIONS } from '@/lib/levels'
 import { useApp } from '@/stores'
 
@@ -26,7 +27,11 @@ import LedgerListingCell from './LedgerListingCell.vue'
 import LedgerTierStrip from './LedgerTierStrip.vue'
 import LedgerVerdictCell from './LedgerVerdictCell.vue'
 import LedgerViewToggle from './LedgerViewToggle.vue'
+import { compactNumber, intensityBarShare, intensityDomain } from './intensity.js'
+import { LEDGER_ROW_HEIGHT } from './rows.js'
 import { useLedgerListing } from './useLedgerView.js'
+// The widths at which the ledger drops cells, by container query.
+import './narrow.css'
 
 /**
  * The assignment ledger: a formula at an m/z with a tier, per peak of a sample
@@ -44,10 +49,22 @@ import { useLedgerListing } from './useLedgerView.js'
  *   right;
  * - one inline spinner, one inline load error and one empty state where the
  *   table would be, so the strip and the bar above stay usable;
- * - the shared columns, sentence case: m/z, intensity, the formula, what a list
- *   calls it, the tier, the engine's tier and the level where any row has one,
- *   and the verdict, sortable in both scopes. A cell with nothing in it is
- *   blank.
+ * - the shared columns (section 3.2), sentence case, in this order: the
+ *   scope's Plot column, m/z, Compound (the formula, with what a list or a
+ *   target names it under it), Ion, Intensity (a compact number and a
+ *   log-scale bar), Tier (a capping reason as a mark on its chip), Level where
+ *   any row has one, the scope's own columns, the verdict, and the row's
+ *   actions. With Show > Engine readings on, an importing engine's own tier
+ *   is a second, outlined chip in the Tier cell. A cell with nothing in it is
+ *   blank;
+ * - the rows (section 3.3): 40 px each. An isotopologue line is a quiet
+ *   sub-row under its family's row, showing its label, its m/z and its
+ *   intensity, and nothing it would only repeat: no plot box, ion, tier,
+ *   level, verdict or action. The row's actions show on hover, on focus
+ *   within the row and on the selected row. Clicking an m/z opens the peak
+ *   in the inspector (`open-mz`);
+ * - the narrow widths: ./narrow.css drops the level, the sample count, the
+ *   batch's badges and the intensity's bar, in that order.
  *
  * Sorting and filtering are the scope's (useLedgerSort, useLedgerFilters):
  * the table is `lazy`, so `rows` arrive filtered, sorted and folded as shown.
@@ -75,17 +92,24 @@ const props = defineProps({
   emptyTitle: { type: String, default: 'No rows match these filters' },
 
   rows: { type: Array, required: true },
-  rowHeight: { type: Number, required: true },
   sortField: { type: String, default: null },
   sortOrder: { type: Number, default: null },
   /**
    * The row field each shared column reads: `mz`, `intensity`, `formula`,
-   * `listing`, `level`, and `levelSort` for the level's rank.
+   * `ion`, `level`, and `levelSort` for the level's rank.
    */
   fields: { type: Object, required: true },
   /** Header tooltips by column key. */
   headers: { type: Object, default: () => ({}) },
   intensityLabel: { type: String, default: 'Intensity' },
+  /**
+   * The intensities the bars are drawn over: every row the scope holds, not
+   * only the ones its filters leave, so a bar keeps its length as the reader
+   * narrows the ledger. The rows shown where it is not given.
+   */
+  intensities: { type: Array, default: null },
+  /** What clicking an m/z says it does, for its accessible name. */
+  mzAction: { type: String, default: 'Open this peak in the inspector' },
 
   /** The search box's query, and what it says it searches. */
   search: { type: String, default: '' },
@@ -105,11 +129,20 @@ const props = defineProps({
   viewMenuTooltip: { type: String, default: '' },
   viewMenuPt: { type: Object, default: null },
 
-  hasEngineTiers: { type: Boolean, default: false },
+  /**
+   * Show > Engine readings: an importing engine's own tier as a second,
+   * outlined chip in the Tier cell, where a row carries one
+   * (`engine_tier`). Owner's decision of 2026-11-22: the chip, not a column
+   * of its own.
+   */
+  engineReadings: { type: Boolean, default: false },
   engineTierTooltip: { type: Function, default: () => '' },
-  /** Whether an isotopologue line shows an engine tier of its own. */
-  engineTierOnLines: { type: Boolean, default: true },
   hasLevels: { type: Boolean, default: false },
+  /** The cap mark on a row's tier chip (BaseTierTag's `cap`), or null. */
+  tierCap: { type: Function, default: () => null },
+  /** How many isotopologue lines fold under a row, and whether they are shown. */
+  familySize: { type: Function, default: () => 0 },
+  familyOpen: { type: Function, default: () => false },
 
   /** The verdict cell's props for a row (LedgerVerdictCell), and its help card. */
   verdictCell: { type: Function, required: true },
@@ -120,8 +153,11 @@ defineEmits([
   'update:sortOrder',
   'update:search',
   'toggle-tier',
-  'open-verdict'
+  'open-verdict',
+  'open-mz',
+  'toggle-family'
 ])
+const attrs = useAttrs()
 
 const app = useApp()
 const listingColumn = useLedgerListing()
@@ -140,11 +176,33 @@ const toggleOverflowMenu = (event) => overflowMenu.value?.toggle(event)
 const table = ref()
 defineExpose({ table, viewMenu, overflowMenu })
 
+// An isotopologue line, in either scope: the sample's rows mark it
+// `isChild`, the batch's carry the family they fold under as `parentId`.
 const isLineRow = (row) => Boolean(row.isChild || row.parentId)
-const intensityOf = (row) => {
+
+// A line is a sub-row: the class the narrow rules and the quiet style key on,
+// beside whatever the scope gives its rows.
+const rowClass = (row) => {
+  const own = typeof attrs.rowClass === 'function' ? attrs.rowClass(row) : attrs.rowClass
+  return [own, isLineRow(row) ? 'ledger-line' : null].filter(Boolean)
+}
+
+// The intensity: the compact number, the exact one on hover, and the bar on a
+// log scale over the scope's rows.
+const domain = computed(() =>
+  intensityDomain(props.intensities ?? props.rows.map((row) => row[props.fields.intensity]))
+)
+const intensityOf = (row) => compactNumber(row[props.fields.intensity])
+const intensityExact = (row) => {
   const value = row[props.fields.intensity]
   return value != null ? num.peakIntensity.format(value) : ''
 }
+const barStyle = (row) => ({
+  width: `${(intensityBarShare(row[props.fields.intensity], domain.value) * 100).toFixed(1)}%`
+})
+
+const engineChipTooltip = (row) =>
+  props.engineTierTooltip(row) || `The importing engine's own tier: ${tierName(row.engine_tier)}`
 </script>
 
 <template>
@@ -159,6 +217,9 @@ const intensityOf = (row) => {
         v-tooltip.top="countTooltip"
         >{{ count }}</span
       >
+      <!-- The header line's right, after the count: room for the scope's
+           control of where it stands (the batch's pass, the sample's run). -->
+      <span v-if="$slots['header-end']" class="header-end"><slot name="header-end" /></span>
     </template>
 
     <!-- What the scope reports above everything: a refused launch. -->
@@ -279,10 +340,11 @@ const intensityOf = (row) => {
         ref="table"
         v-bind="$attrs"
         :value="rows"
+        :rowClass="rowClass"
         size="small"
         scrollable
         scrollHeight="flex"
-        :virtualScrollerOptions="{ itemSize: rowHeight }"
+        :virtualScrollerOptions="{ itemSize: LEDGER_ROW_HEIGHT }"
         lazy
         removableSort
         :sortField="sortField"
@@ -295,52 +357,105 @@ const intensityOf = (row) => {
           <slot name="empty"><BaseEmptyState :title="emptyTitle" /></slot>
         </template>
 
+        <!-- Plot: the scope's box that puts the row's species in the batch
+             chart. -->
         <slot name="lead-column" />
 
         <!-- The header tooltips sit on a span in the header slot, never on the
              Column itself: Column renders no element of its own. -->
-        <Column :field="fields.mz" sortable style="min-width: 6rem">
+        <Column :field="fields.mz" sortable style="min-width: 5.5rem">
           <template #header>
             <span v-tooltip.top="headers.mz">m/z</span>
           </template>
-          <template #body="{ data }">{{ num.mz.format(data[fields.mz]) }}</template>
+          <!-- The peak, in the inspector: the sample's own row, or the batch
+               peak in its brightest sample. -->
+          <template #body="{ data }">
+            <button
+              type="button"
+              class="mz-link"
+              data-testid="ledger-mz"
+              :aria-label="`${num.mz.format(data[fields.mz])}: ${mzAction}`"
+              @click.stop="$emit('open-mz', data)"
+            >
+              {{ num.mz.format(data[fields.mz]) }}
+            </button>
+          </template>
         </Column>
 
-        <Column :field="fields.intensity" sortable style="min-width: 6rem">
+        <!-- Compound: the formula, with what a list or a target names it on a
+             second line. A line is named by its substitution instead: it is
+             its family's formula again. -->
+        <Column :field="fields.formula" sortable style="min-width: 8rem">
+          <template #header>
+            <span v-tooltip.top="headers.formula">Compound</span>
+          </template>
+          <template #body="{ data }">
+            <span v-if="isLineRow(data)" class="line-cell" data-testid="line-cell"
+              ><slot name="line-label" :data="data"
+            /></span>
+            <span v-else class="compound-cell" data-testid="compound-cell">
+              <span class="compound-formula">
+                <!-- The family's caret and its line count: folds or unfolds
+                     this family's isotopologue lines under the row. -->
+                <button
+                  v-if="familySize(data)"
+                  type="button"
+                  class="family-caret"
+                  data-testid="family-caret"
+                  :aria-expanded="familyOpen(data)"
+                  :aria-label="`${familyOpen(data) ? 'Fold' : 'Unfold'} ${familySize(data)} isotopologue line${familySize(data) === 1 ? '' : 's'}`"
+                  v-tooltip.top="
+                    `${familySize(data)} isotopologue line${familySize(data) === 1 ? '' : 's'}: click to ${familyOpen(data) ? 'fold' : 'unfold'}`
+                  "
+                  @click.stop="$emit('toggle-family', data)"
+                >
+                  <span
+                    :class="['pi', familyOpen(data) ? 'pi-chevron-down' : 'pi-chevron-right']"
+                    aria-hidden="true"
+                  />{{ familySize(data) }}
+                </button>
+                <slot name="formula" :data="data" />
+              </span>
+              <!-- Draws nothing for a row no list or target names. -->
+              <LedgerListingCell
+                class="compound-listing"
+                :listing="data.listing"
+                :target="data.target"
+              />
+            </span>
+          </template>
+        </Column>
+
+        <!-- Ion: what tells two channels of one neutral apart. -->
+        <Column :field="fields.ion" sortable style="min-width: 5rem">
+          <template #header>
+            <span v-tooltip.top="headers.ion">Ion</span>
+          </template>
+          <template #body="{ data }">
+            <span v-if="!isLineRow(data)" class="ion-cell"
+              ><slot name="ion" :data="data"
+                ><span class="ion">{{ data[fields.ion] ?? '' }}</span></slot
+              ></span
+            >
+          </template>
+        </Column>
+
+        <Column :field="fields.intensity" sortable style="min-width: 7rem">
           <template #header>
             <span v-tooltip.top="headers.intensity">{{ intensityLabel }}</span>
           </template>
           <template #body="{ data }">
-            <span class="intensity">{{ intensityOf(data) }}</span>
-            <slot name="intensity" :data="data" />
-          </template>
-        </Column>
-
-        <Column :field="fields.formula" sortable style="min-width: 7rem">
-          <template #header>
-            <span v-tooltip.top="headers.formula">Formula</span>
-          </template>
-          <template #body="{ data }"><slot name="formula" :data="data" /></template>
-        </Column>
-
-        <!-- An isotopologue line is its family's formula again, so it shows
-             no listing of its own. -->
-        <Column
-          :field="fields.listing"
-          sortable
-          :style="{ minWidth: listingColumn.full ? '8rem' : '5rem' }"
-        >
-          <template #header>
-            <span v-tooltip.top="headers.listing">{{
-              listingColumn.full ? 'Listed as' : 'Listed'
-            }}</span>
-          </template>
-          <template #body="{ data }">
-            <LedgerListingCell
-              v-if="!isLineRow(data)"
-              :listing="data.listing"
-              :target="data.target"
-            />
+            <span
+              v-if="intensityOf(data)"
+              class="intensity-cell"
+              data-testid="intensity-cell"
+              v-tooltip.top="intensityExact(data)"
+            >
+              <span class="intensity">{{ intensityOf(data) }}</span>
+              <span class="intensity-bar" aria-hidden="true"
+                ><span class="intensity-fill" :style="barStyle(data)"
+              /></span>
+            </span>
           </template>
         </Column>
 
@@ -359,23 +474,22 @@ const intensityOf = (row) => {
             >
             <BaseProvisionalMark />
           </template>
-          <template #body="{ data }"><slot name="tier" :data="data" /></template>
-        </Column>
-
-        <!-- The producing engine's own tier, beside this server's rather than
-             instead of it: the tier column is what the table sorts, filters and
-             rolls up on, and a row where the two differ is the one worth
-             opening. -->
-        <Column v-if="hasEngineTiers" field="engineTierRank" sortable style="min-width: 7rem">
-          <template #header>
-            <span v-tooltip.top="headers.engineTier">Engine tier</span>
-          </template>
+          <!-- The producing engine's own tier, beside this server's rather than
+               instead of it: the tier this server measured is what the table
+               sorts, filters and rolls up on, and a row where the two differ is
+               the one worth opening. -->
           <template #body="{ data }">
-            <BaseTierTag
-              v-if="data.engine_tier && (engineTierOnLines || !isLineRow(data))"
-              :tier="data.engine_tier"
-              :tooltip="engineTierTooltip(data)"
-            />
+            <span v-if="!isLineRow(data)" class="tier-cell">
+              <slot name="tier" :data="data" :cap="tierCap(data)" />
+              <BaseTierTag
+                v-if="engineReadings && data.engine_tier"
+                class="engine-chip"
+                data-testid="engine-tier-chip"
+                :tier="data.engine_tier"
+                :tooltip="engineChipTooltip(data)"
+                outlined
+              />
+            </span>
           </template>
         </Column>
 
@@ -389,7 +503,9 @@ const intensityOf = (row) => {
           :field="fields.level"
           :sortField="fields.levelSort"
           sortable
-          style="min-width: 5rem"
+          headerClass="col-level"
+          bodyClass="col-level"
+          style="min-width: 4.5rem"
           :filterMatchModeOptions="[{ label: 'Equals', value: 'equals' }]"
           :maxConstraints="1"
           :showAddButton="false"
@@ -406,7 +522,11 @@ const intensityOf = (row) => {
               >Level</span
             >
           </template>
-          <template #body="{ data }"><slot name="level" :data="data" /></template>
+          <template #body="{ data }">
+            <span v-if="!isLineRow(data)" class="level-cell"
+              ><slot name="level" :data="data"
+            /></span>
+          </template>
           <template #filter="{ filterModel, filterCallback }">
             <Select
               v-model="filterModel.value"
@@ -431,7 +551,7 @@ const intensityOf = (row) => {
 
         <!-- Sorts on the rank the scope gives each row's verdict, confirmed
              first and unjudged last, as the tier column sorts on its rank. -->
-        <Column field="verdictRank" sortable style="min-width: 3.5rem">
+        <Column field="verdictRank" sortable style="min-width: 3rem">
           <template #header>
             <span
               class="pi ph ph-seal-check"
@@ -441,9 +561,24 @@ const intensityOf = (row) => {
           </template>
           <template #body="{ data }">
             <LedgerVerdictCell
+              v-if="!isLineRow(data)"
               v-bind="verdictCell(data)"
               @open="$emit('open-verdict', $event, data)"
             />
+          </template>
+        </Column>
+
+        <!-- The row's actions: shown on hover, on focus within the row and on
+             the selected row (the style below), so a keyboard user reaches
+             them without selecting the row first. -->
+        <Column v-if="$slots.actions" style="width: 2.5rem">
+          <template #header>
+            <span class="sr-only">Actions</span>
+          </template>
+          <template #body="{ data }">
+            <span v-if="!isLineRow(data)" class="row-actions" data-testid="row-actions"
+              ><slot name="actions" :data="data"
+            /></span>
           </template>
         </Column>
       </DataTable>
@@ -475,6 +610,8 @@ const intensityOf = (row) => {
 .ledger {
   flex: 1;
   min-height: 0;
+  /* The narrow rules (./narrow.css) measure the ledger's own width. */
+  container: ledger / inline-size;
   /* .col centres on space-between, which would drop the spinner and the load
      error to the bottom of the pane now that this column has room to spare. */
   justify-content: flex-start;
@@ -533,8 +670,117 @@ const intensityOf = (row) => {
   color: var(--p-text-muted-color);
 }
 
-.intensity {
+.header-end {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+/* Every row 40 px (LEDGER_ROW_HEIGHT, the scroller's item size): the cells
+   hold their content on one line, the compound's two excepted. */
+.ledger :deep(.p-datatable-tbody > tr > td) {
+  box-sizing: border-box;
+  height: 40px;
+  padding-top: 0;
+  padding-bottom: 0;
+  white-space: nowrap;
+}
+/* An isotopologue line: a quiet sub-row, its label, m/z and intensity a step
+   smaller and muted. It inherits the rest from the row above it. */
+.ledger :deep(tr.ledger-line > td) {
+  font-size: 0.82rem;
+  color: var(--p-text-muted-color);
+}
+
+/* The m/z: the link to the peak, in Plex Mono and tabular, plain until
+   hovered. */
+.mz-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.mz-link:hover,
+.mz-link:focus-visible {
+  color: var(--p-primary-color);
+  text-decoration: underline;
+}
+
+/* The compound: the formula, and under it what a list calls it, recessive. */
+.compound-cell {
+  display: inline-flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  line-height: 1.2;
+}
+.compound-listing {
+  font-size: 0.72rem;
+  color: var(--p-text-muted-color);
+}
+.line-cell {
+  display: inline-flex;
+  align-items: baseline;
+}
+.ion {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+}
+
+/* The intensity: the compact number, then its bar on a log scale. */
+.intensity-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.intensity {
+  min-width: 2.6rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.intensity-bar {
+  display: inline-block;
+  width: 3rem;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--p-content-border-color);
+  overflow: hidden;
+}
+.intensity-fill {
+  display: block;
+  height: 100%;
+  background: var(--p-text-muted-color);
+}
+
+.tier-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+/* The row's actions: out of sight until the row is hovered, focused or
+   selected. Transparent rather than hidden, so a keyboard user tabbing
+   through the row reaches them. */
+.row-actions {
+  display: inline-flex;
+  opacity: 0;
+}
+.ledger :deep(tr:hover .row-actions),
+.ledger :deep(tr:focus-within .row-actions),
+.ledger :deep(tr.p-datatable-row-selected .row-actions) {
+  opacity: 1;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 /* A level filter's option: the level, then its name, the levels aligned. */
 .level-option b {
@@ -553,15 +799,31 @@ const intensityOf = (row) => {
 .ledger :deep(.formula button) {
   order: 1;
 }
-.ledger :deep(.iso-count) {
-  margin-left: 0.35rem;
+/* The family's caret: quiet, its count beside the chevron. */
+.family-caret {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.1rem;
+  margin-right: 0.3rem;
+  padding: 0 0.2rem;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--p-text-muted-color);
+  font: inherit;
   font-family: var(--font-mono);
-  font-size: 0.62rem;
-  opacity: 0.55;
-  vertical-align: super;
-  /* Its parent is BaseCopyableField's flex row, where vertical-align does
-     nothing; align to the top edge to keep the superscript reading. */
-  align-self: flex-start;
+  font-size: 0.68rem;
+  cursor: pointer;
+}
+.family-caret .pi {
+  font-size: 0.6rem;
+}
+.family-caret:hover {
+  background: var(--p-content-hover-background);
+}
+.compound-formula {
+  display: inline-flex;
+  align-items: center;
 }
 /* An unfolded isotopologue line: indented, named by its substitution. */
 .ledger :deep(.child-cell) {

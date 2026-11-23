@@ -69,11 +69,12 @@ test.describe('the peak inspector card', () => {
       .filter({ has: page.getByRole('button', { name: 'Record a verdict' }) })
       .first()
     await expect(row).toBeVisible({ timeout: 30_000 })
-    // The formula itself, not the isotopologue count beside it.
+    // The formula itself, not the family's caret beside it nor the listed
+    // name under it; and its m/z opens the peak in the inspector.
     const formula = (
-      await row.locator('td').nth(3).locator('.field > span').first().innerText()
+      await row.getByTestId('compound-cell').locator('.field > span').first().innerText()
     ).trim()
-    await row.locator('td').nth(1).click()
+    await row.getByTestId('ledger-mz').click()
 
     const card = page.locator('section.inspector')
     const answer = card.getByTestId('answer')

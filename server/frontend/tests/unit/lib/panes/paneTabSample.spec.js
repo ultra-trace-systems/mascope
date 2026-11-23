@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 
 // The Sample tab with peak-centric assignment on: the inspector in a column of
 // its own, the whole height of the tab, beside the spectrum over the assignment
@@ -38,6 +39,7 @@ vi.mock('@/lib/charts', () => ({
 const { ChartSampleSpectrum, ChartAssignmentTimeseries } = await import('@/lib/charts')
 const { PanePeakAssign } = await import('@/lib/panes')
 const { default: PaneTabSample } = await import('@/lib/panes/PaneTabSample.vue')
+const { usePeakSearch } = await import('@/lib/panes/PanePeakAssign/stores/peakSearch.js')
 
 // A splitter says which way it splits and where it saves its sizes; a panel
 // holds its slot.
@@ -67,7 +69,10 @@ const chartHeights = (wrapper) => [
 // tab, worked the way the tab works it.
 const rowHeight = (percent) => ((window.innerHeight - 180) * percent) / 100
 
-beforeEach(() => localStorage.clear())
+beforeEach(() => {
+  localStorage.clear()
+  setActivePinia(createPinia())
+})
 afterEach(() => vi.clearAllMocks())
 
 describe('PaneTabSample with peak assignment', () => {
@@ -123,5 +128,18 @@ describe('PaneTabSample with peak assignment', () => {
     await wrapper.vm.$nextTick()
 
     expect(held(splitters(wrapper)[1])).toEqual(['spectrum', 'search'])
+  })
+
+  // The sample ledger's Curate opens the search from another tab's pane,
+  // through the store; the tab closes it when it goes, as its own state did.
+  it('shows the search when the ledger asks for it, and closes it when it goes', async () => {
+    const search = usePeakSearch()
+    search.open = true
+    const wrapper = mountTab()
+    expect(held(splitters(wrapper)[1])).toEqual(['spectrum', 'search'])
+    expect(wrapper.findComponent(PanePeakAssign).props('showSearch')).toBe(true)
+
+    wrapper.unmount()
+    expect(search.open).toBe(false)
   })
 })

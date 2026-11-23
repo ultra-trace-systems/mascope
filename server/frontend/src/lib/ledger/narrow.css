@@ -1,0 +1,42 @@
+/*
+ * The ledger at narrow widths (docs/dev/assignment_ledger_and_card.md,
+ * section 3.3): as its column narrows, the ledger drops cells in a fixed
+ * order, the least read first - the level, then the batch's sample count,
+ * then its badges, then the intensity's bar - so the m/z, the compound, the
+ * ion, the number and the tier stay in every width.
+ *
+ * Measured on the ledger's own width (`container-name: ledger`, set on
+ * `.ledger` in AssignmentLedger.vue), not the window's: the ledger shares its
+ * row with the batch chart or the spectrum, and its width is the splitter's.
+ * A column drops as a whole, its header with its cells, since both carry its
+ * class (the Column's headerClass and bodyClass).
+ *
+ * Plain CSS in a file of its own, so the unit spec reads these rules
+ * themselves (tests/unit/lib/ledger/narrow.spec.js): jsdom evaluates no
+ * container query, and a copy of the widths in a script would drift from
+ * the ones that apply.
+ */
+
+@container ledger (max-width: 900px) {
+  .ledger .col-level {
+    display: none;
+  }
+}
+
+@container ledger (max-width: 780px) {
+  .ledger .col-samples {
+    display: none;
+  }
+}
+
+@container ledger (max-width: 680px) {
+  .ledger .col-across {
+    display: none;
+  }
+}
+
+@container ledger (max-width: 560px) {
+  .ledger .intensity-bar {
+    display: none;
+  }
+}

@@ -26,6 +26,7 @@ const assign = vi.fn()
 // runs afresh on every useApp() and would otherwise hand out new spies.
 const sampleUnfocus = vi.fn()
 const peakUnfocus = vi.fn()
+const peakFocus = vi.fn()
 // Reads `verdictRecord` at call time, so a test can set it after mounting.
 // `verdictPeakId`, when a test sets one, additionally models the real store's
 // identity lookup: a record is found only for the peak it was recorded against.
@@ -114,7 +115,7 @@ function makeApp() {
         pending: peaksPending,
         error: peaksError,
         focused: focusedPeak,
-        focus: vi.fn(),
+        focus: peakFocus,
         unfocus: peakUnfocus
       },
       batchPeak: {
@@ -177,8 +178,9 @@ vi.mock('@/lib/base', async () => ({
   },
   // Says which evidence it was handed, so the queue's tests can read it off.
   BaseTierTag: {
-    props: ['tier', 'evidence', 'role', 'source', 'tooltip'],
-    template: '<span class="tier-tag-stub" :data-evidence="String(evidence)" />'
+    props: ['tier', 'evidence', 'role', 'source', 'tooltip', 'cap'],
+    template:
+      '<span class="tier-tag-stub" :data-evidence="String(evidence)" :data-cap="cap?.label" />'
   },
   // Says what it was handed, so the level column's tests can read it off; the
   // chip has a spec of its own (base/BaseLevelTag.spec.js).
@@ -294,6 +296,15 @@ const GLOBAL_STUBS = {
     template: '<div class="datatable"><slot /></div>'
   },
   Column: true,
+  // The Plot box: says whether it is ticked and offers its change on a click.
+  Checkbox: {
+    name: 'Checkbox',
+    props: ['modelValue', 'disabled', 'inputId', 'ariaLabel', 'binary'],
+    emits: ['update:modelValue'],
+    template:
+      '<button class="plot-box-stub" :data-checked="String(modelValue)" :disabled="disabled" ' +
+      ':aria-label="ariaLabel" @click="$emit(\'update:modelValue\', !modelValue)" />'
+  },
   ProgressSpinner: true,
   // Rendered rather than stubbed away, so the switch a test flips is the one
   // the pane binds: `ToggleSwitch: true` renders an element with no v-model,
@@ -817,10 +828,15 @@ describe('PaneBrowserAssignment isotopologue grouping', () => {
     expect(table.props('removableSort')).toBe(true)
   })
 
-  it('leaves the folded default alone', async () => {
+  // Owner's decision of 2026-11-22: intensity, descending, in both scopes, so
+  // the order matches the spectrum; tier is one click away. A, the brighter,
+  // leads, though B is the more confident.
+  it('opens sorted by intensity, brightest first, the families folded', async () => {
     const wrapper = await mountPane()
 
-    expect(ids(wrapper)).toEqual(['b', 'a'])
+    expect(wrapper.vm.sortField).toBe('sample_peak_intensity')
+    expect(wrapper.vm.sortOrder).toBe(-1)
+    expect(ids(wrapper)).toEqual(['a', 'b'])
   })
 
   it('sorts unassigned peaks last rather than treating a missing formula as smallest', async () => {
@@ -870,274 +886,61 @@ describe('PaneBrowserAssignment isotopologue grouping', () => {
   })
 })
 
-// The engine writes adduct corroboration onto the M0 winner alone: an isotopologue
-// is the same ion measured at another isotope, not a second sighting of the
-// compound, so the backend leaves its count null by construction. The marker
-// still belongs on the isotopologue rows - the evidence is about the formula the
-// whole family shares - it just has to say the count is the family's.
-describe('PaneBrowserAssignment adduct corroboration', () => {
+// The Ion cell (docs/dev/assignment_ledger_and_card.md, section 3.2): the
+// mechanism, and a xN pill where the sample's own rows read the same neutral
+// through N channels, counted on the run's rows whatever the filters leave.
+describe("PaneBrowserAssignment the Ion cell's channel pill", () => {
   beforeEach(() => {
     runList = [{ peak_assignment_run_id: 'run-1', status: 'completed' }]
   })
-  afterEach(() => vi.clearAllMocks())
 
-  /** A family whose M0 was corroborated by `n` adducts (null for none). Its
-   *  isotopologues carry whatever the backend put on them, which is nothing. */
-  function corroborated(n, children = [{}, {}]) {
-    const fam = family({
-      id: 'a',
-      mz: 200.1,
-      intensity: 1000,
-      formula: 'C10H12',
-      children: children.map((child, index) => ({
-        sample_peak_mz: 201.1 + index,
-        sample_peak_intensity: 50 - index,
-        corroboration_adducts: null,
-        ...child
-      }))
-    })
-    fam.parent.corroboration_adducts = n
+  const channel = (id, mech, formula, extra = {}) => {
+    const fam = family({ id, mz: 100 + id.length, intensity: 100, formula })
+    Object.assign(fam.parent, { ionization_mechanism_id: mech, ...extra })
     return fam
   }
 
-  async function unfolded(...families) {
-    seed(...families)
-    const wrapper = await mountPane()
-    wrapper.vm.showIsotopologues = true
-    await wrapper.vm.$nextTick()
-    return wrapper
-  }
-
-  const rowsById = (wrapper) => new Map(wrapper.vm.rows.map((row) => [row.peak_assignment_id, row]))
-
-  it('carries the family count onto isotopologue rows, marked inherited', async () => {
-    const wrapper = await unfolded(corroborated(3))
-    const rows = rowsById(wrapper)
-
-    // Every isotopologue shows the count, and says it is not its own.
-    for (const id of ['a-c0', 'a-c1']) {
-      expect(rows.get(id).corrobAdducts, id).toBe(3)
-      expect(rows.get(id).corrobInherited, id).toBe(true)
-    }
-    // The M0's own count is unchanged and not flagged as borrowed.
-    expect(rows.get('a').corrobAdducts).toBe(3)
-    expect(rows.get('a').corrobInherited).toBe(false)
-  })
-
-  // An isotopologue shows its M0's count, and the tooltip says whose evidence
-  // it is.
-  it('says whose evidence it is', async () => {
-    const wrapper = await unfolded(corroborated(3))
-    const rows = rowsById(wrapper)
-
-    expect(wrapper.vm.corrobTooltip(rows.get('a-c0'))).toBe(
-      'Supported by 3 channels, via the M0 of this isotopologue family'
+  it('counts the rows of the sample that read the neutral, the isotope lines aside', async () => {
+    const h = family({ id: 'h', mz: 181.07, intensity: 900, formula: 'C6H12O6', children: [{}] })
+    h.parent.ionization_mechanism_id = 'mech-h'
+    seed(
+      h,
+      channel('na', 'mech-na', 'C6H12O6'),
+      channel('nh4', 'mech-nh4', 'C6H12O6'),
+      channel('lone', 'mech-h', 'C2H6')
     )
-    expect(wrapper.vm.corrobTooltip(rows.get('a'))).toBe('Supported by 3 channels')
-  })
-
-  // The count itself is the same number the M0 shows, so the marker parenthesises
-  // a borrowed one rather than dimming it - dimming would borrow the "no value
-  // here" idiom a dash already owns in the ledger.
-  it('parenthesises a borrowed count and leaves an owned one bare', async () => {
-    const wrapper = await unfolded(corroborated(3))
-    const rows = rowsById(wrapper)
-
-    expect(wrapper.vm.corrobLabel(rows.get('a-c0'))).toBe('(3)')
-    expect(wrapper.vm.corrobLabel(rows.get('a'))).toBe('3')
-  })
-
-  // An untargeted family carries no curated count at all - that is the normal
-  // case in a ledger - so the channel count is what has to reach the marker,
-  // parent and isotopologues alike.
-  it('marks an untargeted family from its channel count', async () => {
-    const fam = corroborated(null)
-    fam.parent.corroboration_channels = 3
-    const wrapper = await unfolded(fam)
-    const rows = rowsById(wrapper)
-
-    expect(rows.get('a').corrobAdducts).toBe(3)
-    expect(rows.get('a').corrobInherited).toBe(false)
-    for (const id of ['a-c0', 'a-c1']) {
-      expect(rows.get(id).corrobAdducts, id).toBe(3)
-      expect(rows.get(id).corrobInherited, id).toBe(true)
-    }
-  })
-
-  // The calibrated probability is not shown (step 3.4d), so the marker's
-  // tooltip names no number the page does not show, whichever count it is.
-  it('names no probability, whichever count it shows', async () => {
-    const curated = await unfolded(corroborated(3))
-    const fam = corroborated(null)
-    fam.parent.corroboration_channels = 3
-    const channels = await unfolded(fam)
-
-    for (const wrapper of [curated, channels]) {
-      for (const row of wrapper.vm.rows) {
-        if (row.corrobAdducts > 1) {
-          expect(wrapper.vm.corrobTooltip(row)).not.toMatch(/P\(correct\)|probability/)
-        }
-      }
-    }
-  })
-
-  // The inheritance is a fallback, not an override. A backend that does put a
-  // count on an isotopologue - the row is the one being described, after all -
-  // must see it rendered as the row's own rather than replaced by its parent's.
-  it("shows an isotopologue's own count rather than inheriting", async () => {
-    const fam = corroborated(null, [{ corroboration_channels: 2 }, {}])
-    fam.parent.corroboration_channels = 4
-    const wrapper = await unfolded(fam)
-    const rows = rowsById(wrapper)
-
-    expect(rows.get('a-c0').corrobAdducts).toBe(2)
-    expect(rows.get('a-c0').corrobInherited).toBe(false)
-    // Its sibling has none of its own and still borrows the family's.
-    expect(rows.get('a-c1').corrobAdducts).toBe(4)
-    expect(rows.get('a-c1').corrobInherited).toBe(true)
-  })
-
-  // Where a curated row carries both, the channel count is the superset.
-  it('prefers the channel count over the curated one', async () => {
-    const fam = corroborated(2)
-    fam.parent.corroboration_channels = 4
-    const wrapper = await unfolded(fam)
-
-    expect(rowsById(wrapper).get('a').corrobAdducts).toBe(4)
-  })
-
-  // The marker is gated on `corrobAdducts > 1`, so an uncorroborated family has
-  // to stay at 0 rather than inherit a 1 or a null that reads as "supported".
-  it('leaves a family whose M0 was not corroborated unmarked', async () => {
-    const wrapper = await unfolded(corroborated(null))
-    const rows = rowsById(wrapper)
-
-    for (const id of ['a', 'a-c0', 'a-c1']) {
-      expect(rows.get(id).corrobAdducts, id).toBe(0)
-      // Nothing was borrowed: there was no count to borrow.
-      expect(rows.get(id).corrobInherited, id).toBe(false)
-    }
-  })
-
-  // A lone adduct corroborates nothing, so the marker's `> 1` gate hides it. The
-  // count still travels to the isotopologues, and the row says so - `corrobInherited`
-  // tracks where the number came from, not whether it happens to render.
-  it('keeps a single-adduct count below the marker threshold', async () => {
-    const wrapper = await unfolded(corroborated(1))
-    const rows = rowsById(wrapper)
-
-    for (const id of ['a-c0', 'a-c1']) {
-      expect(rows.get(id).corrobAdducts, id).toBe(1)
-      expect(rows.get(id).corrobInherited, id).toBe(true)
-    }
-    expect(rows.get('a').corrobInherited).toBe(false)
-  })
-
-  // An imported ledger is not bound by the in-app engine's winner-only rule, so
-  // an isotopologue that does carry its own count keeps it rather than the family's.
-  it('prefers the count on the isotopologue itself over the family one', async () => {
-    const wrapper = await unfolded(corroborated(3, [{ corroboration_adducts: 2 }, {}]))
-    const rows = rowsById(wrapper)
-
-    expect(rows.get('a-c0').corrobAdducts).toBe(2)
-    expect(rows.get('a-c0').corrobInherited).toBe(false)
-    expect(rows.get('a-c1').corrobAdducts).toBe(3)
-    expect(rows.get('a-c1').corrobInherited).toBe(true)
-  })
-
-  // Each isotopologue inherits from ITS OWN parent, not from whichever family the
-  // loop happened to reach first. With one family on screen the two are
-  // indistinguishable, so this is the case that pins the per-parent scope.
-  it('inherits from the parent of each isotopologue, not across families', async () => {
-    const corroboratedFamily = corroborated(3)
-    const bare = family({
-      id: 'b',
-      mz: 100.05,
-      intensity: 500,
-      formula: 'C2H6',
-      children: [{ sample_peak_mz: 101.05, sample_peak_intensity: 40 }]
-    })
-    bare.parent.corroboration_adducts = null
-    const wrapper = await unfolded(corroboratedFamily, bare)
-    const rows = rowsById(wrapper)
-
-    expect(rows.get('a-c0').corrobAdducts).toBe(3)
-    expect(rows.get('a-c0').corrobInherited).toBe(true)
-    // The uncorroborated family's isotopologue has no claim on the other's count.
-    expect(rows.get('b-c0').corrobAdducts).toBe(0)
-    expect(rows.get('b-c0').corrobInherited).toBe(false)
-  })
-
-  // Everything above asserts on `rows`, which the shared stubs never render:
-  // PrimeVue's DataTable is what feeds each row to a Column's #body slot, and
-  // `DataTable` is a bare div here while `Column` is auto-stubbed. So the markup
-  // this change actually ships - the marker's gate and its parenthesised label -
-  // is invisible to those tests, and renaming the binding would leave them all
-  // green. This pair passes the rows down so the rendered cell can be read.
-  async function rendered(...families) {
-    // A ref, not a captured array: the rows change when the family is unfolded
-    // below, and the Column stub has to re-render with them.
-    const tableRows = ref([])
-    seed(...families)
-    const wrapper = mount(PaneBrowserAssignment, {
-      global: {
-        directives: { tooltip: {}, help: {} },
-        stubs: {
-          ...GLOBAL_STUBS,
-          // Keeps the shared stub's prop declarations, so `scrollHeight` and
-          // friends stay props rather than falling through onto the div.
-          DataTable: {
-            ...GLOBAL_STUBS.DataTable,
-            watch: {
-              value: { handler: (value) => (tableRows.value = value), immediate: true }
-            }
-          },
-          Column: {
-            setup: () => ({ rows: tableRows }),
-            template:
-              '<div class="col"><template v-for="(row, i) in rows" :key="i">' +
-              '<slot name="body" :data="row" /></template></div>'
-          }
-        }
-      }
-    })
-    wrapper.vm.showIsotopologues = true
-    await wrapper.vm.$nextTick()
-    return wrapper
-  }
-
-  it('renders a parenthesised marker on isotopologues and a bare one on the M0', async () => {
-    const wrapper = await rendered(corroborated(3))
-    const marks = wrapper.findAll('.corrob-mark').map((m) => m.text())
-
-    // One per row of the family, M0 first: its own count bare, the two borrowed
-    // ones parenthesised.
-    expect(marks).toEqual(['3', '(3)', '(3)'])
-  })
-
-  it('renders no marker for a family whose M0 was not corroborated', async () => {
-    const wrapper = await rendered(corroborated(null))
-
-    expect(wrapper.findAll('.corrob-mark')).toHaveLength(0)
-  })
-
-  // Folded is the default view, and the parent row is the only one on screen.
-  it('leaves the folded M0 row alone', async () => {
-    seed(corroborated(3))
     const wrapper = await mountPane()
+    const count = (id) =>
+      wrapper.vm.channelCount(wrapper.vm.rows.find((r) => r.peak_assignment_id === id))
+    expect(count('h')).toBe(3)
+    expect(count('na')).toBe(3)
+    expect(count('lone')).toBe(1)
+  })
 
-    expect(wrapper.vm.rows).toHaveLength(1)
-    expect(wrapper.vm.rows[0].corrobAdducts).toBe(3)
-    expect(wrapper.vm.rows[0].corrobInherited).toBe(false)
+  it('counts no source ion and no peak nothing explained', async () => {
+    seed(
+      channel('r1', 'mech-a', 'NO3', { role: 'reagent' }),
+      channel('r2', 'mech-b', 'NO3', { role: 'reagent' }),
+      channel('u', 'mech-a', null)
+    )
+    const wrapper = await mountPane()
+    for (const row of wrapper.vm.rows) expect(wrapper.vm.channelCount(row)).toBe(0)
+  })
+
+  // Narrowing the ledger leaves the pill as it was: it counts the run's rows.
+  it('keeps its count while a filter hides the other channels', async () => {
+    seed(
+      channel('a', 'mech-a', 'C6H12O6', { tier: 'assigned' }),
+      channel('b', 'mech-b', 'C6H12O6', { tier: 'candidate' })
+    )
+    const wrapper = await mountPane()
+    wrapper.vm.toggleTier('assigned')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.vm.rows.map((r) => r.peak_assignment_id)).toEqual(['a'])
+    expect(wrapper.vm.channelCount(wrapper.vm.rows[0])).toBe(2)
   })
 })
 
-// An unfolded isotopologue row is labelled by how it differs from its family's
-// M0. For the 15N-nitrate ion C9H16O7^N- the M0 is the bracketed [15N]C9H16O7-,
-// and the one line without a bracket, C9H16NO7-, is the reagent's unlabelled
-// remainder: read off the brackets alone it was labelled "M0", indented under
-// the family's real one. The ion formula on the rows says which brackets are
-// labels.
 describe('PaneBrowserAssignment isotopologue labels', () => {
   const ION = 'C9H16O7^N-'
 
@@ -1309,14 +1112,19 @@ describe('PaneBrowserAssignment a tiering still in progress', () => {
     expect(wrapper.vm.rows.map((row) => row.peak_assignment_id)).toEqual(['a'])
   })
 
-  // The channel-count marker sat beside the probability and moves to the
-  // ionization, whose channels it counts.
-  it('puts the channel count beside the ionization', async () => {
-    assignmentList[0].corroboration_channels = 3
+  // The channel count is the Ion cell's xN pill, read off the sample's own
+  // rows of the neutral.
+  it('puts the channel count in the Ion cell', async () => {
+    const other = family({ id: 'b', mz: 222.1, intensity: 10, formula: 'C10H12' })
+    other.parent.ionization_mechanism_id = 'mech-2'
+    seed(family({ id: 'a', mz: 200.1, intensity: 1000, formula: 'C10H12' }), other)
     const wrapper = await renderedTable()
-    const mech = wrapper.findAll('.stub-col').find((col) => col.attributes('data-field') === 'mech')
+    const ion = wrapper.findAll('.stub-col').find((col) => col.attributes('data-field') === 'mech')
 
-    expect(mech.find('.corrob-mark').text()).toBe('3')
+    expect(ion.findAll('[data-testid="channel-pill"]').map((pill) => pill.text())).toEqual([
+      '×2',
+      '×2'
+    ])
   })
 })
 
@@ -1385,25 +1193,33 @@ describe('PaneBrowserAssignment reference-list column', () => {
     fam.parent.reference_listing = LISTING
     return fam
   }
+  // The listing is the Compound cell's second line: the Listed as column is
+  // gone (docs/dev/assignment_ledger_and_card.md, section 3.2).
   const listingColumn = (wrapper) =>
-    wrapper.findAll('.stub-col').find((col) => col.attributes('data-field') === 'listing')
+    wrapper.findAll('.stub-col').find((col) => col.attributes('data-field') === 'assigned_formula')
 
-  it('shows the name, the list and its tag beside the formula, in full', async () => {
+  it('shows the name, the list and its tag under the formula, in full', async () => {
     const wrapper = await renderedListingAs(true, listedFamily())
     const column = listingColumn(wrapper)
     const cells = column.findAll('.stub-cell')
 
-    // The column comes right after the formula's.
     const fields = wrapper.findAll('.stub-col').map((col) => col.attributes('data-field'))
-    expect(fields.indexOf('listing')).toBe(fields.indexOf('assigned_formula') + 1)
-    expect(column.text()).toContain('Listed as')
+    expect(fields).not.toContain('listing')
+    expect(column.text()).toContain('Compound')
+    expect(column.text()).not.toContain('Listed')
 
-    const listed = cells[0].find('[data-testid="listed-as"]')
+    // The formula first, the listing on the line under it.
+    const compound = cells[0].find('[data-testid="compound-cell"]')
+    expect(compound.find('.compound-formula .copyable').text()).toBe('C10H30O5Si5')
+    const listed = compound.find('.compound-listing')
+    expect(listed.attributes('data-testid')).toBe('listed-as')
     expect(listed.find('.listing-name').text()).toBe('decamethylcyclopentasiloxane +1')
     expect(listed.find('.listing-source').text()).toBe('cyclic-siloxanes')
     expect(listed.find('[data-testid="list-tag-background"]').exists()).toBe(true)
-    // The isotopologue line under it is the same formula again, and shows nothing.
-    expect(cells[1].text()).toBe('')
+    // The isotopologue line under it is the same formula again: its label only.
+    expect(cells[1].find('[data-testid="listed-as"]').exists()).toBe(false)
+    expect(cells[1].find('[data-testid="compound-cell"]').exists()).toBe(false)
+    expect(cells[1].find('.child-label').exists()).toBe(true)
   })
 
   // The plan owner's notes of 2026-09-26: the ledger was too wide with the
@@ -1416,8 +1232,6 @@ describe('PaneBrowserAssignment reference-list column', () => {
     const listed = column.findAll('.stub-cell')[0].find('[data-testid="listed-as"]')
 
     expect(column.find('.ph-flask').exists()).toBe(false)
-    expect(column.text()).not.toContain('Listed as')
-    expect(column.text()).toContain('Listed')
     expect(listed.find('.listing-source').exists()).toBe(false)
     expect(listed.find('[data-testid="listing-folded"]').text()).toBe(
       'decamethylcyclopentasiloxane +1'
@@ -1441,7 +1255,6 @@ describe('PaneBrowserAssignment reference-list column', () => {
     expect(cell().find('.listing-name').text()).toBe('decamethylcyclopentasiloxane +1')
     expect(cell().find('.listing-name').classes()).not.toContain('folded')
     expect(cell().find('.listing-source').exists()).toBe(true)
-    expect(listingColumn(wrapper).text()).toContain('Listed as')
     // One setting for both ledgers, and kept across a reload.
     expect(JSON.parse(localStorage.getItem('mascope.browser.match.ledgerView')).listingFull).toBe(
       true
@@ -1458,19 +1271,7 @@ describe('PaneBrowserAssignment reference-list column', () => {
     const cell = listingColumn(wrapper).find('.stub-cell')
 
     expect(cell.find('[data-testid="listed-as"]').exists()).toBe(false)
-    expect(cell.text()).toBe('')
-  })
-
-  it('sorts on the name, the rows no list names last', async () => {
-    const pinene = family({ id: 'p', mz: 137.13, intensity: 10, formula: 'C10H16' })
-    pinene.parent.reference_listing = { name: 'alpha-pinene', source: 'monoterpenes' }
-    seed(listedFamily(), FAMILY_B, pinene)
-    const wrapper = await mountPane()
-
-    wrapper.vm.sortField = 'listing'
-    wrapper.vm.sortOrder = 1
-    await wrapper.vm.$nextTick()
-    expect(wrapper.vm.rows.map((row) => row.peak_assignment_id)).toEqual(['p', 'd5', 'b'])
+    expect(cell.find('.compound-formula .copyable').text()).toBe('C2H6')
   })
 })
 
@@ -1527,7 +1328,7 @@ describe("PaneBrowserAssignment the target's candidate", () => {
   const firstCell = (wrapper) =>
     wrapper
       .findAll('.stub-col')
-      .find((col) => col.attributes('data-field') === 'listing')
+      .find((col) => col.attributes('data-field') === 'assigned_formula')
       .find('.stub-cell [data-testid="listed-as"]')
 
   afterEach(() => localStorage.clear())
@@ -1585,19 +1386,6 @@ describe("PaneBrowserAssignment the target's candidate", () => {
     expect(cell.find('[data-testid="target-as"]').attributes('aria-label')).toBe('target: glucose')
     expect(cell.find('.ph-flask').exists()).toBe(false)
   })
-
-  it("sorts a target row on the target's name", async () => {
-    const pinene = family({ id: 'p', mz: 137.13, intensity: 10, formula: 'C10H16' })
-    pinene.parent.reference_listing = { name: 'alpha-pinene', source: 'monoterpenes' }
-    const aa = targeted({ ...ONLY_TARGET, target: { ...TARGET, name: 'aa-glucose' } })
-    seed(aa, pinene, FAMILY_B)
-    const wrapper = await mountPane()
-
-    wrapper.vm.sortField = 'listing'
-    wrapper.vm.sortOrder = 1
-    await wrapper.vm.$nextTick()
-    expect(wrapper.vm.rows.map((row) => row.peak_assignment_id)).toEqual(['glc', 'p', 'b'])
-  })
 })
 
 // A run keeps the peak ids it read, and a sample whose peaks were found again
@@ -1625,8 +1413,8 @@ describe('PaneBrowserAssignment rows whose peak the sample no longer has', () =>
     expect(notice(wrapper).text()).toContain('Run the assignment again')
     const rowClass = rowClassOf(wrapper)
     const rows = new Map(assignmentList.map((row) => [row.peak_assignment_id, row]))
-    expect(rowClass(rows.get('a'))).toBe('stale-peak')
-    expect(rowClass(rows.get('b'))).toBeNull()
+    expect(rowClass(rows.get('a'))).toEqual(['stale-peak'])
+    expect(rowClass(rows.get('b'))).toEqual([])
   })
 
   it('names the whole run when none of its rows resolve', async () => {
@@ -1643,7 +1431,7 @@ describe('PaneBrowserAssignment rows whose peak the sample no longer has', () =>
     peakList = livePeaks('p-other')
     let wrapper = await mountPane()
     expect(notice(wrapper).exists()).toBe(false)
-    expect(rowClassOf(wrapper)(assignmentList[0])).toBeNull()
+    expect(rowClassOf(wrapper)(assignmentList[0])).toEqual([])
 
     peaksPending = false
     peakList = []
@@ -1665,7 +1453,7 @@ describe('PaneBrowserAssignment rows whose peak the sample no longer has', () =>
     peaksError = new Error('nope')
     let wrapper = await mountPane()
     expect(notice(wrapper).exists()).toBe(false)
-    expect(rowClassOf(wrapper)(assignmentList[0])).toBeNull()
+    expect(rowClassOf(wrapper)(assignmentList[0])).toEqual([])
 
     peaksError = null
     assignmentsError = new Error('nope')
@@ -1850,8 +1638,9 @@ describe('PaneBrowserAssignment grouping by formula', () => {
     wrapper.vm.groupByFormula = true
     await wrapper.vm.$nextTick()
 
+    // The head's xN pill is its toggle: two channels read the neutral.
     const toggle = wrapper.find('[data-testid="group-toggle"]')
-    expect(toggle.text()).toBe('+1')
+    expect(toggle.text()).toBe('×2')
     expect(toggle.attributes('aria-expanded')).toBe('false')
     await toggle.trigger('click')
     expect(wrapper.find('[data-testid="group-toggle"]').attributes('aria-expanded')).toBe('true')
@@ -2182,7 +1971,7 @@ describe('PaneBrowserAssignment Show menu', () => {
     expect(wrapper.vm.showIsotopologues).toBe(true)
     // The rows change too: the control is wired to the table, not only to a ref
     // that happens to share its name.
-    expect(ids(wrapper)).toEqual(['b', 'b-c0', 'b-c1', 'a', 'a-c0', 'a-c1'])
+    expect(ids(wrapper)).toEqual(['a', 'a-c0', 'a-c1', 'b', 'b-c0', 'b-c1'])
   })
 
   it('filters by verdict from the menu', async () => {
@@ -2452,9 +2241,10 @@ describe('PaneBrowserAssignment identification level column', () => {
     wrapper.vm.showIsotopologues = true
     await wrapper.vm.$nextTick()
 
-    const chip = cell(wrapper, 'a-c0').find('.level-tag-stub')
-    expect(chip.attributes('data-level')).toBe('4a')
-    expect(chip.attributes('data-role')).toBe('iso_child')
+    // A line is a sub-row: its M0's row carries the level, and it repeats
+    // none of it.
+    expect(cell(wrapper, 'a').find('.level-tag-stub').attributes('data-level')).toBe('4a')
+    expect(cell(wrapper, 'a-c0').find('.level-tag-stub').exists()).toBe(false)
   })
 
   it('ranks a row by the scale, a row with no level null', async () => {
@@ -2481,11 +2271,11 @@ describe('PaneBrowserAssignment identification level column', () => {
     expect(ids(wrapper)).toEqual(['a', 'd', 'b', 'c'])
   })
 
-  it('leaves the resting sort on the tier', async () => {
+  it('leaves the default sort on the intensity', async () => {
     seedLevels()
     const wrapper = await mountPane()
 
-    expect(wrapper.vm.sortField).toBe('tierRank')
+    expect(wrapper.vm.sortField).toBe('sample_peak_intensity')
   })
 
   it('narrows the rows to the level its menu picks, and back', async () => {
@@ -2512,7 +2302,7 @@ describe('PaneBrowserAssignment identification level column', () => {
 
     wrapper.vm.filters.level.constraints[0].value = '4a'
     await wrapper.vm.$nextTick()
-    expect(ids(wrapper)).toEqual(['a', 'b'])
+    expect(ids(wrapper)).toEqual(['b', 'a'])
   })
 
   it('offers every level in its menu, in the order of the scale', async () => {
@@ -2690,7 +2480,7 @@ describe('PaneBrowserAssignment verdict column', () => {
 
   it('sorts confirmed first and unjudged last, in both directions', async () => {
     const wrapper = await mountPane()
-    expect(wrapper.vm.rows.map((row) => row.verdictRank)).toEqual([1, 0, null])
+    expect(wrapper.vm.rows.map((row) => row.verdictRank)).toEqual([0, 1, null])
 
     wrapper.vm.sortField = 'verdictRank'
     wrapper.vm.sortOrder = 1
@@ -2834,7 +2624,10 @@ describe('PaneBrowserAssignment row actions', () => {
 
     const index = wrapper.vm.rows.findIndex((r) => r.sample_peak_id === 'p-b')
     expect(index).toBeGreaterThanOrEqual(0)
-    expect(scrollVirtualRowIntoView).toHaveBeenCalledWith(expect.anything(), index)
+    // At the ledger's row height, the scroller's item size.
+    expect(scrollVirtualRowIntoView).toHaveBeenCalledWith(expect.anything(), index, {
+      itemSize: 40
+    })
   })
 
   it('scrolls nothing while no peak is focused', async () => {
@@ -2875,12 +2668,30 @@ describe('PaneBrowserAssignment row actions', () => {
     return wrapper
   }
 
-  it('leads the row with the chart cell', async () => {
+  // Plot: a checkbox, the same in both scopes (section 3.2).
+  it('leads the row with the Plot box, and draws none on a line', async () => {
     const wrapper = await renderedCells(FAMILY_A)
+    wrapper.vm.showIsotopologues = true
+    await wrapper.vm.$nextTick()
     const columns = wrapper.findAll('.stub-col')
     expect(columns.length).toBeGreaterThan(1)
-    expect(columns[0].find('.chart-cell').exists()).toBe(true)
+    // The M0's box, and none for its two lines.
+    expect(columns[0].findAll('.plot-box-stub')).toHaveLength(1)
     expect(columns[0].find('.verdict-cell').exists()).toBe(false)
+  })
+
+  it('plots the species from its box, and says whether it is plotted', async () => {
+    const wrapper = await renderedCells(FAMILY_A)
+    const toggle = vi.spyOn(wrapper.vm.chart, 'toggle').mockImplementation(() => {})
+    vi.spyOn(wrapper.vm.chart, 'canPlot').mockReturnValue(true)
+    vi.spyOn(wrapper.vm.chart, 'isPlotted').mockReturnValue(true)
+    wrapper.vm.$forceUpdate()
+    await wrapper.vm.$nextTick()
+    const box = wrapper.findAll('.stub-col')[0].find('.plot-box-stub')
+    expect(box.attributes('data-checked')).toBe('true')
+    expect(box.attributes('aria-label')).toBe('Remove from the batch chart')
+    await box.trigger('click')
+    expect(toggle).toHaveBeenCalledWith(expect.objectContaining({ peak_assignment_id: 'a' }))
   })
 
   // `empty` is the pane's empty-state panel class, and its scoped
@@ -3070,8 +2881,8 @@ describe('PaneBrowserAssignment reagent families', () => {
     seed(GLUCOSE(), DIMER())
     const wrapper = await mountPane()
 
-    expect(ids(wrapper)).toEqual(['m', 'br2'])
-    expect(wrapper.vm.isoCount(wrapper.vm.rows[1])).toBe(2)
+    expect(ids(wrapper)).toEqual(['br2', 'm'])
+    expect(wrapper.vm.isoCount(wrapper.vm.rows[0])).toBe(2)
   })
 
   it('lists the lines under their ion when unfolded, in bracket spelling', async () => {
@@ -3080,7 +2891,7 @@ describe('PaneBrowserAssignment reagent families', () => {
     wrapper.vm.showIsotopologues = true
     await wrapper.vm.$nextTick()
 
-    expect(ids(wrapper)).toEqual(['m', 'br2', 'br2-c0', 'br2-c1'])
+    expect(ids(wrapper)).toEqual(['br2', 'br2-c0', 'br2-c1', 'm'])
     expect(familyBreak(wrapper.vm.rows)).toBeNull()
     expect(wrapper.findAll('.child-label').map((cell) => cell.text())).toEqual([
       '[81Br]',
@@ -3101,9 +2912,9 @@ describe('PaneBrowserAssignment reagent families', () => {
     const wrapper = await mountWithCells()
 
     const cells = wrapper.findAll('.copyable')
-    expect(cells.map((cell) => cell.text())).toEqual(['C6H12O6', 'Br2-+2'])
-    expect(cells[0].attributes('data-tooltip')).toBeUndefined()
-    expect(cells[1].attributes('data-tooltip')).toMatch(/names an ion, and no compound/)
+    expect(cells.map((cell) => cell.text())).toEqual(['Br2-', 'C6H12O6'])
+    expect(cells[1].attributes('data-tooltip')).toBeUndefined()
+    expect(cells[0].attributes('data-tooltip')).toMatch(/names an ion, and no compound/)
   })
 
   it('sorts the ion by what the column shows', async () => {
@@ -3144,8 +2955,8 @@ describe('PaneBrowserAssignment verification queue', () => {
 
     expect(chip(wrapper).text()).toBe('2 to verify')
     expect(chip(wrapper).attributes('aria-pressed')).toBe('false')
-    // Off: every row, in confidence order.
-    expect(ids(wrapper)).toEqual(['b', 'c', 'a'])
+    // Off: every row, brightest first.
+    expect(ids(wrapper)).toEqual(['a', 'b', 'c'])
   })
 
   it("narrows the table to the queue's rows, in the queue's order", async () => {
@@ -3291,7 +3102,10 @@ describe('PaneBrowserAssignment filter bar', () => {
       .findAllComponents({ name: 'Column' })
       .filter((column) => column.props('sortable'))
       .map((column) => column.props('sortField') ?? column.props('field'))
-    expect(sorted).toContain('engineTierRank')
+    // No engine column: the engine's tier is a chip in the Tier cell.
+    expect(sorted).not.toContain('engineTierRank')
+    expect(sorted).not.toContain('listing')
+    expect(sorted).toContain('mech')
     expect(sorted).toContain('levelRank')
     expect(SORT_FIELDS.sample).toEqual(expect.arrayContaining(sorted))
   })
@@ -3432,5 +3246,171 @@ describe('PaneBrowserAssignment filter bar', () => {
     expect(wrapper.vm.groupByFormula).toBe(false)
     expect(wrapper.vm.verdictFilter).toBe('all')
     expect(wrapper.vm.queueMode).toBe(false)
+  })
+})
+
+// The rows and their actions (docs/dev/assignment_ledger_and_card.md,
+// section 3.3), as this scope configures the shared ledger.
+describe('PaneBrowserAssignment rows and their actions', () => {
+  beforeEach(() => {
+    runList = [{ peak_assignment_run_id: 'run-1', status: 'completed' }]
+    seed(FAMILY_A, FAMILY_B)
+    peakList = assignmentList.map((row) => ({ peak_id: row.sample_peak_id }))
+  })
+  afterEach(() => vi.clearAllMocks())
+
+  const ledger = (wrapper) => wrapper.findComponent({ name: 'AssignmentLedger' })
+
+  // The rows' cells, rendered through a Column that draws its body per row.
+  async function renderedRows() {
+    const tableRows = ref([])
+    const wrapper = mount(PaneBrowserAssignment, {
+      global: {
+        directives: { tooltip: {}, help: {} },
+        stubs: {
+          ...GLOBAL_STUBS,
+          DataTable: {
+            ...GLOBAL_STUBS.DataTable,
+            watch: { value: { handler: (v) => (tableRows.value = v), immediate: true } }
+          },
+          Column: {
+            props: ['field'],
+            setup: () => ({ rows: tableRows }),
+            template:
+              '<div class="stub-col" :data-field="field ?? \'\'">' +
+              '<div v-for="(row, i) in rows" :key="i" class="stub-cell" ' +
+              ':data-row="row.peak_assignment_id"><slot name="body" :data="row" /></div></div>'
+          }
+        }
+      }
+    })
+    await wrapper.vm.$nextTick()
+    return wrapper
+  }
+  // The last column of the field: the actions, which carry none, come after
+  // the Plot box, which carries none either.
+  const cellOf = (wrapper, field, id) =>
+    wrapper
+      .findAll('.stub-col')
+      .filter((col) => col.attributes('data-field') === field)
+      .at(-1)
+      .find(`.stub-cell[data-row="${id}"]`)
+
+  // Curate: the formula search for the row's peak, beside the inspector.
+  it("curates a row in the formula search for its peak, from the row's action", async () => {
+    const wrapper = await renderedRows()
+    const { usePeakSearch } = await import('@/lib/panes/PanePeakAssign/stores/peakSearch.js')
+    const action = cellOf(wrapper, '', 'a').find('.curate-action')
+    expect(action.exists()).toBe(true)
+    await action.trigger('click')
+    expect(usePeakSearch().open).toBe(true)
+  })
+
+  it('offers no Curate where there is no formula or no peak to open', async () => {
+    seed(FAMILY_B, family({ id: 'u', mz: 99.1, intensity: 5, formula: null, tier: 'unassigned' }))
+    peakList = [{ peak_id: 'p-other' }]
+    const wrapper = await renderedRows()
+    // The peak is gone from the sample's list: a stale row opens nothing.
+    expect(cellOf(wrapper, '', 'b').find('.curate-action').exists()).toBe(false)
+    expect(cellOf(wrapper, '', 'u').find('.curate-action').exists()).toBe(false)
+  })
+
+  it('leaves the search closed when the peak is not in the list', async () => {
+    const wrapper = await mountPane()
+    const { usePeakSearch } = await import('@/lib/panes/PanePeakAssign/stores/peakSearch.js')
+    peakList = []
+    wrapper.vm.curate({ sample_peak_id: 'p-none', assigned_formula: 'C2H6' })
+    expect(usePeakSearch().open).toBe(false)
+  })
+
+  // Clicking an m/z opens the sample's own row in the inspector.
+  it("opens the row's peak from its m/z", async () => {
+    const wrapper = await mountPane()
+    expect(ledger(wrapper).props('mzAction')).toBe('Open this peak in the inspector')
+    peakFocus.mockClear()
+    ledger(wrapper).vm.$emit('open-mz', wrapper.vm.rows[1])
+    expect(peakFocus).toHaveBeenCalledWith({ peak_id: 'p-b' })
+  })
+
+  // One family at a time from its caret, against Show's choice.
+  it("unfolds one family from its caret, and Show's switch sets them all again", async () => {
+    const wrapper = await mountPane()
+    const [a, b] = wrapper.vm.rows
+    expect(ledger(wrapper).props('familySize')(a)).toBe(2)
+    expect(ledger(wrapper).props('familyOpen')(a)).toBe(false)
+
+    ledger(wrapper).vm.$emit('toggle-family', a)
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper)).toEqual(['a', 'a-c0', 'a-c1', 'b'])
+    expect(ledger(wrapper).props('familyOpen')(wrapper.vm.rows[0])).toBe(true)
+    // A line has no family of its own.
+    expect(ledger(wrapper).props('familySize')(wrapper.vm.rows[1])).toBe(0)
+
+    // Show unfolds every family, and the caret folds one against it.
+    wrapper.vm.showIsotopologues = true
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper)).toEqual(['a', 'a-c0', 'a-c1', 'b', 'b-c0', 'b-c1'])
+    ledger(wrapper).vm.$emit('toggle-family', b)
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper)).toEqual(['a', 'a-c0', 'a-c1', 'b'])
+  })
+
+  // A sub-row repeats nothing: no box, no verdict.
+  it('draws no verdict on a line, its family judged or not', async () => {
+    verdictRecord = { verdict: 'confirmed' }
+    const wrapper = await renderedRows()
+    wrapper.vm.showIsotopologues = true
+    await wrapper.vm.$nextTick()
+    expect(cellOf(wrapper, 'verdictRank', 'a').find('.verdict-cell').exists()).toBe(true)
+    expect(cellOf(wrapper, 'verdictRank', 'a-c0').find('.verdict-cell').exists()).toBe(false)
+  })
+
+  it('draws the intensity bars over every row of the run', async () => {
+    const wrapper = await mountPane()
+    wrapper.vm.toggleTier('assigned')
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper)).toEqual(['b'])
+    expect(ledger(wrapper).props('intensities')).toEqual(
+      assignmentList.map((row) => row.sample_peak_intensity)
+    )
+  })
+
+  // The run's capping reasons, by rule, as a mark on the tier chip.
+  it('marks a tier a capping reason holds down, and names the reasons', async () => {
+    assignmentList[0].tier_reason_rules = ['evidence_band', 'lone_peak', 'corroborated']
+    assignmentList.find((r) => r.peak_assignment_id === 'b').tier_reason_rules = ['corroborated']
+    const wrapper = await renderedRows()
+    const cap = ledger(wrapper).props('tierCap')
+    const rows = Object.fromEntries(wrapper.vm.rows.map((r) => [r.peak_assignment_id, r]))
+    expect(cap(rows.a)).toEqual({
+      label: 'Held down by: one peak only',
+      tooltip:
+        'Holds this row at candidate - it cannot be assigned while this stands: one peak only. ' +
+        'Open the row for why.'
+    })
+    expect(cap(rows.b)).toBeNull()
+    // The chip is handed it.
+    expect(cellOf(wrapper, 'tierRank', 'a').find('.tier-tag-stub').attributes('data-cap')).toBe(
+      'Held down by: one peak only'
+    )
+    expect(
+      cellOf(wrapper, 'tierRank', 'b').find('.tier-tag-stub').attributes('data-cap')
+    ).toBeUndefined()
+  })
+
+  // Show > Engine readings: the engine's tier as an outlined chip, only where
+  // the run carries engine tiers.
+  it("hands the ledger the engine's readings only while Show asks and the run has them", async () => {
+    let wrapper = await mountPane()
+    wrapper.vm.engineView = true
+    await wrapper.vm.$nextTick()
+    expect(ledger(wrapper).props('engineReadings')).toBe(false)
+
+    assignmentList[0].engine_tier = 'candidate'
+    wrapper = await mountPane()
+    expect(ledger(wrapper).props('engineReadings')).toBe(true)
+    wrapper.vm.engineView = false
+    await wrapper.vm.$nextTick()
+    expect(ledger(wrapper).props('engineReadings')).toBe(false)
   })
 })

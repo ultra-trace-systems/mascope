@@ -6,6 +6,6 @@ twin**: a labelled ion's impurity line one unit down, at the share the reagent's
 ions show (the label's purity where the batch holds none), present or missing in the
 samples that would show it. A **urea pair**: a
 uronium compound's protonated and urea-clustered peaks co-varying across the batch, as
-*Read co-variation* reads them. A tag reads plain where the fact holds, outlined where it
-refutes, muted with a **?** where the batch cannot say. The facts are shown, never
+*Read co-variation* reads them. The ledger's check badge, in *Across the batch*, is green
+where the facts hold and amber where one refutes; its hover names each fact. The facts are shown, never
 weighed: no tier moves on them.
