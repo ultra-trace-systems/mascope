@@ -2138,28 +2138,25 @@ def _tiers(store: CampaignStore, values: _Values, code: np.ndarray) -> pd.Series
     index = pd.Index(values.samples["sample_item_id"].astype(str))
     pos = _positions(index, rows["sample_item_id"])
     key = _positions(pd.Index(values.keys), rows["series_key"])
-    tier = rows["tier"].astype(object).to_numpy()
-    kept = (pos >= 0) & (key >= 0) & pd.notna(tier)
+    # Integer codes, not text: a month holds hundreds of thousands of rows
+    tier, names = pd.factorize(rows["tier"])
+    kept = (pos >= 0) & (key >= 0) & (tier >= 0)
     if not kept.any():
         return pd.Series([], dtype=object)
-    counts = (
-        pd.DataFrame(
-            {
-                "group": code[pos[kept]] * n_keys + key[kept],
-                "tier": tier[kept].astype(str),
-            }
-        )
-        .value_counts()
-        .rename("count")
-        .reset_index()
+    groups, group = np.unique(code[pos[kept]] * n_keys + key[kept], return_inverse=True)
+    counts = np.bincount(
+        group * len(names) + tier[kept], minlength=len(groups) * len(names)
+    ).reshape(len(groups), len(names))
+    # The tiers from the least confident, so that the first of the most
+    # counted is the less confident of a tie
+    rank = {name: i for i, name in enumerate(TIERS)}
+    order = np.argsort(
+        [-rank.get(str(name), len(TIERS)) for name in names], kind="stable"
     )
-    confidence = {name: -i for i, name in enumerate(TIERS)}
-    counts["confidence"] = counts["tier"].map(confidence).fillna(-len(TIERS))
-    counts = counts.sort_values(
-        ["group", "count", "confidence"], ascending=[True, False, True], kind="stable"
+    best = order[np.argmax(counts[:, order], axis=1)]
+    return pd.Series(
+        np.asarray(names, dtype=object)[best].astype(str).astype(object), index=groups
     )
-    first = counts.drop_duplicates("group")
-    return pd.Series(first["tier"].to_numpy(), index=first["group"].to_numpy())
 
 
 def spectrum(
