@@ -54,6 +54,22 @@ CANDIDATE_DENSITY = "candidate_density"
 TIE_ABS_FLOOR = 0.005
 
 
+def tie_gap(best: float, tie_tol: float = DEFAULT_TIE_TOL) -> float:
+    """How far below a peak's best evidence a candidate still ties it.
+
+    The one tie rule every reader of a peak's candidates asks: a fraction of
+    the best (:data:`DEFAULT_TIE_TOL`), floored in absolute terms
+    (:data:`TIE_ABS_FLOOR`). The arbitration, the density count, the finder's
+    weighing of a list reading against the grid and the identification
+    level's mass test all read it here, so none of them re-derives it.
+
+    :param best: The best evidence (or fit) among the candidates.
+    :param tie_tol: The relative part of the gap.
+    :return: The gap.
+    """
+    return max(tie_tol * best, TIE_ABS_FLOOR)
+
+
 @dataclass(frozen=True)
 class ArbitratedCandidate:
     """One candidate after arbitration, for a single peak."""
@@ -130,17 +146,16 @@ def arbitrate_candidates(
     scored.sort(key=lambda t: (-t[3], -t[1], t[0]))
     total = sum(t[3] for t in scored)
     best_evidence = scored[0][3]
-    tie_gap = max(tie_tol * best_evidence, TIE_ABS_FLOOR)
+    gap = tie_gap(best_evidence, tie_tol)
 
     out: list[ArbitratedCandidate] = []
     for rank, (formula, fit, plaus, evidence) in enumerate(scored, start=1):
         confidence = evidence / total if total > 0 else 0.0
         # A candidate is "tied" when it sits within tie_gap of the best evidence and
         # is not the sole contender. When there is no evidence at all, everything ties.
-        near_best = (best_evidence - evidence) <= tie_gap
+        near_best = (best_evidence - evidence) <= gap
         is_tie = near_best and (
-            total <= 0
-            or sum(1 for t in scored if (best_evidence - t[3]) <= tie_gap) > 1
+            total <= 0 or sum(1 for t in scored if (best_evidence - t[3]) <= gap) > 1
         )
         out.append(
             ArbitratedCandidate(
@@ -232,7 +247,7 @@ def candidate_density(
     # The gap is a property of the peak - a fraction of its best evidence -
     # whichever candidate the count is anchored on, so moving the anchor never
     # changes how far apart two candidates have to be to count as separated.
-    gap = max(tie_tol * best, TIE_ABS_FLOOR)
+    gap = tie_gap(best, tie_tol)
     if around is None:
         return max(1, sum(1 for evidence in evidences if best - evidence <= gap))
     anchor = best_evidence.get(str(around))
@@ -275,7 +290,7 @@ def unseparated(
     ranked = sorted(best_evidence.items(), key=lambda item: (-item[1], item[0]))
     if sum(best_evidence.values()) <= 0:
         return [formula for formula, _ in ranked]
-    gap = max(tie_tol * ranked[0][1], TIE_ABS_FLOOR)
+    gap = tie_gap(ranked[0][1], tie_tol)
     return [formula for formula, evidence in ranked if evidence >= anchor - gap]
 
 
@@ -301,7 +316,7 @@ def density_of(
     best = max(candidate.evidence for candidate in arbitrated)
     if sum(candidate.evidence for candidate in arbitrated) <= 0:
         return len(arbitrated)
-    gap = max(DEFAULT_TIE_TOL * best, TIE_ABS_FLOOR)
+    gap = tie_gap(best)
     anchor = next(
         (c.evidence for c in arbitrated if c.formula == str(around)),
         None,

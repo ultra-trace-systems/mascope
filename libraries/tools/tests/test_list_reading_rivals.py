@@ -13,6 +13,7 @@ import pytest
 from mascope_tools.composition.arbitration import candidate_density, unseparated
 from mascope_tools.composition.envelope_tolerance import EnvelopeTolerance
 from mascope_tools.composition.finder import (
+    CANDIDATE_RIVALS,
     HELD_BY_LIBRARY,
     HELD_BY_LINES,
     KNOWN_DISPLACED,
@@ -30,6 +31,7 @@ from mascope_tools.composition.finder import (
 from mascope_tools.composition.heuristic_filter import (
     PATTERN_BASE_SNR,
     PATTERN_REQUIRED_LINES,
+    formula_plausibility,
     neutral_is_closed_shell,
 )
 from mascope_tools.composition.models import (
@@ -306,6 +308,22 @@ class TestTheElection:
         taken = _elect(RESOLVED)[round(TAKEN_MZ, 4)]
         assert taken["candidate_density"] >= 1
         assert "C11H16O5" not in str(taken["other_candidates"]).split(",")
+
+    def test_the_rival_names_what_its_count_holds_for_the_run_to_measure(self):
+        rows = _elect(RESOLVED)
+        taken = rows[round(TAKEN_MZ, 4)]
+        named = taken[CANDIDATE_RIVALS]
+        # The count's formulas but its own, each with the reading that read it.
+        assert len(named) == taken["candidate_density"] - 1
+        assert all(rival["formula"] != "C12H12N4O" for rival in named)
+        assert all(
+            {"formula", "ion", "ionization_mechanism"} <= set(rival) for rival in named
+        )
+        # Its isotope line was never searched, and names none.
+        line = rows[round(LINE_MZ, 4)]
+        assert CANDIDATE_RIVALS not in line or not isinstance(
+            line[CANDIDATE_RIVALS], list
+        )
 
     def test_the_reading_keeps_a_peak_the_prior_holds(self):
         rows = _elect(UNRESOLVED)
@@ -616,6 +634,16 @@ class TestTheWeighing:
 
     def test_the_prior_is_what_holds_the_peak(self):
         assert _weighed(0.45, [_rival("C12H12N4O", 0.9)], prior=1.0).winner == 1
+
+    def test_the_gap_is_the_arbitrations_tie_rule(self, monkeypatch):
+        # Read from ``arbitration.tie_gap``, not derived again: a gap the rule
+        # widens holds a rival out that clears it by the default one.
+        from mascope_tools.composition import finder
+
+        handed = []
+        monkeypatch.setattr(finder, "tie_gap", lambda best: handed.append(best) or 1.0)
+        assert _weighed(0.4, [_rival("C12H12N4O", 0.9)]).winner is None
+        assert handed == [pytest.approx(0.9 * formula_plausibility("C12H12N4O"))]
 
     def test_a_tie_never_lets_a_rival_in(self):
         weighing = _weighed(0.85, [_rival("C12H12N4O", 0.9)], prior=1.0)
