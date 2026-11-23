@@ -1,6 +1,7 @@
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Literal
 
 import numpy as np
 from fastapi import HTTPException
@@ -32,6 +33,7 @@ from mascope_backend.api.models.samples.sample_pydantic_model import SampleSortC
 from mascope_backend.api.models.target.collections.config import (
     target_collection_config,
 )
+from mascope_backend.api.new.axis_fingerprint import service as m_fingerprint
 from mascope_backend.api.new.instrument_configs.lib import file_line_width
 from mascope_backend.api.new.ms2.inventory import ms2_group_count, sample_ms2_groups
 from mascope_backend.db import (
@@ -52,6 +54,10 @@ from mascope_thermo.thermo import NoScansFoundError
 
 # How many samples a refusal names before it counts the rest.
 _MAX_NAMED_SAMPLES = 10
+
+#: The scans ``get_samples_centroids`` serves of a sample: ``all`` of its
+#: polarity in its window, or the ``sample``'s own, its peak list's.
+CentroidScans = Literal["all", "sample"]
 
 
 def _nearest_listed_mz(filename: str, peak_mz: float) -> float:
@@ -977,6 +983,7 @@ async def get_samples_centroids(
     process_id: str | None = None,
     parent_id: str | None = None,
     exclude: tuple[str, ...] = (),
+    scans: CentroidScans = "all",
 ) -> dict:
     """Extracts centroids for a list of sample items by their IDs.
 
@@ -985,6 +992,12 @@ async def get_samples_centroids(
     :param exclude: Names of the centroid flags whose centroids are left out
         (``mascope_thermo.backend.CENTROID_FLAGS``), defaults to none.
     :type exclude: tuple[str, ...], optional
+    :param scans: ``"all"``, every scan of the sample's polarity starting in
+        its window; ``"sample"``, only the scans its peak list is read from,
+        as its axis fingerprint's ``item.scans`` lists them
+        (``mascope_backend.api.new.axis_fingerprint.service``), each entry
+        then marked ``scan_selection: "sample"``. Defaults to ``"all"``.
+    :type scans: str, optional
     :param independent_transaction: Flag to indicate if the operation should be treated as an independent transaction, defaults to False.
     :type independent_transaction: bool, optional
     :param user_id: Current user triggered operation (for user notifications)
@@ -1039,6 +1052,16 @@ async def get_samples_centroids(
             ),
         )
 
+    # The streams each sample's peak list is read from, where only its own
+    # scans are asked for: selected as its axis fingerprint selects them.
+    read_streams = (
+        await m_fingerprint.samples_read_streams(
+            [sample.sample_item_id for sample in sample_items]
+        )
+        if scans == "sample"
+        else {}
+    )
+
     # Step 2: Extract centroids for each sample item
     centroids = dict()
     for sample in sample_items:
@@ -1049,15 +1072,31 @@ async def get_samples_centroids(
             t0=sample.t0,
             t1=sample.t1,
             polarity=sample.polarity,
+            streams=read_streams.get(sample.sample_item_id),
         ):
+            own = None
+            if scans == "sample":
+                own = set(
+                    m_fingerprint.item_scans(
+                        m_fingerprint.scans_by_stream(
+                            filename, polarity, t0, t1, streams
+                        )
+                    )
+                )
             per_scan = m_compute.get_orbi_centroids_per_scan(
                 base_filename=filename,
                 t_min=t0,
                 t_max=t1,
                 polarity=polarity,
+                # The peak list reads MS1 scans alone
+                scan_type="Ms" if own is not None else None,
                 exclude=exclude,
             )
+            if own is not None:
+                per_scan = [cen for cen in per_scan if cen["scan"] in own]
+            selection = {"scan_selection": "sample"} if own is not None else {}
             return {
+                **selection,
                 "scan": [cen["scan"] for cen in per_scan],
                 "masses": [cen["masses"].tolist() for cen in per_scan],
                 "intensities": [cen["intensities"].tolist() for cen in per_scan],

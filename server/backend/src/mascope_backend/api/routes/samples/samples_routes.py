@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, Query
 
 from mascope_backend.api.controllers.samples.samples_controller import (
+    CentroidScans,
     get_sample,
     get_sample_peak_timeseries,
     get_sample_peaks,
@@ -65,9 +66,18 @@ async def get_samples_route(
 async def get_samples_centroids_route(
     sample_item_ids: list[str] = Query(..., description="List of sample item IDs"),
     exclude: tuple[str, ...] = Depends(centroid_exclusion),
+    scans: CentroidScans = Query(
+        "all",
+        description=(
+            "`all` (the default): every scan of the sample's polarity starting "
+            "in its window, MS2 scans and every scan stream's included. "
+            "`sample`: only the scans the sample's peak list is read from, "
+            "the ones its axis fingerprint lists in `item.scans`."
+        ),
+    ),
     user: User = Depends(current_active_user),
 ) -> dict:
-    """Retrieve the centroids of every scan of several sample items.
+    """Retrieve the centroids of the scans of several sample items.
 
     Per sample item, one list entry per scan: `scan` (the scan number),
     `timestamp` [s], `mz_calibration_factor`, and per centroid its `masses`,
@@ -78,11 +88,16 @@ async def get_samples_centroids_route(
     with); 0 for an unflagged one. Every stored centroid is served unless
     `exclude` names its flag.
 
-    The scans are every scan of the sample's polarity starting in its
-    window, MS2 scans and the scans of every scan stream included. The
-    sample's peak list is read from fewer: the MS1 scans of its own stream,
-    or of the streams that own some m/z of a stitched sample, which `GET
-    /api/samples/{sample_item_id}/axis_fingerprint` lists in `item.scans`.
+    `scans` chooses the scans. With `all`, the default, they are every scan
+    of the sample's polarity starting in its window, MS2 scans and the
+    scans of every scan stream included. The sample's peak list is read
+    from fewer: the MS1 scans of its own stream, or of the streams that own
+    some m/z of a stitched sample, each stream's outlier first scan left
+    out. `sample` serves those alone, the very scans `GET
+    /api/samples/{sample_item_id}/axis_fingerprint` lists in `item.scans`,
+    and marks each sample's entry `scan_selection: "sample"`. The mark tells
+    a client the selection was made: a server older than the parameter
+    ignores it and serves every scan, unmarked.
 
     A scan's `masses` are on the file's calibrated m/z axis: as the
     instrument recorded them, times `mz_calibration_factor`. That is the
@@ -94,12 +109,15 @@ async def get_samples_centroids_route(
 
     :param sample_item_ids: List of sample item IDs to retrieve centroids for.
     :param exclude: The flags whose centroids are left out.
+    :param scans: Which of the sample's scans are served.
     :param user: The current authenticated user. Requires workspace guest role.
     :type user: User
     :return: The per-scan centroids, keyed by sample item ID.
     """
     await check_sample_access_bulk(sample_item_ids, user, "guest")
-    return await get_samples_centroids(sample_item_ids=sample_item_ids, exclude=exclude)
+    return await get_samples_centroids(
+        sample_item_ids=sample_item_ids, exclude=exclude, scans=scans
+    )
 
 
 @samples_router.get("/spectra")

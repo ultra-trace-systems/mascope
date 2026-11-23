@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -31,6 +32,7 @@ from sqlalchemy import delete
 import mascope_file.io as m_io
 import mascope_file.name as m_name
 import mascope_thermo.thermo as m_thermo
+from mascope_backend.api.controllers.samples import samples_controller
 from mascope_backend.api.new.axis_fingerprint import routes, service
 from mascope_backend.app.fast import fast
 from mascope_backend.db import (
@@ -718,6 +720,199 @@ def test_a_sample_reads_its_stream_or_the_owners_of_its_composite():
         + [[200.0, 300.0, "stream B"]]
     }
     assert service.read_streams("composite +", stitch) == ["stream B", "stream A"]
+
+
+# ============= The centroid route's scans of the sample =============
+
+
+CENTROIDS_ROUTE = "/api/samples/centroids"
+
+#: The keys of each sample's entry in the centroid route's default answer.
+CENTROID_KEYS = {
+    "scan",
+    "masses",
+    "intensities",
+    "resolutions",
+    "signal_to_noise",
+    "flags",
+    "timestamp",
+    "mz_calibration_factor",
+}
+
+
+class _SampleView:
+    """An ``async_session()`` that answers the centroid route's one query of
+    the sample view, which the test database lacks, with the given rows."""
+
+    def __init__(self, rows):
+        self.rows = rows
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def execute(self, _stmt):
+        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: self.rows))
+
+
+@pytest.fixture
+def sample_view(monkeypatch):
+    """Serve the centroid route's sample view the samples a test made, as
+    their rows say them; the streams they read are the real rows'."""
+    rows = []
+
+    def add(made, *, polarity="+", t0=0.0, t1=60.0):
+        rows.append(
+            SimpleNamespace(
+                sample_item_id=made.item,
+                filename=f"test-orbion_{made.file}.raw",
+                t0=t0,
+                t1=t1,
+                polarity=polarity,
+            )
+        )
+
+    monkeypatch.setattr(samples_controller, "async_session", lambda: _SampleView(rows))
+    monkeypatch.setattr(
+        samples_controller, "get_sample_file_type", lambda _filename: "orbi_raw"
+    )
+    return add
+
+
+async def centroids_of(client, item, **params) -> dict:
+    resp = await client.get(
+        CENTROIDS_ROUTE, params={"sample_item_ids": [item], **params}
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()["data"][item]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reads", [None, "stream", "composite"])
+async def test_the_centroids_of_the_samples_own_scans_are_its_items_scans(
+    guest_client, make_item, props, sample_view, reads
+):
+    made = await make_item(reads=reads)
+    sample_view(made)
+
+    item = served(await guest_client.get(ITEM_ROUTE.format(made.item)))["item"]
+    own = await centroids_of(guest_client, made.item, scans="sample")
+    every = await centroids_of(guest_client, made.item)
+
+    assert own["scan"] == item["scans"] == [1, 2]
+    assert own["scan_selection"] == "sample"
+    # The scans the two answers share are served alike
+    assert {key: own[key] for key in CENTROID_KEYS} == every
+    # and the default answer is as it was, without the mark
+    assert set(every) == CENTROID_KEYS
+
+
+class SampleReader:
+    """A reader of a file with two streams and an MS2 scan. Each stream's
+    selection leaves its outlier first scan out; the centroid read of every
+    stream keeps them, and serves the MS2 scan (9) unless asked for MS1
+    scans."""
+
+    MS2 = [9]
+
+    def __init__(self, asked, ms1):
+        self.asked = asked
+        self.ms1 = ms1
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def scan_indices(self, polarity, t0, t1, ms_type=None, stream=None):
+        if stream is None:
+            return sorted(scan for scans in self.ms1.values() for scan in scans)
+        return self.ms1[stream][1:]
+
+    def centroids_per_scan(self, *, ms_type=None, stream=None, **kwargs):
+        self.asked.append({"ms_type": ms_type, "stream": stream})
+        scans = sorted(scan for scans in self.ms1.values() for scan in scans)
+        if ms_type is None:
+            scans += self.MS2
+        return [
+            {
+                "scan": scan,
+                "masses": np.array([100.0 + scan]),
+                "intensities": np.array([1.0]),
+                "resolutions": np.array([1.0]),
+                "signal_to_noise": np.array([1.0]),
+                "flags": np.array([0]),
+                "timestamp": float(scan),
+            }
+            for scan in scans
+        ]
+
+
+@pytest.fixture
+def sample_reader(monkeypatch, props, stream_key):
+    """The file read as :class:`SampleReader`: ``stream A`` of scans 1, 3, 5
+    and the file's own stream of 2, 4, 6, each first scan its outlier; what
+    each centroid read asked for is recorded."""
+    asked = []
+    ms1 = {"stream A": [1, 3, 5], stream_key: [2, 4, 6]}
+    monkeypatch.setattr(
+        m_thermo, "open_backend", lambda _path: SampleReader(asked, ms1)
+    )
+    return asked
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reads", "scans"),
+    [(None, [1, 2, 3, 4, 5, 6]), ("stream", [4, 6]), ("composite", [3, 4, 5, 6])],
+    ids=["polarity", "stream", "composite"],
+)
+async def test_the_samples_own_scans_leave_out_ms2_and_outlier_scans(
+    guest_client, make_item, sample_view, sample_reader, stream_key, reads, scans
+):
+    runs = [[40.0, 100.0, "stream A"], [100.0, 500.0, stream_key]]
+    made = await make_item(reads=reads, runs=runs)
+    sample_view(made)
+
+    item = served(await guest_client.get(ITEM_ROUTE.format(made.item)))["item"]
+    own = await centroids_of(guest_client, made.item, scans="sample")
+
+    assert own["scan"] == item["scans"] == scans
+    assert own["masses"] == [[100.0 + scan] for scan in scans]
+    # The MS1 scans of every stream are read, each scan on its own factor
+    assert sample_reader == [{"ms_type": "Ms", "stream": None}]
+
+
+@pytest.mark.asyncio
+async def test_the_default_answer_serves_every_scan_of_the_window(
+    guest_client, make_item, sample_view, sample_reader
+):
+    made = await make_item(reads="stream")
+    sample_view(made)
+
+    every = await centroids_of(guest_client, made.item)
+
+    assert every["scan"] == [1, 2, 3, 4, 5, 6, 9]
+    assert set(every) == CENTROID_KEYS
+    assert sample_reader == [{"ms_type": None, "stream": None}]
+
+
+@pytest.mark.asyncio
+async def test_a_selection_the_route_does_not_know_is_refused(
+    guest_client, make_item, sample_view, sample_reader
+):
+    made = await make_item()
+    sample_view(made)
+
+    resp = await guest_client.get(
+        CENTROIDS_ROUTE, params={"sample_item_ids": [made.item], "scans": "ms1"}
+    )
+
+    assert resp.status_code == 422, resp.text
+    assert sample_reader == []
 
 
 # ============= Size and time =============
