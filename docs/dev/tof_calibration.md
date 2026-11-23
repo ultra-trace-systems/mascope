@@ -1,7 +1,7 @@
 # TOF mass calibration
 
 - **Status:** building
-- **As of:** 2026-11-18
+- **As of:** 2026-11-23
 - **Tracked in:** [TOF mass calibration](https://linear.app/ultra-trace/project/tof-mass-calibration-8271ef05d142) (Linear, MAS-171 to MAS-197)
 - **What:** TOF mass calibration across the analysed range: measure, fix calibrants, model, re-calibrate.
 
@@ -12,15 +12,15 @@ in the Linear project
 [TOF mass calibration](https://linear.app/ultra-trace/project/tof-mass-calibration-8271ef05d142);
 this note is its record.*
 
-**Status.** Milestone 0 (measure) is done: the assessment that started the project, the audit
-tool and the fleet baseline (section 2). Of the calibrant sets (milestone 1), TOF H's has been
-corrected, and TOF M's and site B's were measured and kept. Of the node's changes (milestone 2),
-the record that says what a fit was made on (MAS-182), the three-parameter model (MAS-183) and the
-search that finds the calibrants however far the acquisition axis drifts (MAS-951) are in; the
-rest are still to come. How the existing data is re-calibrated is decided (MAS-192, section 6),
-which stored files a refit can read is counted (MAS-193, section 6), and the runner that refits
-them is built (MAS-195, section 6). Sites are named by letter and instruments by neutral labels
-(TOF H, TOF M, B1–B3) throughout, as everywhere in this repository.
+**Status.** Milestone 0 (measure) is done: the assessment that started the project, the audit tool
+and the fleet baseline (section 2). Of the calibrant sets (milestone 1), TOF H's has been corrected,
+and TOF M's and site B's were measured and kept, TOF M's nitrate set under both models. Of the
+node's changes (milestone 2), the record that says what a fit was made on (MAS-182), the
+three-parameter model (MAS-183) and the search that finds the calibrants however far the acquisition
+axis drifts (MAS-951) are in; the rest are still to come. How the existing data is re-calibrated is
+decided (MAS-192, section 6), which stored files a refit can read is counted (MAS-193, section 6),
+and the runner that refits them is built (MAS-195, section 6). Sites are named by letter and
+instruments by neutral labels (TOF H, TOF M, B1–B3) throughout, as everywhere in this repository.
 
 ## 1. The problem
 
@@ -725,12 +725,35 @@ Configuration on the sites, applied on the plan owner's word and measured before
     and the calibrant lines at 150–200 Th read −1.0 ppm instead of −0.1. A lower band reads worse,
     so the set is kept. A wider variant, with NO3−·C7H10O5 (236 Th) and NO3−·C10H18O6 (296 Th) too,
     tilts the same way.
-  - *Nitrate, mode 0 only.* The test fitted the node's one model today, mode 0, so the verdict is
-    mode 0's. With the two ions in, the lines the fit keeps bow on the latest day: +0.5 ppm at
-    40–100 Th, −0.7 at 100–150, −1.0 at 150–200, 0.0 at 278 Th and +0.8 at 312 Th. That is the
-    shape the three-parameter model (MAS-183) is there to remove. The comparison is repeated under
-    it before site A's history is re-calibrated (MAS-196):
-    [#2785](https://github.com/ultra-trace-systems/mascope/issues/2785).
+  - *Nitrate, under the three-parameter model* (MAS-603,
+    [#2785](https://github.com/ultra-trace-systems/mascope/issues/2785)). Under mode 0, with the two
+    ions in, the band medians of the lines the fit keeps read like a bow on the latest day: +0.5 ppm
+    at 40–100 Th, −0.7 at 100–150, −1.0 at 150–200, 0.0 at 278 Th and +0.8 at 312 Th. Mode 2
+    (MAS-183) is meant to remove such a shape. The test ran again on the same window and files, with
+    each set fitted in mode 0, in mode 2 and as the node chooses (MAS-181's rule, section 3). Its
+    mode-0 readings equal the mode-0 table's to 0.1 ppm. The node keeps mode 0 in nearly every file:
+    in 65 of 68 files with today's set and 64 of 68 with the two ions over the 60 days, in 66 and 67
+    on the latest day. Mode 2 predicts the held-out calibrant ions worse on today's set, by a median
+    1.1–1.4 ppm, and no better with the two ions (−0.1 to +0.1 ppm, short of the 0.5 it needs). So
+    the node's fit with the two ions is mode 0's: on the latest day its lines read as mode 0's
+    within 0.1 ppm.
+  - *Nitrate, read per line.* Each band below 200 Th holds two calibrant lines (the per-line table).
+    At 40–100 and 100–150 Th the two read on opposite sides of zero in every set and model. A band
+    median there falls between them and moves by half a ppm when a few files change, so it does not
+    read the band, and the bow above is partly that. On the latest day, the lines at 150–200 Th,
+    176 and 188 Th, both read lower with the two ions in every model: −0.1 and −0.3 ppm become −1.0
+    and −1.4 to −1.5 under mode 0 and the node, 0.0 and −0.3 become −0.5 and −0.9 under mode 2.
+    Over the 60 days the line that reads worse moves: 46 Th under mode 0 and the node (+0.5 and +0.3
+    become +1.5 and +1.0), 113 and 188 Th under mode 2, while 188 Th reads closer to zero under
+    mode 0 and the node. Mode 2 forced does better at the low end: with the two ions in, the lines
+    at 46, 62 and 125 Th read closer to zero, 113 Th further, by 0.5 ppm on the latest day and 0.8
+    over the 60 days. But on today's set it extrapolates worse than mode 0: the two ions, held out,
+    read +2.0 and +3.3 ppm on the latest day instead of +1.4 and +2.3. In every model a lower line
+    reads worse with the two ions, on the latest day and over the 60 days, so the set is kept under
+    both, and site A's history is re-calibrated on today's set (MAS-196). The two compounds also bring their [M−H]− ions, at 215
+    and 249 Th. They are matched in only 19% and 6% of the 60 days' files, the 249 Th one on another
+    peak 71 ppm off, which the fit drops: applied as compounds, they would want ion-level entries
+    (MAS-186).
   - *Second nitrate mode.* Five files on one day. Nothing passes, and its collection serves seven
     modes. Unchanged.
   - Reaching the top would take an ion in every file above those masses, such as a calibrant dosed
@@ -751,6 +774,33 @@ Configuration on the sites, applied on the plan owner's word and measured before
   | 278 | NO3−·C10H16O5, not in the fit | 0.0 (+1.4) | −0.5 (0.0) |
   | 312 | NO3−·C10H18O7, not in the fit | +0.9 (+2.3) | +0.9 (+1.4) |
   | 300–500 | family | no reading | +1.5 [13] (no reading) |
+
+  The 40–100 and 100–150 Th rows are medians over two lines on opposite sides of zero: read those
+  bands per line, in the per-line table below.
+
+  The nitrate test under mode 2 and the node's choice, ppm, as the mode-0 table. The calibrant
+  lines are in the per-line table.
+
+  | Band or line (Th) | Read on | Node, today's set | Node, with the two | Mode 2, today's set | Mode 2, with the two |
+  | -- | -- | --: | --: | --: | --: |
+  | 100–150 | family | −1.8 [2] (no reading) | −1.4 [2] (no reading) | −3.5 [2] (no reading) | −2.3 [2] (no reading) |
+  | 150–200 | family | −2.4 [4] (−1.1 [4]) | −2.4 [3] (−2.1 [4]) | −2.1 [3] (−0.9 [5]) | −2.6 [3] (−1.6 [4]) |
+  | 200–300 | family | −1.0 [4] (−0.2 [4]) | −1.4 [3] (−1.4 [4]) | +0.6 [5] (+0.1 [5]) | −1.3 [3] (−1.4 [3]) |
+  | 278 | NO3−·C10H16O5, not in the fit | 0.0 (+1.4) | −0.5 (−0.1) | +3.4 (+2.0) | −0.5 (−0.3) |
+  | 312 | NO3−·C10H18O7, not in the fit | +0.9 (+2.3) | +0.9 (+1.4) | +5.5 (+3.3) | +1.7 (+1.0) |
+  | 300–500 | family | no reading | +1.5 [13] (no reading) | no reading | +1.7 [13] (+1.0 [14]) |
+
+  The calibrant lines, per line, in-fit residual, ppm, median over the 60 days (latest day). The
+  188 Th line is kept in 57 of the 68 sampled files and 19 of the latest day's 68.
+
+  | Line (Th) | Ion | Mode 0, today's set | Mode 0, with the two | Node, today's set | Node, with the two | Mode 2, today's set | Mode 2, with the two |
+  | -- | -- | --: | --: | --: | --: | --: | --: |
+  | 46 | NO2− | +0.5 (+0.9) | +1.5 (+2.2) | +0.3 (+0.9) | +1.0 (+2.2) | +1.3 (+1.1) | +0.5 (+0.6) |
+  | 62 | NO3− | −2.0 (−1.7) | −1.5 (−1.1) | −2.0 (−1.7) | −1.5 (−1.1) | −2.2 (−1.8) | −1.7 (−1.5) |
+  | 113 | C2F3O2− | +3.5 (+2.8) | +3.3 (+2.4) | +3.5 (+2.8) | +3.3 (+2.4) | +3.0 (+2.5) | +3.8 (+3.0) |
+  | 125 | HN2O6− | −2.0 (−1.7) | −2.1 (−2.3) | −2.0 (−1.7) | −2.1 (−2.3) | −2.1 (−1.8) | −1.9 (−1.5) |
+  | 176 | C2HF3NO5− | +0.2 (−0.1) | 0.0 (−1.0) | +0.2 (−0.1) | +0.4 (−1.0) | +0.6 (0.0) | +0.1 (−0.5) |
+  | 188 | H2N3O9− | −1.5 (−0.3) | −1.1 (−1.5) | −1.5 (−0.3) | −1.1 (−1.4) | −0.5 (−0.3) | −1.5 (−0.9) |
 - **Site B**: the nitrate and bromide sets of B1–B3 stay as they are (MAS-180, done; the plan
   owner's word in MAS-584). No ion above any set's top calibrant passes the rules: section 2,
   "Site B's calibrant sets on 2026-10-29". B2's nitrate set already holds within ±2.1 ppm to
