@@ -2440,7 +2440,27 @@ async def test_a_transfer_that_fails_holds_the_file_back(status):
     assert detail.startswith(
         "Not m/z calibrated: ionization mode 'Bromide RI' has no calibration "
         "collection, and the transfer of a neighbouring file's calibration "
-        "failed: "
+        "failed: Disk gone. "
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_transfer_that_raises_any_error_holds_the_file_back(status):
+    """The transfer is no @api_controller, so its errors are not all
+    ApiExceptions: a neighbour's truncated .h5 must hold this file back with a
+    reason, not fail its processing."""
+    mocks, _ = _start_transfer(OSError("Unable to open file (truncated file)"))
+
+    result = await _run_pipeline()
+
+    mocks["match"].assert_not_called()
+    assert "Auto-processing complete" in result["message"]
+    assert _recorded(status)[-1] == (
+        "calibration_failed",
+        "Not m/z calibrated: ionization mode 'Bromide RI' has no calibration "
+        "collection, and the transfer of a neighbouring file's calibration "
+        "failed: an unexpected error. Matching needs a verified m/z "
+        "calibration. Matching and peak assignment were skipped.",
     )
 
 

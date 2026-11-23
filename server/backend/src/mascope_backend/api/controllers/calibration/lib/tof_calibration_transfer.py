@@ -46,6 +46,7 @@ import mascope_file.name as m_name
 import mascope_signal.compute as m_compute
 from mascope_backend.api.models.calibration.config import calibration_config
 from mascope_backend.db import SampleFile, async_session
+from mascope_backend.runtime import runtime
 from mascope_tofwerk.calibration import FITTED_MODES
 from mascope_tofwerk.tofwerk import open_h5_file
 
@@ -342,7 +343,11 @@ def transfer_note(record: dict | None) -> str | None:
 async def plan_transfer(sample_file: SampleFile) -> Transfer:
     """The transfer a TOF file in a mode without calibrants takes, or why none.
 
-    Reads the database, then each file's raw axis in a thread.
+    Reads the database, then each file's raw axis in a thread. A raw axis
+    that cannot be read, whatever the error (a truncated or missing ``.h5``,
+    a missing sum signal), is a reason, not an error: what a file gets
+    depends on its neighbours' files too, and one bad neighbour must not fail
+    the processing of every file within reach of it.
     """
     window_s = float(calibration_config.TOF_TRANSFER_WINDOW_S)
     if sample_file.polarity not in ("+", "-"):
@@ -364,7 +369,14 @@ async def plan_transfer(sample_file: SampleFile) -> Transfer:
     for key, filename in [("", sample_file.filename)] + [
         (source.sample_file_id, source.filename) for source in sources
     ]:
-        offset = await asyncio.to_thread(raw_index_offset, filename)
+        try:
+            offset = await asyncio.to_thread(raw_index_offset, filename)
+        except Exception as error:
+            runtime.logger.warning(
+                f"Cannot read the raw TOF axis of '{filename}' for a "
+                f"calibration transfer: {error!r}"
+            )
+            offset = None
         if offset is None:
             return Transfer(
                 None,
