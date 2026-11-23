@@ -69,7 +69,10 @@ test.describe('the peak inspector card', () => {
       .filter({ has: page.getByRole('button', { name: 'Record a verdict' }) })
       .first()
     await expect(row).toBeVisible({ timeout: 30_000 })
-    const formula = (await row.locator('td').nth(3).innerText()).trim()
+    // The formula itself, not the isotopologue count beside it.
+    const formula = (
+      await row.locator('td').nth(3).locator('.field > span').first().innerText()
+    ).trim()
     await row.locator('td').nth(1).click()
 
     const card = page.locator('section.inspector')
