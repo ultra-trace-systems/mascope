@@ -48,7 +48,7 @@ import re
 import shutil
 import sys
 import time
-from collections.abc import Collection, Iterable, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -85,6 +85,12 @@ ROOT_ENV = "MASCOPE_VIZ_STORE"
 #: A batch with a sample acquired less than this long ago is refetched on
 #: every sync: it is the batch holding today, still filling, in any zone.
 LIVE = pd.Timedelta(days=1)
+
+#: Seconds a sync lets pass between two writes of ``store.json`` while it
+#: goes through the batches and days. The manifest grows by a stamp per
+#: batch, so writing it after each made a long campaign's sync quadratic; a
+#: sync stopped between two writes redoes at most this long's work.
+SAVE_EVERY = 2.0
 
 #: The rollups' bins, as pandas offsets, and what ``rollups.bin`` calls them.
 BINS = {"1h": "hour", "1D": "day"}
@@ -194,6 +200,11 @@ METADATA_KEY = b"mascope"
 
 def _now() -> pd.Timestamp:
     return pd.Timestamp.now(tz="UTC")
+
+
+def _seconds() -> float:
+    """The clock a sync times its writes of ``store.json`` by."""
+    return time.monotonic()
 
 
 def _iso(moment: Any) -> str | None:
@@ -1091,6 +1102,34 @@ def _why_fetch(
     return None
 
 
+def _unsaved_days(
+    store: CampaignStore, batch_id: str, stamp: dict[str, Any]
+) -> list[str] | None:
+    """The UTC days of a batch's tables on disk when they are not the ones
+    its stamp records; None when they are.
+
+    They are not when a sync wrote them, or removed them, and was stopped
+    before it next wrote ``store.json``: the rollups of their days may then
+    have been made from them, or not yet. A sync writes a batch's
+    ``samples`` first and records in it the ``synced_utc`` its stamp is
+    about to get, so that file alone tells. One written before that was
+    recorded says nothing and is taken as the stamp's: the sync that wrote
+    it wrote ``store.json`` after each batch.
+    """
+    path = store.path / BATCH_TABLES[0] / _file_name(batch_id)
+    try:
+        metadata = pq.read_schema(path).metadata or {}
+    except FileNotFoundError:
+        return []
+    written = json.loads(metadata.get(METADATA_KEY, b"{}")).get("synced_utc")
+    if written is None or written == stamp.get("synced_utc"):
+        return None
+    times = _read([path], BATCH_TABLES[0])["t_mid_utc"].dropna()
+    if times.empty:
+        return []
+    return _days(_iso(times.min()), _iso(times.max()))
+
+
 def _days(first: str | None, last: str | None) -> list[str]:
     """The UTC days from *first* to *last*, as ``YYYY-MM-DD``."""
     if first is None or last is None:
@@ -1386,6 +1425,18 @@ def sync(
     calls it ``unchecked``, and the next sync decides on the listing again.
     A refused token stops the sync.
 
+    ``store.json``, the stamps and the days whose rollups are still to be
+    made, is written before anything else, which marks the sync as not
+    complete until it ends; then, while the batches are fetched and the days
+    rolled, once :data:`SAVE_EVERY` seconds have passed since its last write;
+    at once for a failed batch and for whatever stops the sync early; and at
+    the end. A sync stopped between two writes, by anything that leaves it
+    no chance to write, loses the stamps and rolled days since the last
+    one: the next sync fetches those batches again, rolls those days again,
+    and, for a batch whose tables were rewritten and whose stamp was not
+    (its ``samples`` file records which stamp it belongs to), fetches it and
+    rolls the days its tables held even if its stamp gives no reason to.
+
     :param client: An SDK client; its workspace is the scope's.
     :param scope: What to sync.
     :param pause: Seconds to wait between two batches' fetches, so a long
@@ -1434,14 +1485,63 @@ def sync(
         batches=stamps,
     )
 
-    def save() -> None:
+    written_at = 0.0
+
+    def save(*, at_once: bool = False) -> None:
+        # store.json is rewritten whole, and grows by a stamp per batch: it
+        # is written once SAVE_EVERY seconds have passed since it last was,
+        # and at once when *at_once*
+        nonlocal written_at
+        moment = _seconds()
+        if not at_once and moment - written_at < SAVE_EVERY:
+            return
         meta["pending_rollups"] = sorted(pending)
         _write_json(store.meta_path, meta)
+        written_at = moment
 
     # Before anything is written: a sync stopped from here on is no
     # complete one
-    save()
+    save(at_once=True)
+    try:
+        removed, fetched, unchanged, failed = _sync_batches(
+            client, resolved, store, meta, stamps, pending, now, pause, save
+        )
+    except BaseException:
+        # Whatever ends the sync early, a refused token or an error no batch
+        # was failed for, leaves store.json as far as the sync got
+        save(at_once=True)
+        raise
+    meta["synced_utc"] = _iso(_now())
+    save(at_once=True)
+    return SyncReport(
+        resolved=resolved,
+        store=store,
+        fetched=fetched,
+        unchanged=tuple(unchanged),
+        failed=failed,
+        removed=removed,
+        seconds=time.monotonic() - started,
+    )
 
+
+def _sync_batches(
+    client: "MascopeClient",
+    resolved: ResolvedScope,
+    store: CampaignStore,
+    meta: dict[str, Any],
+    stamps: dict[str, dict[str, Any]],
+    pending: set[str],
+    now: pd.Timestamp,
+    pause: float,
+    save: Callable[..., None],
+) -> tuple[tuple[str, ...], dict[str, str], list[str], dict[str, str]]:
+    """What :func:`sync` does between its first and last writes of
+    ``store.json``: the files listing, the batches the scope dropped, each
+    batch, and the rollups of the days they changed. *stamps* and *pending*
+    are *meta*'s, updated in place; *save* writes *meta* when its time has
+    come. Returns the batches removed, fetched (with why), left unchanged and
+    failed (with the error).
+    """
     files = resolved.files.copy()
     _write(
         store.path / "files.parquet",
@@ -1479,6 +1579,14 @@ def sync(
                 run, newest = _ledger_runs(client, batch_id)
             checked = True
             why = _why_fetch(stamp, batch, run, newest, now)
+            unsaved = _unsaved_days(store, batch_id, stamp or {})
+            if unsaved is not None:
+                # A sync stopped before it wrote store.json left this batch's
+                # tables newer than its stamp, which may give no reason to
+                # fetch it (a day after "today"); the rollups of their days
+                # may be made from them or not, and are made again
+                pending.update(unsaved)
+                why = why or "unsaved"
             if why is None:
                 unchanged.append(batch_id)
                 # Listed again, and found as it was
@@ -1506,7 +1614,7 @@ def sync(
                 client, resolved, batch, run, newest, mechanisms or {}, modes
             )
         except NotAuthenticated:
-            save()
+            # sync writes store.json before it lets the error through
             raise
         except Exception as e:
             message = (
@@ -1532,22 +1640,29 @@ def sync(
                     )
                 stamp.update(error=message, attempted_utc=_iso(_now()))
             stamps[batch_id] = stamp
-            save()
+            # A failure is on disk at once, whatever the time since the last
+            # write: the status reads it from there
+            save(at_once=True)
             continue
 
+        fresh.update(synced_utc=_iso(_now()), error=None)
         about = {
             "sample_batch_id": batch_id,
             "run_id": (run or {}).get("run_id"),
             "provenance": fresh["provenance"],
+            # What tells the tables from those of the stamp store.json holds
+            # until the next write (_unsaved_days)
+            "synced_utc": fresh["synced_utc"],
         }
-        for table, frame in tables.items():
-            _write(store.path / table / _file_name(batch_id), frame, table, about)
+        # samples first: _unsaved_days reads it alone
+        for table in BATCH_TABLES:
+            path = store.path / table / _file_name(batch_id)
+            _write(path, tables[table], table, about)
         if stamp:
             pending.update(
                 _days(stamp.get("first_t_mid_utc"), stamp.get("last_t_mid_utc"))
             )
         pending.update(_days(fresh["first_t_mid_utc"], fresh["last_t_mid_utc"]))
-        fresh.update(synced_utc=_iso(_now()), error=None)
         stamps[batch_id] = fresh
         if fresh["provenance"]:
             meta["provenance"] = fresh["provenance"]
@@ -1556,14 +1671,4 @@ def sync(
     for day in _roll_days(store, stamps, list(pending)):
         pending.discard(day)
         save()
-    meta["synced_utc"] = _iso(_now())
-    save()
-    return SyncReport(
-        resolved=resolved,
-        store=store,
-        fetched=fetched,
-        unchanged=tuple(unchanged),
-        failed=failed,
-        removed=removed,
-        seconds=time.monotonic() - started,
-    )
+    return removed, fetched, unchanged, failed
