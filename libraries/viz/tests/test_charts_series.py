@@ -547,7 +547,8 @@ def test_a_run_change_is_marked_on_a_formulas_panel_and_not_an_ions(month):
         change.at.tz_convert(ZONE).isoformat()
     ]
     (note,) = [note for note in fig.notes if "two readings" in note]
-    assert f"changes at 2026-06-16 03:00 ({ZONE})" in note
+    polarity = common.POLARITY_NAMES[fig.summary["run_changes"][0]["polarity"]]
+    assert f"changes at 2026-06-16 03:00 ({polarity} batches" in note
     # On an ion alone, nothing changes
     alone = species_series(store, ion, cadence="1h")
     assert not alone.summary["mixed_runs"]
@@ -727,7 +728,7 @@ def test_species_series_shades_the_events_as_given(month):
 def test_the_y_axis_names_the_signal_not_a_concentration(month):
     campaign, store = month
     key = _cycles(campaign, "day")[0]
-    want = {"TOF": "peak area", "Orbitrap": "peak height"}[
+    want = {"TOF": "Peak area", "Orbitrap": "Peak height"}[
         campaign.params.instrument_type
     ]
 
@@ -737,49 +738,9 @@ def test_the_y_axis_names_the_signal_not_a_concentration(month):
     tic = species_series(store, key, normalise="tic")
     assert tic.panels[0].axes.y.label == "signal / TIC"
     assert "normalised to TIC" in tic.subtitle
-    assert species_series(store, key).panels[0].axes.x.label == f"time ({ZONE})"
-
-
-class _Samples:
-    def __init__(self, types: list):
-        self.frame = pd.DataFrame(
-            {
-                "t_mid_utc": pd.date_range(
-                    "2026-06-01", periods=len(types), freq="h", tz="UTC"
-                ),
-                "instrument_type": types,
-            }
-        )
-
-    def table(self, name: str, **_) -> pd.DataFrame:
-        assert name == "samples"
-        return self.frame
-
-
-@pytest.mark.parametrize(
-    "types, label",
-    [
-        (["tof", "tof"], "peak area"),
-        (["orbi"], "peak height"),
-        (["TOF", "Orbitrap"], "peak area or peak height"),
-        (["tof", "quadrupole"], "signal"),
-        ([None], "signal"),
-    ],
-)
-def test_the_y_label_follows_the_instrument_types_in_the_window(types, label):
-    assert common.y_label(_Samples(types), {"normalise": "none"}) == label
-
-
-def test_the_window_keeps_its_instrument_types():
-    store = _Samples(["orbi", "tof", "tof"])
-
-    window = {"normalise": "none", "start": "2026-06-01T01:00:00+00:00"}
-    assert common.y_label(store, window) == "peak area"
-    assert common.y_label(store, {**window, "end": None}) == "peak area"
-    assert (
-        common.y_label(store, {"normalise": "none", "end": "2026-06-01T01:00Z"})
-        == "peak height"
-    )
+    assert species_series(store, key).panels[0].axes.x.label == f"Time ({ZONE})"
+    # The label the other charts give, by one rule
+    assert want == common.value_label(store, {"normalise": "none"})
 
 
 def test_the_summary_is_plain_json_in_the_display_zone(month):
@@ -824,7 +785,7 @@ def test_species_series_under_a_reagent_sum(clusters):
     n = len(campaign.tables["samples"])
     assert complete == pytest.approx(1 - shares.lost_samples / n)
     (note,) = [note for note in fig.notes if "partial sum" in note]
-    assert f"{100 * shares.lost_samples / n:.1f} %" in note
+    assert f"partial sum in {shares.lost_samples / n:.1%} of the samples" in note
     # One ion alone is no sum, and has no partial sums to note
     one = species_series(store, key, cadence="1h", normalise=shares.series_keys[0])
     assert not any("partial sum" in note for note in one.notes)
@@ -934,13 +895,13 @@ def test_diurnal_draws_an_hour_at_its_middle_on_the_zones_clock(month):
         "lo": "lo",
         "hi": "hi",
     }
-    assert panel.axes.x.label == f"hour of day ({ZONE})"
+    assert panel.axes.x.label == f"Hour of day ({ZONE})"
     assert panel.axes.x.range == (0.0, 24.0)
     assert panel.axes.y.scale == "linear"
     assert "hour of day medians, p25-p75 band" in fig.subtitle
     assert any("solar time" in note and ZONE in note for note in fig.notes)
     utc = diurnal(store, key, tz="UTC")
-    assert utc.panels[0].axes.x.label == "hour of day (UTC)"
+    assert utc.panels[0].axes.x.label == "Hour of day (UTC)"
     # Helsinki is three hours ahead of UTC in June
     assert (_entry(utc, key)["hour_max"] - _entry(fig, key)["hour_max"]) % 24 == 21
 
@@ -1297,7 +1258,7 @@ def test_period_boxes_by_day_put_the_episode_day_highest(month):
             whole.loc[whole["median"].idxmax(), "period"], ZONE
         )
     assert list(_rows(fig, keys[0])["label"][:2]) == ["2026-06-01", "2026-06-02"]
-    assert fig.panels[0].axes.x.label == f"day ({ZONE})"
+    assert fig.panels[0].axes.x.label == f"Day ({ZONE})"
 
 
 def test_period_boxes_by_week_show_the_episode_in_p95_not_the_median(month):
@@ -1323,7 +1284,7 @@ def test_period_boxes_by_week_show_the_episode_in_p95_not_the_median(month):
         "2026-06-22",
         "2026-06-29",
     ]
-    assert fig.panels[0].axes.x.label == f"week from Monday ({ZONE})"
+    assert fig.panels[0].axes.x.label == f"Week from Monday ({ZONE})"
 
 
 def test_a_thin_period_is_hollow_and_flagged(month):
@@ -1456,7 +1417,7 @@ def test_period_boxes_say_what_a_box_is(month):
     assert {"min", "max"} <= set(fig.data.columns)
     assert list(_rows(fig, key)["label"]) == ["2026-06", "2026-07"]
     assert fig.summary["period"] == "month"
-    assert panel.axes.x.label == f"month ({ZONE})"
+    assert panel.axes.x.label == f"Month ({ZONE})"
 
 
 @pytest.mark.parametrize("kwargs", [{"period": "year"}, {"y": "symlog"}])
@@ -1610,7 +1571,12 @@ def test_the_charts_are_registered_with_their_parameters():
         params = {p.name: p for p in chart.params}
         assert params["species"].type == "species"
         assert params["species"].default == "top:5"
-        assert params["normalise"].type == "normaliser"
+        # The type every chart of species' values declares it as
+        assert params["normalise"] == common.NORMALISE_PARAM
+        # And the window, as every chart over time takes it
+        assert [params[p.name] for p in common.WINDOW_PARAMS] == list(
+            common.WINDOW_PARAMS
+        )
         assert params["normalise"].default == "none"
         json.dumps(chart.to_dict())
     assert found["species_series"].build is species_series
@@ -1667,10 +1633,10 @@ def test_a_ratio_is_of_finite_values_over_a_positive_one(top, bottom, want):
 def test_a_normalised_axis_names_its_normaliser_or_its_key():
     attrs = {"normalise": "ion:x", "normalise_name": "reagent"}
 
-    assert common.y_label(_Samples(["tof"]), attrs) == "signal / reagent"
+    # A normalised value's label reads no store
+    assert common.value_label(None, attrs) == "signal / reagent"
     assert (
-        common.y_label(_Samples(["tof"]), {**attrs, "normalise_name": None})
-        == "signal / ion:x"
+        common.value_label(None, {**attrs, "normalise_name": None}) == "signal / ion:x"
     )
 
 
@@ -1683,8 +1649,14 @@ def test_a_change_of_both_polarities_at_once_is_one_rule():
     attrs = {"mixed_runs": True, "run_changes": changes, "tz": ZONE}
 
     assert common.run_rules(attrs) == [{"at": at, "label": "engine run: 2"}]
-    (note,) = common.notes(attrs, [])
-    assert note.count("2026-06-16 03:00") == 1
+    # A note per polarity, each with its batches
+    notes = common.notes(attrs, [])
+    assert len(notes) == 2
+    assert all(note.count("2026-06-16 03:00") == 1 for note in notes)
+    assert {note.split("(")[1].split(" batches")[0] for note in notes} == {
+        "positive",
+        "negative",
+    }
     assert common.run_rules({"run_changes": []}) == []
 
 
@@ -1708,7 +1680,7 @@ def test_a_partial_sum_is_noted_only_for_a_sum(members, complete, noted):
     found = [note for note in common.notes(attrs, []) if "partial sum" in note]
     assert bool(found) == noted
     if noted:
-        assert "In 25.0 % of the samples" in found[0]
+        assert "partial sum in 25.0% of the samples" in found[0]
 
 
 def _hours(values, n=None, n_samples=None) -> pd.DataFrame:

@@ -18,7 +18,7 @@ from test_viz_scope_contract import (  # noqa: F401 - the fixtures are used by n
 )
 
 from mascope_viz import render
-from mascope_viz.charts import common, registry
+from mascope_viz.charts import registry
 from mascope_viz.data import Scope
 from mascope_viz.data.store import sync
 
@@ -44,7 +44,7 @@ def test_each_chart_draws_the_demo_dataset(store, kind):
     # The server spells the instrument types its own way (orbi, tof)
     types = store.table("samples")["instrument_type"].dropna().astype(str)
     assert set(types)
-    named = list(common.INTENSITY.values())
-    assert fig.panels[0].axes.y.label in (*named, " or ".join(named))
+    named = ["Peak area", "Peak height"]
+    assert fig.panels[0].axes.y.label in (*named, "Peak area or peak height")
     assert len(render.matplotlib(fig).axes) >= len(fig.panels)
     json.loads(render.plotly(fig).to_json())

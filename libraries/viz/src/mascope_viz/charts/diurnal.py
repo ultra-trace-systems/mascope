@@ -299,8 +299,8 @@ def _figure(
                 sparse.append(f"{where} ({_listed(drawn['sparse_hours'])})")
         entries.append(entry)
 
-    label = common.y_label(store, attrs)
-    x_axis = Axis(f"hour of day ({zone})", range=(0.0, 24.0))
+    label = common.value_label(store, attrs)
+    x_axis = Axis(f"Hour of day ({zone})", range=(0.0, 24.0))
     if by:
         encodings = {"x": "x", "y": "value", "group": "group", "lo": "lo", "hi": "hi"}
     else:
@@ -401,12 +401,7 @@ KIND = registry.register(
                 BY,
                 help="a line per month, season, or weekday and weekend",
             ),
-            Param(
-                "normalise",
-                "normaliser",
-                "none",
-                help="none, tic, a series key, or a list of keys whose sum divides",
-            ),
+            common.NORMALISE_PARAM,
             Param("y", "text", "linear", SCALES, help="the y scale"),
             Param(
                 "day_hours",
@@ -420,9 +415,7 @@ KIND = registry.register(
                 list(NIGHT_HOURS),
                 help="the night's clock span [start, end) of day_night_ratio",
             ),
-            Param("tz", "text", None, help="the zone: an IANA name or instrument"),
-            Param("start", "time", None, help="the window's start"),
-            Param("end", "time", None, help="the window's end, excluded"),
+            *common.WINDOW_PARAMS,
         ),
         summary=(
             "species",
