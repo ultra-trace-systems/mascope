@@ -36,12 +36,12 @@ function uses(needle) {
 }
 
 describe('the retired double meanings', () => {
-  // The verdict column's header, in each ledger. The tier wears a dot, an
-  // unjudged row nothing, and the batch facts their own check.
+  // The verdict column's header, which the one ledger component draws for
+  // both scopes. The tier wears a dot, an unjudged row nothing, and the batch
+  // facts their own check.
   it('keeps the seal-check for the verdict column alone', () => {
     expect(uses('ph-seal-check')).toEqual({
-      'lib/panes/PaneBrowserMatch/PaneBrowserAssignment.vue': 1,
-      'lib/panes/PaneBrowserMatch/PaneBrowserBatchPeaks.vue': 1
+      'lib/ledger/AssignmentLedger.vue': 1
     })
   })
 

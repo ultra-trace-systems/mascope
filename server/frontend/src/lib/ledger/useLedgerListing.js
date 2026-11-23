@@ -7,7 +7,7 @@ import { defineStore } from 'pinia'
  * The full column - the name, its list and the list's tags - made the ledger
  * too wide for the column the browser has, so it rests folded: the name cut
  * short with the list's tags beside it, the rest in its tooltip. One switch for both ledgers,
- * held outside them as their sort is (./ledgerSort.js): PaneBrowserMatch swaps
+ * held outside them as their sort is (./useLedgerSort.js): PaneBrowserMatch swaps
  * the two panes, and a reader who opened the column in one would otherwise find
  * it folded again in the other. Persisted, so it survives a reload too.
  */

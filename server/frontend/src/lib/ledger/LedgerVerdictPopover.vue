@@ -12,49 +12,73 @@ import { EVIDENCE_LEVELS, VERDICT_META, claimCandidates } from '@/lib/verificati
 import { useApp } from '@/stores'
 
 /**
- * The batch-level verdict form for one batch peak, shown from the Verdict
- * column's popover: what the row claims, the live verdict on it if any (and
- * whether it is stale), Confirm / Reject / Unsure with the evidence level
- * confirming requires, a note, and Retract.
+ * The verdict form for one ledger row, shown from the Verdict column's
+ * popover, in either scope: what the row claims, the verdict on it if any,
+ * Confirm / Reject / Unsure with the evidence level confirming requires, and
+ * a note. Each scope keeps its own words and its own endpoint.
  *
- * Every write names the formula judged, so a consensus that moved under the
- * user - another sample's fold can move it between the ledger being read and
- * the click - is refused by the server and the row reloaded, rather than a
- * verdict recorded against a formula nobody saw.
+ * - **sample**: the per-sample verdict the peak inspector records. A verdict is
+ *   about the compound, so it is recorded on the family's M0 whichever member
+ *   the row is - the verification store redirects, as it does for the
+ *   inspector - and it wins over a batch-level verdict reaching the sample.
+ *   There is no retract: a per-sample verdict is superseded by the next one.
+ * - **batch**: the batch-level verdict on a batch peak's species. Every write
+ *   names the formula judged, so a consensus that moved under the user is
+ *   refused by the server (409) and the ledger reloaded, rather than a verdict
+ *   recorded against a formula nobody saw. A stale verdict - about a formula
+ *   the consensus has since left - says so, and Retract withdraws a verdict.
  *
  * A confirmation may name the structure it identifies, from the compound the
- * consensus's reference listing names or an InChIKey of the user's own; one on
- * a reference standard, MS/MS or orthogonal evidence must (BaseClaimStructure).
- * Changing the verdict starts from the structure it names, unless it is stale:
- * a structure is one of a formula, and the consensus has moved off it.
+ * row's reference listing names or an InChIKey of the user's own; one on a
+ * reference standard, MS/MS or orthogonal evidence must (BaseClaimStructure).
  */
 const props = defineProps({
-  /** The ledger row: batch_peak_id, consensus_formula, mz, n_present, ... */
+  /** Which ledger the row is from. */
+  scope: {
+    type: String,
+    required: true,
+    validator: (scope) => scope === 'sample' || scope === 'batch'
+  },
+  /** The ledger row: an assignment row, or a batch peak. */
   row: { type: Object, required: true },
-  /** The live verdict shown on the row, or null. */
+  /** The row's own live verdict, or null. */
   record: { type: Object, default: null },
-  /** Whether that verdict is about a claim the row no longer makes. */
+  /** Sample scope: the batch-level verdict reaching the row when it has none of its own. */
+  overlay: { type: Object, default: null },
+  /** Batch scope: whether the verdict is about a claim the row no longer makes. */
   stale: { type: Boolean, default: false }
 })
 const emit = defineEmits(['done'])
 
 const app = useApp()
-const verdicts = computed(() => app.data.batchPeakVerification)
+const batch = computed(() => props.scope === 'batch')
 
-// Same answer the compute bar gives, for the same reason: "yes" while the
-// account or workspace is still loading, so a slow load offers the form rather
-// than hiding a capability the user has. A 403 on the write still lands as
-// `denied` below.
-const canEdit = computed(() => canEditWorkspace(app.data.workspace.focused, app.auth?.user))
-const judgeable = computed(() => Boolean(props.row.consensus_formula))
+// "Yes" while the account or workspace is still loading, so a slow load offers
+// the form rather than hiding a capability the user has. A 403 on the write
+// still lands as `denied` below.
+const canEdit = computed(() => canEditWorkspace(app.data.workspace?.focused, app.auth?.user))
+
+// The row a verdict is recorded on: a batch peak itself, or a sample row's
+// family M0, as the inspector judges it.
+const target = computed(() =>
+  batch.value ? props.row : (app.data.peakAssignment.peak.m0Of(props.row) ?? props.row)
+)
+const rowId = computed(() => (batch.value ? props.row.batch_peak_id : props.row.peak_assignment_id))
+const formula = computed(() =>
+  batch.value ? props.row.consensus_formula : target.value?.assigned_formula
+)
+const judgeable = computed(() => Boolean(formula.value))
+const throughM0 = computed(
+  () => target.value && target.value.peak_assignment_id !== props.row.peak_assignment_id
+)
 
 const evidenceLevel = ref(props.record?.evidence_level ?? null)
 const note = ref(props.record?.note ?? '')
-// The structures the consensus's candidates name; the claim the form picks.
+// The structures the row's candidates name; the claim the form picks of them.
 const candidates = computed(() =>
   claimCandidates({
-    target: targetOf(props.row.reference_listing),
-    identities: ledgerListing(props.row.reference_listing)?.identities
+    target: targetOf(target.value?.reference_listing),
+    identities: ledgerListing(target.value?.reference_listing)?.identities
   })
 )
 const claim = ref(null)
@@ -62,18 +86,15 @@ const canConfirm = computed(() => Boolean(evidenceLevel.value) && claim.value?.r
 const submitting = ref(false)
 const pendingVerdict = ref(null) // which button is mid-submit
 const denied = ref(false) // 403: not an editor in this workspace
-const claimChanged = ref(false) // 409: the consensus moved under the user
+const claimChanged = ref(false) // batch, 409: the consensus moved under the user
 
 // Pointed at another row: start from that row's verdict, not the last one's.
-watch(
-  () => props.row.batch_peak_id,
-  () => {
-    evidenceLevel.value = props.record?.evidence_level ?? null
-    note.value = props.record?.note ?? ''
-    denied.value = false
-    claimChanged.value = false
-  }
-)
+watch(rowId, () => {
+  evidenceLevel.value = props.record?.evidence_level ?? null
+  note.value = props.record?.note ?? ''
+  denied.value = false
+  claimChanged.value = false
+})
 
 const staleText = computed(() => {
   if (!props.stale || !props.record) return ''
@@ -83,31 +104,56 @@ const staleText = computed(() => {
   }. Re-judge or retract.`
 })
 
-async function submit(verdict) {
+const SCOPE_TEXT = {
+  sample:
+    "One verdict per compound in this sample, recorded on the family's M0. It wins over a " +
+    'batch-level verdict reaching this sample.',
+  batch:
+    'One verdict per species at this batch peak. It covers every sample in this batch that has ' +
+    'no verdict of its own; per-sample verdicts always win.'
+}
+const NOTHING_TO_JUDGE = {
+  sample: 'Nothing to judge: this peak carries no formula.',
+  batch: 'Nothing to judge yet: this batch peak has no consensus formula.'
+}
+
+function payload(verdict) {
   const confirm = verdict === 'confirmed'
-  if (confirm && !canConfirm.value) return
+  const common = {
+    verdict,
+    evidence_level: evidenceLevel.value || null,
+    note: note.value?.trim() || null,
+    ...(confirm && claim.value?.claimed_inchikey
+      ? { claimed_inchikey: claim.value.claimed_inchikey, claimed_name: claim.value.claimed_name }
+      : {})
+  }
+  return batch.value
+    ? {
+        batch_peak_id: props.row.batch_peak_id,
+        ...common,
+        expected_formula: props.row.consensus_formula
+      }
+    : { peak_assignment_id: target.value.peak_assignment_id, ...common }
+}
+
+async function submit(verdict) {
+  // Confirm requires an evidence level, and a structure on structure evidence
+  // (both also enforced server-side).
+  if (verdict === 'confirmed' && !canConfirm.value) return
   submitting.value = true
   pendingVerdict.value = verdict
   claimChanged.value = false
   try {
-    await verdicts.value.verify({
-      batch_peak_id: props.row.batch_peak_id,
-      verdict,
-      evidence_level: evidenceLevel.value || null,
-      note: note.value?.trim() || null,
-      expected_formula: props.row.consensus_formula,
-      ...(confirm && claim.value?.claimed_inchikey
-        ? {
-            claimed_inchikey: claim.value.claimed_inchikey,
-            claimed_name: claim.value.claimed_name
-          }
-        : {})
-    })
+    const store = batch.value
+      ? app.data.batchPeakVerification
+      : app.data.peakAssignment.verification
+    await store.verify(payload(verdict))
     emit('done')
   } catch (error) {
+    // The http layer already toasts; only these change the form.
     const status = error?.response?.status
     if (status === 403) denied.value = true
-    else if (status === 409) {
+    else if (status === 409 && batch.value) {
       // The consensus moved since the ledger was read: reload the row rather
       // than record a verdict on a formula the user never saw.
       claimChanged.value = true
@@ -123,7 +169,7 @@ async function retract() {
   submitting.value = true
   pendingVerdict.value = 'retract'
   try {
-    await verdicts.value.retract({ batch_peak_id: props.row.batch_peak_id })
+    await app.data.batchPeakVerification.retract({ batch_peak_id: props.row.batch_peak_id })
     emit('done')
   } catch (error) {
     if (error?.response?.status === 403) denied.value = true
@@ -137,23 +183,25 @@ async function retract() {
 <template>
   <div class="verdict-popover">
     <div class="claim">
-      <span class="formula">{{ row.consensus_formula ?? 'unassigned' }}</span>
-      <span class="detail">m/z {{ num.mz.format(row.mz) }}</span>
-      <span class="detail">{{ row.n_present }} sample{{ row.n_present === 1 ? '' : 's' }}</span>
+      <span class="formula">{{ formula ?? 'unassigned' }}</span>
+      <span class="detail">m/z {{ num.mz.format(batch ? row.mz : row.sample_peak_mz) }}</span>
+      <span v-if="batch" class="detail"
+        >{{ row.n_present }} sample{{ row.n_present === 1 ? '' : 's' }}</span
+      >
+      <span v-if="throughM0" class="detail">judged on its M0</span>
     </div>
-    <p class="scope">
-      One verdict per species at this batch peak. It covers every sample in this batch that has no
-      verdict of its own; per-sample verdicts always win.
-    </p>
+    <p class="scope">{{ SCOPE_TEXT[scope] }}</p>
 
     <div v-if="record" class="current" :class="{ stale }">
       <BaseVerdictBadge :record="record" />
       <span v-if="stale" class="stale-text">{{ staleText }}</span>
     </div>
-
-    <div v-if="!judgeable" class="hint">
-      Nothing to judge yet: this batch peak has no consensus formula.
+    <div v-else-if="overlay && !batch" class="current inherited">
+      <BaseVerdictBadge :record="overlay" inherited />
+      <span class="detail">batch-level, until this sample has one of its own</span>
     </div>
+
+    <div v-if="!judgeable" class="hint">{{ NOTHING_TO_JUDGE[scope] }}</div>
     <div v-else-if="denied || !canEdit" class="denied">
       <span class="pi ph ph-lock-simple" /> Recording a verdict needs the editor role in this
       workspace.
@@ -209,16 +257,18 @@ async function retract() {
         showClear
         fluid
       />
+      <!-- A stale verdict's structure is one of a formula the consensus has
+           moved off, so a change starts from none. -->
       <BaseClaimStructure
         v-if="evidenceLevel"
-        :key="row.batch_peak_id"
+        :key="rowId"
         v-model="claim"
         :candidates="candidates"
         :evidence="evidenceLevel"
         :initial="stale ? null : record"
       />
       <InputText v-model="note" placeholder="Note (optional)" size="small" fluid />
-      <div v-if="record" class="retract">
+      <div v-if="batch && record" class="retract">
         <Button
           label="Retract"
           icon="pi ph ph-arrow-counter-clockwise"
@@ -251,7 +301,7 @@ async function retract() {
   gap: 0.6rem;
 }
 .formula {
-  font-weight: 600;
+  font-family: var(--font-mono);
 }
 .detail {
   font-size: 0.8rem;

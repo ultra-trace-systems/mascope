@@ -26,8 +26,10 @@ vi.mock('@/lib/permissions', () => ({
   canEditWorkspace: (workspace) => workspace?.my_role === 'editor'
 }))
 
-const { default: BatchPeakVerdictPopover } =
-  await import('@/lib/panes/PaneBrowserMatch/BatchPeakVerdictPopover.vue')
+// The ledger's one verdict popover, in the batch scope: the batch-level
+// verdict on a batch peak's species (ledgerVerdictPopover.sample.spec.js has the
+// sample scope).
+const { default: LedgerVerdictPopover } = await import('@/lib/ledger/LedgerVerdictPopover.vue')
 
 const ROW = {
   batch_peak_id: 'bp-1',
@@ -89,8 +91,8 @@ const TOOLTIP = {
 
 function mountPopover(props = {}, options = {}) {
   app = makeApp(options)
-  return mount(BatchPeakVerdictPopover, {
-    props: { row: ROW, ...props },
+  return mount(LedgerVerdictPopover, {
+    props: { scope: 'batch', row: ROW, ...props },
     global: { stubs: STUBS, directives: { tooltip: TOOLTIP } }
   })
 }
@@ -112,7 +114,7 @@ beforeEach(() => {
 
 const GLUCOSE = 'WQZGKKKJIJFFOK-GASJEMHNSA-N'
 
-describe('BatchPeakVerdictPopover', () => {
+describe('LedgerVerdictPopover, batch scope', () => {
   it('names the claim and states the scope in words', () => {
     const wrapper = mountPopover()
     expect(wrapper.text()).toContain('C6H12O6')
