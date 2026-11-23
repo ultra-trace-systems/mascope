@@ -75,7 +75,8 @@ EXPECTED_MFA_GATE_EXEMPT_ROUTES = {
 #: reasons are mixed here, and only the first is settled:
 #:
 #: - Anonymous or externally authenticated by design: login, the first-owner
-#:   bootstrap, the public version, instrument-agent pairing, and logout
+#:   bootstrap, the public version, the readiness route, instrument-agent
+#:   pairing, and logout
 #:   (authenticated by fastapi-users' own token dependency, and reachable by a
 #:   gated account because the password screen offers Log out).
 #: - The three tus methods, which **are** authenticated - by a dependency on the
@@ -117,6 +118,9 @@ KNOWN_UNGATED_ROUTES = {
     # login screen renders the same string to anyone; the capabilities stay
     # behind GET /api/version.
     ("GET", "/api/version/public"),
+    # The readiness route the backend's own healthcheck asks: ready or not
+    # ready, nothing else. Outside /api/, so nginx never passes it on.
+    ("GET", "/ready"),
     ("POST", "/api/users/first-owner"),
     ("HEAD", "/api/sample/files/upload/tus/{uuid}"),
     ("OPTIONS", "/api/sample/files/upload/tus/"),
