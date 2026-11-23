@@ -27,12 +27,18 @@ evidence's alone to keep below (MAS-983's Verify).
 
 The members a sample's own run or fold wrote keep the tiers the run gave them:
 they are the context the batch's readings are judged in, not what is judged.
+
+A pass judges a sample again after each of its rewriting stages, and keeps
+what it measured of the sample's readings between them
+(``kept_measurement.KeptMeasurement``): a judging scores only the readings it
+has not measured at the same inputs, the ones the stage wrote or changed, and
+elects, judges and caps all of them as a run does (MAS-1073).
 """
 
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -59,6 +65,7 @@ from mascope_backend.api.new.peak_assignments.batch_runs import touch_ledger
 from mascope_backend.api.new.peak_assignments.batch_untargeted import Annotation
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.fold_view import fold_run_id
+from mascope_backend.api.new.peak_assignments.kept_measurement import KeptMeasurement
 from mascope_backend.api.new.peak_assignments.pipeline import (
     PROPAGATION,
     RunContext,
@@ -210,15 +217,22 @@ async def rejudge_sample(
     config: PeakAssignmentConfig,
     *,
     corroborated: frozenset[str] = frozenset(),
+    kept: Optional[KeptMeasurement] = None,
 ) -> Counter:
     """Judge one sample's readings again as a run judges them, and write the
     tiers onto the members the batch wrote or corroborates.
 
     :param corroborated: Anchors a new decision corroborates in this sample:
         their members take the judging's tier though no stage rewrote them.
+    :param kept: What the pass measured of its samples' readings: the
+        readings it measured at the same inputs are not scored again. None
+        scores every one.
     :return: ``samples_judged`` (1 where the sample was judged, nothing
         where nothing the batch wrote in it carries a reading to judge),
-        ``members_judged`` and ``members_moved``.
+        ``members_judged`` and ``members_moved``; with ``kept``, the
+        readings scored and kept (``readings_scored``, ``readings_kept``),
+        or ``samples_unrecorded`` for a sample whose run recorded no model
+        to keep a measurement at, every reading of it scored.
     """
 
     members, registries = await _sample_members(sample_batch_id, sample_item_id)
@@ -245,10 +259,13 @@ async def rejudge_sample(
             given=given,
             held_peak_ids=held,
             floors=floors_of(members),
+            kept=kept,
         )
     )
     by_peak = {str(row["sample_peak_id"]): row for row in ctx.result}
     counts: Counter = Counter(samples_judged=1)
+    if kept is not None:
+        counts.update(kept.counts.pop(sample_item_id, Counter()))
     now = datetime.now(timezone.utc)
     async with async_session() as session:
         await _acquire_batch_fold_lock(session, sample_batch_id)
@@ -290,15 +307,24 @@ async def rejudge_samples(
     sample_batch_id: str,
     samples: dict[str, frozenset[str]],
     config: PeakAssignmentConfig,
+    *,
+    kept: Optional[KeptMeasurement] = None,
+    progress: Optional[Callable[[float], Awaitable[None]]] = None,
 ) -> dict:
     """Judge each sample again (:func:`rejudge_sample`); a sample that cannot
     be read is counted and skipped, as the stages skip one.
 
     :param samples: Sample id -> the anchors a new decision corroborates in it.
+    :param kept: What the pass measured of its samples' readings.
+    :param progress: Told how far through the samples the judging is, a
+        share, before each sample and after the last.
     :return: The counts, with ``samples_judged`` and ``samples_failed``.
     """
     counts: Counter = Counter()
-    for sample_item_id in sorted(samples):
+    order = sorted(samples)
+    for done, sample_item_id in enumerate(order):
+        if progress is not None:
+            await progress(done / len(order))
         try:
             counts.update(
                 await rejudge_sample(
@@ -306,6 +332,7 @@ async def rejudge_samples(
                     sample_item_id,
                     config,
                     corroborated=samples[sample_item_id],
+                    kept=kept,
                 )
             )
         except Exception as exc:  # noqa: BLE001 - one sample never stops the rest
@@ -314,7 +341,31 @@ async def rejudge_samples(
                 f"failed: {exc}"
             )
             counts["samples_failed"] += 1
+    if progress is not None and order:
+        await progress(1.0)
     return dict(counts)
+
+
+def judged_message(counts: dict) -> str:
+    """What a pass's judging of a stage's samples says it did
+    (:func:`rejudge_samples`' counts): the samples judged, the members that
+    took another tier, the readings measured and the ones kept from earlier
+    in the pass, and the samples with no recorded measurement to keep."""
+    judged = counts.get("samples_judged", 0)
+    moved = counts.get("members_moved", 0)
+    message = (
+        f"Judged {judged} sample{'s' if judged != 1 else ''} again as a run "
+        f"judges them: {moved} member{'s' if moved != 1 else ''} took another "
+        f"tier; {counts.get('readings_scored', 0)} readings measured and "
+        f"{counts.get('readings_kept', 0)} kept from earlier in the pass."
+    )
+    unrecorded = counts.get("samples_unrecorded", 0)
+    if unrecorded:
+        message += (
+            f" {unrecorded} of them had no recorded measurement to keep, and "
+            "every reading of them was measured again."
+        )
+    return message
 
 
 async def samples_written(
@@ -435,6 +486,7 @@ __all__ = [
     "species_restored",
     "floors_of",
     "given_readings",
+    "judged_message",
     "judged_reading",
     "judged_targets",
     "new_tier",

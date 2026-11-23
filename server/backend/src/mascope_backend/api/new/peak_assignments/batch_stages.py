@@ -104,8 +104,9 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Awaitable, Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+from functools import partial
 from typing import Any, Optional
 
 from fastapi import status
@@ -142,6 +143,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     recompute_batch_consensus,
 )
 from mascope_backend.api.new.peak_assignments.batch_rejudge import (
+    judged_message,
     rejudge_samples,
     samples_written,
     series_corroborated,
@@ -203,6 +205,7 @@ from mascope_backend.api.new.peak_assignments.config import (
 from mascope_backend.api.new.peak_assignments.continuity import (
     recompute_batch_continuity,
 )
+from mascope_backend.api.new.peak_assignments.kept_measurement import KeptMeasurement
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakRun,
@@ -246,6 +249,9 @@ class StageCall:
         into and every record it writes names.
     :param cancelled: Whether a person asked the pass to stop; None where
         nobody can (``batch_runs.cancel_requested``).
+    :param kept: What the pass measured of its samples' readings, which each
+        judging of a sample again scores only where it has not measured one
+        at the same inputs (``kept_measurement``).
     """
 
     sample_batch_id: str
@@ -254,6 +260,7 @@ class StageCall:
     parent_id: Optional[str]
     batch_peak_run_id: Optional[str] = None
     cancelled: Optional[Callable[[], Awaitable[bool]]] = None
+    kept: KeptMeasurement = field(default_factory=KeptMeasurement)
 
 
 @dataclass(frozen=True)
@@ -932,12 +939,17 @@ async def _run_stage(
     call: StageCall,
     begun: tuple[int, datetime],
     then: Optional[BatchStage],
+    announce: Optional[Callable[..., Awaitable[None]]] = None,
+    index: int = 0,
 ) -> tuple[dict, Optional[tuple[int, datetime]]]:
     """Run one stage, already begun: its steps run, its records stamped, and
     its standing written whichever way it ends. Its end begins ``then``, the
     pass's next stage, in the same transaction (:func:`hand_over`), unless a
     person asked the pass to stop meanwhile: then nothing begins, and every
     stage after it is left stale.
+
+    :param announce: The pass's progress (``assign_batch``), told how far
+        into the stage, its ``index``-th, the judging of its samples is.
 
     :return: What it ran, and ``then``'s version and start; None where
         ``then`` did not begin.
@@ -949,7 +961,14 @@ async def _run_stage(
         run_ids = [call.batch_peak_run_id] if call.batch_peak_run_id else []
         await stamp_versions(call.sample_batch_id, spec.record_keys, run_ids, version)
         if spec.rewrites:
-            outcomes.append(await judge_again(spec.stage, call, version, outcomes))
+            progress = None
+            if announce is not None:
+                progress = partial(
+                    announce, spec.stage.value, spec.label, spec.phase, index
+                )
+            outcomes.append(
+                await judge_again(spec.stage, call, version, outcomes, progress)
+            )
         if then is not None and call.cancelled is not None and await call.cancelled():
             then = None
         # In the guard: a finish that fails leaves the stage stopped, not
@@ -997,14 +1016,21 @@ def restored_in(outcomes: list[dict]) -> dict[str, set[str]]:
 
 
 async def judge_again(
-    stage: BatchStage, call: StageCall, version: int, outcomes: list[dict]
+    stage: BatchStage,
+    call: StageCall,
+    version: int,
+    outcomes: list[dict],
+    progress: Optional[Callable[[float], Awaitable[None]]] = None,
 ) -> dict:
     """Judge every sample a rewriting stage wrote in again, as a run judges
     it (``batch_rejudge``): the members it marked, after the series the
     members its records corroborate, and where it withdrew an earlier
     decision the members it put back, take the tier the run's judging gives
-    the reading they carry.
+    the reading they carry. Each scores only the readings the pass has not
+    measured at the same inputs (``StageCall.kept``).
 
+    :param progress: Told how far through the samples the judging is, a
+        share, before each sample and after the last.
     :return: The step's outcome, as the stage's own steps report theirs.
     """
 
@@ -1026,17 +1052,15 @@ async def judge_again(
     for sample, anchors in named.items():
         samples[sample] = samples.get(sample, frozenset()) | frozenset(anchors)
     counts = await rejudge_samples(
-        call.sample_batch_id, samples, call.config or PeakAssignmentConfig()
+        call.sample_batch_id,
+        samples,
+        call.config or PeakAssignmentConfig(),
+        kept=call.kept,
+        progress=progress,
     )
-    judged = counts.get("samples_judged", 0)
-    moved = counts.get("members_moved", 0)
     return {
         "status": "partial" if counts.get("samples_failed") else "success",
-        "message": (
-            f"Judged {judged} sample{'s' if judged != 1 else ''} again as a run "
-            f"judges them: {moved} member{'s' if moved != 1 else ''} took "
-            "another tier."
-        ),
+        "message": judged_message(counts),
         "data": counts,
     }
 
@@ -1279,12 +1303,12 @@ class PassRecord:
     """A pass's summary as it goes: every stage in order, the fold first,
     each with its status, start, end and outcome."""
 
-    def __init__(self, from_stage: Optional[str]):
+    def __init__(self, from_stage: Optional[str], settings_hash: Optional[str] = None):
         self.from_stage = from_stage
         self.fold: dict = {"ran": False, "reasons": []}
         self.samples: list[str] = []
         self.library: Optional[dict] = None
-        self.settings_hash: Optional[str] = None
+        self.settings_hash = settings_hash
         self.entries: dict[str, dict] = {}
         for name, label, phase in [(FOLD_STAGE, FOLD_LABEL, PHASE_GATHER)] + [
             (spec.stage.value, spec.label, spec.phase) for spec in STAGES
@@ -1450,10 +1474,12 @@ def stage_packet(
     user_id: Optional[int],
     process_id: str,
     parent_id: Optional[str],
+    stage_progress: float = 0.0,
 ) -> UserNotification:
-    """The pending packet a pass sends as one of its stages starts: one
-    progress entry for the whole pass, the stage's own packets nested under
-    it."""
+    """The pending packet a pass sends as one of its stages starts, and as a
+    stage judges its samples again (``stage_progress``, how far into the
+    stage it is): one progress entry for the whole pass, the stage's own
+    packets nested under it."""
     return UserNotification(
         process_id=process_id,
         parent_id=parent_id,
@@ -1467,7 +1493,7 @@ def stage_packet(
             "stage_index": stage_index,
             "n_stages": n_stages,
             "phase": phase,
-            "stage_progress": 0.0,
+            "stage_progress": stage_progress,
             "_room_ids": [sample_batch_id],
             "_user_id": user_id,
         },
@@ -1613,7 +1639,6 @@ async def assign_batch(
     asked = BatchStage(from_stage) if from_stage is not None else None
     if config is None or settings_source is None:
         config, settings_source = await pass_settings(sample_batch_id, config)
-
     if batch_peak_run_id is not None:
         run_id = batch_peak_run_id
     else:
@@ -1628,8 +1653,7 @@ async def assign_batch(
             config=pass_config(from_stage, fold, config, settings_source),
             user_id=user_id,
         )
-    record = PassRecord(from_stage)
-    record.settings_hash = settings_hash(config)
+    record = PassRecord(from_stage, settings_hash(config))
     call = StageCall(
         sample_batch_id=sample_batch_id,
         config=config,
@@ -1661,7 +1685,7 @@ async def assign_batch(
         record.plan(([FOLD_STAGE] if reasons else []) + [s.value for s in stages])
         n_stages = len(record.planned)
 
-        async def announce(stage: str, label: str, phase: str, index: int) -> None:
+        async def announce(stage: str, label: str, phase: str, index: int, share=0.0):
             # On the run first, for the batch's assignment status; then the
             # packet, for whoever follows the process.
             await record_progress(
@@ -1673,6 +1697,7 @@ async def assign_batch(
                     "phase": phase,
                     "stage_index": index,
                     "n_stages": n_stages,
+                    "stage_progress": share,
                     "utc_stage_started": record.entries[stage]["utc_started"],
                 },
             )
@@ -1687,6 +1712,7 @@ async def assign_batch(
                     phase=phase,
                     stage_index=index,
                     n_stages=n_stages,
+                    stage_progress=share,
                     user_id=user_id,
                     process_id=process_id,
                     parent_id=parent_id,
@@ -1717,7 +1743,7 @@ async def assign_batch(
             then = stages[position + 1] if position + 1 < len(stages) else None
             record.start(stage.value, begun[1])
             await announce(stage.value, spec.label, spec.phase, index)
-            entry, begun = await _run_stage(spec, call, begun, then)
+            entry, begun = await _run_stage(spec, call, begun, then, announce, index)
             record.done(
                 stage.value,
                 entry["outcomes"],

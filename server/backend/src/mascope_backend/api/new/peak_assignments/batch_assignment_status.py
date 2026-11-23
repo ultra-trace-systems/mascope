@@ -332,9 +332,10 @@ def running_record(
     it is in, which of how many, and how far through its stages it is.
 
     A pass keeps that under :data:`PROGRESS_KEY` in its summary as each stage
-    starts; a rebuild or an import on its own keeps none, and a stage row
-    running with no run (never so since MAS-1011, but the routes still refuse
-    on it) gives its stage alone.
+    starts, and how far into the stage it is as the stage judges its samples
+    again (``stage_progress``); a rebuild or an import on its own keeps none,
+    and a stage row running with no run (never so since MAS-1011, but the
+    routes still refuse on it) gives its stage alone.
     """
     if run is None and stage_row is None:
         return None
@@ -359,7 +360,11 @@ def running_record(
         "stage_index": index,
         "n_stages": n_stages,
         "utc_stage_started": progress.get("utc_stage_started"),
-        "progress": (index / n_stages if isinstance(index, int) and n_stages else None),
+        "progress": (
+            min(1.0, (index + float(progress.get("stage_progress") or 0.0)) / n_stages)
+            if isinstance(index, int) and n_stages
+            else None
+        ),
         "cancel_requested_utc": _iso(
             run.cancel_requested_utc if run is not None else None
         ),

@@ -1513,3 +1513,149 @@ async def test_a_samples_next_run_keeps_its_reading_on_a_twin(
         for peak, row in rows.items()
         if row.role == "M0" and row.assigned_formula == D4
     ] == ["tw"]
+
+
+async def test_a_judging_after_a_stage_wrote_one_member_scores_that_member_alone(
+    async_session_factory, known_batch, monkeypatch
+):
+    """MAS-1073: a pass keeps what it measured of a sample between two
+    judgings of it. After a stage writes one member, the next judging scores
+    that member's reading and no other; every other reading keeps the lines
+    the first judging scored, and the member takes the tier its new reading
+    is judged at."""
+    from mascope_backend.api.new.peak_assignments.batch_peaks import mark_member
+    from mascope_backend.api.new.peak_assignments.batch_rejudge import rejudge_sample
+    from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+    from mascope_backend.api.new.peak_assignments.kept_measurement import (
+        KeptMeasurement,
+    )
+
+    samples, ids = known_batch["samples"], known_batch["ids"]
+    batch_id = known_batch["batch_id"]
+    sample = samples["S02"]
+    async with async_session_factory() as session:
+        # S02's run recorded the model the pass keeps its measurement at.
+        await session.execute(
+            update(PeakAssignmentRun)
+            .where(
+                PeakAssignmentRun.peak_assignment_run_id == known_batch["runs"]["S02"]
+            )
+            .values(
+                config={
+                    MEASUREMENT_MODEL_KEY: {
+                        "version": 2,
+                        "mu_ppm": 0.0,
+                        "mu_source": "fitted",
+                        "sigma_ppm": 0.1,
+                        "fallback_sigma_ppm": 0.54,
+                    }
+                }
+            )
+        )
+        await session.commit()
+    _stub_the_stage_list(monkeypatch, {})
+    scored: list[set] = []
+    scorer = pipeline.score_seeds
+
+    async def spy(sample_row, seeds, params, **kwargs):
+        scored.append(set(seeds))
+        return await scorer(sample_row, seeds, params, **kwargs)
+
+    monkeypatch.setattr(pipeline, "score_seeds", spy)
+    anchors = frozenset((await _held_anchors(async_session_factory, sample)))
+    kept, config = KeptMeasurement(), PeakAssignmentConfig()
+
+    first = await rejudge_sample(
+        batch_id, sample, config, corroborated=anchors, kept=kept
+    )
+    assert scored == [{("C10H14O4", MECH), (OTHER, MECH)}]
+    assert first["readings_scored"] == 2 and first["readings_kept"] == 0
+
+    # A stage writes one member: S02's siloxane now reads the listed one.
+    async with async_session_factory() as session:
+        anchor = await session.get(BatchPeak, ids["d"])
+        registry = list(anchor.candidates or [])
+        index = candidate_index(registry, D4, D4_ION, MECH)
+        anchor.candidates = registry
+        member = await session.get(BatchPeakOccurrence, (ids["d"], sample))
+        mark_member(member, "series")
+        member.candidate = index
+        await session.commit()
+
+    second = await rejudge_sample(
+        batch_id, sample, config, corroborated=anchors, kept=kept
+    )
+    assert scored[-1] == {(D4, MECH)}
+    assert second["readings_scored"] == 1 and second["readings_kept"] == 1
+    assert second["members_judged"] >= 1
+    judged = {
+        key: (await _members(async_session_factory, ids[key]))[sample].tier
+        for key in ("a", "d")
+    }
+
+    # Without the pass's store every reading is scored again, and the members
+    # are judged as with it: knocked off, they take the same tiers back.
+    async with async_session_factory() as session:
+        await session.execute(
+            update(BatchPeakOccurrence)
+            .where(BatchPeakOccurrence.sample_item_id == sample)
+            .values(tier=tier_code("unassigned"))
+        )
+        await session.commit()
+    await rejudge_sample(batch_id, sample, config, corroborated=anchors)
+    assert scored[-1] == {("C10H14O4", MECH), (D4, MECH)}
+    assert {
+        key: (await _members(async_session_factory, ids[key]))[sample].tier
+        for key in ("a", "d")
+    } == judged
+    assert judged["d"] != tier_code("unassigned")
+
+
+async def _held_anchors(session_factory, sample_item_id) -> set[str]:
+    """The batch peaks a sample holds a member of."""
+    async with session_factory() as session:
+        return set(
+            (
+                await session.execute(
+                    select(BatchPeakOccurrence.batch_peak_id).where(
+                        BatchPeakOccurrence.sample_item_id == sample_item_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+
+async def test_a_sample_whose_run_recorded_no_model_is_measured_whole_each_time(
+    async_session_factory, known_batch, monkeypatch
+):
+    """A sample no run recorded a measurement model for is read at a stand-in
+    its refit refits (MAS-1071): nothing is kept of it, every judging scores
+    every reading, and the judging says so."""
+    from mascope_backend.api.new.peak_assignments.batch_rejudge import rejudge_sample
+    from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+    from mascope_backend.api.new.peak_assignments.kept_measurement import (
+        KeptMeasurement,
+    )
+
+    sample = known_batch["samples"]["S04"]
+    _stub_the_stage_list(monkeypatch, {})
+    scored: list[set] = []
+    scorer = pipeline.score_seeds
+
+    async def spy(sample_row, seeds, params, **kwargs):
+        scored.append(set(seeds))
+        return await scorer(sample_row, seeds, params, **kwargs)
+
+    monkeypatch.setattr(pipeline, "score_seeds", spy)
+    anchors = frozenset(await _held_anchors(async_session_factory, sample))
+    kept, config = KeptMeasurement(), PeakAssignmentConfig()
+    for _ in range(2):
+        counts = await rejudge_sample(
+            known_batch["batch_id"], sample, config, corroborated=anchors, kept=kept
+        )
+        assert counts["samples_unrecorded"] == 1
+        assert "readings_kept" not in counts
+    assert len(scored) == 2 and scored[0] == scored[1] and scored[0]
+    assert sample not in kept.samples

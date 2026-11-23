@@ -249,3 +249,21 @@ def test_the_samples_a_step_restored_are_read_off_its_outcomes():
         None,
     ]
     assert restored_in(outcomes) == {"s-1": {"bp-1", "bp-3"}, "s-2": {"bp-2"}}
+
+
+def test_the_judging_says_what_it_measured_kept_and_could_not_keep():
+    """MAS-1073: the outcome counts the readings measured and kept, and names
+    the samples with no recorded measurement to keep (MAS-1071)."""
+    from mascope_backend.api.new.peak_assignments.batch_rejudge import judged_message
+
+    counts = {"samples_judged": 2, "members_moved": 1, "readings_scored": 5}
+    plain = judged_message({**counts, "readings_kept": 7})
+    assert plain == (
+        "Judged 2 samples again as a run judges them: 1 member took another "
+        "tier; 5 readings measured and 7 kept from earlier in the pass."
+    )
+    unrecorded = judged_message({**counts, "samples_unrecorded": 1})
+    assert unrecorded.endswith(
+        " 1 of them had no recorded measurement to keep, and every reading of "
+        "them was measured again."
+    )

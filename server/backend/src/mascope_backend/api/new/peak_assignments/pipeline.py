@@ -61,6 +61,7 @@ from mascope_backend.api.new.match.params import default_match_params
 from mascope_backend.api.new.peak_assignments import (
     batch_lines,
     judging_loop,
+    kept_measurement,
     model_readers,
     prepasses,
     run_config,
@@ -481,6 +482,8 @@ class RunContext:
         so does a re-score at the refit's model (``judging_loop.rescore_rows``):
         the caps may lower it again, but the evidence alone does not keep it
         below.
+    :param kept: What the batch's pass measured of the sample's given
+        readings, scored again only at other inputs (``kept_measurement``).
     """
 
     path: AssignmentPath
@@ -503,6 +506,7 @@ class RunContext:
     recorded_artifact_peak_ids: frozenset[str] | None = None
     held_peak_ids: frozenset[str] = frozenset()
     floors: dict[str, str] = field(default_factory=dict)
+    kept: kept_measurement.KeptMeasurement | None = None
     #: The stages run so far, in order, a round's once per round.
     ran: list[Stage] = field(default_factory=list)
     # -- resolve
@@ -1354,15 +1358,8 @@ async def score(ctx: RunContext) -> None:
             for seed in ctx.seeds
             if (formula_identity(seed[0]), str(seed[1])) in ctx.listed_ions
         }
-        ctx.seeded = await score_seeds(
-            ctx.sample,
-            ctx.seeds,
-            ctx.match_params,
-            model=ctx.model,
-            resolution=ctx.resolution,
-            claimed_peak_ids=ctx.claimed_peak_ids,
-            listed_seeds=listed_seeds,
-        )
+        # What the pass measured of the sample is kept (``kept_measurement``).
+        ctx.seeded = await kept_measurement.score_kept(ctx, score_seeds, listed_seeds)
         ion_by_seed, _fits, _errors, scored_df = ctx.seeded
         if not scored_df.empty:
             ctx.seeded_frame = judging_loop.SeededFrame(scored_df, ion_by_seed)
