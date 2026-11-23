@@ -39,12 +39,27 @@ those measures over the bin's files, summed up in the database, so that a
 year of a busy instrument is read whole and answered in a few hundred bins.
 """
 
+import asyncio
 import csv
 import io
+import json
 import math
+from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import JSON, Boolean, Integer, func, literal, or_, select, text
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Integer,
+    Text,
+    cast,
+    func,
+    literal,
+    or_,
+    select,
+    text,
+    tuple_,
+)
 from sqlalchemy.types import TIMESTAMP
 
 from mascope_backend.api.controllers.calibration.lib import acquisition_axis
@@ -58,6 +73,7 @@ from mascope_backend.api.new.workspaces.dependencies import (
     where_collection_visible,
 )
 from mascope_backend.db import SampleFile, TargetCollection, async_session
+from mascope_backend.runtime import runtime
 from mascope_sdk.csv_cells import escape_cell
 
 
@@ -81,6 +97,10 @@ TREND_MAX_BINNED_FILES = 100_000
 #: the trend. It lists files, never bins: at 160 files a day this is four
 #: months.
 EXPORT_MAX_FILES = 20_000
+
+#: How many files the export reads from the database at a time, and writes
+#: out as one piece of its body: a few hundred kilobytes of CSV.
+EXPORT_FILES_PER_PIECE = 200
 
 #: A window of this many days or fewer is binned per hour, a longer one per
 #: day.
@@ -889,26 +909,52 @@ async def _count_on_the_trend(
     return result.scalar_one()
 
 
+def _record_text():
+    """SQL for a file's record as the text the database keeps.
+
+    Read as text, a record is parsed where the caller chooses
+    (:func:`_parsed`): in a worker thread, not on the event loop, which the
+    driver would parse the JSON column on as it fetches it.
+    """
+    return cast(SampleFile.mz_calibration, Text)
+
+
+def _parsed(rows) -> list[tuple]:
+    """``(sample_file_id, filename, datetime_utc, record)`` per row read with
+    :func:`_record_text`, its record parsed."""
+    return [
+        (sample_file_id, filename, acquired, json.loads(record))
+        for sample_file_id, filename, acquired, record in rows
+    ]
+
+
+def _build_trend_of_text(rows) -> dict:
+    """:func:`build_trend` of rows read with :func:`_record_text`, oldest
+    first; run in a worker thread."""
+    return build_trend(_parsed(rows))
+
+
 async def _read_files(
     session, instrument: str, polarity: str, start: datetime, end: datetime, most: int
-) -> tuple[dict, list[tuple], bool, datetime]:
+) -> tuple[dict, bool, datetime]:
     """
     The window's files on the trend, one by one: the latest ``most`` of them.
 
-    :return: :func:`build_trend`'s trend of them; the rows it was built from,
-        ``(sample_file_id, filename, datetime_utc, record)`` aligned with its
-        ``files``, for the export to list each file's lines from the very
-        records the trend read; whether the window held more; and where the
-        files read begin, for their changes: the window's start, or the
-        earliest file read when it held more, since the files left out were
-        acquired before.
+    Their records are parsed and the trend built in a worker thread
+    (:func:`_build_trend_of_text`), so that a trend of thousands of files
+    holds up no other request the worker serves.
+
+    :return: :func:`build_trend`'s trend of them; whether the window held
+        more; and where the files read begin, for their changes: the window's
+        start, or the earliest file read when it held more, since the files
+        left out were acquired before.
     """
     result = await session.execute(
         select(
             SampleFile.sample_file_id,
             SampleFile.filename,
             SampleFile.datetime_utc,
-            SampleFile.mz_calibration,
+            _record_text(),
         )
         .where(*_in_the_window(instrument, polarity, start, end))
         .order_by(SampleFile.datetime_utc.desc(), SampleFile.sample_file_id.desc())
@@ -918,9 +964,11 @@ async def _read_files(
     truncated = len(read) > most
     # The latest files of a window that holds too many; then oldest first.
     read = read[:most]
-    rows = [tuple(row) for row in reversed(read)]
     since = read[-1].datetime_utc if truncated else start
-    return build_trend(rows), rows, truncated, since
+    trend = await asyncio.to_thread(
+        _build_trend_of_text, [tuple(row) for row in reversed(read)]
+    )
+    return trend, truncated, since
 
 
 async def _read_bins(
@@ -966,7 +1014,9 @@ async def _changes(
     seen, last, recorded = await _before_the_window(
         session, instrument, polarity, since, collections
     )
-    return collection_changes(collections, seen, last, recorded)
+    return await asyncio.to_thread(
+        collection_changes, collections, seen, last, recorded
+    )
 
 
 async def _name_collections(session, collections: list[dict], scope) -> None:
@@ -1001,7 +1051,7 @@ async def _read_trend(
             )
             trend["files"] = []
         else:
-            trend, _, truncated, since = await _read_files(
+            trend, truncated, since = await _read_files(
                 session, instrument, polarity, start, end, TREND_MAX_FILES
             )
             n_files = len(trend["files"])
@@ -1085,31 +1135,29 @@ def _cell(value) -> str | float | int | bool:
     return escape_cell(value)
 
 
-def trend_rows(trend: dict, rows: list[tuple]) -> list[list]:
+def trend_rows(rows: list[tuple], names: dict[str, str]) -> list[list]:
     """
-    The export's rows (:data:`EXPORT_COLUMNS`) for a trend and its records.
+    The export's rows (:data:`EXPORT_COLUMNS`) for files and their records.
 
-    :param trend: A trend of files one by one (:func:`build_trend`), its
-        collections named.
-    :param rows: The ``(sample_file_id, filename, datetime_utc, record)`` it
-        was built from, aligned with its ``files``.
+    :param rows: ``(sample_file_id, filename, datetime_utc, record)`` per
+        file, oldest first, each record one :func:`on_the_trend` admits.
+    :param names: The names of the collections the asker can read, by id.
     :return: One row per line of each file's record, in the record's order,
         and one for a file whose record lists none.
     """
     out = []
-    collections = trend["collections"]
-    for entry, (_, _, _, record) in zip(trend["files"], rows):
-        version = (
-            collections[entry["collection"]] if entry["collection"] is not None else {}
-        )
+    for sample_file_id, filename, acquired, record in rows:
+        entry = file_summary(record)
+        version = record_collection(record)
+        collection_id, sha = version if version is not None else (None, None)
         head = [
-            entry["datetime_utc"],
-            entry["sample_file_id"],
-            entry["filename"],
+            _utc(acquired),
+            sample_file_id,
+            filename,
             entry["status"],
-            version.get("id"),
-            version.get("name"),
-            version.get("isotopes_sha256"),
+            collection_id,
+            names.get(collection_id) if collection_id is not None else None,
+            sha,
             entry["model_mode"],
             entry["node_version"],
             entry["n_points"],
@@ -1138,6 +1186,104 @@ def trend_rows(trend: dict, rows: list[tuple]) -> list[list]:
     return out
 
 
+def csv_text(rows: list[list]) -> str:
+    """Rows of the export as CSV text, each line ended with a newline."""
+    buffer = io.StringIO()
+    csv.writer(buffer, lineterminator="\n").writerows(rows)
+    return buffer.getvalue()
+
+
+def _csv_piece(rows, names: dict[str, str]) -> str:
+    """The CSV of files read with :func:`_record_text`, oldest first: one
+    piece of the export's body, made in a worker thread."""
+    return csv_text(trend_rows(_parsed(rows), names))
+
+
+def _export_keyset():
+    """SQL for the order the export lists files in, oldest first."""
+    return tuple_(SampleFile.datetime_utc, SampleFile.sample_file_id)
+
+
+async def _export_cut(
+    session, instrument: str, polarity: str, start: datetime, end: datetime
+) -> tuple[datetime, str] | None:
+    """
+    Where the files the export lists begin: the acquisition time and id of
+    the oldest of the window's latest :data:`EXPORT_MAX_FILES` on the trend,
+    or None where the window holds no more than those. Read without the
+    records, which stay in the database.
+    """
+    result = await session.execute(
+        select(SampleFile.datetime_utc, SampleFile.sample_file_id)
+        .where(*_in_the_window(instrument, polarity, start, end))
+        .order_by(SampleFile.datetime_utc.desc(), SampleFile.sample_file_id.desc())
+        .offset(EXPORT_MAX_FILES - 1)
+        .limit(1)
+    )
+    row = result.first()
+    return tuple(row) if row is not None else None
+
+
+def _exported(
+    instrument: str,
+    polarity: str,
+    start: datetime,
+    end: datetime,
+    cut: tuple[datetime, str] | None,
+):
+    """The statement's filters: the files the export lists (:func:`_export_cut`)."""
+    window = _in_the_window(instrument, polarity, start, end)
+    if cut is None:
+        return window
+    return (*window, _export_keyset() >= tuple_(*cut))
+
+
+async def _export_body(
+    instrument: str,
+    polarity: str,
+    start: datetime,
+    end: datetime,
+    cut: tuple[datetime, str] | None,
+    names: dict[str, str],
+) -> AsyncIterator[str]:
+    """
+    The export's CSV, piece by piece: its header, then
+    :data:`EXPORT_FILES_PER_PIECE` files at a time, oldest first.
+
+    The records are read from a cursor as they are written out, so neither
+    they nor the table are ever held whole; each piece is parsed and written
+    in a worker thread (:func:`_csv_piece`). The database session is opened
+    when the first piece of files is asked for, and closed with the body
+    (``ClosingStreamingResponse``), however the response ends.
+    """
+    yield csv_text([list(EXPORT_COLUMNS)])
+    try:
+        async with async_session() as session:
+            result = await session.stream(
+                select(
+                    SampleFile.sample_file_id,
+                    SampleFile.filename,
+                    SampleFile.datetime_utc,
+                    _record_text(),
+                )
+                .where(*_exported(instrument, polarity, start, end, cut))
+                .order_by(
+                    SampleFile.datetime_utc.asc(), SampleFile.sample_file_id.asc()
+                )
+                .execution_options(yield_per=EXPORT_FILES_PER_PIECE)
+            )
+            async for rows in result.partitions():
+                yield await asyncio.to_thread(_csv_piece, rows, names)
+    except Exception:
+        # The response has started: its status cannot say so any more.
+        runtime.logger.exception(
+            f"Exporting the calibration trend of instrument '{instrument}' "
+            f"({polarity}) failed part way; the response went out as a 200 "
+            "whose CSV stops there"
+        )
+        raise
+
+
 @api_controller()
 async def export_calibration_trend(
     instrument: str,
@@ -1145,7 +1291,7 @@ async def export_calibration_trend(
     scope: WorkspaceScope,
     datetime_min: datetime | None = None,
     datetime_max: datetime | None = None,
-) -> str:
+) -> AsyncIterator[str]:
     """
     The calibration trend as a CSV table, one row per calibrant line of each
     file (:data:`EXPORT_COLUMNS`), oldest file first.
@@ -1157,16 +1303,21 @@ async def export_calibration_trend(
     spreadsheet would read as a formula is written with a leading apostrophe
     (:func:`_cell`).
 
-    :return: The CSV text, with a header row.
+    Where the files begin and the names of their collections are read here,
+    so that a window that cannot be read is answered with an error status;
+    the records are read as the table is sent (:func:`_export_body`).
+
+    :return: The CSV text, with a header row, as pieces to stream: an async
+        generator the caller sends from and closes.
     """
     start, end = _window(datetime_min, datetime_max)
     async with async_session() as session:
-        trend, rows, _, _ = await _read_files(
-            session, instrument, polarity, start, end, EXPORT_MAX_FILES
+        cut = await _export_cut(session, instrument, polarity, start, end)
+        result = await session.execute(
+            select(_collection_id_of())
+            .where(*_exported(instrument, polarity, start, end, cut))
+            .distinct()
         )
-        await _name_collections(session, trend["collections"], scope)
-    buffer = io.StringIO()
-    writer = csv.writer(buffer, lineterminator="\n")
-    writer.writerow(EXPORT_COLUMNS)
-    writer.writerows(trend_rows(trend, rows))
-    return buffer.getvalue()
+        ids = {collection_id for collection_id in result.scalars() if collection_id}
+        names = await _collection_names(session, ids, scope)
+    return _export_body(instrument, polarity, start, end, cut, names)

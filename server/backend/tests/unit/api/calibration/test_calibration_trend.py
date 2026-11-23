@@ -26,6 +26,7 @@ from mascope_backend.api.controllers.calibration.calibration_trend import (
     build_trend,
     calibrant_key,
     collection_changes,
+    csv_text,
     file_summary,
     trend_rows,
 )
@@ -111,6 +112,12 @@ def _rows(*records):
         (f"file{i}", f"tof_file{i}.h5", _T0 + timedelta(hours=i), record)
         for i, record in enumerate(records)
     ]
+
+
+def _named(filename, record):
+    """One file's row for the export, under the name given."""
+    ((sample_file_id, _, acquired, record),) = _rows(record)
+    return [(sample_file_id, filename, acquired, record)]
 
 
 class TestFileSummary:
@@ -520,12 +527,9 @@ class TestCollectionChanges:
         assert [c["sample_file_id"] for c in changes] == ["file1", "file2"]
 
 
-def _csv(trend, rows):
-    buffer = io.StringIO()
-    writer = csv.writer(buffer, lineterminator="\n")
-    writer.writerow(EXPORT_COLUMNS)
-    writer.writerows(trend_rows(trend, rows))
-    return list(csv.DictReader(io.StringIO(buffer.getvalue())))
+def _csv(rows, names=None):
+    text = csv_text([list(EXPORT_COLUMNS), *trend_rows(rows, names or {})])
+    return list(csv.DictReader(io.StringIO(text)))
 
 
 class TestBinUnit:
@@ -781,11 +785,8 @@ class TestExportRows:
             ),
             _record(None),
         )
-        trend = build_trend(rows)
-        for version in trend["collections"]:
-            version["name"] = "Nitrate set"
 
-        table = _csv(trend, rows)
+        table = _csv(rows, {"set": "Nitrate set"})
 
         assert [(r["sample_file_id"], r["ion"]) for r in table] == [
             ("file0", "NO3-"),
@@ -804,9 +805,8 @@ class TestExportRows:
 
     def test_a_refits_lines_are_exported_with_their_acquisition_offsets(self):
         rows = _rows(_refit(_record([_point("NO3-", 61.9884, 80, 0.5)])))
-        trend = build_trend(rows)
 
-        (row,) = _csv(trend, rows)
+        (row,) = _csv(rows)
 
         assert float(row["offset_ppm"]) == pytest.approx(80.0, abs=1e-6)
         assert float(row["axis_offset_ppm"]) == pytest.approx(80.0, abs=1e-6)
@@ -815,12 +815,9 @@ class TestExportRows:
         assert observed == pytest.approx(0.2, abs=1e-3)
 
     def test_a_name_a_spreadsheet_would_run_is_written_as_text(self):
-        rows = _rows(_record([_point("NO3-", 61.9884, -80, 0.5)]))
-        trend = build_trend(rows)
-        trend["collections"][0]["name"] = "=HYPERLINK(1)"
-        trend["files"][0]["filename"] = "-cmd.h5"
+        rows = _named("-cmd.h5", _record([_point("NO3-", 61.9884, -80, 0.5)]))
 
-        table = _csv(trend, rows)
+        table = _csv(rows, {"set": "=HYPERLINK(1)"})
 
         assert table[0]["collection_name"] == "'=HYPERLINK(1)"
         assert table[0]["filename"] == "'-cmd.h5"
@@ -828,16 +825,13 @@ class TestExportRows:
         assert float(table[0]["offset_ppm"]) < 0
 
     def test_the_sdks_reader_gives_a_name_back_as_it_was_typed(self, tmp_path):
-        rows = _rows(_record([_point("NO3-", 61.9884, -80, 0.5)]))
-        trend = build_trend(rows)
-        trend["collections"][0]["name"] = "=HYPERLINK(1)"
-        trend["files"][0]["filename"] = "-cmd.h5"
+        rows = _named("-cmd.h5", _record([_point("NO3-", 61.9884, -80, 0.5)]))
         path = tmp_path / "trend.csv"
-        buffer = io.StringIO()
-        writer = csv.writer(buffer, lineterminator="\n")
-        writer.writerow(EXPORT_COLUMNS)
-        writer.writerows(trend_rows(trend, rows))
-        path.write_text(buffer.getvalue())
+        path.write_text(
+            csv_text(
+                [list(EXPORT_COLUMNS), *trend_rows(rows, {"set": "=HYPERLINK(1)"})]
+            )
+        )
 
         back = read_export_csv(path, sep=",")
 

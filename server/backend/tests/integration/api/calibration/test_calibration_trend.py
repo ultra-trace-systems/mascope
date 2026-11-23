@@ -13,6 +13,7 @@ the unit tests' (``unit/api/calibration/test_calibration_trend.py``).
 import copy
 import csv
 import io
+import threading
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
@@ -878,6 +879,135 @@ async def test_the_export_lists_the_latest_files_of_a_window_with_more(
         instrument["files"]["private"],
         instrument["files"]["failed"],
     ]
+
+
+@pytest.mark.asyncio
+async def test_the_export_sent_a_file_at_a_time_is_the_same_table(
+    guest_client, instrument, monkeypatch
+):
+    whole = await guest_client.get(
+        "/api/calibration/trend/export", params=_window(instrument)
+    )
+    monkeypatch.setattr(calibration_trend, "EXPORT_FILES_PER_PIECE", 1)
+
+    pieces = await guest_client.get(
+        "/api/calibration/trend/export", params=_window(instrument)
+    )
+
+    assert pieces.status_code == 200, pieces.text
+    assert pieces.text == whole.text
+    assert len(list(csv.DictReader(io.StringIO(pieces.text)))) == 7
+
+
+def _record_threads(monkeypatch, *names):
+    """Wrap each of the module's functions named to note the thread it runs
+    on, by name."""
+    threads: dict[str, set] = {name: set() for name in names}
+    for name in names:
+        original = getattr(calibration_trend, name)
+
+        def noted(*args, _name=name, _original=original, **kwargs):
+            threads[_name].add(threading.get_ident())
+            return _original(*args, **kwargs)
+
+        monkeypatch.setattr(calibration_trend, name, noted)
+    return threads
+
+
+@pytest.mark.asyncio
+async def test_the_trend_is_built_off_the_event_loop(
+    guest_client, instrument, monkeypatch
+):
+    threads = _record_threads(monkeypatch, "build_trend", "collection_changes")
+
+    data = await _trend(guest_client, _window(instrument))
+
+    assert data["changes"], "the window's changes are worked out"
+    loop = threading.get_ident()
+    assert threads["build_trend"] and loop not in threads["build_trend"]
+    assert threads["collection_changes"]
+    assert loop not in threads["collection_changes"]
+
+
+@pytest.mark.asyncio
+async def test_the_export_is_written_off_the_event_loop(
+    guest_client, instrument, monkeypatch
+):
+    threads = _record_threads(monkeypatch, "trend_rows")
+
+    response = await guest_client.get(
+        "/api/calibration/trend/export", params=_window(instrument)
+    )
+
+    assert response.status_code == 200, response.text
+    assert threads["trend_rows"]
+    assert threading.get_ident() not in threads["trend_rows"]
+
+
+@pytest_asyncio.fixture
+async def twins(async_session_factory):
+    """A TOF instrument with three files acquired at one instant, fitted with
+    one collection."""
+    name = f"trend-twins-{gen_id(6).lower()}"
+    collection_id = gen_id(16)
+    files = sorted(gen_id(16) for _ in range(3))
+    async with async_session_factory() as session:
+        session.add_all(
+            [
+                SampleFile(
+                    sample_file_id=sample_file_id,
+                    filename=f"{name}_{i}.h5",
+                    instrument=name,
+                    instrument_type="tof",
+                    datetime=(_W0 + timedelta(hours=1)).replace(tzinfo=None),
+                    datetime_utc=_W0 + timedelta(hours=1),
+                    length=60.0,
+                    range=[10.0, 600.0],
+                    polarity="-",
+                    mz_calibration=_record(collection_id, _V1),
+                )
+                for i, sample_file_id in enumerate(files)
+            ]
+        )
+        await session.commit()
+    yield {"name": name, "files": files}
+    async with async_session_factory() as session:
+        await session.execute(
+            delete(SampleFile).where(SampleFile.sample_file_id.in_(files))
+        )
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_the_exports_latest_files_are_told_apart_by_id_at_one_instant(
+    owner_client, twins, monkeypatch
+):
+    monkeypatch.setattr(calibration_trend, "EXPORT_MAX_FILES", 2)
+
+    response = await owner_client.get(
+        "/api/calibration/trend/export", params=_window(twins)
+    )
+
+    rows = list(csv.DictReader(io.StringIO(response.text)))
+    # The latest two by acquisition time and then id, oldest first.
+    assert [row["sample_file_id"] for row in rows[::2]] == twins["files"][1:]
+
+
+@pytest.mark.asyncio
+async def test_the_export_names_no_version_for_a_record_without_its_hash(
+    owner_client, busy
+):
+    response = await owner_client.get(
+        "/api/calibration/trend/export", params=_window(busy)
+    )
+
+    rows = {
+        row["sample_file_id"]: row for row in csv.DictReader(io.StringIO(response.text))
+    }
+    unhashed = rows[busy["files"]["unhashed"]]
+    assert unhashed["collection_id"] == ""
+    assert unhashed["collection_isotopes_sha256"] == ""
+    assert rows[busy["files"]["b0"]]["collection_id"] == busy["collection"]
 
 
 # --- The acquisition axis a record keeps (MAS-937) ---
