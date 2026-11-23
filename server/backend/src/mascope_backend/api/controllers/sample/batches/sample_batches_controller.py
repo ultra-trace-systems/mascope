@@ -1,4 +1,5 @@
 import asyncio
+import copy
 from datetime import datetime, timezone
 
 import numpy as np
@@ -349,6 +350,7 @@ async def get_batch_targets(sample_batch_id: str, deduplicate: bool = False) -> 
 async def _insert_sample_batch(
     sample_batch: SampleBatchCreate,
     independent_transaction: bool = False,
+    assignment_settings: dict | None = None,
 ) -> dict:
     """Validate and insert one sample batch, letting ``IntegrityError`` through.
 
@@ -364,6 +366,10 @@ async def _insert_sample_batch(
     :type sample_batch: SampleBatchCreate
     :param independent_transaction: Whether to emit the creation event here.
     :type independent_transaction: bool, optional
+    :param assignment_settings: The batch's assignment settings as a batch
+        stores them (:func:`stored_batch_settings`); None for the defaults.
+        Stored as a copy of its own.
+    :type assignment_settings: dict | None, optional
     :raises IntegrityError: When the insert violates a constraint - notably
         ``uq_sample_batch_acquisition_natural_key`` on a concurrent create.
     :return: The created sample batch data.
@@ -406,6 +412,8 @@ async def _insert_sample_batch(
                 else 0
             ),  # Auto-lock acquisition
             sample_batch_utc_created=datetime.now(timezone.utc),
+            # A copy of its own, so the new row never shares the caller's dict.
+            assignment_settings=copy.deepcopy(assignment_settings),
         )
 
         session.add(new_sample_batch)
@@ -443,6 +451,7 @@ async def _insert_sample_batch(
 async def create_sample_batch(
     sample_batch: SampleBatchCreate,
     independent_transaction: bool = False,
+    assignment_settings: dict | None = None,
 ) -> dict:
     """
     Creates a new sample batch with the specified details.
@@ -462,12 +471,17 @@ async def create_sample_batch(
     :type sample_batch: SampleBatchCreate
     :param independent_transaction: Flag indicating if the operation is an independent transaction, defaults to False.
     :type independent_transaction: bool, optional
+    :param assignment_settings: Assignment settings as a batch stores them
+        (:func:`stored_batch_settings`), for a copy that keeps its original's;
+        None, the defaults, for a batch made through the create route.
+    :type assignment_settings: dict | None, optional
     :return: The created sample batch data.
     :rtype: dict
     """
     return await _insert_sample_batch(
         sample_batch=sample_batch,
         independent_transaction=independent_transaction,
+        assignment_settings=assignment_settings,
     )
 
 
@@ -1161,12 +1175,17 @@ async def copy_sample_batch(
         ),
         target_collection_ids=target_collection_ids,
         chemistry_context=original_sample_batch.chemistry_context,
+        seed_batch_peaks=original_sample_batch.seed_batch_peaks,
     )
 
-    # Create the new sample batch
+    # Create the new sample batch. It keeps the original's assignment settings
+    # as stored: the same fields, so one the original leaves to the engine's
+    # default is left to it in the copy too, and null stays null.
     new_sample_batch = (
         await create_sample_batch(
-            sample_batch=new_sample_batch_body, independent_transaction=True
+            sample_batch=new_sample_batch_body,
+            independent_transaction=True,
+            assignment_settings=original_sample_batch.assignment_settings,
         )
     ).get("data")
 
