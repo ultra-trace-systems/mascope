@@ -81,6 +81,8 @@ pytestmark = pytest.mark.asyncio
 #: A mechanism no other suite names: the mechanism table's notations are
 #: unique, and the integration database is shared by the whole run.
 MECH, NOTATION = "mech-strip-h", "[M-H]- (merged isotopologue test)"
+#: Another mechanism to the same ions, for a parent read another way.
+MECH_FA, NOTATION_FA = "mech-strip-fa", "[M+HCOO]- (merged isotopologue test)"
 
 N_SAMPLES = 6
 #: The sample folded from an in-app run of its own, and the one folded from
@@ -174,14 +176,15 @@ async def _seed(async_session_factory, pa_test_data, overrides=None):
                 sample_batch_utc_created=now,
             )
         )
-        if await session.get(IonizationMechanism, MECH) is None:
-            session.add(
-                IonizationMechanism(
-                    ionization_mechanism_id=MECH,
-                    ionization_mechanism_polarity="-",
-                    ionization_mechanism=NOTATION,
+        for mechanism, notation in ((MECH, NOTATION), (MECH_FA, NOTATION_FA)):
+            if await session.get(IonizationMechanism, mechanism) is None:
+                session.add(
+                    IonizationMechanism(
+                        ionization_mechanism_id=mechanism,
+                        ionization_mechanism_polarity="-",
+                        ionization_mechanism=notation,
+                    )
                 )
-            )
         for i in range(N_SAMPLES):
             name = f"S{i:02d}"
             sample_file_id, sample_item_id = gen_id(), gen_id()
@@ -766,6 +769,50 @@ async def test_a_row_released_from_its_parent_leaves_the_parents_lines(
     assert [entry["batch_peak_id"] for entry in parent["lines"]] == [ids["o"]]
     assert parent["n_lines"] == 1
     assert parent["formula"] == "C10H16O4"
+
+
+async def test_a_parent_moving_within_its_ion_keeps_its_lines_renamed(
+    async_session_factory, strip_batch
+):
+    """MAS-1144: the samples folded without a run are folded again reading the
+    parent as C9H14O2 through formate, the ion C10H16O4 deprotonated is, and
+    both stripped rows as its lines. The parent's list and both rows' records
+    stand, naming the reading the parent holds now."""
+    batch, samples, ids = strip_batch, strip_batch["samples"], strip_batch["ids"]
+    await run_batch_merged_isotopologues(batch["batch_id"])
+    before = await _anchors(async_session_factory, batch)
+    for i in range(N_SAMPLES):
+        name = f"S{i:02d}"
+        if name in (RUN_SAMPLE, IMPORT_SAMPLE):
+            continue
+        rows = {row["sample_peak_id"]: row for row in _rows(samples[name], i)}
+        rows["p"].update(assigned_formula="C9H14O2", ionization_mechanism_id=MECH_FA)
+        for line, label in (("x", "13C"), ("o", "18O")):
+            rows[line].update(
+                role="iso_child",
+                assigned_formula="C9H14O2",
+                ionization_mechanism_id=MECH_FA,
+                isotope_label=label,
+                owner_peak_assignment_id=rows["p"]["peak_assignment_id"],
+            )
+        assert (
+            await fold_sample_into_batch_peaks(
+                samples[name],
+                rows=[SimpleNamespace(**r) for r in rows.values()],
+                persisted=False,
+            )
+            is not None
+        )
+    anchors = await _anchors(async_session_factory, batch)
+    assert (anchors["p"].consensus_formula, anchors["p"].ionization_mechanism_id) == (
+        "C9H14O2",
+        MECH_FA,
+    )
+    named = {"formula": "C9H14O2", "ionization_mechanism_id": MECH_FA}
+    assert _lines(anchors["p"]) == {**_lines(before["p"]), **named}
+    for line in ("x", "o"):
+        assert anchors[line].isotopologue_of == ids["p"]
+        assert _stripped(anchors[line]) == {**_stripped(before[line]), **named}
 
 
 async def _drop(session_factory, batch_peak_id):

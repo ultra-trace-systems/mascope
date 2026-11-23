@@ -74,12 +74,13 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     STAMP_PICKER,
     STAMP_PREDICTED,
     STAMPED_ISOTOPOLOGUE_OF_KEY,
-    diagnostic_isotopologues_record_reads,
     instrument_type_of,
     is_monoisotopic,
     mz_from_delta,
+    on_the_reading,
     resolution_from_tol_ppm,
     role_name,
+    stands_on_ion,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
     ACTION_ISOTOPOLOGUES,
@@ -582,10 +583,13 @@ def still_read(
 
     The stamping reads the ledger outside the fold lock and writes under it,
     so a fold or a curation can land in between. A parent whose reading moved
-    there, or that went, has had its stamps taken off by its recompute
-    (``batch_peaks_controller``) before these were written, and its line's
-    record is served whatever the parent now reads: the parent's record and
-    its lines' are left out, as if the parent had moved after the write.
+    there to another ion, or that went, has had its stamps taken off by its
+    recompute (``batch_peaks_controller``) before these were written, and its
+    line's record is served whatever the parent now reads: the parent's record
+    and its lines' are left out, as if the parent had moved after the write.
+    A parent that moved to another reading of its ion keeps them, renamed to
+    the reading it holds (``batch_peaks.on_the_reading``), as its recompute
+    would have renamed them.
 
     :param anchors: The batch's anchors, read under the lock.
     :param parents: Parent id -> its diagnostic isotopologues record
@@ -596,13 +600,12 @@ def still_read(
     """
     by_id = {anchor.batch_peak_id: anchor for anchor in anchors}
     kept = {
-        parent_id: record
+        parent_id: on_the_reading(record, by_id[parent_id])
         for parent_id, record in parents.items()
-        if parent_id in by_id
-        and diagnostic_isotopologues_record_reads(record, by_id[parent_id])
+        if parent_id in by_id and stands_on_ion(record, by_id[parent_id])
     }
     return kept, {
-        line_id: record
+        line_id: on_the_reading(record, by_id[record["batch_peak_id"]])
         for line_id, record in lines.items()
         if record["batch_peak_id"] in kept
     }

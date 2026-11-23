@@ -229,6 +229,7 @@ async def seed_group_batch(async_session_factory, pa_test_data, *, extra_steps=(
         }
         provenance["root"]["diagnostic_isotopologues"] = {
             "formula": ROOT_FORMULA,
+            "ion_formula": anchors["root"][1],
             "ionization_mechanism_id": NITRATE,
             "batch_peak_run_id": "stamp-run",
             "lines": [],

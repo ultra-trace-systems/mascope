@@ -25,7 +25,7 @@ import json
 import statistics
 from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Iterable
+from typing import Any, Iterable
 
 from sqlalchemy import select, update
 
@@ -59,6 +59,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     fold_in_sample,
     held_member_tiers,
     hold_persistence_only,
+    is_stale,
     kept_record,
     known_species_record_of,
     manual_pin_of,
@@ -66,6 +67,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     merged_isotopologue_of_record,
     merged_isotopologues_record,
     mz_delta_ppm,
+    on_the_reading,
     persistence_asks,
     persistence_record_of,
     resolution_adaptive_tol_ppm,
@@ -802,13 +804,13 @@ async def _recompute_consensus_chunk(
             holds[bp_id] = hold_persistence_only(
                 consensus, facts.get(bp_id, PersistenceFacts())
             )
+    renamed = renamed_parents(voted)
     for bp_id, (bp, consensus) in voted.items():
         await _store_held_members(
             session, bp_id, consensus, members_by_peak[bp_id], holds.get(bp_id, False)
         )
         _apply_consensus(bp, consensus, now)
-    await _take_off_stamps(session, unstamped, now)
-    await _take_off_merged_lines(session, released, now)
+    await _follow_parents(session, unstamped, released, renamed, now)
     stages = {STAGE_OF_KEY[key] for key in stale_keys if key in STAGE_OF_KEY}
     for sample_batch_id in sorted(stale_batches):
         # A stage running now is left to its own end: a record its own run
@@ -1007,6 +1009,105 @@ async def _persistence_facts(
                 line_samples=lines.get(bp_id, 0), channels=tuple(sorted(others))
             )
     return facts
+
+
+def _line_ids(key: str, record: dict) -> set[str]:
+    """The batch peaks a parent's isotope-line record names as its lines."""
+    if key == DIAGNOSTIC_ISOTOPOLOGUES_KEY:
+        return stamped_lines(record)
+    return {
+        entry["batch_peak_id"]
+        for entry in record.get("lines") or []
+        if isinstance(entry, dict) and entry.get("batch_peak_id")
+    }
+
+
+def renamed_parents(
+    voted: dict[str, tuple[Any, Consensus]],
+) -> dict[str, tuple[Consensus, set[str]]]:
+    """The parents whose isotope-line records a recompute renamed: their vote
+    moved to another reading of the ion the records stand on
+    (``batch_peaks.on_the_reading``, MAS-1144). Read before the votes are
+    written, as it compares each anchor's records with its vote's.
+
+    :param voted: Anchor id -> the anchor and its fresh vote.
+    :return: Parent id -> its vote and the lines its renamed records name.
+    """
+    renamed: dict[str, tuple[Consensus, set[str]]] = {}
+    for bp_id, (bp, consensus) in voted.items():
+        lines: set[str] = set()
+        for key in (DIAGNOSTIC_ISOTOPOLOGUES_KEY, MERGED_ISOTOPOLOGUES_KEY):
+            before = (bp.provenance or {}).get(key)
+            after = consensus.provenance.get(key)
+            if (
+                isinstance(before, dict)
+                and isinstance(after, dict)
+                and not is_stale(after)
+                and any(before.get(k) != after.get(k) for k in _READING)
+            ):
+                lines |= _line_ids(key, after)
+        if lines:
+            renamed[bp_id] = (consensus, lines)
+    return renamed
+
+
+#: The parts of a parent's reading its lines' records name beside its ion.
+_READING = ("formula", "ionization_mechanism_id")
+
+
+async def _follow_parents(
+    session,
+    unstamped: dict[str, set[str]],
+    released: dict[str, set[str]],
+    renamed: dict[str, tuple[Consensus, set[str]]],
+    now: datetime,
+) -> None:
+    """Carry a recompute's moves of its parents onto their isotope lines, which
+    need not be in it: the stamps taken off where a parent moved to another
+    ion (:func:`_take_off_stamps`), the stripped rows its members released
+    taken off their parent's list (:func:`_take_off_merged_lines`), and the
+    lines of a parent that moved to another reading of its ion renamed with it
+    (:func:`_rename_lines`)."""
+    await _take_off_stamps(session, unstamped, now)
+    await _take_off_merged_lines(session, released, now)
+    await _rename_lines(session, renamed, now)
+
+
+async def _rename_lines(
+    session, renamed: dict[str, tuple[Consensus, set[str]]], now: datetime
+) -> None:
+    """Rename a stamped line's record, and a stripped row's, to the reading
+    their parent moved to within its ion (:func:`renamed_parents`): the line
+    is still that parent's, and its record names what the parent reads now,
+    as the parent's own does. A line that is another parent's since keeps
+    that one's record, renamed only if that parent was.
+    """
+    lines = sorted({line for _, ids in renamed.values() for line in ids})
+    if not lines:
+        return
+    anchors = (
+        (
+            await session.execute(
+                select(BatchPeak).where(BatchPeak.batch_peak_id.in_(lines))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for line in anchors:
+        provenance = dict(line.provenance or {})
+        for key in (STAMPED_ISOTOPOLOGUE_OF_KEY, MERGED_ISOTOPOLOGUE_OF_KEY):
+            record = provenance.get(key)
+            parent = (
+                renamed.get(record.get("batch_peak_id"))
+                if isinstance(record, dict)
+                else None
+            )
+            if parent is not None:
+                provenance[key] = on_the_reading(record, parent[0])
+        if provenance != (line.provenance or {}):
+            line.provenance = provenance
+            line.batch_peak_utc_modified = now
 
 
 async def _take_off_stamps(

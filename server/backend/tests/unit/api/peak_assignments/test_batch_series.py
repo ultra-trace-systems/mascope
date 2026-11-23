@@ -74,6 +74,19 @@ def anchor(key, *, tier="unassigned", formula=None, mz=None, **extra):
     return SimpleNamespace(**fields)
 
 
+#: The ion each test mechanism makes of a neutral, as the walk names it.
+_TEST_NOTATIONS = {MECHANISM: NOTATION, "mech-fa": "[M+HCOO]-", "mech-br": "[M+Br]-"}
+
+
+def _lines_record(formula, mechanism=MECHANISM):
+    """An isotope-line record read for ``formula`` through ``mechanism``."""
+    return {
+        "formula": formula,
+        "ion_formula": ion_formula_of(formula, _TEST_NOTATIONS[mechanism]),
+        "ionization_mechanism_id": mechanism,
+    }
+
+
 def at(formula):
     return ion_mz(parse_formula_tokens(formula), NOTATION)
 
@@ -219,12 +232,20 @@ class TestTheWalksAnchors:
         "key", [DIAGNOSTIC_ISOTOPOLOGUES_KEY, MERGED_ISOTOPOLOGUES_KEY]
     )
     def test_a_target_an_isotope_line_record_stands_on_is_a_line_parent(self, key):
-        # MAS-1091: the stamping's or the strip's record on the reading.
-        lines = {key: {"formula": "C9H12O5", "ionization_mechanism_id": MECHANISM}}
+        # MAS-1091: the stamping's or the strip's record on the reading; its
+        # ion is what the walk keeps (MAS-1144).
+        lines = {key: _lines_record("C9H12O5")}
+        ion = {"consensus_ion_formula": "C9H11O5-"}
         modes = series_anchors(
             [
                 anchor("src", tier="assigned", formula="C8H10O5", provenance=lines),
-                anchor("held", tier="candidate", formula="C9H12O5", provenance=lines),
+                anchor(
+                    "held",
+                    tier="candidate",
+                    formula="C9H12O5",
+                    provenance=lines,
+                    **ion,
+                ),
                 anchor("open", mz=199.06),
             ],
             NOTATIONS,
@@ -232,20 +253,48 @@ class TestTheWalksAnchors:
         mode = modes["mode-1"]
         assert [t.key for t in mode.targets] == ["held", "open"]
         # A source is never moved: only a target can be.
-        assert mode.line_parents == {"held": ("C9H12O5", MECHANISM)}
+        assert mode.line_parents == {"held": "C9H11O5-"}
+
+    def test_a_record_of_the_ion_through_another_mechanism_makes_a_line_parent(
+        self,
+    ):
+        # The record names C8H10O3 through formate; the anchor reads the same
+        # ion as C9H12O5 deprotonated (MAS-1144).
+        lines = {DIAGNOSTIC_ISOTOPOLOGUES_KEY: _lines_record("C8H10O3", "mech-fa")}
+        modes = series_anchors(
+            [
+                anchor(
+                    "held",
+                    tier="candidate",
+                    formula="C9H12O5",
+                    provenance=lines,
+                    consensus_ion_formula="C9H11O5-",
+                )
+            ],
+            NOTATIONS,
+        )
+        assert modes["mode-1"].line_parents == {"held": "C9H11O5-"}
 
     @pytest.mark.parametrize(
         "record",
         [
-            {"formula": "C9H12O5", "ionization_mechanism_id": MECHANISM, "stale": True},
-            {"formula": "C9H12O4", "ionization_mechanism_id": MECHANISM},
-            {"formula": "C9H12O5", "ionization_mechanism_id": "mech-other"},
+            {**_lines_record("C9H12O5"), "stale": True},
+            _lines_record("C9H12O4"),
+            _lines_record("C9H12O5", "mech-br"),
         ],
     )
     def test_a_record_that_does_not_stand_makes_no_line_parent(self, record):
         lines = {DIAGNOSTIC_ISOTOPOLOGUES_KEY: record}
         modes = series_anchors(
-            [anchor("held", tier="candidate", formula="C9H12O5", provenance=lines)],
+            [
+                anchor(
+                    "held",
+                    tier="candidate",
+                    formula="C9H12O5",
+                    provenance=lines,
+                    consensus_ion_formula="C9H11O5-",
+                )
+            ],
             NOTATIONS,
         )
         assert [t.key for t in modes["mode-1"].targets] == ["held"]
@@ -364,23 +413,19 @@ class TestThePlan:
         assert result.annotations["up-0"].formula == "C9H12O5"
 
     @staticmethod
-    def _line_parent(formula, mechanism=MECHANISM):
-        """A candidate on ``formula`` whose stamped lines stand on it."""
-        lines = {
-            DIAGNOSTIC_ISOTOPOLOGUES_KEY: {
-                "formula": formula,
-                "ionization_mechanism_id": mechanism,
-            }
-        }
+    def _line_parent(formula, mechanism=MECHANISM, key=DIAGNOSTIC_ISOTOPOLOGUES_KEY):
+        """A candidate on ``formula`` whose isotope lines stand on it."""
+        record = _lines_record(formula, mechanism)
         return {
             "tier": "candidate",
             "formula": formula,
+            "consensus_ion_formula": record["ion_formula"],
             "ionization_mechanism_id": mechanism,
-            "provenance": lines,
+            "provenance": {key: record},
         }
 
-    def test_a_line_parent_reading_another_formula_keeps_it(self):
-        # MAS-1091: the series yields to the isotope lines.
+    def test_a_line_parent_reading_another_ion_keeps_it(self):
+        # MAS-1091: the series yields to the isotope lines of another ion.
         result = plan(ladder_batch(C9H12O5=self._line_parent("C5H10N4O4")))
         assert "up-0" not in result.records
         assert "up-0" not in result.annotations
@@ -397,11 +442,32 @@ class TestThePlan:
         assert result.records["up-0"]["formula"] == "C9H12O5"
         assert result.yielded == set()
 
-    def test_a_line_parent_read_through_another_mechanism_keeps_it(self):
-        parent = self._line_parent("C9H12O5", mechanism="mech-other")
+    def test_a_line_parent_reading_the_formula_as_another_ion_keeps_it(self):
+        # The proposal's formula through another mechanism is another ion.
+        parent = self._line_parent("C9H12O5", mechanism="mech-br")
         result = plan(ladder_batch(C9H12O5=parent))
         assert "up-0" not in result.records
+        assert "up-0" not in result.annotations
         assert result.yielded == {"up-0"}
+
+    @pytest.mark.parametrize(
+        "key", [DIAGNOSTIC_ISOTOPOLOGUES_KEY, MERGED_ISOTOPOLOGUES_KEY]
+    )
+    def test_a_line_parent_takes_a_proposal_of_its_own_ion(self, key):
+        # MAS-1144: C8H10O3 through formate is C9H12O5 deprotonated, one ion
+        # with one set of lines, so the proposal is measured as any other.
+        parent = self._line_parent("C8H10O3", mechanism="mech-fa", key=key)
+        result = plan(ladder_batch(C9H12O5=parent))
+        assert result.yielded == set()
+        assert "up-0" not in result.corroborated
+        assert result.records["up-0"]["formula"] == "C9H12O5"
+        assert result.annotations["up-0"] == Annotation(
+            formula="C9H12O5",
+            ion_formula="C9H11O5-",
+            ionization_mechanism_id=MECHANISM,
+            role="M0",
+            owner_batch_peak_id=None,
+        )
 
     def test_a_family_short_of_the_floor_commits_nothing(self):
         anchors = ladder_batch()[:-1]
@@ -515,13 +581,13 @@ class TestTheLadders:
 
     def test_a_line_parent_the_series_yielded_is_not_linked(self):
         # Reached by the walk as a taken target is: the ladders read it so.
-        lines = {
-            DIAGNOSTIC_ISOTOPOLOGUES_KEY: {
-                "formula": "C5H10N4O4",
-                "ionization_mechanism_id": MECHANISM,
-            }
+        lines = {DIAGNOSTIC_ISOTOPOLOGUES_KEY: _lines_record("C5H10N4O4")}
+        parent = {
+            "tier": "candidate",
+            "formula": "C5H10N4O4",
+            "consensus_ion_formula": "C5H9N4O4-",
+            "provenance": lines,
         }
-        parent = {"tier": "candidate", "formula": "C5H10N4O4", "provenance": lines}
         above = anchor("si", mz=at(_up(SOURCES[0])) + SILOXANE.mass)
         yielded = plan(ladder_batch(C9H12O5=parent) + [above])
         assert yielded.yielded == {"up-0"}

@@ -669,11 +669,17 @@ class TestTheRecords:
             ]
         )
 
-    def test_the_consensus_keeps_the_parents_record_while_it_reads_the_same(self):
-        record = {"formula": "C10H16O4", "ionization_mechanism_id": MECH, "lines": []}
+    def test_the_consensus_keeps_the_parents_record_while_it_reads_the_ion(self):
+        record = {
+            "formula": "C10H16O4",
+            "ion_formula": PARENT_ION,
+            "ionization_mechanism_id": MECH,
+            "lines": [],
+        }
         parent = [
             {
                 "assigned_formula": "C10H16O4",
+                "ion_formula": PARENT_ION,
                 "ionization_mechanism_id": MECH,
                 "role": "M0",
                 "tier": "assigned",
@@ -683,21 +689,29 @@ class TestTheRecords:
         ] * 3
         kept = compute_consensus(parent, "P", merged_isotopologues=record)
         assert kept.provenance[MERGED_ISOTOPOLOGUES_KEY] is record
-        moved = [{**m, "assigned_formula": "C11H20O3"} for m in parent]
+        moved = [
+            {**m, "assigned_formula": "C11H20O3", "ion_formula": "C11H19O3-"}
+            for m in parent
+        ]
         # Kept, marked stale: the stage reads it again when it re-runs.
         assert is_stale(
             compute_consensus(moved, "P", merged_isotopologues=record).provenance[
                 MERGED_ISOTOPOLOGUES_KEY
             ]
         )
-        other_mechanism = [
-            {**m, "ionization_mechanism_id": "mech-other"} for m in parent
+        # The same ion read as C9H14O2 through formate: the record stands,
+        # renamed to the reading (MAS-1144).
+        same_ion = [
+            {**m, "assigned_formula": "C9H14O2", "ionization_mechanism_id": "m-fa"}
+            for m in parent
         ]
-        assert is_stale(
-            compute_consensus(
-                other_mechanism, "P", merged_isotopologues=record
-            ).provenance[MERGED_ISOTOPOLOGUES_KEY]
-        )
+        assert compute_consensus(same_ion, "P", merged_isotopologues=record).provenance[
+            MERGED_ISOTOPOLOGUES_KEY
+        ] == {
+            **record,
+            "formula": "C9H14O2",
+            "ionization_mechanism_id": "m-fa",
+        }
 
     def test_the_ledger_and_a_snapshot_serve_them_without_the_member_states(self):
         _, record = self._records()
@@ -711,6 +725,7 @@ class TestTheRecords:
         )
         parent_record = {
             "formula": "C10H16O4",
+            "ion_formula": PARENT_ION,
             "ionization_mechanism_id": MECH,
             "lines": [{"batch_peak_id": "X"}],
             "n_lines": 1,
@@ -767,12 +782,16 @@ class TestTheRecords:
             provenance={
                 MERGED_ISOTOPOLOGUES_KEY: {
                     "formula": "C10H16O4",
+                    "ion_formula": PARENT_ION,
                     "ionization_mechanism_id": MECH,
                 }
             },
         )
         assert merged_isotopologues_record(parent) is not None
         assert standing_merged_isotopologues_record(parent) is None
+        # Another reading of the record's ion: it stands (MAS-1144).
+        parent.consensus_formula, parent.consensus_ion_formula = "C9H14O2", PARENT_ION
+        assert standing_merged_isotopologues_record(parent) is not None
 
     def test_a_released_row_comes_off_its_parents_lines(self):
         record = {

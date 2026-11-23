@@ -973,28 +973,58 @@ def diagnostic_isotopologues_record_of(
 
 
 def standing_diagnostic_isotopologues_record(anchor: Any) -> Optional[dict]:
-    """The diagnostic isotopologues record an anchor carries, where it was
-    predicted for the anchor's consensus formula and mechanism; None otherwise.
+    """The diagnostic isotopologues record an anchor carries, where it stands
+    on the ion of the anchor's reading (:func:`stands_on_ion`); None otherwise.
 
-    The consensus keeps the record only while it names that reading
+    The consensus keeps the record only while it does
     (:func:`compute_consensus`), so a vote, a curation or a re-fold that moves
-    it takes the record off, and with it the stamps on its lines
-    (``batch_peaks_controller``).
+    the reading to another ion takes the record off, and with it the stamps
+    on its lines (``batch_peaks_controller``).
     """
     record = diagnostic_isotopologues_record_of(anchor)
-    if record is None or not diagnostic_isotopologues_record_reads(record, anchor):
+    if record is None or not stands_on_ion(record, anchor):
         return None
     return record
 
 
-def diagnostic_isotopologues_record_reads(record: dict, anchor: Any) -> bool:
-    """Whether a diagnostic isotopologues record was predicted for the anchor's
-    consensus formula and mechanism, the reading it stands beside."""
-    return _reads(
-        record,
-        _member(anchor, "consensus_formula"),
-        _member(anchor, "ionization_mechanism_id"),
+def stands_on_ion(record: dict, anchor: Any) -> bool:
+    """Whether an isotope-line record - a parent's ``diagnostic_isotopologues``
+    or ``merged_isotopologues`` - stands on an anchor's reading: the reading
+    names a formula, and its ion is the one the record was read for, whatever
+    neutral and mechanism name it (MAS-1144).
+
+    The lines are predicted from the ion alone, at the parent's own m/z
+    (``batch_isotopologues.plan_batch``), so two readings of one ion have the
+    same lines; another ion has others, which the isotope lines' stage has
+    not read.
+
+    :param record: The record.
+    :param anchor: The anchor, or its fresh :class:`Consensus`: anything
+        with ``consensus_formula`` and ``consensus_ion_formula``.
+    """
+    ion_formula = _member(anchor, "consensus_ion_formula")
+    return (
+        bool(_member(anchor, "consensus_formula"))
+        and bool(ion_formula)
+        and record.get("ion_formula") == ion_formula
     )
+
+
+def on_the_reading(record: Optional[dict], anchor: Any) -> Optional[dict]:
+    """An isotope-line record renamed to the formula and mechanism of the
+    reading it stands on (:func:`stands_on_ion`): a move to another reading of
+    its ion leaves it naming the reading the anchor holds. A record that does
+    not stand on it, or names it already, comes back as it is.
+    """
+    if not isinstance(record, dict) or not stands_on_ion(record, anchor):
+        return record
+    reading = {
+        "formula": _member(anchor, "consensus_formula"),
+        "ionization_mechanism_id": _member(anchor, "ionization_mechanism_id"),
+    }
+    if all(record.get(key) == value for key, value in reading.items()):
+        return record
+    return {**record, **reading}
 
 
 def stamped_isotopologue_of_record(
@@ -1097,19 +1127,21 @@ def row_stamped_isotopologue_of(row: dict, anchor: Any) -> Optional[dict]:
 
 def row_diagnostic_isotopologues(row: dict, anchor: Any) -> Optional[dict]:
     """The diagnostic isotopologues record of the anchor a sample's row sits
-    in, for the inspector: on a monoisotopic row that reads the formula and
-    mechanism the record was predicted for; None otherwise.
+    in, for the inspector: on a monoisotopic row that reads a formula as the
+    ion the record was predicted for (:func:`stands_on_ion`); None otherwise.
 
     :param row: The sample's row, with ``role``, ``assigned_formula`` and
-        ``ionization_mechanism_id``.
+        ``ion_formula``.
     :param anchor: The anchor its peak sits in, or None.
     """
     if anchor is None or row.get("role") != ROLE_M0:
         return None
     record = standing_diagnostic_isotopologues_record(anchor)
-    if record is None or not _reads(
-        record, row.get("assigned_formula"), row.get("ionization_mechanism_id")
-    ):
+    reading = {
+        "consensus_formula": row.get("assigned_formula"),
+        "consensus_ion_formula": row.get("ion_formula"),
+    }
+    if record is None or not stands_on_ion(record, reading):
         return None
     return record
 
@@ -1202,13 +1234,10 @@ def merged_isotopologues_record(anchor: Any, *, stale: bool = False) -> Optional
 
 def standing_merged_isotopologues_record(anchor: Any) -> Optional[dict]:
     """The parent's record an anchor carries, where its lines were read
-    against the anchor's consensus formula and mechanism; None otherwise."""
+    against the ion of the anchor's reading (:func:`stands_on_ion`); None
+    otherwise."""
     record = merged_isotopologues_record(anchor)
-    if record is None or not _reads(
-        record,
-        _member(anchor, "consensus_formula"),
-        _member(anchor, "ionization_mechanism_id"),
-    ):
+    if record is None or not stands_on_ion(record, anchor):
         return None
     return record
 
@@ -1218,11 +1247,12 @@ def stands_under_lines(anchor: Any) -> bool:
     lines the stamping predicted for it (``diagnostic_isotopologues``), or the
     rows the strip took as its lines (``merged_isotopologues``).
 
-    Both stand while the anchor reads the formula and mechanism they were
-    read against, so the series moves no such reading: it would mark them
-    stale, and the isotope lines' stage with them (``batch_series.py``,
-    MAS-1091). A row the strip read as a parent's line is an isotope line
-    (:func:`is_isotope_line`).
+    Both stand while the anchor reads the ion they were read against
+    (:func:`stands_on_ion`), so the series moves no such reading to another
+    ion: it would mark them stale, and the isotope lines' stage with them
+    (``batch_series.py``, MAS-1091). Another reading of the same ion it may
+    take, and the records follow it (MAS-1144). A row the strip read as a
+    parent's line is an isotope line (:func:`is_isotope_line`).
     """
     return (
         standing_diagnostic_isotopologues_record(anchor) is not None
@@ -2170,28 +2200,28 @@ def compute_consensus(
     anchor, so it stands while the consensus names the formula: a series never
     vouches for a formula it did not propose. The co-variation record is about
     the anchor's reading - its formula through its mechanism, read against the
-    neutral's other channels - and stands while the consensus names both; so
-    does the diagnostic isotopologues record, the lines predicted for that
-    reading. A stamp record is about the line's height against its parent, not
-    about what the line's own members read, so it is kept whatever the line's
-    consensus names; the parent's recompute marks it stale when the parent's
-    reading moves. A row the merged-isotopologue reading stripped stands while
-    its members still name that parent (:func:`merged_isotopologue_of_reads`),
-    and the parent's list of lines while it names the reading they were read
-    against; a row whose record goes stale comes off that list, which the row's
-    recompute does (:func:`without_merged_lines`), as the parent need not be in
-    it. The batch checks record states facts of the anchor's reading - its ion,
-    its formula and its mechanism - and stands while the consensus names all
-    three (:func:`batch_checks_record_reads`). A known-species record stands
-    while the anchor reads what the decision left it reading
+    neutral's other channels - and stands while the consensus names both. The
+    diagnostic isotopologues record and the parent's list of stripped lines
+    stand while it reads their ion (:func:`stands_on_ion`), renamed to the
+    reading it holds (:func:`on_the_reading`). A stamp record is about the
+    line's height against its parent, not what the line's members read, so it
+    is kept whatever the line's consensus names; the parent's recompute marks
+    it stale when the parent's reading moves to another ion. A row the
+    merged-isotopologue reading stripped stands while its members still name
+    that parent (:func:`merged_isotopologue_of_reads`); a row whose record
+    goes stale comes off the parent's list, which the row's recompute does
+    (:func:`without_merged_lines`), as the parent need not be in it. The batch
+    checks record states facts of the anchor's reading - its ion, formula and
+    mechanism - and stands while the consensus names all three
+    (:func:`batch_checks_record_reads`). A known-species record stands while
+    the anchor reads what the decision left it reading
     (:func:`known_species_reads`), and a water-ladder record while it reads
     what the pass left it reading (:func:`water_ladder_reads`). A persistence
     record is about the anchor's peak - how many of its partition's spectra
     hold it, which is why the batch search took it - so it is kept whatever
     the anchor reads; the rule it feeds is applied once the facts it reads off
     other batch peaks are in hand (:func:`hold_persistence_only`), and asks
-    only the reading the search elected. A flat-series record is about the
-    reading it was read on and stands while the consensus names it, as a
+    only the reading the search elected. A flat-series record stands as a
     co-variation record does.
 
     :param members: The batch peak's occurrences.
@@ -2238,8 +2268,8 @@ def compute_consensus(
         (CO_VARIATION_KEY, co_variation, lambda r: _reads(r, formula, mechanism)),
         (
             DIAGNOSTIC_ISOTOPOLOGUES_KEY,
-            diagnostic_isotopologues,
-            lambda r: _reads(r, formula, mechanism),
+            on_the_reading(diagnostic_isotopologues, consensus),
+            lambda r: stands_on_ion(r, consensus),
         ),
         (
             MERGED_ISOTOPOLOGUE_OF_KEY,
@@ -2248,8 +2278,8 @@ def compute_consensus(
         ),
         (
             MERGED_ISOTOPOLOGUES_KEY,
-            merged_isotopologues,
-            lambda r: _reads(r, formula, mechanism),
+            on_the_reading(merged_isotopologues, consensus),
+            lambda r: stands_on_ion(r, consensus),
         ),
         (
             BATCH_CHECKS_KEY,

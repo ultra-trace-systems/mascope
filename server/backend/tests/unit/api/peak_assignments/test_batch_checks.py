@@ -381,7 +381,9 @@ class TestTheHalogenLock:
 
     def test_a_stamping_of_another_reading_is_not_read(self):
         anchors, members = halogen_batch("C2H4BrO-", "C2H4O", 122.9451)
+        # Another ion: a stamping stands on the ion it predicted (MAS-1144).
         anchors[0].consensus_formula = "C2H5O"
+        anchors[0].consensus_ion_formula = "C2H5BrO-"
         records, summary = check(anchors, members)
         assert "p" not in records
         assert summary["halogen_unstamped"] == 1

@@ -2091,8 +2091,8 @@ committed, the ratio stability grades a drift by the co-variation, the batch che
 stamps and the co-variation. And every stage that rewrites members runs before every stage
 that only records a reading: a record stands only while its batch peak reads what it was
 made for. The series rewrites members after the isotope lines are recorded, so it moves
-no reading an isotope line's record stands on (*Detecting series*, below), and a
-completed pass leaves every stage current.
+no reading an isotope line's record stands on to another ion (*Detecting series*,
+below), and a completed pass leaves every stage current.
 
 - **Assign batch starts the list at its first stage that is not current**, and every
   stage after it runs too, on what it wrote. On a batch that is up to date, *Re-assign*
@@ -2630,8 +2630,9 @@ The ledger route and `batch_peaks.list` carry the stripped row's record as
 `merged_isotopologue_of` (its compound, the line, the share read and what the row was)
 and the compound's as `merged_isotopologues`. The row keeps its record for as long as
 its members read it as the compound's line. The compound lists the row for as long as
-the row keeps its record, and keeps its list for as long as its consensus names the
-formula and ionization the lines were read against. A row released from the compound
+the row keeps its record, and keeps its list for as long as its consensus reads the ion
+the lines were read against; read another way to that ion, the list and the rows'
+records name the reading it holds now. A row released from the compound
 (its samples assigned again, folded again or curated) leaves the list, and a compound
 with no row left loses them from its badge and leaves **Stripped rows**. The rewrite
 stays: a later *Strip isotopologue rows* reads the rows not yet stripped, and a
@@ -2710,10 +2711,12 @@ per sample, which parent a member was stamped for (`stamped_isotopologue_of`) an
 the stamp came from (`stamp_source`: `predicted` or `picker`). The ledger route and
 `batch_peaks.list` carry the parent's record as `diagnostic_isotopologues` and the
 line's as `stamped_isotopologue_of`. A parent keeps its record for as long as its
-consensus names the formula and ionization the isotope lines were predicted for. A vote,
-a curation or a rebuild that moves the parent's reading takes its stamps off its lines,
-and the next *Stamp isotopologues* replaces every stamp. A parent whose reading moves
-while the stamping runs gets no record, and its lines no stamp. *Stamp isotopologues*
+consensus reads the ion the isotope lines were predicted for. Read through another
+formula and ionization to the same ion, it keeps the record and its lines their stamps,
+both renamed to the reading it holds now. A vote, a curation or a rebuild that moves the
+parent to another ion takes its stamps off its lines, and the next *Stamp isotopologues*
+replaces every stamp. A parent that moves to another ion while the stamping runs gets no
+record, and its lines no stamp. *Stamp isotopologues*
 writes its summary into the pass's run: it counts the isotope lines predicted, found and stamped
 per ionization mode and instrument type, the parents that moved while it ran, and names
 the thresholds. It changes no tier, no member and no per-sample run.
@@ -2773,13 +2776,21 @@ recorded beside it, and only the samples that do not read the formula yet are me
 
 The series yields to the isotope lines, the stage before it. A row the strip read as
 another compound's isotope line is never a step of a series. A batch peak the isotope
-lines read against keeps its reading: the strip took rows as its lines, or the stamping
-predicted its lines, stamped or not. A series that proposes another formula
-for it, or the same formula through another ionization, leaves it as it is, measures
-nothing on it and records nothing on it. Moving it would leave the isotope lines it
-explains standing for a reading the peak no longer holds, so the isotope lines would be
-out of date after every pass, and the next *Assign batch* would start there again. The
-run's summary counts these batch peaks (`anchors_yielded`). A
+lines read against keeps its ion: the strip took rows as its lines, or the stamping
+predicted its lines, stamped or not. Its lines are predicted from the ion alone, so they
+are the same whichever neutral and ionization name it: C6H6O with formate and C7H8O3
+deprotonated are both the ion C7H7O3-.
+
+- **A proposal of the same ion is taken**, through whatever ionization it names. It is
+  measured on the samples as any other proposal. If the peak moves to it, the isotope
+  lines' records stay, and they name the reading the peak holds now.
+- **A proposal of another ion yields.** The series leaves the peak as it is, measures
+  nothing on it and records nothing on it. Its isotope lines were read for the ion it
+  holds, not the one proposed. Moving it would leave them out of date after every pass,
+  and the next *Assign batch* would start there again. The run's summary counts these
+  batch peaks (`anchors_yielded`).
+
+A
 row a series vouches for shows a stairs badge beside its formula, in green as a reading
 that supports it, whose tooltip names the
 step and the assigned compound the series starts at. The series counts as a second

@@ -71,6 +71,8 @@ pytestmark = pytest.mark.asyncio
 #: A real adduct no other suite names: the mechanism table's notations are
 #: unique, and the integration database is shared by the whole run.
 MECH, NOTATION = "mech-stamp-br", "[M+Br]-"
+#: Another mechanism to the same ions: a hydrated bromide adduct.
+MECH_WATER, NOTATION_WATER = "mech-stamp-wbr", "[M+H2O+Br]-"
 
 N_SAMPLES = 6
 #: The sample folded from a run of its own.
@@ -121,7 +123,7 @@ def _rows(sample_item_id, index, *, run_id=None, overrides=None, leave_out=()):
     for peak_id, (mz, formula, ion, intensity) in _peaks().items():
         if peak_id in leave_out:
             continue
-        formula, ion = (overrides or {}).get(peak_id, (formula, ion))
+        formula, ion, *through = (overrides or {}).get(peak_id, (formula, ion))
         rows[peak_id] = dict(
             peak_assignment_id=gen_id(32),
             peak_assignment_run_id=run_id or fold_run_id(sample_item_id),
@@ -132,7 +134,7 @@ def _rows(sample_item_id, index, *, run_id=None, overrides=None, leave_out=()):
             role="M0" if formula else "unassigned",
             assigned_formula=formula,
             ion_formula=ion,
-            ionization_mechanism_id=MECH if formula else None,
+            ionization_mechanism_id=(through or [MECH])[0] if formula else None,
             source="untargeted" if formula else None,
             tier="assigned" if formula else "unassigned",
             fit_score=0.9 if formula else None,
@@ -174,14 +176,15 @@ async def _seed(async_session_factory, pa_test_data):
                 sample_batch_utc_created=now,
             )
         )
-        if await session.get(IonizationMechanism, MECH) is None:
-            session.add(
-                IonizationMechanism(
-                    ionization_mechanism_id=MECH,
-                    ionization_mechanism_polarity="-",
-                    ionization_mechanism=NOTATION,
+        for mechanism, notation in ((MECH, NOTATION), (MECH_WATER, NOTATION_WATER)):
+            if await session.get(IonizationMechanism, mechanism) is None:
+                session.add(
+                    IonizationMechanism(
+                        ionization_mechanism_id=mechanism,
+                        ionization_mechanism_polarity="-",
+                        ionization_mechanism=notation,
+                    )
                 )
-            )
         for i in range(N_SAMPLES):
             name = f"S{i:02d}"
             sample_file_id, sample_item_id = gen_id(), gen_id()
@@ -407,6 +410,32 @@ async def test_the_consensus_keeps_the_records_while_the_parent_reads_the_same(
     assert _parent(moved["p"]) is None
     assert _line(moved["line"]) is None
     assert moved["line"].batch_peak_utc_modified > kept["line"].batch_peak_utc_modified
+    assert _line(moved["x"]) == _line(anchors["x"])
+
+
+async def test_a_parent_moving_within_its_ion_keeps_its_records_renamed(
+    async_session_factory, isotopologue_batch
+):
+    """MAS-1144: the lines are predicted from the ion alone, so a parent read
+    as another neutral through another mechanism to the same ion keeps its
+    record and its line's stamp, both naming the reading it holds now."""
+    batch_id, samples = isotopologue_batch["batch_id"], isotopologue_batch["samples"]
+    await run_batch_isotopologues(batch_id)
+    anchors = await _anchors(async_session_factory, batch_id)
+    for i in range(1, N_SAMPLES):
+        await _fold(samples, i, overrides={"p": ("C2H2O", "C2H4BrO2-", MECH_WATER)})
+    moved = await _anchors(async_session_factory, batch_id)
+    assert (moved["p"].consensus_formula, moved["p"].ionization_mechanism_id) == (
+        "C2H2O",
+        MECH_WATER,
+    )
+    named = {"formula": "C2H2O", "ionization_mechanism_id": MECH_WATER}
+    assert _parent(moved["p"]) == {**_parent(anchors["p"]), **named}
+    assert _line(moved["line"]) == {**_line(anchors["line"]), **named}
+    assert (
+        moved["line"].batch_peak_utc_modified > anchors["line"].batch_peak_utc_modified
+    )
+    # The second parent did not move: its line's stamp is as it was.
     assert _line(moved["x"]) == _line(anchors["x"])
 
 

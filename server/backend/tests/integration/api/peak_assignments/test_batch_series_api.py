@@ -460,51 +460,86 @@ async def test_a_better_measured_reading_keeps_its_member(
     assert carried == (rival.consensus_formula == below)
 
 
+#: A deprotonation that reads, as another neutral, the ion the walk's adduct
+#: makes of a neutral: C8H10O3 + HSO4- and C8H12O7S - H+ are one ion.
+SAME_ION_MECHANISM = "mech-series-dep"
+SAME_ION_NOTATION = "[M-H]- (series test)"
+SAME_ION_RIVAL = "C8H12O7S"
+
+
+def _lines_record(formula, mechanism, ion):
+    return {
+        "formula": formula,
+        "ion_formula": ion,
+        "ionization_mechanism_id": mechanism,
+        "batch_peak_run_id": "run-lines",
+        "predicted": [],
+    }
+
+
 @pytest_asyncio.fixture
 async def stamped_rival_batch(async_session_factory, pa_test_data):
-    """The series batch with the rival one CH2 below the first compound held
-    poorly in both samples, so the series' formula would take every member,
-    and its stamped lines standing on the rival's reading: an isotope-line
-    record the series must not move (MAS-1091)."""
+    """The series batch with two line parents held poorly in both samples, so
+    the series' formula would take every member of each: the rival one CH2
+    below the first compound, another ion than the walk proposes there, and
+    one CH2 below the second compound C8H12O7S deprotonated, the ion the walk
+    proposes there through its own adduct. The stamped lines' record of each
+    stands on its reading (MAS-1091, MAS-1144)."""
     batch_id, samples = await _new_batch(
         async_session_factory, pa_test_data, label="series-stamped"
     )
-    below = _step(SOURCES[0], -1)
+    async with async_session_factory() as session:
+        if await session.get(IonizationMechanism, SAME_ION_MECHANISM) is None:
+            session.add(
+                IonizationMechanism(
+                    ionization_mechanism_id=SAME_ION_MECHANISM,
+                    ionization_mechanism_polarity="-",
+                    ionization_mechanism=SAME_ION_NOTATION,
+                )
+            )
+            await session.commit()
+    below, same_ion = _step(SOURCES[0], -1), _step(SOURCES[1], -1)
     for name in ("S1", "S2"):
         readings = _peaks()
         readings["down-0"] = (below, ("candidate", RIVAL, 0.40))
-        await fold_sample_into_batch_peaks(
-            samples[name], rows=_rows(samples[name], readings), persisted=False
-        )
+        readings["down-1"] = (same_ion, ("candidate", SAME_ION_RIVAL, 0.40))
+        rows = _rows(samples[name], readings)
+        held = next(row for row in rows if row.sample_peak_id == "down-1")
+        held.ionization_mechanism_id = SAME_ION_MECHANISM
+        held.ion_formula = _ion(same_ion)
+        await fold_sample_into_batch_peaks(samples[name], rows=rows, persisted=False)
     async with async_session_factory() as session:
-        rival = (
-            await session.execute(
-                select(BatchPeak).where(
-                    BatchPeak.sample_batch_id == batch_id,
-                    BatchPeak.consensus_formula == RIVAL,
+        for formula, record in (
+            (RIVAL, _lines_record(RIVAL, MECHANISM, _ion(RIVAL))),
+            (
+                SAME_ION_RIVAL,
+                _lines_record(SAME_ION_RIVAL, SAME_ION_MECHANISM, _ion(same_ion)),
+            ),
+        ):
+            parent = (
+                await session.execute(
+                    select(BatchPeak).where(
+                        BatchPeak.sample_batch_id == batch_id,
+                        BatchPeak.consensus_formula == formula,
+                    )
                 )
-            )
-        ).scalar_one()
-        rival.provenance = {
-            **(rival.provenance or {}),
-            DIAGNOSTIC_ISOTOPOLOGUES_KEY: {
-                "formula": RIVAL,
-                "ionization_mechanism_id": MECHANISM,
-                "batch_peak_run_id": "run-lines",
-                "predicted": [],
-            },
-        }
+            ).scalar_one()
+            parent.provenance = {
+                **(parent.provenance or {}),
+                DIAGNOSTIC_ISOTOPOLOGUES_KEY: record,
+            }
         await session.commit()
     return {"batch_id": batch_id, "samples": samples}
 
 
-async def test_a_pass_leaves_a_stamped_parent_its_reading_and_ends_current(
+async def test_a_pass_moves_a_stamped_parent_within_its_ion_and_ends_current(
     async_session_factory, stamped_rival_batch, stubbed, only_these_stages
 ):
-    """The series yields to the isotope lines (MAS-1091): its proposal onto a
-    parent whose lines a record stands on is not applied, the record stands
-    after the series' consensus recompute, and so the pass that ran both
-    ends with every stage current."""
+    """The series yields to the isotope lines of another ion (MAS-1091): its
+    proposal onto a parent read as another ion is not applied. A proposal of
+    the parent's own ion is (MAS-1144): the parent's record stands after the
+    series' consensus recompute, naming the reading it moved to. So the pass
+    ends with every stage current, and a second has nothing to run."""
     only_these_stages("series")
     batch_id = stamped_rival_batch["batch_id"]
     outcome = await assign_batch(sample_batch_id=batch_id)
@@ -513,6 +548,7 @@ async def test_a_pass_leaves_a_stamped_parent_its_reading_and_ends_current(
         spec.stage.value: "current" for spec in STAGES
     }
     assert standing["stale_stages"] == []
+    assert (await assign_batch(sample_batch_id=batch_id))["status"] == "skipped"
 
     anchors = await _anchors(async_session_factory, batch_id)
     parent = anchors["down-0"]
@@ -520,6 +556,16 @@ async def test_a_pass_leaves_a_stamped_parent_its_reading_and_ends_current(
     record = parent.provenance[DIAGNOSTIC_ISOTOPOLOGUES_KEY]
     assert not is_stale(record)
     assert SERIES_KEY not in parent.provenance
+    moved = anchors["down-1"]
+    proposed = _step(SOURCES[1], -1)
+    assert (moved.consensus_formula, moved.ionization_mechanism_id) == (
+        proposed,
+        MECHANISM,
+    )
+    assert moved.provenance[DIAGNOSTIC_ISOTOPOLOGUES_KEY] == _lines_record(
+        proposed, MECHANISM, _ion(proposed)
+    )
+    assert moved.provenance[SERIES_KEY]["formula"] == proposed
     for name in ("S1", "S2"):
         members = await _members(
             async_session_factory, stamped_rival_batch["samples"][name]
@@ -527,6 +573,10 @@ async def test_a_pass_leaves_a_stamped_parent_its_reading_and_ends_current(
         assert (
             resolve_candidate(parent.candidates, members["down-0"].candidate)["formula"]
             == RIVAL
+        )
+        assert (
+            resolve_candidate(moved.candidates, members["down-1"].candidate)["formula"]
+            == proposed
         )
     # The rest of the family is measured as before.
     assert anchors["up-1"].consensus_formula == _step(SOURCES[1], 1)
