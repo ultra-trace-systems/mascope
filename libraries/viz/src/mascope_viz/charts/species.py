@@ -169,15 +169,23 @@ def _items(species: Any) -> list[str]:
 def _table(store: CampaignStore) -> pd.DataFrame:
     """The store's species as text columns, ``None`` where it names none:
     object columns, since a text column of pandas 3 reads ``None`` as NaN,
-    which is no falsy name."""
+    which is no falsy name. Blank text is none too: a store synced before
+    blank names were dropped holds the server's ``""`` for a target ion
+    without a compound name."""
     species = store.table("species")
     out = pd.DataFrame(index=range(len(species)))
     for column in ("series_key", "name", "formula", "ion_formula", "mechanism"):
         values = species[column].astype(object).to_numpy()
-        out[column] = pd.Series(
-            [None if pd.isna(v) else str(v) for v in values], dtype=object
-        )
+        out[column] = pd.Series([_text(v) for v in values], dtype=object)
     return out
+
+
+def _text(value: Any) -> str | None:
+    """*value* as text; None when missing or blank."""
+    if value is None or (not isinstance(value, str) and pd.isna(value)):
+        return None
+    text = str(value)
+    return text if text.strip() else None
 
 
 def _identities(table: pd.DataFrame) -> dict[str, list[str]]:
