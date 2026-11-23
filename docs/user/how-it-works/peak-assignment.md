@@ -366,7 +366,10 @@ as *reagent* peaks: a row that names the ion and no compound, so it votes on no 
 consensus and weighs on no tier. Each ion the pass knows belongs to a family and carries
 the works that name it, and the row records both, so a claim can be checked against a
 paper rather than against Mascope's word. A work is cited for an ion only where it names
-that ion.
+that ion. A source ion only the sample's batch says is there is set aside later, once
+both stages have read the sample, so the run can keep a reading the batch's own claim
+keeps (*A sample's run reads what the batch decided*, under
+[the batch stages](#the-batch-stages)).
 
 - **The reagent's own ladder.** The ion a CIMS source is dosed with and what it makes of
   itself: nitrate, its clusters with nitric acid [Jokinen et al. 2012][jok12] and its
@@ -2427,8 +2430,8 @@ below), and a completed pass leaves every stage current.
 
   | Decision | Where the run reads it | A decoy run |
   | -- | -- | -- |
-  | A known species, a library ion decided present | its reagent pass claims the ion | claims it, as its control does |
-  | A water-ladder rung | its reagent pass claims the rung | claims it, as its control does |
+  | A known species, a library ion decided present | claimed for the source once its target library and search have read the sample | claims it where its control did |
+  | A water-ladder rung | claimed so too | claims it where its control did |
   | A listed compound decided present | committed on its peak at candidate | commits it, as its control does |
   | A row stripped as another row's isotope line | read as that row's line before the run judges it | does not read it |
   | A series | a second observation of the reading it proposed | does not read it |
@@ -2443,7 +2446,11 @@ below), and a completed pass leaves every stage current.
   about a peak it no longer has is left, and the run's record counts it. The run keeps
   what the batch's own claim keeps (see each step below), and judges what it read as it
   judges every row: a cap may hold the listed compound lower, and the row then says why.
-  A decoy run claims what its control claims, and its own lines decide everything else.
+  A source ion is claimed after the target library and the search have read the sample,
+  not before them as the reagent pass claims the reagent's own ions: only then can the
+  run ask of the peak what the batch's claim asks, so a sample the batch kept is kept by
+  its next run too, and the two ledgers agree. A decoy run claims a source ion on the
+  peaks its control claimed it on, and its own lines decide everything else.
   Each run records the version of each stage whose records it read, read before the
   records themselves, and what they did to its rows, under `batch_decisions` in its
   configuration, so a run that read an older decision than the batch now holds can be told
@@ -2638,7 +2645,13 @@ batch peak reads what the measurement left it reading. Each measurement replaces
 one before it. A sample assigned again, and one folded in after the measurement, claims
 the rungs that passed in the stretch it was acquired in, on the sample's corrected mass
 and with the rung's isotope lines, where its own reagent pass did not; each row names the
-measurement and the stretch. A sample acquired outside every stretch the measurement read
+measurement and the stretch. It claims a rung after its target library and its search
+have read the sample, and keeps their reading where the measurement's claim keeps a
+sample's: the target library or a reference list names the peak, the peak is another
+reading's isotope line or another claim's, or the reading carries an isotope line the
+rung cannot have. A line of the rung is claimed with it only on a peak no other reading
+of the run holds. The row of a claimed rung keeps the reading it displaced first among
+its alternatives. A sample acquired outside every stretch the measurement read
 claims none until a measurement reads it. Its summary, in the pass's run, gives per ionization mode and
 instrument type the stretches, how far each core's ladder reached in each, the rungs
 tested and passed, the batch peaks claimed, the samples they were claimed in, and the
@@ -2721,9 +2734,15 @@ verdict and decides nothing, as *Read co-variation* decides nothing: a library i
 against the ion its ladder grew from, else against the source's brightest reagent or
 calibrant ion, and a listed compound carries its own *Read co-variation* reading.
 
-A sample's next run takes the batch's word for a library ion: its reagent pass claims a
-present ion on the sample's corrected mass where its own claim did not, with no height
-floor and no ladder below it, and the row names the batch's decision as its reason. Where
+A sample's next run takes the batch's word for a library ion: it claims a present ion on
+the sample's corrected mass where its own reagent pass did not, with no height floor and
+no ladder below it, and the row names the batch's decision as its reason. It claims the
+ion after its target library and its search have read the sample, and keeps their
+reading where the decision's claim keeps a sample's: the target library named the peak,
+the peak is another reading's isotope line or another claim's, or the reading carries an
+isotope line the ion cannot have. A claimed ion's row keeps the reading it displaced first
+among its alternatives (**earlier reading**), and the ion's isotope lines go with it,
+each only on a peak no other reading of the run holds. Where
 the fold split an ion's trace over two batch peaks decided present, the run claims the ion
 once, as the batch peak in the most samples. A
 listed compound decided present is committed on its peak by a sample's next run, as the

@@ -407,9 +407,13 @@ As built (`batch_stages.py`):
   power and 1.7 s resolving the lists' lines at it (#3500).
 - A sample's own run reads the records (MAS-985, `batch_decisions.py`): once, in its
   resolve stage, as a declared input of the stage list (`pipeline.BATCH_INPUTS`). A known
-  species and a water-ladder rung enter at the claim stage, a listed compound at the
-  propose stage (elected after the search, as the known-species claim takes a member), a
-  strip and a series at the judging. A rung reaches a sample acquired inside a stretch it
+  species and a water-ladder rung are matched at the claim stage and claimed at the elect
+  stage, on the known set's and the search's rows, by the keep rules the batch's own claims
+  take a member by (`known_species.claim_keeps`, `batch_decisions.claim_source_ions`,
+  MAS-1089); a decoy arm claims the peaks its control claimed, and the batch's own passes,
+  with no known set, claim them at the claim stage. A listed compound enters at the
+  propose stage (elected after the search and the source claim, as the known-species
+  claim takes a member), a strip and a series at the judging. A rung reaches a sample acquired inside a stretch it
   passed in, which the ladder's record now bounds by its first and last spectrum's times;
   `claimed_samples` places only a sample the times cannot (no time, or a record from
   before them). A strip's record now keeps the line's m/z offset. A listed compound or a

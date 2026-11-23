@@ -1,19 +1,26 @@
 """The pre-passes a run makes before Stage A: the reagent ions and the artifacts.
 
-The reagent pre-pass claims the reagent's own ions, the batch's known species
-and the ladders the profile names; the artifact pass claims the instrument's
-artifact lines. Stage A then reads only the peaks they left.
+The reagent pre-pass claims the reagent's own ions and the ladders the
+profile names, and matches the source ions the batch decided are there; the
+artifact pass claims the instrument's artifact lines. Stage A then reads only
+the peaks they left. A run claims the batch's source ions after Stage A
+and the search, on its rows (``batch_decisions.claim_source_ions``).
 """
 
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 from types import SimpleNamespace
+from typing import Any
 
 import pandas as pd
 
 from mascope_backend.api.new.peak_assignments.artifact_pass import (
     build_artifact_assignments,
     claim_artifact_peaks,
+)
+from mascope_backend.api.new.peak_assignments.batch_decisions import (
+    claim_source_ions,
 )
 from mascope_backend.api.new.peak_assignments.model_readers import (
     _claim_reagent_lines,
@@ -28,10 +35,12 @@ from mascope_backend.api.new.peak_assignments.reagent_pass import (
     claim_batch_species,
     claim_ladder_peaks,
     ion_ladders_for,
+    record_displaced,
 )
 from mascope_backend.api.new.peak_assignments.sample_mechanisms import _source_axis
 from mascope_backend.runtime import runtime
 from mascope_tools.composition.mass_accuracy import ReagentOffset
+from mascope_tools.composition.reagents import ReagentHit
 
 
 def _log_fragments(claims: FragmentClaims, sample_name: str) -> None:
@@ -45,6 +54,22 @@ def _log_fragments(claims: FragmentClaims, sample_name: str) -> None:
         )
 
 
+@dataclass(frozen=True)
+class SourceIonHits:
+    """The source ions a file's batch decided are there, matched on the
+    file's corrected mass by the claim stage and not yet claimed.
+
+    :param hits: The ions and their isotope lines, monoisotopic before their
+        lines (``reagents.match_batch_species``), indexing the sample's peaks
+        positionally.
+    :param decided: Ion formula -> the batch's decision, for every ion the
+        batch named.
+    """
+
+    hits: tuple[ReagentHit, ...] = ()
+    decided: Mapping[str, BatchSpecies] = field(default_factory=dict)
+
+
 def _reagent_assignments(
     peaks_df: pd.DataFrame,
     resolved_profile: ResolvedProfile,
@@ -55,7 +80,7 @@ def _reagent_assignments(
     own_mechanisms: list[SimpleNamespace],
     sample_name: str,
     batch_species: Sequence[BatchSpecies] = (),
-) -> tuple[list[dict], set[str], ReagentOffset | None]:
+) -> tuple[list[dict], set[str], ReagentOffset | None, SourceIonHits]:
     """The reagent pre-pass: the peaks the source made, claimed before the stages.
 
     Shared by the run-backed orchestrator and the run-less ingest fold for the
@@ -82,15 +107,21 @@ def _reagent_assignments(
         there, one entry per ion (``batch_decisions.BatchDecisions
         .source_ions``): the library ions it decided present (step 4.2h) and
         the rungs its water ladder passed in the sample's acquisition segment
-        (step 4.2j). Claimed where the file's own claims did not take them, on
-        its corrected mass (:func:`reagent_pass.claim_batch_species`), each
-        row naming the decision as its reason. The offset is read off the
-        file's own claims alone.
-    :return: The reagent rows, the peaks they take out of both stages, and where
-        the claimed lines put the mass axis, which Stage A scores at where the
-        target library fits no offset (:func:`reagent_line_offset`); None for a
-        profile with no reagent library. The offset is read off the library's
-        lines alone, as it was measured: a ladder's rungs do not move it.
+        (step 4.2j). Matched where the file's own claims did not take them,
+        on its corrected mass (:func:`reagent_pass.claim_batch_species`), and
+        returned unclaimed: a run claims them after Stage A and the search,
+        where the batch claim's keep rules can read the run's rows
+        (``batch_decisions.claim_source_ions``, MAS-1089), and a path with no
+        known set of its own claims them before it proposes
+        (:func:`_batch_source_rows`). The offset is read off the file's own
+        claims alone.
+    :return: The reagent rows of the file's own claims, the peaks they take
+        out of both stages, where the claimed lines put the mass axis, which
+        Stage A scores at where the target library fits no offset
+        (:func:`reagent_line_offset`; None for a profile with no reagent
+        library, and read off the library's lines alone, as it was measured: a
+        ladder's rungs do not move it), and the batch's source ions matched
+        on the file's peaks.
 
     The claim reads the peaks on the axis as stored (:func:`_source_axis`), so
     a decoy claims the lines its control claimed, at the offset its control
@@ -141,43 +172,185 @@ def _reagent_assignments(
         purity=_reagent_purity(resolved_profile),
         resolution=resolution,
     )
-    decided = {one.cluster.formula: one for one in batch_species}
-    if pooled:
-        reasons = Counter(
-            decided[hit.cluster.formula].reason
-            for hit in pooled
-            if hit.cluster.formula in decided
-        )
-        runtime.logger.info(
-            f"Sample '{sample_name}': {len(pooled)} peaks claimed on the batch's "
-            "decisions ("
-            + ", ".join(
-                f"{count} {reason}" for reason, count in sorted(reasons.items())
-            )
-            + ")"
-        )
     rows = build_reagent_assignments(
-        hits + rungs + pooled,
+        hits + rungs,
         source,
         sample_item_id=sample_item_id,
         peak_assignment_run_id=peak_assignment_run_id,
+    )
+    _at_read_mz(rows, source, peaks_df)
+    found = SourceIonHits(
+        tuple(pooled), {one.cluster.formula: one for one in batch_species}
+    )
+    return rows, {row["sample_peak_id"] for row in rows}, offset, found
+
+
+def _at_read_mz(rows: list[dict], source: pd.DataFrame, peaks_df: pd.DataFrame) -> None:
+    """Name the m/z the run reads each claimed peak at, as every other row of
+    the run does, where the claim read the peaks on the axis as stored
+    (:func:`_source_axis`)."""
+    if source is peaks_df:
+        return
+    read_mz = dict(
+        zip(
+            peaks_df["sample_peak_id"].astype(str),
+            peaks_df["mz"].astype(float),
+            strict=True,
+        )
+    )
+    for row in rows:
+        row["sample_peak_mz"] = read_mz[row["sample_peak_id"]]
+
+
+def _batch_source_rows(
+    found: SourceIonHits,
+    hits: Sequence[ReagentHit],
+    peaks_df: pd.DataFrame,
+    sample: Any,
+    peak_assignment_run_id: str,
+    displaced: Mapping[str, dict] | None = None,
+) -> list[dict]:
+    """The rows of the source ions claimed on the batch's word, each naming
+    the decision as its reason (:func:`reagent_pass.build_reagent_assignments`),
+    at the m/z the run reads their peaks at.
+
+    :param found: What the claim stage matched (:func:`_reagent_assignments`).
+    :param hits: Those of its hits the claim takes: all of them where the
+        path claims before it proposes, the ones the keep rules leave where it
+        claims after the known set (``batch_decisions.claim_source_ions``).
+    :param peaks_df: Every observed peak of the sample, as the run reads them.
+    :param sample: The sample (``sample_item_id``, ``sample_item_name``).
+    :param displaced: Sample peak -> the run's reading a claim displaced
+        from it, which its row records (``reagent_pass.record_displaced``).
+    """
+    if not hits:
+        return []
+    source = _source_axis(peaks_df)
+    rows = build_reagent_assignments(
+        list(hits),
+        source,
+        sample_item_id=sample.sample_item_id,
+        peak_assignment_run_id=peak_assignment_run_id,
         batch={
-            hit.cluster.formula: decided[hit.cluster.formula]
-            for hit in pooled
-            if hit.cluster.formula in decided
+            hit.cluster.formula: found.decided[hit.cluster.formula]
+            for hit in hits
+            if hit.cluster.formula in found.decided
         },
     )
-    if source is not peaks_df:
-        read_mz = dict(
-            zip(
-                peaks_df["sample_peak_id"].astype(str),
-                peaks_df["mz"].astype(float),
-                strict=True,
-            )
-        )
-        for row in rows:
-            row["sample_peak_mz"] = read_mz[row["sample_peak_id"]]
-    return rows, {row["sample_peak_id"] for row in rows}, offset
+    _at_read_mz(rows, source, peaks_df)
+    for row in rows:
+        reading = (displaced or {}).get(row["sample_peak_id"])
+        if reading is not None and not row.get("owner_peak_assignment_id"):
+            record_displaced(row, reading)
+    reasons = Counter(
+        found.decided[hit.cluster.formula].reason
+        for hit in hits
+        if hit.cluster.formula in found.decided
+    )
+    runtime.logger.info(
+        f"Sample '{sample.sample_item_name}': {len(hits)} peaks claimed on the "
+        "batch's "
+        "decisions ("
+        + ", ".join(f"{count} {reason}" for reason, count in sorted(reasons.items()))
+        + ")"
+    )
+    return rows
+
+
+def _batch_claims(rows: list[dict]) -> dict[str, int]:
+    """How many ions rows claimed on the batch's word name each reason."""
+    counted = Counter(
+        row["provenance"]["reagent"]["reason"]
+        for row in rows
+        if not row.get("owner_peak_assignment_id")
+    )
+    return dict(sorted(counted.items()))
+
+
+def _claim_batch_source(
+    found: SourceIonHits,
+    stage_a: list[dict],
+    stage_b: list[dict],
+    peaks_df: pd.DataFrame,
+    sample: Any,
+    run_id: str,
+    *,
+    claimed_peak_ids: set[str],
+    control: frozenset[str] | None,
+) -> tuple[list[dict], list[dict], list[dict], dict[str, str]]:
+    """Claim the batch's source ions on the rows of the known set and the
+    search, by the keep rules the batch's own claims take a member by
+    (``batch_decisions.claim_source_ions``, MAS-1089): the rows they take a
+    peak from leave Stage A's and the search's, and every stage after reads
+    the peak as the source's.
+
+    :param found: What the claim stage matched (:func:`_reagent_assignments`).
+    :param control: A decoy arm's control's claims on the batch's word.
+    :return: The claimed rows, Stage A's and the search's rows left, and what
+        became of each ion by its peak.
+    """
+    hits, stage_a, stage_b, outcomes, displaced = claim_source_ions(
+        stage_a,
+        stage_b,
+        found.hits,
+        found.decided,
+        peak_ids=peaks_df["sample_peak_id"].astype(str).tolist(),
+        claimed_peak_ids=claimed_peak_ids,
+        control=control,
+    )
+    rows = _batch_source_rows(found, hits, peaks_df, sample, run_id, displaced)
+    counted = Counter(outcomes.values())
+    runtime.logger.info(
+        f"Sample '{sample.sample_item_name}' read {len(outcomes)} source ions "
+        "its batch "
+        "decided are there: "
+        + ", ".join(f"{count} {why}" for why, count in sorted(counted.items()))
+    )
+    return rows, stage_a, stage_b, outcomes
+
+
+def _take_rows(ctx: Any, rows: list[dict]) -> None:
+    """The rows of the batch's source ions a claim took, among the source's."""
+    ctx.reagent_rows = [*ctx.reagent_rows, *rows]
+    ctx.reagent_peak_ids |= {row["sample_peak_id"] for row in rows}
+    if claims := _batch_claims(rows):
+        ctx.batch_applied["claimed"] = claims
+
+
+def take_batch_source(ctx: Any, found: SourceIonHits) -> None:
+    """Claim every source ion the batch decided there, in the claim stage: a
+    path with no known set for the keep rules to ask
+    (``pipeline.claims_after_the_known_set``).
+
+    :param ctx: The run (``pipeline.RunContext``).
+    :param found: What the claim stage matched (:func:`_reagent_assignments`).
+    """
+    rows = _batch_source_rows(found, found.hits, ctx.peaks_df, ctx.sample, ctx.run_id)
+    _take_rows(ctx, rows)
+
+
+def claim_batch_source_on_known_set(ctx: Any) -> None:
+    """The batch's source ions, claimed on the rows of the known set and the
+    search (:func:`_claim_batch_source`); a decoy arm claims the peaks its
+    control claimed (``decoy.DecoyPlan.control_source_claims``).
+
+    :param ctx: The run (``pipeline.RunContext``), in its elect stage.
+    """
+    if not ctx.batch_source.hits:
+        return
+    plan = ctx.decoy_plan
+    rows, ctx.stage_a, ctx.stage_b, outcomes = _claim_batch_source(
+        ctx.batch_source,
+        ctx.stage_a,
+        ctx.stage_b,
+        ctx.peaks_df,
+        ctx.sample,
+        ctx.run_id,
+        claimed_peak_ids=ctx.claimed_peak_ids,
+        control=None if plan is None else plan.control_source_claims,
+    )
+    _take_rows(ctx, rows)
+    ctx.batch_applied["source"] = dict(sorted(Counter(outcomes.values()).items()))
 
 
 def _artifact_assignments(

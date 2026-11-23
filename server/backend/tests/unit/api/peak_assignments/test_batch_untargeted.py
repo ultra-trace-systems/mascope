@@ -1084,12 +1084,14 @@ async def test_a_member_reading_an_ion_its_lists_hold_is_that_lists_row(
 
 
 def _claiming(claim, peak_ids):
+    from mascope_backend.api.new.peak_assignments.prepasses import SourceIonHits
+
     """The claim stage taking ``peak_ids``, through the reagent pre-pass or the
     artifact one, with no row of its own; None claims nothing."""
     if claim == "reagent":
         return patch(
             "mascope_backend.api.new.peak_assignments.prepasses._reagent_assignments",
-            return_value=([], set(peak_ids), None),
+            return_value=([], set(peak_ids), None, SourceIonHits()),
         )
     if claim == "artifact":
         return patch(

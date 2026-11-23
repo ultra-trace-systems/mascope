@@ -2,7 +2,7 @@
 
 A species of the batch - a library ion or a listed compound, read across the
 partition of the batch its samples fold into - and what a run takes on the
-batch's word: the ions its reagent pre-pass claims (``batch_species_for``)
+batch's word: the ions it claims for the source (``batch_species_for``)
 and the listed compound's row at the batch's reading. The batch stage that
 decides them is ``batch_known_species``; ``batch_decisions`` reads them into
 a run.
@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -19,8 +20,10 @@ from sqlalchemy import select
 
 from mascope_backend.api.new.ionization.modes.versions import root_ids
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    ROLE_ISO_CHILD,
     ROLE_M0,
     ROLE_REAGENT,
+    SOURCE_ROLES,
     _intensity_variable,
     instrument_type_of,
     standing_known_species_record,
@@ -70,13 +73,79 @@ LISTED_CLAIM_TIER = TIER_CANDIDATE
 ALREADY = "already"
 
 
+#: Why a claim on the batch's word keeps a file's reading of a peak
+#: (:func:`claim_keeps`): a person assigned it; the target library named it;
+#: a reference list named it (a water-ladder rung's claim only); it is
+#: another reading's isotope line; another source claim took it; it carries
+#: isotope lines the claimed species cannot have.
+KEPT_HAND_ASSIGNED = "hand_assigned"
 KEPT_TARGET_LIBRARY = "target_library"
+KEPT_LISTED = "listed"
 KEPT_LINE_OF_ANOTHER = "line_of_another"
 KEPT_CLAIMED_OTHERWISE = "claimed_otherwise"
 KEPT_CARRIES_LINES = "carries_lines"
 #: Kept: the sample reads the species on a twin, another batch peak of the
 #: species' trace (:func:`settle_twins`).
 KEPT_ON_TWIN = "reads_on_twin"
+
+
+@dataclass(frozen=True)
+class PeakReading:
+    """What a claim on the batch's word asks of one file's reading of a peak,
+    read off a batch peak's member (the batch's own claims) or off a run's
+    rows on the peak (a run's claim, ``batch_decisions.claim_source_ions``).
+
+    :ivar hand: A person assigned the peak.
+    :ivar target: The reading names a compound of the workspace's target
+        library.
+    :ivar listed: The reading names a reference list's identity.
+    :ivar line_of_another: The peak is another reading's isotope line.
+    :ivar claimed_otherwise: Another source claim took the peak: a reagent,
+        artifact or fragment claim.
+    :ivar lines: The isotope lines the reading carries, as the caller's
+        ``owns_line`` reads them.
+    """
+
+    hand: bool = False
+    target: bool = False
+    listed: bool = False
+    line_of_another: bool = False
+    claimed_otherwise: bool = False
+    lines: tuple[Any, ...] = ()
+
+
+def claim_keeps(
+    reading: PeakReading,
+    *,
+    owns_line: Callable[[Any], bool],
+    keep_listed: bool = False,
+) -> Optional[str]:
+    """Why a claim on the batch's word keeps a file's reading of a peak, or
+    None where the claim takes it: the one rule the batch's own claims
+    (``batch_known_species.sample_decision``,
+    ``batch_water_ladder.sample_decision``) and a run's claim on the batch's
+    word (``batch_decisions.claim_source_ions``) read, in this order.
+
+    :param reading: What the file reads on the peak.
+    :param owns_line: Whether a line the reading carries is the claimed
+        species' own: one it can have, so the claim takes it with the peak.
+    :param keep_listed: Whether a reference list's reading keeps the peak: a
+        water-ladder rung's claim keeps one, a known species' does not.
+    :return: A ``KEPT_*`` reason, or None.
+    """
+    if reading.hand:
+        return KEPT_HAND_ASSIGNED
+    if reading.target:
+        return KEPT_TARGET_LIBRARY
+    if keep_listed and reading.listed:
+        return KEPT_LISTED
+    if reading.line_of_another:
+        return KEPT_LINE_OF_ANOTHER
+    if reading.claimed_otherwise:
+        return KEPT_CLAIMED_OTHERWISE
+    if not all(owns_line(line) for line in reading.lines):
+        return KEPT_CARRIES_LINES
+    return None
 
 
 # --- what is read -------------------------------------------------------------
@@ -139,6 +208,28 @@ class Member:
             and not self.formula
             and not self.owner_batch_peak_id
         )
+
+
+def member_reading(
+    member: Member, lines: Sequence[Any] = (), *, listed: bool = False
+) -> PeakReading:
+    """What a claim on the batch's word asks of a batch peak's member
+    (:func:`claim_keeps`).
+
+    :param lines: The isotope lines the members of the file that name the
+        batch peak as their owner carry.
+    :param listed: Whether the member's reading names a reference list's
+        identity.
+    """
+    return PeakReading(
+        hand=member.hand,
+        target=member.target,
+        listed=listed,
+        line_of_another=member.role == ROLE_ISO_CHILD
+        or bool(member.owner_batch_peak_id),
+        claimed_otherwise=member.role in SOURCE_ROLES,
+        lines=tuple(lines),
+    )
 
 
 @dataclass(frozen=True)
@@ -456,8 +547,8 @@ async def sample_partition(session, sample: Any) -> Partition:
 
 async def batch_species_for(sample: Any) -> list[BatchSpecies]:
     """The library ions a sample's batch decided present, in the sample's
-    partition: what its run's reagent pre-pass claims on the batch's word
-    (``reagent_pass.claim_batch_species``).
+    partition: what its run claims on the batch's word
+    (``batch_decisions.claim_source_ions``).
 
     One entry per ion: where the fold split an ion's trace over two batch
     peaks, the decision lets one claim it and holds the other
@@ -507,12 +598,17 @@ __all__ = [
     "ALREADY",
     "KEPT_CARRIES_LINES",
     "KEPT_CLAIMED_OTHERWISE",
+    "KEPT_HAND_ASSIGNED",
     "KEPT_LINE_OF_ANOTHER",
+    "KEPT_LISTED",
     "KEPT_ON_TWIN",
     "KEPT_TARGET_LIBRARY",
     "LISTED_CLAIM_TIER",
     "Member",
+    "PeakReading",
     "Species",
+    "claim_keeps",
+    "member_reading",
     "batch_species_for",
     "listed_species_row",
     "sample_partition",

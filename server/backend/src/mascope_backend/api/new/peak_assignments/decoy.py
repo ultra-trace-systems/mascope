@@ -126,6 +126,11 @@ class DecoyPlan:
     :param named_context: What the control's batch and dataset named when it
         ran (:func:`recorded_named_context`), which the decoy resolves its
         chemistry under instead of what they name now.
+    :param control_source_claims: The peaks the control claimed for the
+        source on its batch's word, which the decoy claims and no other
+        (``batch_decisions.claim_source_ions``): a run claims them after its
+        Stage A, on what its own rows read, and an arm's rows read otherwise.
+        None where they were not read, and the arm then asks its own rows.
     """
 
     decoy: PeakAssignmentDecoy
@@ -136,6 +141,7 @@ class DecoyPlan:
     mechanisms: tuple[SimpleNamespace, ...] = ()
     swapped: dict[str, str | None] = field(default_factory=dict)
     named_context: NamedContext = NamedContext()
+    control_source_claims: frozenset[str] | None = None
 
     def record(self) -> dict:
         """What the decoy run records about it (:data:`DECOY_ARM_KEY`)."""
