@@ -1101,6 +1101,11 @@ trend = read_export_csv("calibration-trend-instrument-pos.csv", sep=",")
 frame = unescape_frame(pd.read_csv("peaks.csv", sep=";"))
 ```
 
+`read_export_csv` raises a `ValueError` for a file whose last line begins
+`# Mascope: this export stopped part way` (`csv_cells.INCOMPLETE_MARK`): the
+calibration trend's export ends so when it fails after its download began,
+and its rows are then not the whole table.
+
 A text that really begins with an apostrophe followed by one of those six
 characters comes back without it; it is the one case that does not
 round-trip. `escape_frame` and `escape_cell` write the same prefix, for a

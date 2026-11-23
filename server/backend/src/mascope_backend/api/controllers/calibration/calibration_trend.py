@@ -74,7 +74,7 @@ from mascope_backend.api.new.workspaces.dependencies import (
 )
 from mascope_backend.db import SampleFile, TargetCollection, async_session
 from mascope_backend.runtime import runtime
-from mascope_sdk.csv_cells import escape_cell
+from mascope_sdk.csv_cells import INCOMPLETE_LINE, escape_cell
 
 
 #: The window a trend reads when it is given no start: this many days before
@@ -1255,6 +1255,10 @@ async def _export_body(
     in a worker thread (:func:`_csv_piece`). The database session is opened
     when the first piece of files is asked for, and closed with the body
     (``ClosingStreamingResponse``), however the response ends.
+
+    A failure part way is logged and ends the body with
+    :data:`~mascope_sdk.csv_cells.INCOMPLETE_LINE` after the last whole
+    piece, which ``read_export_csv`` refuses: the status is sent by then.
     """
     yield csv_text([list(EXPORT_COLUMNS)])
     try:
@@ -1275,13 +1279,15 @@ async def _export_body(
             async for rows in result.partitions():
                 yield await asyncio.to_thread(_csv_piece, rows, names)
     except Exception:
-        # The response has started: its status cannot say so any more.
+        # The response has started: its status cannot say so any more, and
+        # the app's middleware ends the body cleanly whatever is raised. So
+        # the file itself says it stopped, after its last whole row.
         runtime.logger.exception(
             f"Exporting the calibration trend of instrument '{instrument}' "
-            f"({polarity}) failed part way; the response went out as a 200 "
-            "whose CSV stops there"
+            f"({polarity}) failed part way; the CSV ends with the line that "
+            "says so"
         )
-        raise
+        yield INCOMPLETE_LINE + "\n"
 
 
 @api_controller()

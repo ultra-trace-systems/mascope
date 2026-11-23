@@ -11,7 +11,7 @@ from mascope_sdk import (
     unescape_cell,
     unescape_frame,
 )
-from mascope_sdk.csv_cells import FORMULA_STARTS
+from mascope_sdk.csv_cells import FORMULA_STARTS, INCOMPLETE_LINE
 
 
 # The six starts the convention names, spelled out rather than read from the
@@ -119,3 +119,27 @@ def test_a_written_export_reads_back_as_typed(tmp_path, sep):
         "b",
     ]
     assert back["mz"].tolist() == [-1.5, 2.0, 3.0, 4.0, 5.0, 6.0]
+
+
+@pytest.mark.parametrize("end", ["", "\n", "\r\n", "\n\n"])
+def test_an_export_that_stopped_part_way_is_refused(tmp_path, end):
+    """Also when it was saved again with a blank line or two after the mark."""
+    path = tmp_path / "cut.csv"
+    path.write_text(f"name,mz\nSpring,1.5\n{INCOMPLETE_LINE}{end}")
+
+    with pytest.raises(ValueError, match="stopped part way"):
+        read_export_csv(path, sep=",")
+
+
+def test_the_mark_holds_no_column_separator():
+    """A spreadsheet shows the line in one cell, whichever the separator."""
+    assert "," not in INCOMPLETE_LINE and ";" not in INCOMPLETE_LINE
+
+
+def test_an_export_that_names_the_mark_in_a_row_before_its_end_reads(tmp_path):
+    path = tmp_path / "whole.csv"
+    path.write_text(f"name,mz\n{INCOMPLETE_LINE},1.5\nSpring,2.5\n\n")
+
+    back = read_export_csv(path, sep=",")
+
+    assert back["mz"].tolist() == [1.5, 2.5]

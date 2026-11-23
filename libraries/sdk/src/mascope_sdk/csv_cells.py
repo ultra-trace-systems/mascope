@@ -17,6 +17,11 @@ The server writes its exports with :func:`escape_cell` and
 wrote it, and :func:`unescape_cell` and :func:`unescape_frame` undo the
 prefix for a file read some other way. ``docs/user/concepts/tables.md``
 describes the convention for readers outside Python.
+
+An export that is sent while it is read, the calibration trend's, cannot
+change its status once the first rows are out. If it fails part way, its
+last line is :data:`INCOMPLETE_LINE` instead, and :func:`read_export_csv`
+refuses such a file rather than read the rows above it as the whole table.
 """
 
 from __future__ import annotations
@@ -32,6 +37,26 @@ FORMULA_STARTS = ("=", "+", "-", "@", "\t", "\r")
 
 #: The prefix that shows such a cell as text.
 PREFIX = "'"
+
+#: How the last line of an export that stopped part way begins. No data row
+#: of the export that writes it can: its first cell is a timestamp.
+INCOMPLETE_MARK = "# Mascope: this export stopped part way"
+
+#: The last line of an export that stopped part way, after its last whole
+#: row. It holds no column separator, so a spreadsheet shows it in one cell.
+INCOMPLETE_LINE = (
+    INCOMPLETE_MARK + ": the rows above are not the whole table. Export it again."
+)
+
+
+def _last_line(path: str | os.PathLike) -> str:
+    """The file's last line that is not blank, or an empty text."""
+    with open(path, "rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        handle.seek(max(0, handle.tell() - 4096))
+        tail = handle.read().decode("utf-8", errors="replace")
+    lines = [line for line in tail.splitlines() if line.strip()]
+    return lines[-1] if lines else ""
 
 
 def escape_cell(value: Any) -> Any:
@@ -112,5 +137,12 @@ def read_export_csv(
     :param kwargs: Passed on to :func:`pandas.read_csv`.
     :return: The table, every text cell with the export's apostrophe removed
         (:func:`unescape_frame`).
+    :raises ValueError: The file ends with :data:`INCOMPLETE_LINE`: the export
+        stopped part way, and its rows are not the whole table.
     """
+    if _last_line(path).startswith(INCOMPLETE_MARK):
+        raise ValueError(
+            f"{os.fspath(path)} is an export that stopped part way: its rows "
+            "are not the whole table. Export it again."
+        )
     return unescape_frame(pd.read_csv(path, sep=sep, **kwargs))
