@@ -239,7 +239,7 @@ def _summary(
             "mz": float(row.mz),
             "total": common.number(row.total),
             "n_keys": int(row.n_keys),
-            "presence": common.number(row.n / row.n_samples) if row.n_samples else None,
+            "presence": common.presence(row.n, row.n_samples),
             "species": common.species(row.key, row.name, row.formula),
             "share": common.number(row.share),
         }
@@ -250,8 +250,8 @@ def _summary(
     )
     top_columns = [
         {
-            "t": common.iso(row.t, zone),
-            "end": common.iso(row.t_end, zone),
+            "t": common.at(row.t, zone),
+            "end": common.at(row.t_end, zone),
             "total": common.number(row.total),
             "n_samples": int(row.n_samples),
         }

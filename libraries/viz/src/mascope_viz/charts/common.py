@@ -24,11 +24,12 @@ note's phase 2), with helpers of their own below:
 
 The composition charts (spectrogram, period spectrum, Van Krevelen) add
 what they alone need: the note that the store holds the assigned peaks
-only (:data:`ASSIGNED_ONLY`), the normaliser's members and completeness in
-the summary (:func:`normaliser_fields`), and why a chart has nothing to
-draw: whether the store holds no assigned peak (no batch ledger, or none
-its runs left) or the window holds none (:func:`empty_notes`), so an empty
-frame is not taken for a rendering fault.
+only (:data:`ASSIGNED_ONLY`), and why a chart has nothing to draw: whether
+the store holds no assigned peak (no batch ledger, or none its runs left)
+or the window holds none (:func:`empty_notes`), so an empty frame is not
+taken for a rendering fault. Their summaries, as the species charts',
+carry the normaliser's members and completeness beside the face
+(:func:`normaliser_fields`).
 """
 
 import math
@@ -311,6 +312,22 @@ def face(
     }
 
 
+#: The fields :func:`normaliser_fields` adds to a summary's
+#: :data:`FACE_FIELDS`.
+NORMALISER_FIELDS = ("normalise_members", "normalise_complete")
+
+
+def normaliser_fields(attrs: Mapping[str, Any]) -> dict[str, Any]:
+    """What a view's normaliser is made of, for a summary beside
+    :func:`face`: the keys divided by (one for a single key, a sum's
+    members, none for ``none`` and ``tic``), and the share of the samples
+    in which every one of them had a value."""
+    return {
+        "normalise_members": list(attrs.get("normalise_members") or []),
+        "normalise_complete": number(attrs.get("normalise_complete")),
+    }
+
+
 def duration_text(value: Any) -> str:
     """A duration as a reader writes it: ``1h``, ``30min``, ``2 days``."""
     step = pd.Timedelta(value)
@@ -454,8 +471,7 @@ def summary(
         "species": entries,
         "requested": resolved.given,
         **face(attrs, zone, start=start, end=end),
-        "normalise_members": list(attrs.get("normalise_members") or []),
-        "normalise_complete": number(attrs.get("normalise_complete")),
+        **normaliser_fields(attrs),
         "same_ion": [same.to_dict() for same in resolved.same_ion],
         **extra,
     }
@@ -538,28 +554,6 @@ ASSIGNED_ONLY = (
     "formula, seen in two samples at least, without their isotopologues; "
     "unassigned signal is not in it."
 )
-
-#: The fields :func:`normaliser_fields` adds to a summary's
-#: :data:`FACE_FIELDS`.
-NORMALISER_FIELDS = ("normalise_members", "normalise_complete")
-
-
-def normaliser_fields(attrs: Mapping[str, Any]) -> dict[str, Any]:
-    """What a view's normaliser is made of, for a summary beside
-    :func:`face`: the keys divided by (one for a single key, a sum's
-    members, none for ``none`` and ``tic``), and the share of the samples
-    in which every one of them had a value."""
-    return {
-        "normalise_members": list(attrs.get("normalise_members") or []),
-        "normalise_complete": attrs.get("normalise_complete"),
-    }
-
-
-def iso(value: Any, zone: str | None) -> str | None:
-    """A time as ISO 8601 with its offset in *zone* (UTC when none); None
-    for none."""
-    at = moment(value, zone or "UTC")
-    return None if at is None else at.isoformat()
 
 
 def wall(value: Any, zone: str | None) -> str:
