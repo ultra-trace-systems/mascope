@@ -1,7 +1,7 @@
 - **The target a peak was matched to reads as a candidate beside the reference
-  list.** The peak inspector, the assignment ledger's *listed as* column and the
-  *Batch peaks* ledger show *target* and the target compound's name beside the
-  reference list's name. Where a list names the same structure (the same
+  list.** The peak inspector, the assignment ledger's **Compound** column and
+  the *Batch peaks* ledger show *target* and the target compound's name beside
+  the reference list's name. Where a list names the same structure (the same
   InChIKey) it is one candidate shown once with both labels; a structure no
   loaded list carries reads *unlisted*. The tooltip says which candidate is
   which: what the target stands for, not what the peak is. The verdict forms

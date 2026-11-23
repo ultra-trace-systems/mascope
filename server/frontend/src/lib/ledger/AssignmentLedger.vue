@@ -792,13 +792,6 @@ const engineChipTooltip = (row) =>
 .ledger :deep(.formula) {
   font-family: var(--font-mono);
 }
-/* The copy button sits between the formula and its markers in source order,
-   and it reserves its space even while hidden - which would strand the "+N" a
-   button's width away from the formula it counts for. Ordering it last in the
-   flex row puts the markers back against the formula. */
-.ledger :deep(.formula button) {
-  order: 1;
-}
 /* The family's caret: quiet, its count beside the chevron. */
 .family-caret {
   display: inline-flex;

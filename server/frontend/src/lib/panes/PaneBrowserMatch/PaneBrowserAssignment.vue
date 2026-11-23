@@ -837,8 +837,9 @@ const HEADERS = {
         <p>
         What the ledger's rows show, rather than what it is reading.
         <b>Isotopologue lines</b> unfolds each compound's isotopologue peaks -
-        folded into the <b>+N</b> marker by default - as indented rows under
-        their main peak (M0), each named by its substitution. <b>Roles</b>
+        folded under the caret and line count beside the formula by default -
+        as indented rows under their main peak (M0), each named by its
+        substitution. <b>Roles</b>
         shows the reagent's and the artifacts' peaks; off, the ledger lists
         the sample's compounds and the peaks nothing explained.
         </p>
