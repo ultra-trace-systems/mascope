@@ -543,8 +543,9 @@ The rest of each record is its own, so the residual and ion issues are the store
 - The corrected set raises no coverage issue: on no file do the strong peaks reach past 1.14
   widths.
 - The old set raises it on 1,080 files (48%), those whose strong peaks reach past 375 Th: up to
-  625 Th, 2.23 widths past. On the rest the peaks end lower, at the median at 286 Th, 0.82 widths
-  past.
+  625 Th, 2.23 widths past. On the rest the peaks end lower: their median file is the 26th
+  percentile of all files, just past the quartile at 0.77 widths, 276 Th. The table's 0.82 widths,
+  286 Th, is the median of all 2,241.
 
 **What it shows.**
 
