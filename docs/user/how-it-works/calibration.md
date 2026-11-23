@@ -348,9 +348,10 @@ Matching and peak assignment trust a calibrated file's mass axis, so after a fit
 
 | Criterion | Orbitrap | TOF |
 |---|---|---|
-| Mean post-calibration $\lvert m/z \rvert$ error | at most 1 ppm | at most 10 ppm |
-| Correction made by a fit nothing corroborates (one point, or two isotopes of one ion) | at most 10 ppm | at most 10 ppm |
-| Distinct calibrant ions, for a fit on 3 or more points | at least 2 | at least 2 |
+| Mean post-calibration $\lvert m/z \rvert$ error | at most 1 ppm | at most 7 ppm |
+| Correction made by a fit nothing corroborates (one point, or two isotopes of one ion) | at most 10 ppm | not trusted: see the points below |
+| Calibration points | any, within the correction above | at least 3 for the square-root model, 4 for the three-parameter one |
+| Distinct calibrant ions | at least 2, for a fit on 3 or more points | at least 3 for the square-root model, 4 for the three-parameter one |
 | Share of the collection's lines the fit kept | not checked | at least 40% |
 | How far the strong peaks reach past the lines kept | not checked | at most 1.25 widths of the span, on the square-root scale |
 
@@ -358,6 +359,18 @@ One or two calibration points are common for narrow mass ranges and EasyIC.
 Two points from different ions check each other, so such a fit is judged on its error alone.
 A single point (or two isotopes of one ion) cannot, so it is trusted only while the correction it makes is small: a single calibrant that moves the axis tens of ppm has most likely been matched to the wrong peak.
 The correction is measured from the axis the instrument wrote, so recalibrating a file an earlier fit moved does not hide it.
+
+A TOF fit is held to its model instead.
+A model passes through as many points as it has parameters, whatever peaks they sit on, so only a point beyond those can disagree with the rest.
+On a TOF a calibrant's place on the axis is its ion: the two lines of a bromide ion, 2 Th apart, read the axis at one place.
+So a TOF fit must keep a point more than its model has parameters, from as many ions: three for the square-root model, four for the three-parameter one.
+A fit on the two lines of $\mathrm{Br^-}$ and the lines of $\mathrm{Br_3^-}$ is five points at two places on the axis, and is flagged.
+The calibration step itself never fits a TOF on fewer points than its model needs.
+
+The TOF limit on the mean error is read off the fleet's TOF instruments.
+Per instrument and mode, the typical fit leaves 0.5 to 3.8 ppm, and three fits in four stay within 4.5 ppm.
+The two noisiest modes, a propylamine TOF and a bromide APi-TOF, spread enough that the upper fence of their own fits lies at 6.6 and 6.9 ppm: the upper quartile plus 1.5 times the interquartile range (Tukey, *Exploratory Data Analysis*, Addison-Wesley, 1977).
+A TOF fit past 7 ppm reads worse than even those instruments' fits do.
 
 A TOF fit must also keep at least 40% of the lines its calibration collection offers.
 Up to version 2 of the calibration step, when the axis the instrument wrote was further off than the refine window, a calibrant's own peak was not where matching looked for it.
@@ -412,7 +425,7 @@ What happens next is a server setting, `calibration_quality_gate` in the `[backe
 - `"enforce"`: the sample is left out of matching and peak assignment until it is recalibrated, or until an operator accepts the fit in the calibration dialog. An accepted fit is used downstream, and the sample keeps a warning badge saying so.
 
 Run on `"warn"` first and look at which ionization modes the amber badges gather in.
-Usually the lasting fix is in the calibration collection: two calibrants that disagree by a couple of ppm need a third, so that three or more points from at least two ions are found across the mass range.
+Usually the lasting fix is in the calibration collection: two calibrants that disagree by a couple of ppm need a third, so that three or more points from at least two ions are found across the mass range, and on a TOF from at least three ions.
 Once the badges are rare, switch to `"enforce"`.
 
 TOF files arrive carrying the axis the acquisition software wrote.
