@@ -34,6 +34,19 @@ ISOTOPE_MATCHING_INTENSITY_TOLERANCE = 0.4
 # M+1 line of an organic ion is over it, and a C20 dibromide's merged lines,
 # each the sum of tens of members, come out within 2% of their whole share.
 UNRESOLVED_MEMBER_DEPTH = 1e-3
+# How far from a merged line's dominant member another member adds to the line
+# on a file whose intensity is a peak's height, an Orbitrap's, in FWHM
+# (`line_model.HeightResolution`). A member further off sits on the dominant
+# member's flank and adds little to the apex: at 0.44 FWHM the [29Si]2 line of a
+# siloxane's M+2 peak adds almost nothing, and the dominant member alone
+# predicts the peak within 3 % (mascope#3338). Lines much closer still add: the
+# 13C and 17O lines are 0.16 to 0.19 FWHM apart at m/z 400 to 450 on the demo's
+# Orbitrap, the 17O line 1.4 to 1.9 % of the 13C line's share there. On the
+# demo's Du and Db sets 0.1, 0.2 and 0.3 tie on the median absolute abundance
+# error of the merged lines (0.071 pooled, every paired difference's 95 % interval
+# across zero); 0.2 is the smallest that still adds the 17O line (MAS-1040, the
+# plan log's block "After step 5.3b").
+HEIGHT_SUM_SPAN = 0.2
 
 
 # Wiley spectral database:

@@ -118,7 +118,6 @@
         "heuristic_filter.py:score_ion_envelopes": 161,
         "heuristic_filter.py:score_pattern_v2": 181,
         "heuristic_filter.py:score_patterns_v2": 132,
-        "line_model.py:resolve_lines": 101,
         "reagents.py:match_ion_ladders": 298,
         "reagents.py:match_reagent_clusters": 121,
         "scoring.py:score_candidates": 133
