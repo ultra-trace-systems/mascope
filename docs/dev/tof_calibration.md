@@ -475,6 +475,113 @@ last file (804 at the baseline's count).
 above 234 Th on B2 nitrate. Why most files of B2's other ambient/zero mode, and of B1's, end
 `done`: the screen reads no file of a mode without a collection.
 
+### The quality bar on site files on 2026-11-23
+
+The stored record of every TOF file of both sites from 2026-10-24 to 11-22, judged by two bars:
+develop's at `03cf94af2`, and the one MAS-189 sets (section 4, "3 · Keep it right"). It ran
+read-only on the sites, releases v1.16.0 and v1.16.1, through the database's read-only role, with
+the app's own bar code carried in the job (MAS-189). It refit nothing. Each file's record was
+judged as it is stored, with the reach of its strong peaks read from its peak store as the app
+reads it.
+
+- *Judged*: files whose record is a fit with a quality block. Every one is a mode-0 fit: no site
+  release fits mode 2 yet.
+- No record of these releases keeps the collection's line count, so the kept-line share is not
+  judged. Records from before MAS-182 keep no span and are not judged on coverage: all of TOF H's
+  propylamine files, 508 of TOF M's, 130 of B3's and 15 of B2's.
+- *Two ions*: fits on three points or more from two ions, flagged by this bar's ion floor. No fit
+  kept fewer than three points, so the point floors flag nothing.
+- *Past 1.25 widths*: files flagged `extrapolated`, of those judged on coverage.
+- *Develop's bar*, *this bar*: files flagged by each bar as a whole.
+
+| Site | Instrument, mode | Files | Days | Judged | Post-fit error, ppm, median (q90) | > 10 ppm | > 7 ppm | Two ions | Past 1.25 widths | Develop's bar | This bar | Only this bar |
+| -- | -- | --: | --: | --: | --: | --: | --: | --: | --: | --: | --: | --: |
+| A | TOF H, propylamine (+) | 641 | 5 | 631 | 3.5 (7.0) | 13 | 64 | 2 | – | 13 | 65 | 52 |
+| A | TOF H, nitrate (−) | 814 | 8 | 814 | 9.3 (19.7) | 356 | 502 | 0 | 479 of 814 | 612 | 675 | 63 |
+| A | TOF M, nitrate (−) | 1,393 | 14 | 1,393 | 1.5 (2.7) | 0 | 0 | 0 | 884 of 885 | 884 | 884 | 0 |
+| B | B1, nitrate (−) | 1,466 | 24 | 1,466 | 5.3 (6.4) | 3 | 60 | 0 | 910 of 1,466 | 913 | 960 | 47 |
+| B | B1, bromide (−) | 1,446 | 24 | 1,446 | 2.1 (3.6) | 20 | 48 | 492 | 1,446 of 1,446 | 1,446 | 1,446 | 0 |
+| B | B1, ambient | 1,459 | 24 | 0 | unfitted |  |  |  |  |  |  |  |
+| B | B2, bromide (−) | 10 | 2 | 9 | 2.8 (3.7) | 0 | 0 | 0 | 0 of 1 | 0 | 0 | 0 |
+| B | B2, nitrate (−) | 8 | 2 | 8 | 0.8 (1.0) | 0 | 0 | 0 | 0 of 1 | 0 | 0 | 0 |
+| B | B2, ambient/zero, both | 16 | 1 | 0 | unfitted |  |  |  |  |  |  |  |
+| B | B3, nitrate (−) | 668 | 29 | 667 | 1.8 (2.2) | 0 | 0 | 0 | 515 of 537 | 515 | 515 | 0 |
+
+The job numbers instruments and modes by file count; they are named here by polarity, span and
+ion count. TOF M's bromide/nitrate mode had no files in the window, and B2 only 34 on two days.
+Of the 6,434 judged files, develop's bar flags 4,383 (68%) and this one 4,545 (71%).
+
+Each threshold at other values, files above each:
+
+| Instrument, mode | Judged | > 4 ppm | > 5 | > 6 | > 7 | > 8 | > 10 |
+| -- | --: | --: | --: | --: | --: | --: | --: |
+| A TOF H, propylamine (+) | 631 | 260 | 185 | 116 | 64 | 28 | 13 |
+| A TOF H, nitrate (−) | 814 | 632 | 562 | 524 | 502 | 471 | 356 |
+| A TOF M, nitrate (−) | 1,393 | 16 | 3 | 1 | 0 | 0 | 0 |
+| B B1, nitrate (−) | 1,466 | 1,367 | 945 | 256 | 60 | 19 | 3 |
+| B B1, bromide (−) | 1,446 | 118 | 87 | 63 | 48 | 36 | 20 |
+
+| Instrument, mode | Judged on coverage | Strong peaks to, median | > 1.0 widths | > 1.25 | > 1.5 | > 2.0 |
+| -- | --: | --: | --: | --: | --: | --: |
+| A TOF H, nitrate (−) | 814 | 462 Th | 721 | 479 | 180 | 77 |
+| A TOF M, nitrate (−) | 885 | 664 Th | 884 | 884 | 874 | 211 |
+| B B1, nitrate (−) | 1,466 | 450 Th | 923 | 910 | 593 | 158 |
+| B B1, bromide (−) | 1,446 | 707 Th | 1,446 | 1,446 | 1,437 | 1,365 |
+| B B3, nitrate (−) | 537 | 764 Th | 534 | 515 | 454 | 339 |
+
+B3 reads nothing over 4 ppm. B2 reads nothing over 4 ppm and has one file past 1 width.
+
+**TOF H's two sets.** Every propylamine file of the 90 days from 2026-08-25, judged by this bar
+with each set's span in place of the record's: 2,241 judged files on 18 days, 09-24 to 10-28.
+The rest of each record is its own, so the residual and ion issues are the stored fit's.
+
+| Span | Past the top, median (max) | `extrapolated` | Flagged |
+| -- | --: | --: | --: |
+| Corrected, 41–228 Th | 0.21 (1.14) | 0 | 173: residual 171, ions 3 |
+| Old, 41–148 Th | 0.82 (2.23) | 1,080 | 1,093 |
+
+- The corrected set raises no coverage issue: on no file do the strong peaks reach past 1.14
+  widths.
+- The old set raises it on 1,080 files (48%), those whose strong peaks reach past 375 Th: up to
+  625 Th, 2.23 widths past. On the rest the peaks end lower, at the median at 286 Th, 0.82 widths
+  past.
+
+**What it shows.**
+
+- **No threshold moves.** None flags most files of a mode whose fits the baseline shows to be
+  right.
+- **7 ppm** adds 52 of TOF H's propylamine files (8%), 47 of B1's nitrate files (3%) and 63 of
+  TOF H's nitrate files to what develop's bar flags. Nothing else.
+  - TOF H's nitrate mode is not in the baseline. Its fits read 9.3 ppm at the median and 18 ppm
+    at the upper quartile, where every other nitrate mode reads 0.8–5.3 ppm. Develop's 10 ppm
+    already flags 44% of them: these fits are off, whatever the bar.
+  - TOF H's propylamine fits spread wider than in the baseline: an upper quartile of 5.3 ppm
+    against about 4.2. They are mode-0 fits, and MAS-183's check keeps mode 2 on most of TOF H's
+    files once a release fits it.
+  - B1's nitrate fits read higher than in the baseline: a median of 5.3 ppm against 3.5. 4% of
+    them are over 7 ppm, 1% over 8.
+- **The ion floor** flags 492 of B1's bromide fits (34%), which keep two ions, and two of TOF H's.
+  Every one of those B1 fits is flagged `extrapolated` already, so the mode's verdict does not
+  change.
+- **The coverage check** flags most files of five modes: 59% of TOF H's nitrate files, 62% of
+  B1's, 96% of B3's, all but one of TOF M's, and all of B1's bromide files.
+  The baseline reads these axes off past their top calibrant: B1 nitrate +10 to +16 ppm at
+  150–300 Th, B3 +8 at 200–300 Th, TOF M nitrate +6 to +19 at 500–1,000 Th. So it flags the short
+  sets of milestone 1, not a strict threshold. At 2 widths it would still flag 94% of B1's bromide
+  files and 63% of B3's. And TOF H's corrected set raises nothing only under a threshold above
+  1.14 widths: 1.25 is the tightest value counted that clears it.
+- **Enforcing the TOF bar now would leave most files out.** Under `enforce`, 63–100% of the files
+  of five modes would leave matching, mostly for coverage, until their sets reach higher
+  (milestone 1).
+- **A calibration transfer (MAS-187) takes only fits that clear the bar as its sources.** So B1's
+  ambient files could draw on 35% of its nitrate fits under this bar, 38% under develop's, and on
+  none of its bromide fits
+  ([#3512](https://github.com/ultra-trace-systems/mascope/issues/3512)).
+
+**Not measured.** The kept-line share, and the floors of mode 2, on site files: no site release
+records either. Coverage on TOF H's propylamine records of the 30 days, which keep no span. How
+many of TOF H's residual flags a mode-2 refit would clear.
+
 ## 3. How TOF calibration works today
 
 The node is `TofCalibrationHandler` in
@@ -883,8 +990,12 @@ Code, shipped in releases.
     five ions.
   - *Coverage* stays at 1.25 widths (MAS-184), and the *kept-line share* at 40% (MAS-586).
   - *Hygiene flags* (MAS-185) are not built yet, so none is set here.
-  - The site counts per instrument, each threshold on its own and the bar as a whole against
-    develop's, come from MAS-189's prod job; the table is below once it has run.
+  - On the site files of 2026-10-24 to 11-22 no threshold flags most files of a mode whose fits
+    are right, so none moved. 7 ppm adds 3–8% of the files of TOF H's propylamine and B1's
+    nitrate modes to what 10 ppm flagged. The ion floor flags a third of B1's bromide fits, all
+    flagged by the coverage check already. TOF H's corrected set raises no coverage issue, its old set raises it on every file
+    whose strong peaks reach past 375 Th. The counts per instrument are in section 2, "The quality
+    bar on site files on 2026-11-23".
 - **A calibration trend per instrument**: calibrant residuals and the raw-axis offset over time,
   so a calibrant that starts to read off, or a chemistry change that moves a neighbour onto it,
   shows (MAS-190). On TOF H, 246 and 248 Th moved by 14 and 35 ppm in one week.
