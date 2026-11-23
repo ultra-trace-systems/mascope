@@ -775,6 +775,78 @@ async def test_a_sample_with_a_run_is_searched_at_that_runs_line_tolerance(
     ]
 
 
+async def test_a_run_from_before_the_one_record_caps_nothing_its_stage_a_did_not_measure(
+    async_session_factory, folded_batch, stubbed_engine, monkeypatch
+):
+    # Pinned as it stands, by the plan owner's call (GitHub #3363): a run from
+    # before the one measurement record kept Stage A's scoring snapshot and the
+    # mass gate's calibration apart. Where its Stage A measured nothing (the
+    # class's width and the reagent lines' centre stood in), the search reads
+    # the sample at that snapshot alone, refits nothing on it, and so caps
+    # nothing off calibration and gives no row a mass z - even though the
+    # run's own mass gate measured the sample and capped. Before the record,
+    # the search judged at that calibration. Such a sample is assigned again
+    # before its batch is searched (docs/maintaining.md, "Peak assignment").
+    # A change here is a change to that upgrade note.
+    samples = folded_batch["samples"]
+    now = datetime.now(timezone.utc)
+    config = {
+        "run_untargeted": True,
+        "pattern_scoring": _scoring(-1.2, "reagent", "instrument_class", _CLASS_WIDTH),
+        "mass_calibration": {
+            "applied": True,
+            "mu_ppm": -1.1,
+            "sigma_ppm": 0.4,
+            "anchors": 9,
+            "capped": 3,
+        },
+    }
+    async with async_session_factory() as session:
+        session.add(
+            PeakAssignmentRun(
+                peak_assignment_run_id=gen_id(),
+                sample_item_id=samples["S1"],
+                engine=IN_APP_ENGINE,
+                engine_version="0.1.0-test",
+                status="completed",
+                config=config,
+                peak_assignment_run_utc_created=now - timedelta(minutes=30),
+            )
+        )
+        await session.commit()
+    passes = []
+    run_stages = pipeline.run_stages
+
+    async def recording(ctx):
+        passes.append(ctx)
+        return await run_stages(ctx)
+
+    monkeypatch.setattr(batch_untargeted, "run_stages", recording)
+
+    await run_batch_untargeted_search(folded_batch["batch_id"], PeakAssignmentConfig())
+
+    [searched] = [ctx for ctx in passes if ctx.path is pipeline.BATCH_SEARCH]
+    assert searched.sample.sample_item_id == samples["S1"]
+    # The snapshot is read as a record: v1, at the reagent lines' centre and
+    # the class's width, the calibration's centre and width ignored.
+    assert searched.model_recorded is True
+    assert searched.model.version == 1
+    assert (searched.model.mu_source, searched.model.mu_ppm) == ("reagent", -1.2)
+    assert searched.model.sigma_ppm is None
+    assert not searched.model.measured
+    # Nothing refitted it, so the gate stood down where it stood.
+    assert searched.judging.refits is False
+    gate = searched.judged.mass_calibration
+    assert gate["applied"] is False
+    assert gate["inherited"] is True
+    assert gate["committed"] > 0
+    assert gate["capped"] == 0
+    assert searched.judged.model is searched.model
+    assert not any(
+        "mass_z" in (row.get("provenance") or {}) for row in searched.judged.rows
+    )
+
+
 async def test_the_propagation_runs_every_stage_of_the_list(
     folded_batch, stubbed_engine, monkeypatch
 ):
