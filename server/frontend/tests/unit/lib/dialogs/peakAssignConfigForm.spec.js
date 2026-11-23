@@ -3,13 +3,12 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { reactive } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 
-// The launcher form after its values moved into the shared parameter store: it
-// no longer owns a config object the caller hands it, so what is worth pinning
-// is the wiring the move created - the fields bind the shared record, and the
-// reset control clears exactly the fields this form shows. A form that reset
-// fields it does not render would silently discard the search pane's settings,
-// or the other launcher's, from a button whose label promises nothing of the
-// kind.
+// The run configuration form, bound to the model its caller hands it (a
+// batch's settings, or a launch seeded from them): the fields show and write
+// that model, the reset control clears exactly the fields this form shows, and
+// the chemistry says what `auto` resolves to. A form that reset fields it does
+// not render would silently discard a setting the caller decided, from a button
+// whose label promises nothing of the kind.
 
 const SERVED = {
   run_untargeted: true,
@@ -109,8 +108,16 @@ const stubs = {
   FloatLabel: { template: '<div><slot /></div>' }
 }
 
+// The model the last form mounted without one of its own was bound to: the
+// served defaults, as a caller seeds it.
+let bound
+
 async function mountForm(props = {}) {
-  const wrapper = mount(PeakAssignConfigForm, { props, global: { stubs } })
+  bound = props.model ?? reactive({ ...SERVED })
+  const wrapper = mount(PeakAssignConfigForm, {
+    props: { ...props, model: bound },
+    global: { stubs }
+  })
   await flushPromises()
   return wrapper
 }
@@ -127,23 +134,12 @@ beforeEach(() => {
 })
 
 describe('PeakAssignConfigForm', () => {
-  it('opens on the shared values rather than filling a config the caller owns', async () => {
+  it('loads the served defaults and bounds it offers', async () => {
     const store = usePeakAssignParams()
     await mountForm()
 
-    expect({ ...store.params }).toEqual(SERVED)
     expect(store.loaded).toBe(true)
-  })
-
-  it('carries a value set elsewhere into the fields', async () => {
-    // Set in the search pane, or in the other launcher, or last session.
-    const store = usePeakAssignParams()
-    await store.ensureLoaded()
-    store.params.mz_precision_ppm = 8
-
-    const wrapper = await mountForm()
-    const shown = wrapper.findAll('input[type="number"]').map((i) => i.element.value)
-    expect(shown).toContain('8')
+    expect(store.defaults).toEqual(SERVED)
   })
 
   it('hides the switch the caller decides for itself', async () => {
@@ -162,47 +158,40 @@ describe('PeakAssignConfigForm reset control', () => {
   })
 
   it('wakes up once a field is overridden, and puts it back', async () => {
-    const store = usePeakAssignParams()
     const wrapper = await mountForm()
 
-    store.params.max_alternatives = 9
+    bound.max_alternatives = 9
     await wrapper.vm.$nextTick()
     expect(resetButton(wrapper).attributes('disabled')).toBeUndefined()
 
     await resetButton(wrapper).trigger('click')
-    expect(store.params.max_alternatives).toBe(SERVED.max_alternatives)
-    expect(store.isDefault()).toBe(true)
+    expect(bound.max_alternatives).toBe(SERVED.max_alternatives)
+    await wrapper.vm.$nextTick()
+    expect(resetButton(wrapper).attributes('disabled')).toBeDefined()
   })
 
   it('leaves a hidden field alone - it was never this form to set', async () => {
-    // The batch launcher hides the untargeted switch because that button IS the
-    // stage. Its reset must not reach across and flip the per-sample launcher's
-    // switch back on, which is a setting made on a different screen.
-    const store = usePeakAssignParams()
-    await store.ensureLoaded()
-    store.params.run_untargeted = false
-    store.params.mz_precision_ppm = 8
+    // The batch's dialog hides the untargeted switch because its pass IS the
+    // stage. Its reset must not reach a field the caller decided.
+    const model = reactive({ ...SERVED, run_untargeted: false, mz_precision_ppm: 8 })
 
-    const wrapper = await mountForm({ hidden: ['run_untargeted'] })
+    const wrapper = await mountForm({ model, hidden: ['run_untargeted'] })
     await resetButton(wrapper).trigger('click')
 
-    expect(store.params.mz_precision_ppm).toBe(SERVED.mz_precision_ppm)
-    expect(store.params.run_untargeted).toBe(false)
+    expect(model.mz_precision_ppm).toBe(SERVED.mz_precision_ppm)
+    expect(model.run_untargeted).toBe(false)
   })
 
   it('stays inert when only a hidden field is overridden', async () => {
-    const store = usePeakAssignParams()
-    await store.ensureLoaded()
-    store.params.run_untargeted = false
+    const model = reactive({ ...SERVED, run_untargeted: false })
 
-    const wrapper = await mountForm({ hidden: ['run_untargeted'] })
+    const wrapper = await mountForm({ model, hidden: ['run_untargeted'] })
     expect(resetButton(wrapper).attributes('disabled')).toBeDefined()
   })
 })
 
 describe('PeakAssignConfigForm formula range', () => {
-  it('marks a half-typed range invalid and keeps it out of the shared record', async () => {
-    const store = usePeakAssignParams()
+  it('marks a half-typed range invalid and keeps it out of the model', async () => {
     const wrapper = await mountForm()
     const field = wrapper.find('input.text')
 
@@ -210,18 +199,17 @@ describe('PeakAssignConfigForm formula range', () => {
     await field.trigger('blur')
 
     expect(wrapper.find('input.text').attributes('data-invalid')).toBe('true')
-    expect(store.params.formula_ranges).toBe(SERVED.formula_ranges)
+    expect(bound.formula_ranges).toBe(SERVED.formula_ranges)
   })
 
   it('commits a range that parses', async () => {
-    const store = usePeakAssignParams()
     const wrapper = await mountForm()
     const field = wrapper.find('input.text')
 
     await field.setValue('C0-40 H0-80 [15N]0-1')
     await field.trigger('blur')
 
-    expect(store.params.formula_ranges).toBe('C0-40 H0-80 [15N]0-1')
+    expect(bound.formula_ranges).toBe('C0-40 H0-80 [15N]0-1')
   })
 })
 
@@ -295,8 +283,7 @@ describe('PeakAssignConfigForm chemistry', () => {
     expect(text).toContain("Read off the sample's ionization mechanisms.")
   })
 
-  it('binds a chosen profile to the shared record and asks again', async () => {
-    const store = usePeakAssignParams()
+  it('binds a chosen profile to the model and asks again', async () => {
     previewAnswer = (url, config) => [
       config.params.profile === 'UR'
         ? resolution({
@@ -315,7 +302,7 @@ describe('PeakAssignConfigForm chemistry', () => {
     await wrapper.find('select#assign_profile').setValue('UR')
     await flushPromises()
 
-    expect(store.params.profile).toBe('UR')
+    expect(bound.profile).toBe('UR')
     expect(previewCalls.at(-1).params).toEqual({ profile: 'UR', context: 'auto' })
     // Auto is no longer the choice, so its option stops naming an answer...
     expect(optionTexts(wrapper, 'assign_profile')[0]).toBe('Auto')
@@ -350,24 +337,22 @@ describe('PeakAssignConfigForm chemistry', () => {
         context_source: 'config'
       })
     ]
-    const store = usePeakAssignParams()
     const wrapper = await mountForm({ sampleItemId: 'si-1' })
-    store.params.context = 'none'
+    bound.context = 'none'
     await flushPromises()
 
     expect(resolvedText(wrapper).text()).not.toContain('names')
   })
 
   it('puts a named chemistry back on auto with the other fields', async () => {
-    const store = usePeakAssignParams()
     const wrapper = await mountForm()
-    store.params.profile = 'BR'
-    store.params.context = 'none'
+    bound.profile = 'BR'
+    bound.context = 'none'
     await wrapper.vm.$nextTick()
 
     await resetButton(wrapper).trigger('click')
-    expect(store.params.profile).toBe('auto')
-    expect(store.params.context).toBe('auto')
+    expect(bound.profile).toBe('auto')
+    expect(bound.context).toBe('auto')
   })
 
   it('shows the grid the run would search where the formula range is left empty', async () => {
@@ -490,7 +475,6 @@ describe('PeakAssignConfigForm chemistry', () => {
   })
 
   it('keeps the later answer when an earlier one arrives last', async () => {
-    const store = usePeakAssignParams()
     let releaseFirst
     previewAnswer = (url, config) =>
       config.params.profile === 'UR'
@@ -506,7 +490,7 @@ describe('PeakAssignConfigForm chemistry', () => {
           })
     const wrapper = await mountForm({ sampleItemId: 'si-1' })
 
-    store.params.profile = 'UR'
+    bound.profile = 'UR'
     await flushPromises()
     releaseFirst()
     await flushPromises()
@@ -534,31 +518,31 @@ describe('PeakAssignConfigForm bound to a model', () => {
   it('shows and writes the model, not the per-user store', async () => {
     const store = usePeakAssignParams()
     await store.ensureLoaded()
-    store.params.max_untargeted_peaks = 999
-    const bound = model({ max_untargeted_peaks: 120 })
+    store.params.mz_precision_ppm = 8
+    const values = model({ max_untargeted_peaks: 120 })
 
-    const wrapper = await mountForm({ model: bound })
+    const wrapper = await mountForm({ model: values })
     const field = wrapper.find('#max_untargeted_peaks')
     expect(field.element.value).toBe('120')
+    expect(wrapper.find('#mz_precision_ppm').element.value).toBe('3')
 
     await wrapper.find('select#assign_profile').setValue('BR')
-    expect(bound.profile).toBe('BR')
-    expect(store.params.profile).toBe('auto')
-    expect(store.params.max_untargeted_peaks).toBe(999)
+    expect(values.profile).toBe('BR')
+    expect(store.params.mz_precision_ppm).toBe(8)
   })
 
   it('resets the model to the defaults and leaves the store alone', async () => {
     const store = usePeakAssignParams()
     await store.ensureLoaded()
     store.params.mz_precision_ppm = 8
-    const bound = model({ mz_precision_ppm: 5, max_alternatives: 1 })
+    const values = model({ mz_precision_ppm: 5, max_alternatives: 1 })
 
-    const wrapper = await mountForm({ model: bound, hidden: ['run_untargeted'] })
+    const wrapper = await mountForm({ model: values, hidden: ['run_untargeted'] })
     expect(resetButton(wrapper).attributes('disabled')).toBeUndefined()
     await resetButton(wrapper).trigger('click')
 
-    expect(bound.mz_precision_ppm).toBe(SERVED.mz_precision_ppm)
-    expect(bound.max_alternatives).toBe(SERVED.max_alternatives)
+    expect(values.mz_precision_ppm).toBe(SERVED.mz_precision_ppm)
+    expect(values.max_alternatives).toBe(SERVED.max_alternatives)
     expect(store.params.mz_precision_ppm).toBe(8)
     await wrapper.vm.$nextTick()
     expect(resetButton(wrapper).attributes('disabled')).toBeDefined()
@@ -567,8 +551,10 @@ describe('PeakAssignConfigForm bound to a model', () => {
   it('keeps the untargeted fields live where the switch is hidden', async () => {
     // A batch's pass is the untargeted search: whatever run_untargeted holds,
     // its fields are the batch's to set.
-    const bound = model({ run_untargeted: false })
-    const hidden = await mountForm({ model: bound, hidden: ['run_untargeted'] })
+    const hidden = await mountForm({
+      model: model({ run_untargeted: false }),
+      hidden: ['run_untargeted']
+    })
     expect(hidden.find('#mz_precision_ppm').attributes('disabled')).toBeUndefined()
 
     const shown = await mountForm({ model: model({ run_untargeted: false }) })
@@ -576,8 +562,7 @@ describe('PeakAssignConfigForm bound to a model', () => {
   })
 
   it('clears the range back to empty, and commit() says whether it parses', async () => {
-    const bound = model({ formula_ranges: 'C0-10' })
-    const wrapper = await mountForm({ model: bound })
+    const wrapper = await mountForm({ model: model({ formula_ranges: 'C0-10' }) })
     const field = wrapper.find('input.text')
 
     await field.setValue('C0-')

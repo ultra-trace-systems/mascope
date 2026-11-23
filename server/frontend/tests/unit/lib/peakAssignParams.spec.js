@@ -2,9 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { nextTick } from 'vue'
 
-// The shared untargeted-search parameters: one record behind the composition
-// search pane, the per-sample assignment launcher and the batch untargeted
-// search, which used to disagree about where a value comes from.
+// The untargeted-search parameters: the served defaults, bounds and presets
+// every surface reads, the composition search pane's two remembered fields,
+// and the helpers that turn a batch's saved settings into a form model and a
+// run's request.
 //
 // What is worth pinning is not that a value round-trips but WHICH values are
 // written: only genuine overrides, so a default that moves in a release moves
@@ -50,6 +51,7 @@ const {
   isFormulaRange,
   PARAM_KEYS,
   BATCH_SETTING_KEYS,
+  SEARCH_KEYS,
   batchSettingsBody,
   batchSettingsModel,
   runConfig
@@ -75,6 +77,12 @@ function served({ peak_assignment = SERVED, ...rest } = {}) {
   }
 }
 
+// The served defaults of the fields the store remembers.
+const SEARCH_DEFAULTS = {
+  mz_precision_ppm: SERVED.mz_precision_ppm,
+  formula_ranges: SERVED.formula_ranges
+}
+
 const stored = () => JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null')
 
 /** A loaded store: the defaults have landed, as they have by the time a form shows. */
@@ -94,7 +102,8 @@ beforeEach(() => {
 describe('peak assignment parameters: defaults', () => {
   it('starts every field on the server default', async () => {
     const store = await loadedStore()
-    expect({ ...store.params }).toEqual(SERVED)
+    expect({ ...store.params }).toEqual(SEARCH_DEFAULTS)
+    expect(store.defaults).toEqual(SERVED)
     expect(store.loaded).toBe(true)
     expect(store.isDefault()).toBe(true)
   })
@@ -145,24 +154,13 @@ describe('peak assignment parameters: persistence', () => {
 
   it('drops a field from storage again once it is back on the default', async () => {
     const store = await loadedStore()
-    store.params.max_alternatives = 9
+    store.params.mz_precision_ppm = 9
     await nextTick()
-    expect(stored()).toEqual({ max_alternatives: 9 })
+    expect(stored()).toEqual({ mz_precision_ppm: 9 })
 
-    store.params.max_alternatives = SERVED.max_alternatives
+    store.params.mz_precision_ppm = SERVED.mz_precision_ppm
     await nextTick()
     expect(localStorage.getItem(STORAGE_KEY)).toBeNull()
-  })
-
-  it('keeps a threshold of zero apart from an unset one', async () => {
-    // 0 is a meaningful value for the intensity threshold - it searches
-    // everything the peak cap allows - so it must not be mistaken for "unset".
-    get.mockResolvedValue(served({ peak_assignment: { ...SERVED, peak_intensity_threshold: 500 } }))
-    const store = await loadedStore()
-    store.params.peak_intensity_threshold = 0
-    await nextTick()
-
-    expect(stored()).toEqual({ peak_intensity_threshold: 0 })
   })
 
   it('restores an override on the next session and follows the default elsewhere', async () => {
@@ -173,38 +171,28 @@ describe('peak assignment parameters: persistence', () => {
       JSON.stringify({ mz_precision_ppm: 8, retired_knob: 'nonsense' })
     )
     // A release moves the defaults under the user.
-    get.mockResolvedValue(
-      served({ peak_assignment: { ...SERVED, mz_precision_ppm: 4, max_alternatives: 12 } })
-    )
+    get.mockResolvedValue(served({ peak_assignment: { ...SERVED, formula_ranges: 'C0-10 H0-20' } }))
     const store = await loadedStore()
 
     expect(store.params.mz_precision_ppm).toBe(8) // theirs, kept
-    expect(store.params.max_alternatives).toBe(12) // the new default, followed
-    expect(Object.keys(store.params).sort()).toEqual([...PARAM_KEYS].sort())
+    expect(store.params.formula_ranges).toBe('C0-10 H0-20') // the new default, followed
+    expect(Object.keys(store.params).sort()).toEqual([...SEARCH_KEYS].sort())
   })
 
-  it('puts a stored name this server no longer offers back on the default', async () => {
-    // The API would refuse a launch naming it, and a selector could not show
-    // it: the same reason an unparseable range is dropped on load.
+  it("drops what the launchers once stored: a run's settings are the batch's", async () => {
+    // Before MAS-1017 the launchers bound this record, so a profile, a context
+    // and the run's ceilings could sit in it. No control shows them now, so
+    // none may be restored, and the next write leaves them out.
     localStorage.setItem(
       STORAGE_KEY,
-      JSON.stringify({ profile: 'KRYPTON', context: 'ambient-air' })
+      JSON.stringify({ profile: 'BR', context: 'none', max_alternatives: 9, mz_precision_ppm: 8 })
     )
     const store = await loadedStore()
 
-    expect(store.params.profile).toBe('auto')
-    expect(store.params.context).toBe('ambient-air')
+    expect({ ...store.params }).toEqual({ ...SEARCH_DEFAULTS, mz_precision_ppm: 8 })
+    store.params.mz_precision_ppm = 7
     await nextTick()
-    expect(stored()).toEqual({ context: 'ambient-air' })
-  })
-
-  it('keeps a stored name when the server offers no list to check it against', async () => {
-    // A server from before the presets were served still accepts the names.
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ profile: 'BR' }))
-    get.mockResolvedValue(served({ peak_assignment_presets: undefined }))
-    const store = await loadedStore()
-
-    expect(store.params.profile).toBe('BR')
+    expect(stored()).toEqual({ mz_precision_ppm: 7 })
   })
 
   it('never writes before the defaults have landed', async () => {
@@ -248,16 +236,19 @@ describe('peak assignment parameters: the formula range', () => {
     expect(isFormulaRange(null)).toBe(false)
   })
 
-  it('neither stores nor launches with a half-typed range', async () => {
-    // The launcher's field binds the store directly, so a range on its way to
-    // being finished must not be persisted - and must not reach the pane's next
-    // search, or the endpoint, as the committed value.
+  it('never stores a half-typed range', async () => {
     const store = await loadedStore()
     store.params.formula_ranges = 'C0-80 H0-'
     await nextTick()
 
     expect(localStorage.getItem(STORAGE_KEY)).toBeNull()
-    expect(store.payload().formula_ranges).toBeUndefined()
+  })
+
+  it('drops a stored range that no longer parses', async () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ formula_ranges: 'C0-' }))
+    const store = await loadedStore()
+
+    expect(store.params.formula_ranges).toBe(SERVED.formula_ranges)
   })
 })
 
@@ -265,79 +256,38 @@ describe('peak assignment parameters: reset', () => {
   it('puts every field back and stops remembering', async () => {
     const store = await loadedStore()
     store.params.mz_precision_ppm = 8
-    store.params.max_alternatives = 9
+    store.params.formula_ranges = 'C0-10'
     await nextTick()
 
     store.reset()
     await nextTick()
 
-    expect({ ...store.params }).toEqual(SERVED)
+    expect({ ...store.params }).toEqual(SEARCH_DEFAULTS)
     expect(store.isDefault()).toBe(true)
     expect(localStorage.getItem(STORAGE_KEY)).toBeNull()
   })
 
-  it('clears only the fields it is given', async () => {
-    // The record is shared, so the search pane's reset must not discard the
-    // peak ceiling a launcher dialog set - a field that pane never shows.
+  it('clears only the fields it is given, and none it does not own', async () => {
     const store = await loadedStore()
     store.params.mz_precision_ppm = 8
-    store.params.max_untargeted_peaks = 42
+    store.params.formula_ranges = 'C0-10'
     await nextTick()
 
-    store.reset(['mz_precision_ppm', 'formula_ranges'])
+    store.reset(['formula_ranges', 'max_alternatives'])
     await nextTick()
 
-    expect(store.params.mz_precision_ppm).toBe(SERVED.mz_precision_ppm)
-    expect(store.params.max_untargeted_peaks).toBe(42)
-    expect(stored()).toEqual({ max_untargeted_peaks: 42 })
+    expect(store.params.formula_ranges).toBe(SERVED.formula_ranges)
+    expect(store.params).not.toHaveProperty('max_alternatives')
+    expect(stored()).toEqual({ mz_precision_ppm: 8 })
   })
 
   it('reports per scope whether anything is overridden', async () => {
     const store = await loadedStore()
-    store.params.max_untargeted_peaks = 42
+    store.params.mz_precision_ppm = 8
 
     expect(store.isDefault()).toBe(false)
-    expect(store.isDefault(['max_untargeted_peaks'])).toBe(false)
-    // What a surface showing only these two would put on its reset control.
-    expect(store.isDefault(['mz_precision_ppm', 'formula_ranges'])).toBe(true)
-  })
-})
-
-describe('peak assignment parameters: the launch payload', () => {
-  it('sends every field the user has, and lets the caller force its own', async () => {
-    const store = await loadedStore()
-    store.params.run_untargeted = false
-    store.params.mz_precision_ppm = 8
-
-    // The batch search IS the untargeted stage, so it forces the switch it does
-    // not show, over whatever the shared record says.
-    expect(store.payload({ run_untargeted: true })).toEqual({
-      ...SERVED,
-      mz_precision_ppm: 8,
-      run_untargeted: true
-    })
-  })
-
-  it('omits what is still unknown so the backend default applies', async () => {
-    // A dialog opened before /params answered: a null would override the
-    // server default rather than defer to it.
-    const store = usePeakAssignParams()
-    store.params.mz_precision_ppm = 8
-
-    expect(store.payload()).toEqual({ mz_precision_ppm: 8 })
-  })
-
-  it('names the chemistry the user chose', async () => {
-    const store = await loadedStore()
-    store.params.profile = 'BR'
-    store.params.context = 'none'
-
-    expect(store.payload()).toMatchObject({ profile: 'BR', context: 'none' })
-  })
-
-  it('covers exactly the fields the config form offers', async () => {
-    const store = await loadedStore()
-    expect(Object.keys(store.payload()).sort()).toEqual([...PARAM_KEYS].sort())
+    expect(store.isDefault(['mz_precision_ppm'])).toBe(false)
+    expect(store.isDefault(['formula_ranges'])).toBe(true)
   })
 })
 
@@ -424,5 +374,28 @@ describe("a batch's settings as a form model and back", () => {
     })
     expect(runConfig({ ...DEFAULTS, formula_ranges: 'C0-' }).formula_ranges).toBeUndefined()
     expect(runConfig(DEFAULTS, { run_untargeted: false }).run_untargeted).toBe(false)
+  })
+
+  it('launches with what the batch saved of the fields the form does not show', () => {
+    // The tier bands and the rest of the engine's config a batch keeps: a
+    // sample is assigned as its batch is in those too.
+    const saved = { assigned_threshold: 0.9, stage_b_confidence: 0.5, max_alternatives: 2 }
+    expect(runConfig({ ...DEFAULTS, max_alternatives: 7 }, {}, saved)).toEqual({
+      assigned_threshold: 0.9,
+      stage_b_confidence: 0.5,
+      run_untargeted: true,
+      profile: 'auto',
+      context: 'auto',
+      peak_intensity_threshold: 0,
+      max_alternatives: 7
+    })
+  })
+
+  it('keeps what the batch saved of a field the dialog does not show', () => {
+    const saved = { assigned_threshold: 0.9 }
+    expect(body({ max_alternatives: 2 }, saved)).toEqual({
+      settings: { assigned_threshold: 0.9, max_alternatives: 2 },
+      changed: true
+    })
   })
 })

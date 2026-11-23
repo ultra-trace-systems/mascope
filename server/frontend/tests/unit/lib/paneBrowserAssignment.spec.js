@@ -548,19 +548,59 @@ describe('PaneBrowserAssignment launcher', () => {
     // Not written back: the batch keeps its settings, the per-user store
     // its own, and the next open is on the batch's settings again.
     expect(batchSettings).toEqual({ max_untargeted_peaks: 100 })
-    expect(store.params.max_untargeted_peaks).toBeNull()
+    expect(store.params).not.toHaveProperty('max_untargeted_peaks')
     await openDialog(wrapper)
     expect(formModel(wrapper).max_untargeted_peaks).toBe(100)
     expect(formModel(wrapper).run_untargeted).toBe(true)
   })
 
-  it('keeps the dialog open while the typed range does not parse', async () => {
+  // The tier bands, the stage B confidence and the rest a batch may save
+  // through the API: the form does not show them, the run still takes them.
+  it('launches with what the batch saved of the fields the form does not show', async () => {
+    batchSettings = { assigned_threshold: 0.9, stage_b_confidence: 0.5, max_alternatives: 2 }
+    const wrapper = await mountPane()
+    await openDialog(wrapper)
+
+    formModel(wrapper).max_alternatives = 7
+    await wrapper.vm.launch()
+
+    expect(assign.mock.calls[0][1]).toMatchObject({
+      assigned_threshold: 0.9,
+      stage_b_confidence: 0.5,
+      max_alternatives: 7
+    })
+  })
+
+  it('keeps the dialog open while the typed range does not parse, and says why', async () => {
     const wrapper = await mountPane()
     await openDialog(wrapper)
     formCommits = false
     await wrapper.vm.launch()
+    await wrapper.vm.$nextTick()
     expect(assign).not.toHaveBeenCalled()
     expect(wrapper.vm.configVisible).toBe(true)
+    expect(wrapper.find('[data-testid="assign-form-error"]').text()).toContain(
+      'The formula range does not parse'
+    )
+
+    // Fixed, the launch goes ahead and the reason goes away.
+    formCommits = true
+    await wrapper.vm.launch()
+    await wrapper.vm.$nextTick()
+    expect(assign).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-testid="assign-form-error"]').exists()).toBe(false)
+  })
+
+  it('opens again without the last reason', async () => {
+    const wrapper = await mountPane()
+    await openDialog(wrapper)
+    formCommits = false
+    await wrapper.vm.launch()
+    wrapper.vm.configVisible = false
+    await flushAll()
+
+    await openDialog(wrapper)
+    expect(wrapper.find('[data-testid="assign-form-error"]').exists()).toBe(false)
   })
 
   it('closes the dialog and shows the reason when the sample is ineligible', async () => {

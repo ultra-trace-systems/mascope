@@ -152,8 +152,9 @@ const curationHelp = {
 }
 
 // The search parameters are the user's remembered ones, in the shared store,
-// which also carries the search debounce and the bounds. An assignment run no
-// longer reads them: the launchers open on the batch's own settings
+// which also carries the search debounce and the bounds: the m/z precision and
+// the formula range, the two this pane shows. An assignment run does not read
+// them: the launchers open on the batch's own settings
 // (docs/dev/batch_assignment_one_action.md 3.4).
 const store = usePeakAssignParams()
 const params = store.params
@@ -207,12 +208,19 @@ const updateFormulaRange = () => {
 // What an empty field searches with: the focused sample's chemistry profile,
 // its element grid and its instrument's m/z window - what a run of the sample
 // would use - asked of the server as the launcher asks it, and asked again
-// when the sample or the chosen profile or context changes. A value typed in
-// overrides it here as it would in the run.
+// when the sample or the profile or context changes. A run of the sample opens
+// on the focused batch's settings, so the profile and context are the batch's,
+// or `auto` where it saved none. A value typed in overrides it here as it
+// would in the run.
+const batchSettings = computed(() => app.data.batch.focused?.assignment_settings ?? null)
 const resolved = ref(null)
 let resolveRequest = 0
 watch(
-  () => [app.data.sample.focusedId, params.profile, params.context],
+  () => [
+    app.data.sample.focusedId,
+    batchSettings.value?.profile ?? null,
+    batchSettings.value?.context ?? null
+  ],
   async ([sampleItemId, profile, context]) => {
     const request = ++resolveRequest
     resolved.value = null
@@ -321,7 +329,8 @@ app.ui.notification.on('match_compositions_by_mz', async (payload) => {
 })
 
 // Follow the store into the text box: the reset button writes the same field,
-// so the committed range can change while this pane is mounted. A range put back to the profile's empties the box.
+// so the committed range can change while this pane is mounted. A range put
+// back to the profile's empties the box.
 watch(
   () => params.formula_ranges,
   (newValue) => {
@@ -760,8 +769,9 @@ watch(
         <label for="ionmechs">Ion. Mechanisms</label>
       </FloatLabel>
       <!-- These two persist, so the way back to the shipped defaults has to
-           be reachable from here. Disabled while both are already at their default, which makes it
-           the answer to "have I changed these?" as well as the way to undo. -->
+           be reachable from here. Disabled while both are already at their
+           default, which makes it the answer to "have I changed these?" as
+           well as the way to undo. -->
       <Button
         icon="pi ph ph-arrow-counter-clockwise"
         size="small"

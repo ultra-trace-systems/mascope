@@ -337,7 +337,8 @@ the window the run would search at. *Assign sample* opens on the settings of the
 sample's batch, and *Edit assignment settings* edits those, for every pass of the batch
 (*Assigning a batch*, below). *Find other formulas for this peak* - the composition
 search in the Sample tab - keeps its own m/z precision and formula range, remembered
-between visits.
+between visits. Where they are empty it searches the grid and the window of the
+profile and context the batch's settings name, as a run of the sample would.
 
 A named profile applies to every sample it reaches. The launcher warns when that profile
 belongs to the other polarity from the samples. *Reset to defaults* puts both presets back

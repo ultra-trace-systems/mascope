@@ -31,16 +31,15 @@ import {
 //
 // Defaults and bounds come from the shared parameter store: the limits are the
 // constants PeakAssignmentConfig validates against, so an input can never offer
-// a value the API would reject. The values come from the caller's `model` when
-// it hands one - the batch's settings, or a launch seeded from them
-// (docs/dev/batch_assignment_one_action.md 3.4) - and from the per-user store
-// otherwise, which the composition search pane binds too. The caller reads its
-// model on save or launch, after `commit()`.
+// a value the API would reject. The values are the caller's `model`: the
+// batch's settings, or a launch seeded from them
+// (docs/dev/batch_assignment_one_action.md 3.4). The caller reads its model on
+// save or launch, after `commit()`.
 
 const props = defineProps({
   // Fields the caller has decided for the user and does not show: a launcher
   // that IS the untargeted stage pins `run_untargeted` on and hides its switch.
-  // A hidden field is never bound, so it is never persisted from here and the
+  // A hidden field is never bound, so nothing typed here changes it and the
   // reset control below leaves it alone.
   hidden: {
     type: Array,
@@ -57,13 +56,12 @@ const props = defineProps({
     type: String,
     default: null
   },
-  // The values to bind in place of the per-user store's: a batch's settings,
-  // or a launch seeded from them. The caller owns it and reads it on save or
-  // launch; nothing typed here reaches the per-user store. Read once, at
-  // setup: a caller reseeds the same object rather than handing a new one.
+  // The values to bind: a batch's settings, or a launch seeded from them. The
+  // caller owns it and reads it on save or launch. Read once, at setup: a
+  // caller reseeds the same object rather than handing a new one.
   model: {
     type: Object,
-    default: null
+    required: true
   },
   // Show the values without letting them change: a viewer's look at settings
   // only an editor may save. Said once above the fields, with the reason.
@@ -79,8 +77,7 @@ const props = defineProps({
 
 const app = useApp()
 const store = usePeakAssignParams()
-const params = props.model ?? store.params
-const ownModel = Boolean(props.model)
+const params = props.model
 
 onMounted(() => store.ensureLoaded())
 
@@ -96,33 +93,23 @@ const stagesDoc = app.ui.help.docUrl('how-it-works/peak-assignment/#the-two-stag
 const resettable = computed(() => PARAM_KEYS.filter((key) => !props.hidden.includes(key)))
 const blankToNull = (value) => (value === '' || value === undefined ? null : value)
 const atDefaults = computed(() => {
-  if (!ownModel) return store.isDefault(resettable.value)
   if (!store.defaults) return true
   return resettable.value.every(
     (key) => blankToNull(params[key]) === blankToNull(store.defaults[key])
   )
 })
 
-// The bound record's fields back to the served defaults, the store's or the
-// caller's model alike.
+// The bound model's fields back to the served defaults.
 function resetFields() {
   for (const key of resettable.value) params[key] = store.defaults ? store.defaults[key] : null
 }
 
-// What the reset control resets, said for the record the form is bound to.
-const resetHelp = ownModel
-  ? `
+// What the reset control resets.
+const resetHelp = `
     <h1>Reset to Defaults</h1>
     <p>
     Puts every field above back to the value Mascope ships. Nothing is
     written until you save or launch.
-    </p>`
-  : `
-    <h1>Reset to Defaults</h1>
-    <p>
-    These settings are remembered between runs and shared with the
-    composition search. This puts every field above back to the value
-    Mascope ships, and stops remembering yours.
     </p>`
 
 // The untargeted fields wait on the switch, where the form shows one; a form
@@ -131,9 +118,9 @@ const untargetedOff = computed(
   () => !props.hidden.includes('run_untargeted') && !params.run_untargeted
 )
 
-// The range is committed to the store only once it parses, so a half-typed
-// range is never persisted and never reaches the pane's next search. The raw
-// text lives here meanwhile; the same two-model split the search pane uses.
+// The range is committed to the model only once it parses, so a half-typed
+// range is never saved or launched with. The raw text lives here meanwhile;
+// the same two-model split the search pane uses.
 const formulaRangeModel = ref(params.formula_ranges ?? '')
 const formulaRangeValid = computed(
   () => !formulaRangeModel.value || isFormulaRange(formulaRangeModel.value)
@@ -143,18 +130,17 @@ watch(
   () => params.formula_ranges,
   (value) => {
     if (value != null && formulaRangeModel.value !== value) formulaRangeModel.value = value
-    // A caller's model is reseeded or reset to an empty range, which the
-    // field shows as empty rather than keeping the last text.
-    else if (value == null && ownModel) formulaRangeModel.value = ''
+    // A model reseeded or reset to an empty range shows the field empty
+    // rather than keeping the last text.
+    else if (value == null) formulaRangeModel.value = ''
   }
 )
 
 function commitFormulaRange() {
   if (formulaRangeValid.value && formulaRangeModel.value) {
     params.formula_ranges = formulaRangeModel.value.trim()
-  } else if (ownModel && !formulaRangeModel.value) {
-    // Cleared: the range follows the chemistry profile again. The per-user
-    // store keeps its last range instead, as the search pane's field does.
+  } else if (!formulaRangeModel.value) {
+    // Cleared: the range follows the chemistry profile again.
     params.formula_ranges = null
   }
 }
@@ -303,8 +289,8 @@ const samplesText = (count) => `${count} sample${count === 1 ? '' : 's'}`
 
 // A named profile is applied as named: over samples of the other polarity it
 // searches reagent chemistry they were never measured with. Said rather than
-// refused - the server runs what it is asked to - because the name persists
-// between launches and may have been chosen for another batch.
+// refused - the server runs what it is asked to - because the name is saved on
+// the batch and may have been chosen before samples of the other mode joined.
 const mismatchText = computed(() => {
   const mismatched = polarityMismatches(preview.value)
   if (!mismatched.length) return null
@@ -626,10 +612,11 @@ const chemistryDoc = app.ui.help.docUrl(
       />
       <label for="max_alternatives">Max alternatives kept</label>
     </FloatLabel>
-    <!-- These settings persist, so the way back to the shipped defaults has to
-         be visible: without it a range narrowed once would quietly shape every
-         later run. Disabled while nothing is overridden, which also makes the
-         control double as the answer to "am I on the defaults?". -->
+    <!-- A batch's settings are saved and shape every later pass, so the way
+         back to the shipped defaults has to be visible: without it a range
+         narrowed once would quietly stay. Disabled while every field is on its
+         default, which also makes the control double as the answer to "am I
+         on the defaults?". -->
     <div v-if="!readonly" class="reset-row">
       <Button
         label="Reset to defaults"

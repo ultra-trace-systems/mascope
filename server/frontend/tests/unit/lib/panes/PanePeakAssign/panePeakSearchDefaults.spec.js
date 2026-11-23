@@ -48,6 +48,9 @@ let focusedSampleId
 // The focused sample itself, behind a getter so a test can focus one that has
 // no ionization mode.
 let focusedSample
+// The focused batch, whose saved settings name the profile and context a run
+// of the sample uses.
+let focusedBatch
 
 vi.mock('@/stores', () => ({
   useApp: () => ({
@@ -58,6 +61,11 @@ vi.mock('@/stores', () => ({
         },
         get focused() {
           return focusedSample.value
+        }
+      },
+      batch: {
+        get focused() {
+          return focusedBatch.value
         }
       },
       peak: { list: [PEAK], focused: PEAK },
@@ -164,6 +172,7 @@ beforeEach(() => {
   setActivePinia(createPinia())
   focusedSampleId = ref('si-1')
   focusedSample = ref({ ionization_mode_id: 'mode-1' })
+  focusedBatch = ref(null)
   previewCalls.length = 0
   handlers.clear()
 })
@@ -229,6 +238,41 @@ describe('PanePeakSearch with its fields left empty', () => {
     await flushPromises()
 
     expect(rangeField(wrapper).element.value).toBe('')
+  })
+
+  // A run of the sample opens on the batch's settings, so the pane resolves its
+  // empty fields with the batch's profile and context too.
+  it("resolves with the focused batch's saved profile and context", async () => {
+    focusedBatch.value = { assignment_settings: { profile: 'BR', context: 'none' } }
+    await mountPane()
+
+    expect(previewCalls.at(-1).params).toEqual({ profile: 'BR', context: 'none' })
+  })
+
+  it("asks again when the batch's saved profile changes", async () => {
+    focusedBatch.value = { assignment_settings: null }
+    await mountPane()
+    expect(previewCalls.at(-1).params).toEqual({ profile: 'auto', context: 'auto' })
+
+    focusedBatch.value = { assignment_settings: { profile: 'BR' } }
+    await flushPromises()
+
+    expect(previewCalls.at(-1).params).toEqual({ profile: 'BR', context: 'auto' })
+  })
+
+  // Before the launchers moved to the batch's settings they wrote a profile and
+  // a context to the per-user record. No control shows those now, so one left
+  // in storage must not steer the search.
+  it('does not resolve with a profile left in the per-user record', async () => {
+    localStorage.setItem(
+      'mascope.peakAssign.config',
+      JSON.stringify({ profile: 'BR', context: 'none', max_alternatives: 9 })
+    )
+    setActivePinia(createPinia())
+    await mountPane()
+
+    expect(previewCalls.at(-1).params).toEqual({ profile: 'auto', context: 'auto' })
+    expect(usePeakAssignParams().params).not.toHaveProperty('profile')
   })
 
   it('asks again for another sample', async () => {

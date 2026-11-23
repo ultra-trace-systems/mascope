@@ -7,15 +7,17 @@ import { api } from '@/api'
  * The untargeted search parameters: the served defaults, bounds and presets
  * every surface that asks for them reads, and one user's own remembered values.
  *
- * The remembered values are the composition search pane's (m/z precision and
- * formula range, for the focused peak): the server default until the user
- * changes it, the user's value afterwards, across reloads. An assignment run
- * does not read them. A batch keeps its own settings on itself, which every
- * pass of the batch runs on and which the per-sample launcher opens on
- * (docs/dev/batch_assignment_one_action.md 3.4, decided in MAS-1012); the
- * helpers below the store's constants turn those into a form model and back.
- * Before that, the launchers bound this record too, so the same settings
- * differed from one user to the next on one batch.
+ * The remembered values are the composition search pane's two fields (m/z
+ * precision and formula range, for the focused peak): the server default until
+ * the user changes one, the user's value afterwards, across reloads. An
+ * assignment run does not read them. A batch keeps its own settings on itself,
+ * which every pass of the batch runs on and which the per-sample launcher
+ * opens on (docs/dev/batch_assignment_one_action.md 3.4, decided in MAS-1012);
+ * the helpers below the store's constants turn those into a form model and
+ * back. Before that, the launchers bound this record too, so the same settings
+ * differed from one user to the next on one batch, and the record held every
+ * run field; a stored value of a field the pane does not show is now dropped
+ * on load, so nothing is carried that no control shows.
  *
  * Only genuine overrides are persisted: a field left at the server default is
  * absent from storage, so a default that moves in a release moves for everyone
@@ -32,13 +34,10 @@ import { api } from '@/api'
 const STORAGE_KEY = 'mascope.peakAssign.config'
 const LEGACY_STORAGE_KEY = 'mascope.peakAssign.params'
 
-// The fields this store owns: the run config the API accepts, minus what is
-// decided per launch rather than by the user. Null means "no override yet" and
-// is replaced by the server default the moment /params answers.
-//
-// The chemistry profile and context are the run's too, and persist like the
-// rest: a launcher shows both on every open, so a named one is never carried
-// invisibly, and the reset control puts both back on `auto`.
+// The fields of a run config the API accepts, minus what is decided per launch
+// rather than by the user: what the run forms show and the served defaults
+// cover. Null means "no value yet" and is replaced by the server default the
+// moment /params answers.
 const BLANK = Object.freeze({
   run_untargeted: null,
   profile: null,
@@ -51,6 +50,12 @@ const BLANK = Object.freeze({
 })
 
 export const PARAM_KEYS = Object.freeze(Object.keys(BLANK))
+
+/**
+ * The fields the store remembers for the user: the composition search pane's
+ * two. The rest of a run's settings are the batch's.
+ */
+export const SEARCH_KEYS = Object.freeze(['mz_precision_ppm', 'formula_ranges'])
 
 // Generous bounds used only until /params answers, at which point the real
 // ceilings arrive - they are the constants PeakAssignmentConfig validates
@@ -74,9 +79,6 @@ export const AUTO_PRESET = 'auto'
 // which is what a run would use anyway.
 const NO_PRESETS = Object.freeze({ profiles: [], contexts: [] })
 
-// The params key a preset list is served under, per field.
-const PRESET_LISTS = Object.freeze({ profile: 'profiles', context: 'contexts' })
-
 // "C0-100 H0-200 Cl0-10", isotopes in brackets ([15N]0-1) or caret form (^N0-1).
 const ELEMENT_PATTERN = '(?:[A-Z][a-z]?|\\^[A-Z][a-z]?|\\[\\d*[A-Z][a-z]?\\])'
 const RANGE_PATTERN = '\\d+-\\d+'
@@ -87,9 +89,9 @@ export const FORMULA_RANGE_PATTERN = new RegExp(
 /**
  * Whether a formula-range string is well formed.
  *
- * Shared rather than restated per surface: the range is now one persisted
- * value, so a string the pane would have rejected must not reach the store
- * through the launcher's field and come back as the pane's next search.
+ * Shared rather than restated per surface: the search pane, the per-sample
+ * launcher and the batch's settings dialog all take a range, and must accept
+ * and refuse the same strings.
  *
  * @param {*} value - Candidate formula-range string.
  * @returns {boolean} True when the string parses as a list of element ranges.
@@ -189,11 +191,8 @@ export function batchSettingsModel(saved, defaults) {
  */
 export function batchSettingsBody(model, saved, defaults, keys = BATCH_SETTING_KEYS) {
   const opened = batchSettingsModel(saved, defaults)
-  const out = {}
   // What the batch saved of a field this dialog does not show stays saved.
-  for (const [key, value] of Object.entries(saved ?? {})) {
-    if (!keys.includes(key)) out[key] = value
-  }
+  const out = unshownSettings(saved, keys)
   for (const key of keys) {
     const value = blank(model[key]) ? null : model[key]
     const before = blank(opened[key]) ? null : opened[key]
@@ -217,16 +216,35 @@ function sortedEntries(record) {
 }
 
 /**
+ * What a batch saved of the fields a form does not show: the tier bands, the
+ * stage B confidence and the rest of the engine's config a batch may keep.
+ *
+ * @param {object|null} saved - The batch's `assignment_settings`.
+ * @param {string[]} [keys] - The fields the form shows.
+ * @returns {object} The saved entries of every other field; empty for none.
+ */
+export function unshownSettings(saved, keys = PARAM_KEYS) {
+  const out = {}
+  for (const [key, value] of Object.entries(saved ?? {})) {
+    if (!keys.includes(key)) out[key] = value
+  }
+  return out
+}
+
+/**
  * The run configuration a form model launches with: the fields that are set,
- * as the per-user store's `payload` sends them, so the run records the
- * settings it ran on and the backend default applies to a field left blank.
+ * so the run records the settings it ran on and the backend default applies
+ * to a field left blank.
  *
  * @param {object} model - A form model.
  * @param {object} [forced] - Fields the caller decides, applied over the model's.
+ * @param {object|null} [saved] - The batch's `assignment_settings` the model was
+ *   seeded from: what it saved of a field the form does not show goes in too,
+ *   so a sample is assigned as its batch is in those as well.
  * @returns {object} Body `config` for the assignment endpoint.
  */
-export function runConfig(model, forced = {}) {
-  const out = {}
+export function runConfig(model, forced = {}, saved = null) {
+  const out = unshownSettings(saved)
   for (const key of PARAM_KEYS) {
     const value = model[key]
     if (blank(value)) continue
@@ -236,14 +254,18 @@ export function runConfig(model, forced = {}) {
   return { ...out, ...forced }
 }
 
-/** Overrides held in storage, filtered to the fields this store still owns. */
+/**
+ * Overrides held in storage, filtered to the fields this store still owns. A
+ * stored profile, context or ceiling from when the launchers bound this record
+ * is dropped: no control shows it any more, so it must not steer a search.
+ */
 function load() {
   try {
     localStorage.removeItem(LEGACY_STORAGE_KEY)
     const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null')
     if (!stored || typeof stored !== 'object') return {}
     const out = {}
-    for (const key of PARAM_KEYS) {
+    for (const key of SEARCH_KEYS) {
       if (stored[key] === null || stored[key] === undefined) continue
       out[key] = stored[key]
     }
@@ -272,7 +294,10 @@ function save(overrides) {
 export const usePeakAssignParams = defineStore('peakAssign.params', () => {
   // Stored overrides over "not yet known", so a field the user never touched
   // stays null until the server default lands on it.
-  const params = reactive({ ...BLANK, ...load() })
+  const params = reactive({
+    ...Object.fromEntries(SEARCH_KEYS.map((key) => [key, null])),
+    ...load()
+  })
   const limits = ref({ ...FALLBACK_LIMITS })
   const debounceMs = ref(FALLBACK_DEBOUNCE_MS)
   const defaults = ref(null)
@@ -286,14 +311,12 @@ export const usePeakAssignParams = defineStore('peakAssign.params', () => {
   /**
    * The fields that differ from the server default - all that is persisted.
    *
-   * An invalid formula range is never written: the launcher's field binds
-   * straight to the store, so a half-typed range would otherwise be saved on
-   * its way to being finished.
+   * An invalid formula range is never written, should one reach the record.
    */
   const overrides = computed(() => {
     const out = {}
     if (!defaults.value) return out
-    for (const key of PARAM_KEYS) {
+    for (const key of SEARCH_KEYS) {
       const value = params[key]
       if (value === null || value === undefined || value === '') continue
       if (value === defaults.value[key]) continue
@@ -312,7 +335,7 @@ export const usePeakAssignParams = defineStore('peakAssign.params', () => {
   })
 
   // One request for every surface that mounts: the launcher dialog, the batch
-  // dialog and the search pane all want the same three answers, and two of them
+  // settings dialog and the search pane all want the same three answers, and two of them
   // can be on screen at once.
   let pending = null
 
@@ -344,19 +367,10 @@ export const usePeakAssignParams = defineStore('peakAssign.params', () => {
         )
         // Fill only what the user has not overridden, so the defaults arriving
         // late cannot overwrite a value already restored or typed.
-        for (const key of PARAM_KEYS) {
+        for (const key of SEARCH_KEYS) {
           if (params[key] === null || params[key] === undefined) {
             params[key] = defaults.value[key]
           }
-        }
-        // A stored name this server no longer offers goes back to the default,
-        // as an unparseable range is dropped on load: the API would refuse the
-        // launch it reached, and a selector could not show it.
-        for (const [key, list] of Object.entries(PRESET_LISTS)) {
-          const offered = presets.value[list]
-          const value = params[key]
-          if (!offered.length || value === AUTO_PRESET || value === defaults.value[key]) continue
-          if (!offered.some((preset) => preset.name === value)) params[key] = defaults.value[key]
         }
       })
       .catch(() => {
@@ -368,36 +382,12 @@ export const usePeakAssignParams = defineStore('peakAssign.params', () => {
   }
 
   /**
-   * The run configuration to launch with.
-   *
-   * Only fields that are actually set: anything still unknown - the dialog was
-   * opened before /params answered - is left out so the backend default applies
-   * rather than a null overriding it. An unparseable formula range is dropped
-   * on the same grounds; it would only be rejected downstream.
-   *
-   * @param {object} [forced] - Fields the caller decides for itself, applied
-   *   over the user's. The batch search IS the untargeted stage, so it forces
-   *   `run_untargeted` on rather than reading a switch it does not show.
-   * @returns {object} Body for the assignment or untargeted-search endpoint.
-   */
-  function payload(forced = {}) {
-    const out = {}
-    for (const key of PARAM_KEYS) {
-      const value = params[key]
-      if (value === null || value === undefined || value === '') continue
-      if (key === 'formula_ranges' && !isFormulaRange(value)) continue
-      out[key] = value
-    }
-    return { ...out, ...forced }
-  }
-
-  /**
    * Whether the given fields are all at the server default.
    *
    * @param {string[]} [keys] - Fields to test; defaults to all of them.
    * @returns {boolean} True when none of the fields is overridden.
    */
-  function isDefault(keys = PARAM_KEYS) {
+  function isDefault(keys = SEARCH_KEYS) {
     return keys.every((key) => !(key in overrides.value))
   }
 
@@ -405,14 +395,13 @@ export const usePeakAssignParams = defineStore('peakAssign.params', () => {
    * Put the given fields back to the server defaults.
    *
    * Scoped rather than global on purpose: a surface's reset control clears
-   * exactly the fields that surface shows, so resetting from the search pane
-   * cannot silently discard a peak ceiling set in the launcher dialog.
+   * exactly the fields that surface shows, and none it does not.
    *
    * @param {string[]} [keys] - Fields to reset; defaults to all of them.
    */
-  function reset(keys = PARAM_KEYS) {
+  function reset(keys = SEARCH_KEYS) {
     for (const key of keys) {
-      if (!PARAM_KEYS.includes(key)) continue
+      if (!SEARCH_KEYS.includes(key)) continue
       params[key] = defaults.value ? defaults.value[key] : null
     }
   }
@@ -426,7 +415,6 @@ export const usePeakAssignParams = defineStore('peakAssign.params', () => {
     loaded,
     overrides,
     ensureLoaded,
-    payload,
     isDefault,
     reset
   }
