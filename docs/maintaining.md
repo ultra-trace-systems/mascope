@@ -2028,6 +2028,45 @@ gigabytes a month. It buys the inspector's per-peak alternatives and error
 figures and hand curation on every sample without an explicit run. All three
 take effect on the next stack restart.
 
+#### Samples assigned before the one measurement model
+
+Releases after 1.16.1 record one measurement model per assignment run: the
+centre and width its rows are scored and capped at. A run from 1.16.1 or
+earlier kept two: the centre and width it scored at, and a separate
+calibration its mass gate capped at. The batch's untargeted search, the
+search step of *Assign batch*, reads such a run at the first alone. Where its
+known compounds matched too few library ions to measure the sample (a TOF
+sample with a thin library is the usual case), that model is not the
+sample's own, so the search caps none of its rows off calibration and gives
+them no mass z. The old release capped them at the run's calibration.
+
+So after the upgrade, assign such a sample again with *Assign sample* before
+its batch is searched. *Assign batch* alone does not do it: the search reads
+the sample's latest per-sample run, and a batch pass writes none. In
+`mascope prod db cli`, this lists the samples whose latest assignment run is
+of this kind, with their batch:
+
+```sql
+SELECT s.sample_batch_id, s.sample_item_id, s.sample_item_name
+FROM sample_item s
+JOIN LATERAL (
+  SELECT r.config
+  FROM peak_assignment_run r
+  WHERE r.sample_item_id = s.sample_item_id
+    AND r.status = 'completed' AND r.engine = 'mascope' AND r.decoy IS NULL
+  ORDER BY r.peak_assignment_run_utc_created DESC
+  LIMIT 1
+) latest ON true
+WHERE latest.config -> 'measurement_model' IS NULL
+  AND latest.config -> 'pattern_scoring' IS NOT NULL
+  AND (latest.config -> 'pattern_scoring' ->> 'mu_source' IS DISTINCT FROM 'fitted'
+       OR latest.config -> 'pattern_scoring' ->> 'sigma_source' IS DISTINCT FROM 'fitted')
+ORDER BY 1, 3;
+```
+
+An empty answer means nothing needs doing. A server that never had peak
+assignment switched on has no such runs.
+
 #### Turning peak assignment on or off
 
 Set it in the env's config toml (see [Where a deployment's settings
