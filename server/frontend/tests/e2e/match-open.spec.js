@@ -8,9 +8,27 @@ import { test, expect } from './fixtures'
  *
  * Reads the demo data and changes nothing, so it finds a sample with matched
  * ions through the API and opens that location by URL.
+ *
+ * Opening a location by URL fills the ion table twice: first for the batch,
+ * then, once the URL's sample is focused, for that sample. While the second
+ * list loads the table gives way to a "loading..." spinner, which takes a
+ * focused row with it, so an Enter pressed then reaches nothing (#3457). The
+ * row is acted on only once it shows the sample's own match score, which the
+ * batch's list does not show for it.
  */
 
-/** The first sample of the demo data with a matched ion, and that ion. */
+// A match score as the ion table's score tag shows it (BaseMatchTag.vue).
+const matchScore = new Intl.NumberFormat('en-US', {
+  style: 'percent',
+  minimumIntegerDigits: 2,
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2
+})
+
+/**
+ * The first sample of the demo data with a matched ion that another sample of
+ * its batch matches better, that ion, and the ion's score in the sample.
+ */
 async function searchMatchedIon(api) {
   for (const workspace of (await api.get('/workspaces')).data) {
     const datasets = (await api.get(`/workspaces/${workspace.workspace_id}/datasets`)).data
@@ -34,22 +52,38 @@ async function searchMatchedIon(api) {
             const best = [...ions].sort(
               (a, b) => (b.match?.match_score ?? 0) - (a.match?.match_score ?? 0)
             )[0]
-            if (best?.match?.match_score > 0) {
-              return { workspace, dataset, batch, sample, collection, ion: best }
+            if (!(best?.match?.match_score > 0)) continue
+            // The batch's list shows each ion's best score in the batch. Only
+            // an ion whose best is another sample's tells the two lists apart.
+            const batchIons = (
+              await api.post('/match/records/ion', {
+                sample_batch_id: batch.sample_batch_id,
+                target_collection_id: collection.target_collection_id
+              })
+            ).data
+            const inBatch = batchIons.find((i) => i.target_ion_id === best.target_ion_id)
+            const score = matchScore.format(best.match.match_score)
+            if (inBatch && matchScore.format(inBatch.match?.match_score ?? 0) !== score) {
+              return { workspace, dataset, batch, sample, collection, ion: best, score }
             }
           }
         }
       }
     }
   }
-  throw new Error('The demo data has no sample with a matched ion')
+  throw new Error(
+    'The demo data has no sample whose best matched ion matches better in another sample'
+  )
 }
 
 // Searched once per worker: the `api` fixture is per test, so not in beforeAll.
 let matched
 const findMatchedIon = (api) => (matched ??= searchMatchedIon(api))
 
-/** Open the ion table of the found sample and collection, and return its best row. */
+/**
+ * Open the ion table of the found sample and collection, and return its best
+ * row once the table lists the sample's ions, not the batch's.
+ */
 async function openIonTable(page, found) {
   const query = new URLSearchParams({
     w: found.workspace.workspace_id,
@@ -62,7 +96,7 @@ async function openIonTable(page, found) {
   })
   await page.goto(`/?${query}`)
   const row = page.locator('tr', { has: page.locator(`#target-ion-${found.ion.target_ion_id}`) })
-  await expect(row).toBeVisible({ timeout: 30_000 })
+  await expect(row.getByText(found.score, { exact: true })).toBeVisible({ timeout: 30_000 })
   return row
 }
 
