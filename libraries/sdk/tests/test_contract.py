@@ -493,6 +493,23 @@ class TestSpectraContract:
             sum(map(len, every["masses"])) - excluded
         )
 
+    def test_centroids_of_the_samples_own_scans_are_its_items_scans(self, mascope):
+        _skip_unless_param(mascope.samples.get_centroids, "scans")
+        sample_id = _first_sample_id(mascope)
+
+        own = mascope.samples.get_centroids([sample_id], scans="sample")[sample_id]
+        every = mascope.samples.get_centroids([sample_id])[sample_id]
+
+        assert own["scan_selection"] == "sample"
+        assert "scan_selection" not in every
+        assert 0 < len(own["scan"]) <= len(every["scan"])
+        assert set(own["scan"]) <= set(every["scan"])
+        # The scans the fingerprint lists, where it describes them: the demo's
+        # files were converted before the fingerprint, and hold none.
+        document = mascope.samples.get_axis_fingerprint(sample_id)
+        if "item" in document:
+            assert own["scan"] == document["item"]["scans"]
+
     def test_centroids_say_the_factor_each_scan_is_on(self, mascope):
         sample_id = _first_sample_id(mascope)
 

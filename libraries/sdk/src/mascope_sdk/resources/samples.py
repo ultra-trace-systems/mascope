@@ -1038,6 +1038,7 @@ class SamplesResource(BaseResource):
         sample_ids: Sequence[str],
         *,
         exclude: Iterable[str] | None = None,
+        scans: str = "all",
     ) -> dict | None:
         """Get centroid data for multiple samples.
 
@@ -1047,10 +1048,17 @@ class SamplesResource(BaseResource):
         centroid ``masses``, ``intensities``, ``resolutions``,
         ``signal_to_noise`` and ``flags``.
 
-        The scans are every scan of the sample's polarity in its window, MS2
-        scans and every scan stream's included. Its peak list is read from
-        the MS1 scans of its own streams alone, which
-        :meth:`get_axis_fingerprint` lists in ``item["scans"]``.
+        ``scans`` chooses the scans. With ``"all"``, the default, they are
+        every scan of the sample's polarity in its window, MS2 scans and
+        every scan stream's included. Its peak list is read from fewer: the
+        MS1 scans of its own stream, or of each stream that owns some m/z of
+        a stitched sample, each stream's outlier first scan left out. With
+        ``"sample"`` only those are returned, the very scans
+        :meth:`get_axis_fingerprint` lists in ``item["scans"]``, and each
+        sample's entry also holds ``scan_selection: "sample"``. A server
+        older than ``scans`` ignores it and serves every scan: given
+        ``"sample"``, an answer without that mark raises rather than hand
+        back scans the peak list is not read from.
 
         ``masses`` are on the file's calibrated m/z axis: as the instrument
         recorded them, times the scan's ``mz_calibration_factor``. In a file
@@ -1078,14 +1086,19 @@ class SamplesResource(BaseResource):
             ``"fragmented"``. Every stored centroid is returned when this is
             omitted.
         :type exclude: Iterable[str], optional
+        :param scans: ``"all"`` (the default) for every scan of the sample's
+            polarity in its window, ``"sample"`` for the scans its peak list
+            is read from.
+        :type scans: str, optional
         :return: A dictionary containing centroid data keyed by sample ID.
                  Returns None if no data is found.
         :rtype: dict | None
         :raises ValidationError: If ``exclude`` names something that is not
-            a flag.
+            a flag, or ``scans`` is neither ``"all"`` nor ``"sample"``.
         :raises AuthenticationError: If authentication fails.
-        :raises MascopeAPIError: If the API request fails, or ``exclude`` was
-            given and the server predates centroid flags.
+        :raises MascopeAPIError: If the API request fails, ``exclude`` was
+            given and the server predates centroid flags, or ``scans`` was
+            ``"sample"`` and the server predates the selection.
 
         .. note::
             This method returns a dict rather than DataFrame due to the
@@ -1095,6 +1108,8 @@ class SamplesResource(BaseResource):
         if exclude:
             names = [exclude] if isinstance(exclude, str) else list(exclude)
             params["exclude"] = ",".join(names)
+        if scans != "all":
+            params["scans"] = scans
         data = self._get("samples/centroids", params=params)
         if "exclude" in params and data:
             # A server older than the flags ignores the parameter it does not
@@ -1104,6 +1119,18 @@ class SamplesResource(BaseResource):
                     "The server predates centroid flags and ignored "
                     f"exclude={params['exclude']}: its answer still holds "
                     "the centroids asked to be left out. Upgrade the server."
+                )
+        if "scans" in params and data:
+            # The same for the selection: an older server serves every scan,
+            # and only the missing mark shows it.
+            if any(
+                entry.get("scan_selection") != params["scans"]
+                for entry in data.values()
+            ):
+                raise MascopeAPIError(
+                    "The server predates the scan selection and ignored "
+                    f"scans={params['scans']}: its answer holds every scan of "
+                    "each sample's window. Upgrade the server."
                 )
         return data
 
