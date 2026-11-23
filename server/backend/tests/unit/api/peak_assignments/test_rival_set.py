@@ -21,16 +21,22 @@ from mascope_backend.api.new.peak_assignments.engine import (
     MEASURED_SHORTLIST,
     invert_matches_to_peak_assignments,
 )
-from mascope_backend.api.new.peak_assignments.identification_level import shortlist
+from mascope_backend.api.new.peak_assignments.identification_level import (
+    LevelContext,
+    level_of,
+    shortlist,
+)
 from mascope_backend.api.new.peak_assignments.rival_set import (
     FRAME_KNOWN,
     FRAME_SEARCH,
     RIVAL_SET,
+    RIVALS_KEPT,
     RivalFrames,
     SeededFrame,
     measure_rival_sets,
     named_rival_seeds,
 )
+from mascope_backend.api.new.peak_assignments.row_terms import REFERENCE_IDENTITIES_COL
 from mascope_backend.api.new.peak_assignments.tiering import (
     REASON_NO_CLOSE_RIVAL,
     density_reason,
@@ -139,6 +145,10 @@ class TestOnePeakOneSet:
             "C4H6O3": FRAME_SEARCH,
             "C6H14O": FRAME_SEARCH,
         }
+        # Which of them the evidence could not separate, as the set counted.
+        assert {
+            entry["formula"]: entry["unseparated"] for entry in record["rivals"]
+        } == {"C4H6O3": True, "C6H14O": False}
         candidates = [("C5H10O2", 0.8), ("C4H6O3", 0.78), ("C6H14O", 0.3)]
         # The density, counted by the arbitration's tie rule over the set.
         counted = unseparated(candidates, around="C5H10O2")
@@ -184,6 +194,11 @@ class TestOnePeakOneSet:
         measure_rival_sets([row], frames, V1)
 
         assert row["provenance"]["candidate_density"] == 1
+        # Both rivals stay in the set, each marked as one the evidence parted.
+        assert {
+            entry["formula"]: entry["unseparated"]
+            for entry in row["provenance"][RIVAL_SET]["rivals"]
+        } == {"C4H6O3": False, "C6H14O": False}
         assert density_reason(row) is None
         reasons = {reason["rule"] for reason in standing_reasons(row, [])}
         assert REASON_NO_CLOSE_RIVAL in reasons
@@ -319,6 +334,44 @@ class TestOnePeakOneSet:
         assert RIVAL_SET not in row["provenance"]
         assert summary["unmeasured"] == 1
 
+    def test_the_set_names_ten_rivals_and_counts_the_rest_for_the_level(self):
+        # Twelve other ions on the winner's peak, each fitting less well than
+        # the one before it, all of them parted from the winner by mass.
+        others = [
+            "C4H6O3", "C6H14O", "C7H16O5", "C8H8O4", "C5H10O5", "C3H6O3",
+            "C7H8O3", "C6H10O5", "C4H8O4", "C5H8O4", "C9H10O3", "C4H8O2",
+        ]  # fmt: skip
+        fits = {formula: round(0.6 - 0.04 * n, 2) for n, formula in enumerate(others)}
+        search = SeededFrame(
+            pd.DataFrame(
+                [_line("w", "C5H10O2", "p1", 0.9)]
+                + [_line(f"o{n}", f, "p1", fits[f]) for n, f in enumerate(others)]
+            ),
+            {("C5H10O2", "im-h"): "w"}
+            | {(f, "im-h"): f"o{n}" for n, f in enumerate(others)},
+        )
+        frames = RivalFrames(None, (search,), base=V1, shortlists={"p1": ()})
+        row = _winner()
+
+        measure_rival_sets([row], frames, V1)
+
+        record = row["provenance"][RIVAL_SET]
+        assert RIVALS_KEPT == 10
+        # Best evidence first, the ten it names; the two past them counted.
+        assert [entry["formula"] for entry in record["rivals"]] == others[:10]
+        assert record["rivals_unlisted"] == 2
+        # The level tests the ten and leaves the two it was not given open.
+        rivals, unlisted = shortlist(row)
+        assert len(rivals) == 10 and unlisted == 2
+        level = level_of(
+            row,
+            [],
+            LevelContext(neutral_channels={}, notation_by_id={"im-h": "[M+H]+"}),
+        )
+        assert level["level"] == "5a"
+        assert level["rivals_unlisted"] == 2
+        assert "two rivals past the stored shortlist, not tested" in level["evidence"]
+
 
 def _stage_a_frame(fits: dict[str, float]) -> pd.DataFrame:
     """Two list compounds on one peak, as Stage A's gated frame holds them."""
@@ -353,8 +406,8 @@ class TestAStageAPeakAtTheModelItsCapsRead:
 
     FITS = {"C6H12O6": 0.9, "C7H16O5": 0.6}
 
-    def _row(self):
-        frame = _stage_a_frame(self.FITS)
+    def _row(self, frame=None, role="M0"):
+        frame = _stage_a_frame(self.FITS) if frame is None else frame
         [row] = [
             row
             for row in invert_matches_to_peak_assignments(
@@ -365,9 +418,102 @@ class TestAStageAPeakAtTheModelItsCapsRead:
                 assigned_threshold=0.75,
                 calibration=None,
             )
-            if row["role"] == "M0"
+            if row["role"] == role
         ]
         return frame, row
+
+    @staticmethod
+    def _with_mirror_copies(frame: pd.DataFrame, fits: list[float]) -> pd.DataFrame:
+        """The frame with a reference mirror's copy of each library row on its
+        peak, each fitting as ``fits`` says: the same neutral through the same
+        channel, from an ion of the mirror's own."""
+        mirror = frame.copy()
+        mirror["target_ion_id"] = "mirror-" + mirror["target_ion_id"]
+        mirror["target_isotope_id"] = "mirror-" + mirror["target_isotope_id"]
+        mirror["target_compound_id"] = None
+        mirror[REFERENCE_IDENTITIES_COL] = [[{"name": "ref"}] for _ in fits]
+        mirror["match_score"] = fits
+        frame = frame.assign(**{REFERENCE_IDENTITIES_COL: None})
+        return pd.concat([frame, mirror], ignore_index=True)
+
+    def test_a_mirror_copy_stands_in_for_no_library_rows_reading(self):
+        # Each copy fits better than the library row it restates. Stage A
+        # arbitrates the library rows, and so does the set: the row's own
+        # reading and its rival are the library's, at the library's fits.
+        frame = self._with_mirror_copies(_stage_a_frame(self.FITS), [0.95, 0.85])
+        frame, row = self._row(frame)
+        stage_a = {
+            key: row["provenance"][key]
+            for key in ("confidence", "n_candidates", "is_tie", "candidate_density")
+        }
+        assert stage_a["confidence"] == round(0.9 / 1.5, 4)
+
+        measure_rival_sets([row], RivalFrames(frame, (), base=V1), V1)
+
+        assert {key: row["provenance"][key] for key in stage_a} == stage_a
+        record = row["provenance"][RIVAL_SET]
+        assert record["fit_score"] == 0.9
+        assert [(r["formula"], r["fit_score"]) for r in record["rivals"]] == [
+            ("C7H16O5", 0.6)
+        ]
+
+    def _isotopologue_frame(self) -> pd.DataFrame:
+        """The list compound's M0 alone on p1, and on p2 its 13C line beside
+        another compound's M0 line, which it outfits."""
+        frame = _stage_a_frame(self.FITS)
+        frame.loc[1, ["sample_peak_id", "mz", "sample_peak_mz"]] = [
+            "p2",
+            182.07,
+            182.07,
+        ]
+        line = frame.iloc[[0]].copy()
+        line["target_isotope_id"] = "iso-0-13c"
+        line["target_isotope_formula"] = "[13C]C5H13O6+"
+        line[["sample_peak_id", "mz", "sample_peak_mz"]] = ["p2", 182.07, 182.07]
+        line["match_score"] = 0.85
+        line["relative_abundance"] = 0.07
+        return pd.concat([frame, line], ignore_index=True)
+
+    def test_an_isotopologue_row_reads_its_peaks_share_at_v1_as_stage_a(self):
+        frame, row = self._row(self._isotopologue_frame(), role="iso_child")
+        assert row["sample_peak_id"] == "p2"
+        stage_a = {
+            key: row["provenance"][key]
+            for key in ("confidence", "n_candidates", "is_tie")
+        }
+        assert stage_a == {
+            "confidence": round(0.85 / 1.45, 4),
+            "n_candidates": 2,
+            "is_tie": False,
+        }
+
+        measure_rival_sets([row], RivalFrames(frame, (), base=V1), V1)
+
+        assert {key: row["provenance"][key] for key in stage_a} == stage_a
+        # A line predicted from its ion was never searched: no density, no set.
+        assert "candidate_density" not in row["provenance"]
+        assert RIVAL_SET not in row["provenance"]
+
+    def test_an_isotopologue_rows_share_and_tie_move_at_v2(self, monkeypatch):
+        frame, row = self._row(self._isotopologue_frame(), role="iso_child")
+        monkeypatch.setattr(
+            rival_set,
+            "score_frame_at",
+            lambda scored, _model: scored["target_isotope_id"].map(
+                {"iso-0": 0.8, "iso-0-13c": 0.7, "iso-1": 0.68}
+            ),
+        )
+
+        summary = measure_rival_sets([row], RivalFrames(frame, (), base=V1), V2)
+
+        provenance = row["provenance"]
+        assert provenance["confidence"] == round(0.7 / 1.38, 4)
+        assert provenance["is_tie"] is True
+        assert provenance["n_candidates"] == 2
+        assert "candidate_density" not in provenance
+        assert RIVAL_SET not in provenance
+        # The run counts the monoisotopic rows it measured, not this one.
+        assert summary["measured"] == 0 and summary["unmeasured"] == 0
 
     def test_at_v1_the_set_reads_what_stage_a_arbitrated(self):
         frame, row = self._row()

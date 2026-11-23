@@ -751,6 +751,34 @@ class TestWhatIsNoRival:
 
         assert shortlist(*measured(row))[0] == []
 
+    def test_a_shortlist_formula_placed_as_the_winners_own_ion_is_tested(self):
+        # C6H10O5 through [M+H3O]+ makes the winner's own ion, C6H13O6+. The
+        # 4.15 pass placed it there, and the set names it as no rival: it is
+        # the winner's measurement read another way. Its formula-only entry
+        # among the alternatives is that formula, tested, not an open rival.
+        row = m0(
+            source="untargeted",
+            alternatives=[rival("C6H10O5", None)],
+            provenance={
+                MEASURED_SHORTLIST: [
+                    {
+                        "formula": "C6H10O5",
+                        "ion_formula": "C6H13O6+",
+                        "fit_score": 0.9,
+                        "mz_error_ppm": 0.0,
+                    }
+                ],
+                RIVAL_SET: {"fit_score": 0.9, "rivals": [], "rivals_unlisted": 0},
+            },
+        )
+
+        rivals, unlisted = shortlist(row)
+        record = level(row)
+
+        assert rivals == [] and unlisted == 0
+        assert record["level"] != "5a"
+        assert record["evidence"].startswith("no rival on the measured shortlist")
+
     def test_an_entry_of_the_rows_own_formula_is_no_rival(self):
         # Spelled another way, through another adduct: the same neutral.
         row = m0(alternatives=[rival("H12C6O6", 0.9, "C6H16NO6+")])
