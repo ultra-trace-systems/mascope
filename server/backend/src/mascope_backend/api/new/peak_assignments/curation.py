@@ -1061,15 +1061,13 @@ async def _persons_choice(
             )
         )
     (judged,) = ctx.result
-    asks = (
-        ctx.line_gate is not None
-        and judged.get("role") == ROLE_M0
-        and not peaks_df.empty
-    )
+    # Asked where its peaks were read: the stages always hold a gate, so the
+    # peaks are what says whether this run asks lines (read above).
+    asks = judged.get("role") == ROLE_M0 and not peaks_df.empty
     reasons = (judged.get("provenance") or {}).get("tier_reasons") or []
     return judged, _LinesAsked(
         reason=reasons[0] if reasons and asks else None,
-        unread=unread and ctx.line_gate is not None and judged.get("role") == ROLE_M0,
+        unread=unread and judged.get("role") == ROLE_M0,
     )
 
 
