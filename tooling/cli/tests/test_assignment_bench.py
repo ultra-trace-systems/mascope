@@ -16,6 +16,7 @@ import importlib.util
 import io
 import json
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -1262,6 +1263,36 @@ def test_a_rebuild_starts_the_cards_over_and_keeps_one_recorded_after(rig, tmp_p
     assert [c["sha"] for c in state["cards"]] == ["b" * 40]
     assert state["build"]["ref"] == "develop"
     assert list(state["sets"]) == ["Xb", "Xu"]
+
+
+def test_a_write_waits_for_a_reuse_recording_under_state_lock(tmp_path):
+    home = bench.Home(tmp_path / "home")
+    home.make()
+    bench.save_state(home, bench.new_state("bench"))
+    done = []
+
+    def write():
+        bench.update_state(
+            home, "bench", {"reference": {"pin": "v1.0.0"}}, ["reference"]
+        )
+        done.append(True)
+
+    writer = threading.Thread(target=write)
+    # A reuse's read-modify-write, with the write started inside it: the
+    # write must wait for it, or the reuse's save drops the reference.
+    with bench.bench_run.state_guard(home.root):
+        state = bench.load_state(home, "bench")
+        writer.start()
+        writer.join(0.5)
+        assert writer.is_alive(), "the write did not wait for state.lock"
+        state["cards"].append({"sha": "a" * 40})
+        bench.save_state(home, state)
+    writer.join(10)
+
+    assert done == [True]
+    state = bench.load_state(home, "bench")
+    assert state["cards"] == [{"sha": "a" * 40}]
+    assert state["reference"] == {"pin": "v1.0.0"}
 
 
 def test_two_writers_of_one_file_do_not_share_a_temporary_name(tmp_path, monkeypatch):
