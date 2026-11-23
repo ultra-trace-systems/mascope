@@ -2836,7 +2836,12 @@ is what undoes a run (step 3).
   progress: the pace the composite cut's re-processing kept beside a site's
   ingest, at 2.5 to 3 s a file. After each batch it matches the acquisition
   samples of the batch's files, as ingest does where a file's record is
-  verified, and rematches every other batch its applies set to `rematch`. It
+  verified, and rematches every other batch its applies set to `rematch`.
+  Before matching, each acquisition batch of those files gets the
+  calibrant and diagnostic collections of the current version of its
+  mode, as ingest does. A batch made under an earlier version keeps that
+  version's collections until then. One whose collections changed goes to
+  `rematch` and is rematched with the others. It
   runs no peak assignment and leaves every assignment run as it is; the ledger
   lists those on the files it applied, and the summary counts them.
 - **Stopping.** Create a file `STOP` in the ledger's directory (below): the
