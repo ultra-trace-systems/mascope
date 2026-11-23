@@ -310,24 +310,26 @@ describe('DialogCalibration', () => {
     expect(summary().exists()).toBe(false)
   })
 
+  // A record transferred from two neighbouring fitted files
+  const TRANSFERRED = {
+    mode: 0,
+    par: [2830.0, -9000.0],
+    status: 'transferred',
+    verified: true,
+    transfer: {
+      sources: [
+        { sample_file_id: 'sf-a', gap_s: -360, weight: 0.4 },
+        { sample_file_id: 'sf-b', gap_s: 240, weight: 0.6 }
+      ],
+      gap_s: 240,
+      window_s: 1800
+    }
+  }
+
   it('says the calibration applied was transferred from neighbouring files', () => {
     mocks.fit = fitted({ n_points: 1 }, [point(), SUMMARY])
-    const transferred = {
-      mode: 0,
-      par: [2830.0, -9000.0],
-      status: 'transferred',
-      verified: true,
-      transfer: {
-        sources: [
-          { sample_file_id: 'sf-a', gap_s: -360, weight: 0.4 },
-          { sample_file_id: 'sf-b', gap_s: 240, weight: 0.6 }
-        ],
-        gap_s: 240,
-        window_s: 1800
-      }
-    }
 
-    const wrapper = mountDialog({ ...SAMPLE, mz_calibration: transferred })
+    const wrapper = mountDialog({ ...SAMPLE, mz_calibration: TRANSFERRED })
 
     const message = wrapper.find('[data-testid="calibration-transferred"]')
     expect(message.exists()).toBe(true)
@@ -336,6 +338,36 @@ describe('DialogCalibration', () => {
         'instrument, interpolated in time (the nearer 4 min away).'
     )
     expect(message.text()).toContain('a fit saved here replaces the transfer.')
+  })
+
+  it('says the sample picked in a batch runs on a transferred calibration', async () => {
+    // The batch carries no record of its own: the message follows the
+    // previewed sample.
+    api.http.get.mockResolvedValueOnce([{ ...SAMPLE, mz_calibration: TRANSFERRED }])
+    mocks.fit = fitted({ n_points: 1 }, [point(), SUMMARY])
+
+    const wrapper = mountDialog({ sample_batch_id: 'sb-1', sample_batch_name: 'ambient' })
+    await flushPromises()
+
+    const message = wrapper.find('[data-testid="calibration-transferred"]')
+    expect(message.exists()).toBe(true)
+    expect(message.text()).toContain(
+      'Applied: m/z calibration transferred from the two nearest fitted files'
+    )
+  })
+
+  it('says nothing of a transfer for the sample picked in a batch fitted on its own', async () => {
+    api.http.get.mockResolvedValueOnce([{ ...SAMPLE, mz_calibration: record(undefined) }])
+    mocks.fit = fitted({ n_points: 1 }, [point(), SUMMARY])
+
+    const wrapper = mountDialog({
+      sample_batch_id: 'sb-1',
+      sample_batch_name: 'ambient',
+      mz_calibration: TRANSFERRED
+    })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="calibration-transferred"]').exists()).toBe(false)
   })
 
   it('says nothing of a transfer for a sample fitted on its own', () => {
