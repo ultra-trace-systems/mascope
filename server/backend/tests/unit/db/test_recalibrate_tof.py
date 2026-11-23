@@ -23,7 +23,7 @@ import numpy as np
 import pytest
 import pytest_asyncio
 import xarray as xr
-from sqlalchemy import delete, null
+from sqlalchemy import delete, null, select
 from test_utils import gen_test_id
 
 import mascope_file.io as m_io
@@ -45,6 +45,7 @@ from mascope_backend.db import (
     SampleFile,
     SampleItem,
     TargetCollection,
+    TargetCollectionInSampleBatch,
     Workspace,
 )
 from mascope_backend.db.scripts import recalibrate_tof as script
@@ -400,11 +401,12 @@ def test_what_is_left_to_match_and_the_batches_touched(tmp_path):
         {"event": "applied", "sample_file_id": "c"},
         {"event": "rollback", "sample_file_id": "d", "batches": ["b3"]},
         {"event": "restored", "sample_file_id": "e", "batches": ["b4"]},
+        {"event": "realigned", "sample_file_id": "a", "batches": ["acq1"]},
     )
 
     # A put-back apply never landed, so its matches were not removed
     assert [e["sample_file_id"] for e in ledger.unmatched()] == ["c", "d"]
-    assert ledger.touched_batches() == {"b1", "b2", "b3", "b4"}
+    assert ledger.touched_batches() == {"b1", "b2", "b3", "b4", "acq1"}
 
 
 def test_a_stop_file_asks_the_run_to_stop(tmp_path):
@@ -2321,6 +2323,357 @@ async def test_settling_matches_the_files_and_rematches_the_batches(tmp_path):
     assert ledger.unmatched() == []
     matched = [e for e in _whole(ledger) if e["event"] == "matched"]
     assert matched[1]["unverified"] is True
+
+
+@pytest.mark.asyncio
+async def test_settling_realigns_the_acquisition_batches_before_matching(tmp_path):
+    """A batch whose collections changed is set to ``rematch``, recorded, and
+    rematched with the batches the applies touched; one that did not change
+    is left alone."""
+    ledger = _ledger(
+        tmp_path,
+        {"event": "apply", "sample_file_id": "f", "batches": ["b1"]},
+        {"event": "applied", "sample_file_id": "f"},
+    )
+    calls = []
+    status = AsyncMock(side_effect=lambda **kw: calls.append(("status", kw)))
+    with (
+        patch.object(
+            script,
+            "_file_state",
+            AsyncMock(
+                return_value=SimpleNamespace(
+                    mz_calibration={"status": "ok", "verified": True}
+                )
+            ),
+        ),
+        patch.object(
+            script, "_acquisition_batches", AsyncMock(return_value=["a1", "a2"])
+        ),
+        patch.object(
+            script,
+            "bring_batch_collections_current",
+            AsyncMock(side_effect=lambda b: calls.append(("align", b)) or b == "a1"),
+        ),
+        patch.object(script, "update_sample_batch_status", status),
+        patch.object(script, "_acquisition_samples", AsyncMock(return_value=["s1"])),
+        patch.object(
+            script,
+            "match_compute_sample",
+            AsyncMock(
+                side_effect=lambda **kw: calls.append(("match", kw["sample_item_id"]))
+            ),
+        ),
+        patch.object(
+            script,
+            "_batches_at_rematch",
+            AsyncMock(side_effect=lambda ids: sorted(ids)),
+        ),
+        patch.object(
+            script, "rematch_batch", AsyncMock(return_value={"status": "success"})
+        ) as rematch,
+        patch.object(script, "fresh_in_progress", AsyncMock(return_value=0)),
+    ):
+        await script.settle(_run_config(tmp_path), ledger)
+
+    # Aligned, then flagged, before the file's samples are matched
+    assert [c[0] for c in calls] == ["align", "align", "status", "match"]
+    assert calls[2][1] == {
+        "sample_batch_ids": ["a1"],
+        "status": "rematch",
+        "independent_transaction": True,
+        "never_lower": True,
+    }
+    realigned = [e for e in _whole(ledger) if e["event"] == "realigned"]
+    assert realigned == [{**realigned[0], "batches": ["a1"], "failed": {}}]
+    assert realigned[0]["sample_file_id"] == "f"
+    assert sorted(c.kwargs["sample_batch_id"] for c in rematch.await_args_list) == [
+        "a1",
+        "b1",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_batch_that_cannot_be_realigned_is_recorded_and_the_file_matched(
+    tmp_path,
+):
+    ledger = _ledger(tmp_path, {"event": "applied", "sample_file_id": "f"})
+    with (
+        patch.object(
+            script,
+            "_file_state",
+            AsyncMock(
+                return_value=SimpleNamespace(
+                    mz_calibration={"status": "ok", "verified": True}
+                )
+            ),
+        ),
+        patch.object(script, "_acquisition_batches", AsyncMock(return_value=["a1"])),
+        patch.object(
+            script,
+            "bring_batch_collections_current",
+            AsyncMock(side_effect=RuntimeError("locked")),
+        ),
+        patch.object(script, "update_sample_batch_status", AsyncMock()) as status,
+        patch.object(script, "_acquisition_samples", AsyncMock(return_value=["s1"])),
+        patch.object(script, "match_compute_sample", AsyncMock()) as match,
+        patch.object(script, "_batches_at_rematch", AsyncMock(return_value=[])),
+        patch.object(script, "fresh_in_progress", AsyncMock(return_value=0)),
+    ):
+        await script.settle(_run_config(tmp_path), ledger)
+
+    status.assert_not_awaited()
+    match.assert_awaited_once()
+    realigned = [e for e in _whole(ledger) if e["event"] == "realigned"]
+    assert realigned[0]["batches"] == []
+    assert realigned[0]["failed"] == {"a1": "RuntimeError: locked"}
+
+
+@pytest_asyncio.fixture
+async def swapped_mode(async_session_factory):
+    """An acquisition batch made under a mode's first version, with that
+    version's calibration collection, and a second version since that names
+    another one. The file's sample is under the second version, where the
+    apply moved it."""
+    ids = {
+        key: gen_test_id()
+        for key in (
+            "workspace",
+            "dataset",
+            "batch",
+            "old",
+            "new",
+            "v1",
+            "v2",
+            "file",
+            "item",
+        )
+    }
+    async with async_session_factory() as session:
+        session.add_all(
+            [
+                Workspace(
+                    workspace_id=ids["workspace"],
+                    workspace_name=f"recal {ids['workspace']}",
+                    workspace_status="active",
+                ),
+                *(
+                    TargetCollection(
+                        target_collection_id=ids[key],
+                        target_collection_name=f"recal {key} {ids[key]}",
+                        target_collection_type="CALIBRATION",
+                    )
+                    for key in ("old", "new")
+                ),
+            ]
+        )
+        await session.flush()
+        session.add(
+            Dataset(
+                dataset_id=ids["dataset"],
+                workspace_id=ids["workspace"],
+                dataset_name="recal",
+                dataset_type="ACQUISITION",
+            )
+        )
+        session.add(
+            IonizationMode(
+                ionization_mode_id=ids["v1"],
+                ionization_mode_name=f"Nitrate {ids['v1']}",
+                ionization_mode_polarity="-",
+                ionization_mechanism_ids=[],
+                calibration_collection_id=ids["old"],
+                version=1,
+                is_active=False,
+            )
+        )
+        await session.flush()
+        session.add(
+            IonizationMode(
+                ionization_mode_id=ids["v2"],
+                ionization_mode_name=f"Nitrate {ids['v1']}",
+                ionization_mode_polarity="-",
+                ionization_mechanism_ids=[],
+                calibration_collection_id=ids["new"],
+                version=2,
+                is_active=True,
+                supersedes_id=ids["v1"],
+            )
+        )
+        session.add(
+            SampleBatch(
+                sample_batch_id=ids["batch"],
+                dataset_id=ids["dataset"],
+                sample_batch_name="recal",
+                sample_batch_type="ACQUISITION",
+                status="ready",
+                polarity="-",
+            )
+        )
+        session.add(
+            SampleFile(
+                sample_file_id=ids["file"],
+                filename=f"RecalTof_2026.10.01_12h00m00s_{ids['file']}",
+                instrument="RecalTof",
+                instrument_type="tof",
+                datetime=datetime(2026, 10, 1, 12),
+                datetime_utc=datetime(2026, 10, 1, 12, tzinfo=UTC),
+                length=1.0,
+                range=[10.0, 500.0],
+                polarity="-",
+            )
+        )
+        await session.flush()
+        session.add_all(
+            [
+                TargetCollectionInSampleBatch(
+                    sample_batch_id=ids["batch"], target_collection_id=ids["old"]
+                ),
+                SampleItem(
+                    sample_item_id=ids["item"],
+                    sample_batch_id=ids["batch"],
+                    sample_file_id=ids["file"],
+                    sample_item_name="recal",
+                    sample_item_type="ACQUISITION",
+                    ionization_mode_id=ids["v2"],
+                ),
+            ]
+        )
+        await session.commit()
+
+    yield ids
+
+    async with async_session_factory() as session:
+        await session.execute(
+            delete(SampleItem).where(SampleItem.sample_batch_id == ids["batch"])
+        )
+        await session.execute(
+            delete(TargetCollectionInSampleBatch).where(
+                TargetCollectionInSampleBatch.sample_batch_id == ids["batch"]
+            )
+        )
+        await session.execute(
+            delete(SampleFile).where(SampleFile.sample_file_id == ids["file"])
+        )
+        await session.execute(
+            delete(SampleBatch).where(SampleBatch.sample_batch_id == ids["batch"])
+        )
+        await session.execute(
+            delete(IonizationMode).where(IonizationMode.ionization_mode_id == ids["v2"])
+        )
+        await session.execute(
+            delete(IonizationMode).where(IonizationMode.ionization_mode_id == ids["v1"])
+        )
+        await session.execute(
+            delete(Dataset).where(Dataset.dataset_id == ids["dataset"])
+        )
+        await session.execute(
+            delete(TargetCollection).where(
+                TargetCollection.target_collection_id.in_([ids["old"], ids["new"]])
+            )
+        )
+        await session.execute(
+            delete(Workspace).where(Workspace.workspace_id == ids["workspace"])
+        )
+        await session.commit()
+
+
+async def _batch_collections(session_factory, sample_batch_id) -> set[str]:
+    async with session_factory() as session:
+        return set(
+            (
+                await session.execute(
+                    select(TargetCollectionInSampleBatch.target_collection_id).where(
+                        TargetCollectionInSampleBatch.sample_batch_id == sample_batch_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_file_is_matched_against_its_modes_current_collections(
+    swapped_mode, async_session_factory, tmp_path
+):
+    """The batch's old collection is swapped for the current version's before
+    the file's sample is matched, and the batch waits for and gets a rematch
+    for its other samples, as ingest does when it files into it."""
+    ids = swapped_mode
+    ledger = _ledger(tmp_path, {"event": "applied", "sample_file_id": ids["file"]})
+    seen = {}
+
+    async def match(**kwargs):
+        seen[kwargs["sample_item_id"]] = await _batch_collections(
+            async_session_factory, ids["batch"]
+        )
+
+    with (
+        patch.object(
+            script,
+            "_file_state",
+            AsyncMock(
+                return_value=SimpleNamespace(
+                    mz_calibration={"status": "ok", "verified": True}
+                )
+            ),
+        ),
+        patch.object(script, "match_compute_sample", AsyncMock(side_effect=match)),
+        patch.object(
+            script, "rematch_batch", AsyncMock(return_value={"status": "success"})
+        ) as rematch,
+        patch.object(script, "fresh_in_progress", AsyncMock(return_value=0)),
+    ):
+        await script.settle(_run_config(tmp_path), ledger)
+
+    assert seen == {ids["item"]: {ids["new"]}}
+    assert rematch.await_args.kwargs["sample_batch_id"] == ids["batch"]
+    async with async_session_factory() as session:
+        batch = await session.get(SampleBatch, ids["batch"])
+        assert batch.status == "rematch"
+    assert ledger.touched_batches() == {ids["batch"]}
+
+
+@pytest.mark.asyncio
+async def test_a_batch_already_current_is_neither_flagged_nor_rematched(
+    swapped_mode, async_session_factory, tmp_path
+):
+    ids = swapped_mode
+    async with async_session_factory() as session:
+        await session.execute(
+            delete(TargetCollectionInSampleBatch).where(
+                TargetCollectionInSampleBatch.sample_batch_id == ids["batch"]
+            )
+        )
+        session.add(
+            TargetCollectionInSampleBatch(
+                sample_batch_id=ids["batch"], target_collection_id=ids["new"]
+            )
+        )
+        await session.commit()
+    ledger = _ledger(tmp_path, {"event": "applied", "sample_file_id": ids["file"]})
+    with (
+        patch.object(
+            script,
+            "_file_state",
+            AsyncMock(
+                return_value=SimpleNamespace(
+                    mz_calibration={"status": "ok", "verified": True}
+                )
+            ),
+        ),
+        patch.object(script, "match_compute_sample", AsyncMock()) as match,
+        patch.object(script, "rematch_batch", AsyncMock()) as rematch,
+        patch.object(script, "fresh_in_progress", AsyncMock(return_value=0)),
+    ):
+        await script.settle(_run_config(tmp_path), ledger)
+
+    match.assert_awaited_once()
+    rematch.assert_not_awaited()
+    async with async_session_factory() as session:
+        assert (await session.get(SampleBatch, ids["batch"])).status == "ready"
+    assert not [e for e in _whole(ledger) if e["event"] == "realigned"]
 
 
 @pytest.mark.asyncio

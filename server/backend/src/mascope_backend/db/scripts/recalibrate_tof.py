@@ -25,9 +25,11 @@ a refit from the stored peaks followed by an apply, with no re-detection.
   so. An ``extrapolated`` fit is held below it only when the old record,
   judged on the same strong peaks, is not extrapolated
   (:func:`issues_against_ok`). Before each apply the ledger records what the file had. After each
-  batch of files the runner matches the files' acquisition samples, as
-  ingest does, and rematches every other batch the applies set to
-  ``rematch``. It touches no peak-assignment run: it lists those on the
+  batch of files the runner gives the files' acquisition batches the
+  collections of the current version of their modes, matches the files'
+  acquisition samples, as ingest does, and rematches every other batch the
+  applies set to ``rematch`` and every acquisition batch whose collections
+  changed. It touches no peak-assignment run: it lists those on the
   files it applied.
 - ``rollback`` puts back what the ledger recorded before an apply, for a
   file or a batch of the run (``TOF_RECAL_ROLLBACK``): the database record
@@ -179,7 +181,10 @@ from mascope_backend.api.models.sample.files.sample_file_pydantic_model import (
     SampleFileUpdate,
 )
 from mascope_backend.api.new.instrument_configs.lib import read_instrument_functions
-from mascope_backend.api.new.ionization.modes.versions import current_versions
+from mascope_backend.api.new.ionization.modes.versions import (
+    bring_batch_collections_current,
+    current_versions,
+)
 from mascope_backend.db import (
     IonizationMode,
     PeakAssignmentRun,
@@ -607,11 +612,13 @@ class Ledger:
 
     def touched_batches(self) -> set[str]:
         """Every batch other than an acquisition one that an apply, a rollback
-        or a put-back of the ledger set to ``rematch``."""
+        or a put-back of the ledger set to ``rematch``, and every acquisition
+        batch settling gave the current collections of its modes and set to
+        ``rematch`` (``realigned``)."""
         return {
             batch_id
             for event in self.events
-            if event.get("event") in ("apply", "rollback", "restored")
+            if event.get("event") in ("apply", "rollback", "restored", "realigned")
             for batch_id in event.get("batches") or ()
         }
 
@@ -1486,6 +1493,67 @@ async def _acquisition_samples(sample_file_id: str) -> list[str]:
         )
 
 
+async def _acquisition_batches(sample_file_id: str) -> list[str]:
+    async with async_session() as session:
+        return list(
+            (
+                await session.execute(
+                    select(SampleBatch.sample_batch_id)
+                    .join(
+                        SampleItem,
+                        SampleItem.sample_batch_id == SampleBatch.sample_batch_id,
+                    )
+                    .where(
+                        SampleItem.sample_file_id == sample_file_id,
+                        SampleBatch.sample_batch_type == "ACQUISITION",
+                    )
+                    .distinct()
+                    .order_by(SampleBatch.sample_batch_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+
+async def realign_acquisition_batches(sample_file_id: str, ledger: Ledger) -> None:
+    """Give the file's acquisition batches the collections of the current
+    version of their modes, as ingest does when it files into an existing
+    batch, before the file's samples are matched against them.
+
+    The apply moved the file's samples onto the current version of their
+    mode, but a batch keeps the collections of the version it was made
+    under, and matching reads the batch's own rows. A batch whose collections
+    changed goes to ``rematch``, a pending recalibration staying, since its
+    other samples were matched against the old ones; the ledger records it
+    (``realigned``), and :func:`settle` rematches it with the batches the
+    applies touched.
+    """
+    realigned, failed = [], {}
+    for sample_batch_id in await _acquisition_batches(sample_file_id):
+        try:
+            if await bring_batch_collections_current(sample_batch_id):
+                realigned.append(sample_batch_id)
+        except Exception as error:  # noqa: BLE001 - one batch's failure
+            failed[sample_batch_id] = f"{type(error).__name__}: {error}"
+    if realigned:
+        await update_sample_batch_status(
+            sample_batch_ids=realigned,
+            status="rematch",
+            independent_transaction=True,
+            never_lower=True,
+        )
+    if realigned or failed:
+        ledger.write(
+            {
+                "event": "realigned",
+                "sample_file_id": sample_file_id,
+                "batches": realigned,
+                "failed": failed,
+            }
+        )
+
+
 async def _batches_at_rematch(batch_ids) -> list[str]:
     if not batch_ids:
         return []
@@ -1509,10 +1577,13 @@ async def _batches_at_rematch(batch_ids) -> list[str]:
 async def settle(config: Config, ledger: Ledger) -> dict:
     """Match what the applies and rollbacks cleared, under the backlog guard.
 
-    The file's acquisition samples are matched as ingest matches them, where
-    the file's record is verified (``match_compute_sample``); and every other
-    batch an apply set to ``rematch`` is rematched, which computes the
-    matches its samples of the file lack (``rematch_batch``).
+    The file's acquisition batches are first given the collections of the
+    current version of their modes (:func:`realign_acquisition_batches`).
+    Then the file's acquisition samples are matched as ingest matches them,
+    where the file's record is verified (``match_compute_sample``); and every
+    other batch an apply set to ``rematch``, and every acquisition batch whose
+    collections changed, is rematched, which computes the matches its samples
+    lack (``rematch_batch``).
 
     :return: Counts, and the batches still at ``rematch``.
     """
@@ -1528,6 +1599,7 @@ async def settle(config: Config, ledger: Ledger) -> dict:
                 {"event": "matched", "sample_file_id": sample_file_id, "gone": True}
             )
             continue
+        await realign_acquisition_batches(sample_file_id, ledger)
         samples = await _acquisition_samples(sample_file_id)
         matched, failed = [], {}
         if _is_verified_record(stored.mz_calibration):
