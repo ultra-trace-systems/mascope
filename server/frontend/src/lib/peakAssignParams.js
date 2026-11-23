@@ -4,24 +4,18 @@ import { defineStore } from 'pinia'
 import { api } from '@/api'
 
 /**
- * The untargeted search parameters, shared by every surface that asks for them.
+ * The untargeted search parameters: the served defaults, bounds and presets
+ * every surface that asks for them reads, and one user's own remembered values.
  *
- * Three controls take the same knobs: the composition search pane (m/z
- * precision and formula range, for the focused peak), the per-sample assignment
- * launcher, and the batch untargeted search. They used to disagree about where
- * a value comes from - the pane restored the user's last two values from
- * localStorage, while the launcher form reset to the server defaults on every
- * open - so the same parameter had two answers depending on which control you
- * opened, and a range narrowed in the pane was gone the moment you launched a
- * run with it.
- *
- * Here it has one answer: the server default until the user changes it, the
- * user's value afterwards, on every surface and across reloads. That is one
- * record deliberately, not three: m/z precision and formula range mean the same
- * thing to the pane and to the run - the backend already derives both from the
- * same two constants (`ChemInfoConfig`) - so tuning them against one peak in
- * the pane is what the next run launches with. Every surface that binds a field
- * also shows it, so nothing is carried invisibly.
+ * The remembered values are the composition search pane's (m/z precision and
+ * formula range, for the focused peak): the server default until the user
+ * changes it, the user's value afterwards, across reloads. An assignment run
+ * does not read them. A batch keeps its own settings on itself, which every
+ * pass of the batch runs on and which the per-sample launcher opens on
+ * (docs/dev/batch_assignment_one_action.md 3.4, decided in MAS-1012); the
+ * helpers below the store's constants turn those into a form model and back.
+ * Before that, the launchers bound this record too, so the same settings
+ * differed from one user to the next on one batch.
  *
  * Only genuine overrides are persisted: a field left at the server default is
  * absent from storage, so a default that moves in a release moves for everyone
@@ -137,6 +131,109 @@ export async function fetchProfilePreview(scope, { profile = null, context = nul
     errors: 'inline'
   })
   return response?.data?.data ?? []
+}
+
+// --- A batch's settings ----------------------------------------------------
+// A batch keeps its assignment settings on itself (`assignment_settings` on the
+// batch, docs/dev/batch_assignment_one_action.md 5.4): every pass of its stages
+// reads them, whoever starts it. The batch stores the fields that were set, so
+// a field it leaves out follows the engine's default. The helpers below turn
+// that record into a whole form model and back, for the batch's own dialog and
+// for the per-sample launcher, which opens on the batch's settings.
+
+/**
+ * The fields a batch's settings dialog offers. The batch's pass IS the
+ * untargeted search's stage, so it shows no switch for running it.
+ */
+export const BATCH_SETTING_KEYS = Object.freeze(
+  PARAM_KEYS.filter((key) => key !== 'run_untargeted')
+)
+
+// A field left blank in a form is no value at all: the default applies.
+const blank = (value) => value === null || value === undefined || value === ''
+
+/**
+ * A whole form model from a batch's saved settings: what the batch saved,
+ * and the server default for every field it left out.
+ *
+ * @param {object|null} saved - The batch's `assignment_settings`; null is the defaults.
+ * @param {object|null} defaults - The served defaults (`store.defaults`); null
+ *   while /params has not answered, which leaves an unsaved field empty.
+ * @returns {object} One value per `PARAM_KEYS` field.
+ */
+export function batchSettingsModel(saved, defaults) {
+  const out = {}
+  for (const key of PARAM_KEYS) {
+    out[key] = saved && key in saved ? saved[key] : (defaults?.[key] ?? null)
+  }
+  return out
+}
+
+/**
+ * What saving a batch's settings dialog writes: the record the batch keeps,
+ * and whether it differs from the one it keeps now.
+ *
+ * A field the dialog left as it opened keeps what the batch saved, or stays
+ * out where it saved nothing. A changed field is written, unless it was put
+ * back on the server default or cleared: then it is left out, so it follows
+ * the default as the per-user store's overrides do. A PATCH replaces the
+ * batch's settings whole, so the fields the batch saved before and nobody
+ * touched here travel with the changed ones.
+ *
+ * @param {object} model - The dialog's form model.
+ * @param {object|null} saved - The batch's `assignment_settings` as it opened.
+ * @param {object|null} defaults - The served defaults.
+ * @param {string[]} [keys] - The fields the dialog shows.
+ * @returns {{settings: object|null, changed: boolean}} `settings` is null for
+ *   the defaults, as the batch stores them.
+ */
+export function batchSettingsBody(model, saved, defaults, keys = BATCH_SETTING_KEYS) {
+  const opened = batchSettingsModel(saved, defaults)
+  const out = {}
+  // What the batch saved of a field this dialog does not show stays saved.
+  for (const [key, value] of Object.entries(saved ?? {})) {
+    if (!keys.includes(key)) out[key] = value
+  }
+  for (const key of keys) {
+    const value = blank(model[key]) ? null : model[key]
+    const before = blank(opened[key]) ? null : opened[key]
+    if (value === before) {
+      if (saved && key in saved) out[key] = saved[key]
+      continue
+    }
+    if (value === null || value === (defaults?.[key] ?? null)) continue
+    if (key === 'formula_ranges' && !isFormulaRange(value)) continue
+    out[key] = value
+  }
+  const settings = Object.keys(out).length ? out : null
+  const same = JSON.stringify(sortedEntries(settings)) === JSON.stringify(sortedEntries(saved))
+  return { settings, changed: !same }
+}
+
+// A record's entries in key order, empty for none, so two records compare by
+// content and an empty object reads as no settings, as the batch stores it.
+function sortedEntries(record) {
+  return Object.entries(record ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+}
+
+/**
+ * The run configuration a form model launches with: the fields that are set,
+ * as the per-user store's `payload` sends them, so the run records the
+ * settings it ran on and the backend default applies to a field left blank.
+ *
+ * @param {object} model - A form model.
+ * @param {object} [forced] - Fields the caller decides, applied over the model's.
+ * @returns {object} Body `config` for the assignment endpoint.
+ */
+export function runConfig(model, forced = {}) {
+  const out = {}
+  for (const key of PARAM_KEYS) {
+    const value = model[key]
+    if (blank(value)) continue
+    if (key === 'formula_ranges' && !isFormulaRange(value)) continue
+    out[key] = value
+  }
+  return { ...out, ...forced }
 }
 
 /** Overrides held in storage, filtered to the fields this store still owns. */

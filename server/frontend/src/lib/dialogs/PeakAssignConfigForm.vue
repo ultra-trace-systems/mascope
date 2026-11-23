@@ -26,16 +26,16 @@ import {
 } from '@/lib/peakAssignProfiles'
 
 // The peak-assignment run configuration, shared by the per-sample launcher and
-// the batch launcher so both offer the same knobs and the same bounds.
+// the batch's Edit assignment settings dialog so both offer the same knobs and
+// the same bounds.
 //
-// Defaults, bounds and the values themselves come from the shared parameter
-// store rather than from a config object each caller owns: the limits are the
+// Defaults and bounds come from the shared parameter store: the limits are the
 // constants PeakAssignmentConfig validates against, so an input can never offer
-// a value the API would reject, and the values are the same ones the search
-// pane binds - set here, they are what the pane searches with next, and the
-// other way round. What the user sets persists; the reset control below puts it
-// back. A caller reads `store.params` at launch time and applies whatever it
-// decides for itself on top.
+// a value the API would reject. The values come from the caller's `model` when
+// it hands one - the batch's settings, or a launch seeded from them
+// (docs/dev/batch_assignment_one_action.md 3.4) - and from the per-user store
+// otherwise, which the composition search pane binds too. The caller reads its
+// model on save or launch, after `commit()`.
 
 const props = defineProps({
   // Fields the caller has decided for the user and does not show: a launcher
@@ -56,12 +56,31 @@ const props = defineProps({
   sampleBatchId: {
     type: String,
     default: null
+  },
+  // The values to bind in place of the per-user store's: a batch's settings,
+  // or a launch seeded from them. The caller owns it and reads it on save or
+  // launch; nothing typed here reaches the per-user store. Read once, at
+  // setup: a caller reseeds the same object rather than handing a new one.
+  model: {
+    type: Object,
+    default: null
+  },
+  // Show the values without letting them change: a viewer's look at settings
+  // only an editor may save. Said once above the fields, with the reason.
+  readonly: {
+    type: Boolean,
+    default: false
+  },
+  readonlyReason: {
+    type: String,
+    default: null
   }
 })
 
 const app = useApp()
 const store = usePeakAssignParams()
-const params = store.params
+const params = props.model ?? store.params
+const ownModel = Boolean(props.model)
 
 onMounted(() => store.ensureLoaded())
 
@@ -75,7 +94,42 @@ const stagesDoc = app.ui.help.docUrl('how-it-works/peak-assignment/#the-two-stag
 // Reset clears exactly the fields this form shows. A hidden field was never the
 // user's to set here, so it is not this control's to clear either.
 const resettable = computed(() => PARAM_KEYS.filter((key) => !props.hidden.includes(key)))
-const atDefaults = computed(() => store.isDefault(resettable.value))
+const blankToNull = (value) => (value === '' || value === undefined ? null : value)
+const atDefaults = computed(() => {
+  if (!ownModel) return store.isDefault(resettable.value)
+  if (!store.defaults) return true
+  return resettable.value.every(
+    (key) => blankToNull(params[key]) === blankToNull(store.defaults[key])
+  )
+})
+
+// The bound record's fields back to the served defaults, the store's or the
+// caller's model alike.
+function resetFields() {
+  for (const key of resettable.value) params[key] = store.defaults ? store.defaults[key] : null
+}
+
+// What the reset control resets, said for the record the form is bound to.
+const resetHelp = ownModel
+  ? `
+    <h1>Reset to Defaults</h1>
+    <p>
+    Puts every field above back to the value Mascope ships. Nothing is
+    written until you save or launch.
+    </p>`
+  : `
+    <h1>Reset to Defaults</h1>
+    <p>
+    These settings are remembered between runs and shared with the
+    composition search. This puts every field above back to the value
+    Mascope ships, and stops remembering yours.
+    </p>`
+
+// The untargeted fields wait on the switch, where the form shows one; a form
+// that hides it is for a pass that is the untargeted search, so they are live.
+const untargetedOff = computed(
+  () => !props.hidden.includes('run_untargeted') && !params.run_untargeted
+)
 
 // The range is committed to the store only once it parses, so a half-typed
 // range is never persisted and never reaches the pane's next search. The raw
@@ -89,14 +143,35 @@ watch(
   () => params.formula_ranges,
   (value) => {
     if (value != null && formulaRangeModel.value !== value) formulaRangeModel.value = value
+    // A caller's model is reseeded or reset to an empty range, which the
+    // field shows as empty rather than keeping the last text.
+    else if (value == null && ownModel) formulaRangeModel.value = ''
   }
 )
 
 function commitFormulaRange() {
   if (formulaRangeValid.value && formulaRangeModel.value) {
     params.formula_ranges = formulaRangeModel.value.trim()
+  } else if (ownModel && !formulaRangeModel.value) {
+    // Cleared: the range follows the chemistry profile again. The per-user
+    // store keeps its last range instead, as the search pane's field does.
+    params.formula_ranges = null
   }
 }
+
+/**
+ * Commit the range typed but not yet committed, and say whether the form can
+ * be saved: a caller's Save or Assign may be pressed with the range field
+ * still focused.
+ *
+ * @returns {boolean} False while the typed range does not parse.
+ */
+function commit() {
+  commitFormulaRange()
+  return formulaRangeValid.value
+}
+
+defineExpose({ commit })
 
 // --- Chemistry ---------------------------------------------------------------
 // The reagent profile says how the sample was ionized, the context what was
@@ -265,6 +340,14 @@ const chemistryDoc = app.ui.help.docUrl(
 
 <template>
   <div class="col config-form" style="gap: 1.25rem; align-items: stretch">
+    <Message
+      v-if="readonly && readonlyReason"
+      severity="secondary"
+      size="small"
+      data-testid="config-readonly"
+    >
+      {{ readonlyReason }}
+    </Message>
     <FloatLabel
       :pt="
         app.ui.help.right(
@@ -293,6 +376,7 @@ const chemistryDoc = app.ui.help.docUrl(
         :options="profileOptions"
         optionLabel="label"
         optionValue="value"
+        :disabled="readonly"
         fluid
       />
       <label for="assign_profile">Chemistry profile</label>
@@ -324,6 +408,7 @@ const chemistryDoc = app.ui.help.docUrl(
         :options="contextOptions"
         optionLabel="label"
         optionValue="value"
+        :disabled="readonly"
         fluid
       >
         <template #option="{ option }">
@@ -386,7 +471,7 @@ const chemistryDoc = app.ui.help.docUrl(
         doc: stagesDoc
       }"
     >
-      <ToggleSwitch v-model="params.run_untargeted" inputId="run_untargeted" />
+      <ToggleSwitch v-model="params.run_untargeted" inputId="run_untargeted" :disabled="readonly" />
       <label for="run_untargeted">
         Untargeted search
         <small>Search compositions for peaks the library leaves unassigned.</small>
@@ -417,7 +502,7 @@ const chemistryDoc = app.ui.help.docUrl(
         inputId="mz_precision_ppm"
         :min="1"
         :max="store.limits.max_mz_precision_ppm"
-        :disabled="!params.run_untargeted"
+        :disabled="readonly || untargetedOff"
         :placeholder="mzPrecisionPlaceholder"
         fluid
       />
@@ -447,7 +532,7 @@ const chemistryDoc = app.ui.help.docUrl(
       <InputText
         v-model="formulaRangeModel"
         id="formula_ranges"
-        :disabled="!params.run_untargeted"
+        :disabled="readonly || untargetedOff"
         :invalid="!formulaRangeValid"
         @blur="commitFormulaRange"
         @keydown.enter="commitFormulaRange"
@@ -484,7 +569,7 @@ const chemistryDoc = app.ui.help.docUrl(
         inputId="max_untargeted_peaks"
         :min="1"
         :max="store.limits.max_untargeted_peaks_ceiling"
-        :disabled="!params.run_untargeted"
+        :disabled="readonly || untargetedOff"
         placeholder="Every unexplained peak"
         fluid
       />
@@ -508,7 +593,7 @@ const chemistryDoc = app.ui.help.docUrl(
         v-model="params.peak_intensity_threshold"
         inputId="peak_intensity_threshold"
         :min="0"
-        :disabled="!params.run_untargeted"
+        :disabled="readonly || untargetedOff"
         fluid
       />
       <label for="peak_intensity_threshold">Peak intensity threshold</label>
@@ -536,6 +621,7 @@ const chemistryDoc = app.ui.help.docUrl(
         inputId="max_alternatives"
         :min="0"
         :max="store.limits.max_alternatives_ceiling"
+        :disabled="readonly"
         fluid
       />
       <label for="max_alternatives">Max alternatives kept</label>
@@ -544,7 +630,7 @@ const chemistryDoc = app.ui.help.docUrl(
          be visible: without it a range narrowed once would quietly shape every
          later run. Disabled while nothing is overridden, which also makes the
          control double as the answer to "am I on the defaults?". -->
-    <div class="reset-row">
+    <div v-if="!readonly" class="reset-row">
       <Button
         label="Reset to defaults"
         icon="pi ph ph-arrow-counter-clockwise"
@@ -552,15 +638,9 @@ const chemistryDoc = app.ui.help.docUrl(
         text
         severity="secondary"
         :disabled="atDefaults"
-        @click="store.reset(resettable)"
+        @click="resetFields"
         v-help-layer.right="{
-          message: `
-            <h1>Reset to Defaults</h1>
-            <p>
-            These settings are remembered between runs and shared with the
-            composition search. This puts every field above back to the value
-            Mascope ships, and stops remembering yours.
-            </p>`
+          message: resetHelp
         }"
       />
     </div>

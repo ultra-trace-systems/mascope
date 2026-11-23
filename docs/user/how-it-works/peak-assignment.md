@@ -333,14 +333,15 @@ read this way on a charge-transfer source, whose grid holds no chlorine.
 
 **In the launcher.** *Assign sample* offers the two presets, and says what *Auto*
 resolves to for the sample. The formula range and m/z precision fields show the grid and
-the window the run would search at, and *Find other formulas for this peak* - the
-composition search in the Sample tab - starts from the same two for the sample in view.
-A batch's untargeted search, a stage of *Assign batch*, runs on the settings its last run
-on the batch recorded (*The batch stages*, below).
+the window the run would search at. *Assign sample* opens on the settings of the
+sample's batch, and *Edit assignment settings* edits those, for every pass of the batch
+(*Assigning a batch*, below). *Find other formulas for this peak* - the composition
+search in the Sample tab - keeps its own m/z precision and formula range, remembered
+between visits.
 
 A named profile applies to every sample it reaches. The launcher warns when that profile
-belongs to the other polarity from the samples. The choice is remembered with the other
-launch settings, and *Reset to defaults* puts both presets back on *Auto*.
+belongs to the other polarity from the samples. *Reset to defaults* puts both presets back
+on *Auto*.
 
 **In the run selector.** Each in-app run names the profile it searched under beside its
 engine. Hovering the name shows:
@@ -2025,6 +2026,8 @@ The four phases group the stages without reordering them:
 
 The arrow beside the button opens its menu:
 
+- **Assignment settings…** opens *Edit assignment settings*, the batch's own settings
+  (below).
 - **Re-assign from scratch** folds every sample again before the pass. It is slower; use
   it for an imported ledger, an old one, or a ledger you suspect is wrong.
 - **Run history** opens the batch's runs (*Batch runs*, below).
@@ -2058,8 +2061,26 @@ once a pass has run, and while an earlier run is on screen. It holds:
 - **The settings the pass ran under**: the chemistry profile and context, the m/z
   precision, the formula range, the peak ceiling, the intensity threshold, the
   alternatives kept and the tier bands, and whether they were the batch's own or
-  given to that one run.
+  given to that one run. **Change settings** beside them opens *Edit assignment
+  settings*.
 - **Run history**, the batch's runs (*Batch runs*, below).
+
+**Edit assignment settings** holds the batch's own settings, which every pass of the
+batch runs on, whoever starts it: the chemistry profile and context, each *Auto* naming
+what it resolves to for the batch's samples, the m/z precision, the formula range, the
+peak ceiling, the intensity threshold and the alternatives kept. It opens on what the
+batch saved, and on the defaults for every field it did not. It offers no switch for the
+untargeted search: the pass is that search. *Reset to defaults* puts the fields back on
+the defaults, and nothing is kept until **Save**.
+
+- **Save** writes the settings onto the batch and starts nothing. A field you change is
+  saved; one you put back on its default is no longer kept, so it follows the default.
+  The status then says *Assignment settings changed since the last assignment*, and the
+  next **Re-assign** runs every stage on them.
+- **A viewer** sees the settings read-only, with the reason: an editor of the workspace
+  changes them.
+- **Assign sample** opens on the batch's settings too. A change made there is that one
+  run's: the run records it, and the batch keeps its own.
 
 A pass is one entry in the progress strip. When it ends, the status line and the
 ledger's tier chips change in place, and nothing else is said while the bar is on
@@ -2116,7 +2137,7 @@ completed pass leaves every stage current.
   same settings whoever starts it. *Detect series* reads the m/z precision and the tier
   bands from them, and every stage that rewrites members judges its samples again under
   those bands. A batch that saved none runs on the engine's defaults. They are edited
-  through the API (`assignment_settings` on `PATCH /api/sample/batches/{id}`, or
+  in *Edit assignment settings* (*Assigning a batch*, above), and through the API (`assignment_settings` on `PATCH /api/sample/batches/{id}`, or
   `mascope.batches.update(batch_id, assignment_settings=...)` in the SDK) and served on
   the batch's read. A copy of the batch keeps them as the original saved them: a setting
   the original leaves to the engine's default is left to it in the copy too, and the

@@ -1,6 +1,6 @@
 # Assigning a batch in one action
 
-- **Status:** design
+- **Status:** built
 - **As of:** 2026-11-23
 - **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c)
   (Linear, milestone 8 "One button: assigning a batch from the app": MAS-1011 to
@@ -150,7 +150,7 @@ As built (MAS-1016, `BatchAssignDetails.vue`, `BatchRunHistory.vue`, `batchPass.
   and an earlier run on screen draw none. The run records no tier counts of its own, so
   this reads one snapshot, two at most, as Details opens.
 - The settings are the run's `config.settings` and `settings_source`. *Change settings*
-  waits for the dialog (MAS-1017).
+  beside them opens the settings dialog (3.4).
 - The run selector is gone; `runLabel` and the ordinal live in the runs store
   (`stores/data/modules/batchPeak/run.js`) with `backToCurrent`.
 
@@ -184,6 +184,25 @@ ceiling, the intensity threshold and the alternatives kept. The dialog is the ex
 next *Re-assign* uses the new settings. The per-sample dialog opens on the batch's
 settings and may override them for that one run. That the settings are the batch's was
 decided in MAS-1012 on 2026-11-18.
+
+As built (MAS-1017, `DialogBatchAssignSettings.vue`, the helpers in `peakAssignParams.js`):
+
+- `PeakAssignConfigForm` takes a `model` in place of the per-user store, and `readonly`
+  with its reason. The dialog hides the untargeted switch, as the batch's pass is the
+  search, and leaves the fields under it live.
+- The dialog opens on the batch's `assignment_settings` over the served defaults, seeded
+  again on every open. *Save* sends `assignment_settings` alone. Since that object
+  replaces the batch's settings whole, a field nobody touched keeps what the batch
+  saved; a changed field is written, unless it was put back on the default or cleared,
+  which leaves it out. Nothing changed sends nothing. The control then reads the status
+  again, which says *settings changed*.
+- A viewer, below editor on the workspace, sees the form disabled with *Ask an editor of
+  this workspace to change these settings.*, and *Close* for a footer. `BaseFormDialog`
+  does not exist yet (MAS-156), so the footer is the current *Cancel* and *Save*.
+- *Assign sample* seeds a model of its own from the focused batch's settings on every open
+  and launches with its set fields, so the run's `config` records what it ran on. It no
+  longer reads or writes the per-user store, which only the composition search pane binds
+  now.
 
 ### 3.5 Feedback
 

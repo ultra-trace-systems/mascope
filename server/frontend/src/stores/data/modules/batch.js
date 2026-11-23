@@ -48,6 +48,19 @@ export const useBatch = defineStore('app.data.batch', () => {
         use: 'update',
         type: 'update_batch'
       }),
+    // A batch's assignment settings alone (`assignment_settings`, an object
+    // that replaces them whole; null is the defaults), so the request carries
+    // nothing else of the batch: the dialog sends what it changed.
+    saveAssignmentSettings: ({ sample_batch_id, assignment_settings }) =>
+      api.http.patch(
+        `/sample/batches/${sample_batch_id}`,
+        { assignment_settings },
+        {
+          use: 'update',
+          type: 'update_batch_assignment_settings',
+          errors: 'inline'
+        }
+      ),
     delete: ({ sample_batch_id }) =>
       api.http.delete(`/sample/batches/${sample_batch_id}`, {
         use: 'process',

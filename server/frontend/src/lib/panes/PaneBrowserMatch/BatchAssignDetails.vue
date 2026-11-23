@@ -22,7 +22,8 @@ import { useBatchAssign, whenWords } from './stores/batchAssign.js'
  * pass the batch stands on - the one running, else the newest that stopped,
  * else the last that completed - as a checklist of its stages under the four
  * phases, a one-line result for each that finished, the change it made to
- * the tier counts, the settings it ran under, and a way into Run history.
+ * the tier counts, the settings it ran under with *Change settings*, which
+ * opens Edit assignment settings, and a way into Run history.
  *
  * The stages behind the one button are visible here alone, on demand: a
  * reader who meets a record must still be able to find the stage that wrote
@@ -33,7 +34,7 @@ import { useBatchAssign, whenWords } from './stores/batchAssign.js'
  * history opens it on the second.
  */
 const view = defineModel('view', { type: String, default: 'details' })
-const emit = defineEmits(['picked'])
+const emit = defineEmits(['picked', 'change-settings'])
 
 const app = useApp()
 const assign = useBatchAssign()
@@ -279,6 +280,14 @@ function stateWords(row) {
         <div class="settings-heading">
           Settings
           <span v-if="source" class="settings-source">{{ source }}</span>
+          <Button
+            class="change-settings"
+            data-testid="change-settings"
+            label="Change settings"
+            link
+            size="small"
+            @click="emit('change-settings')"
+          />
         </div>
         <dl>
           <template v-for="line in settings" :key="line.label">
@@ -425,8 +434,14 @@ function stateWords(row) {
   color: var(--p-green-600);
 }
 .settings-heading {
+  display: flex;
+  align-items: baseline;
   font-weight: 600;
   font-size: 0.9rem;
+}
+.settings-heading .change-settings {
+  margin-left: auto;
+  padding: 0;
 }
 .settings-source {
   font-weight: normal;

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
+import { reactive } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 
 // The launcher form after its values moved into the shared parameter store: it
@@ -522,5 +523,99 @@ describe('PeakAssignConfigForm chemistry', () => {
       'Could not look the chemistry up. The run resolves it when it starts.'
     )
     expect(optionTexts(wrapper, 'assign_profile')[0]).toBe('Auto')
+  })
+})
+
+// --- A caller's model: the batch's settings, or a launch seeded from them ------
+
+describe('PeakAssignConfigForm bound to a model', () => {
+  const model = (values = {}) => reactive({ ...SERVED, ...values })
+
+  it('shows and writes the model, not the per-user store', async () => {
+    const store = usePeakAssignParams()
+    await store.ensureLoaded()
+    store.params.max_untargeted_peaks = 999
+    const bound = model({ max_untargeted_peaks: 120 })
+
+    const wrapper = await mountForm({ model: bound })
+    const field = wrapper.find('#max_untargeted_peaks')
+    expect(field.element.value).toBe('120')
+
+    await wrapper.find('select#assign_profile').setValue('BR')
+    expect(bound.profile).toBe('BR')
+    expect(store.params.profile).toBe('auto')
+    expect(store.params.max_untargeted_peaks).toBe(999)
+  })
+
+  it('resets the model to the defaults and leaves the store alone', async () => {
+    const store = usePeakAssignParams()
+    await store.ensureLoaded()
+    store.params.mz_precision_ppm = 8
+    const bound = model({ mz_precision_ppm: 5, max_alternatives: 1 })
+
+    const wrapper = await mountForm({ model: bound, hidden: ['run_untargeted'] })
+    expect(resetButton(wrapper).attributes('disabled')).toBeUndefined()
+    await resetButton(wrapper).trigger('click')
+
+    expect(bound.mz_precision_ppm).toBe(SERVED.mz_precision_ppm)
+    expect(bound.max_alternatives).toBe(SERVED.max_alternatives)
+    expect(store.params.mz_precision_ppm).toBe(8)
+    await wrapper.vm.$nextTick()
+    expect(resetButton(wrapper).attributes('disabled')).toBeDefined()
+  })
+
+  it('keeps the untargeted fields live where the switch is hidden', async () => {
+    // A batch's pass is the untargeted search: whatever run_untargeted holds,
+    // its fields are the batch's to set.
+    const bound = model({ run_untargeted: false })
+    const hidden = await mountForm({ model: bound, hidden: ['run_untargeted'] })
+    expect(hidden.find('#mz_precision_ppm').attributes('disabled')).toBeUndefined()
+
+    const shown = await mountForm({ model: model({ run_untargeted: false }) })
+    expect(shown.find('#mz_precision_ppm').attributes('disabled')).toBeDefined()
+  })
+
+  it('clears the range back to empty, and commit() says whether it parses', async () => {
+    const bound = model({ formula_ranges: 'C0-10' })
+    const wrapper = await mountForm({ model: bound })
+    const field = wrapper.find('input.text')
+
+    await field.setValue('C0-')
+    expect(wrapper.vm.commit()).toBe(false)
+    expect(bound.formula_ranges).toBe('C0-10')
+
+    await field.setValue('')
+    expect(wrapper.vm.commit()).toBe(true)
+    expect(bound.formula_ranges).toBeNull()
+
+    // Reseeded by its caller, the field follows.
+    bound.formula_ranges = 'C0-20 H0-40'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('input.text').element.value).toBe('C0-20 H0-40')
+    bound.formula_ranges = null
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('input.text').element.value).toBe('')
+  })
+
+  it('is read-only with the reason, and offers no reset', async () => {
+    const wrapper = await mountForm({
+      model: model(),
+      readonly: true,
+      readonlyReason: 'Ask an editor of this workspace to change these settings.'
+    })
+    expect(wrapper.find('[data-testid="config-readonly"]').text()).toContain('Ask an editor')
+    for (const id of [
+      '#assign_profile',
+      '#assign_context',
+      '#mz_precision_ppm',
+      '#max_untargeted_peaks',
+      '#peak_intensity_threshold',
+      '#max_alternatives'
+    ]) {
+      expect(wrapper.find(id).attributes('disabled'), id).toBeDefined()
+    }
+    expect(wrapper.find('input.text').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('.toggle').attributes('disabled')).toBeDefined()
+    expect(resetButton(wrapper)).toBeUndefined()
   })
 })

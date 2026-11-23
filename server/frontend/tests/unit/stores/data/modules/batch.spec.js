@@ -7,12 +7,14 @@ import { createPinia, setActivePinia } from 'pinia'
 
 const post = vi.fn()
 const get = vi.fn()
+const patch = vi.fn()
 
 vi.mock('@/api', () => ({
   api: {
     http: {
       post: (...args) => post(...args),
-      get: (...args) => get(...args)
+      get: (...args) => get(...args),
+      patch: (...args) => patch(...args)
     },
     socket: { on: vi.fn(), off: vi.fn(), addSubscription: vi.fn(), removeSubscription: vi.fn() }
   }
@@ -40,5 +42,19 @@ describe('batch store: move', () => {
     expect(body).toEqual({ dataset_id: 'ds-2' })
     expect(config.use).toBe('update')
     expect(config.type).toBe('move_batch')
+  })
+})
+
+describe('batch store: assignment settings', () => {
+  it("PATCHes the batch's settings alone, and leaves a refusal to the dialog", async () => {
+    useBatch().saveAssignmentSettings({
+      sample_batch_id: 'b-1',
+      assignment_settings: { max_alternatives: 2 }
+    })
+
+    const [url, body, config] = patch.mock.calls[0]
+    expect(url).toBe('/sample/batches/b-1')
+    expect(body).toEqual({ assignment_settings: { max_alternatives: 2 } })
+    expect(config).toMatchObject({ use: 'update', errors: 'inline' })
   })
 })
