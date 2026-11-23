@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 import pytest
 import pytest_asyncio
-from sqlalchemy import select, update
+from sqlalchemy import event, select, update
 
 from mascope_backend.api.new.peak_assignments import batch_peaks, batch_peaks_routes
 from mascope_backend.api.new.peak_assignments.batch_export import (
@@ -507,6 +507,84 @@ async def test_a_ledger_without_levels_serves_none(guest_client, ledger):
     ).json()["data"]
 
     assert all(r["member_level"] is None and r["member_levels"] is None for r in rows)
+
+
+def _member_level_reads(async_engine):
+    """Collect the grouped member-level reads sent while the block runs, each
+    as its parameters: the read is the one over the occurrence table that
+    groups by level. A ``plan_cache_mode`` setting sent is collected too, as
+    the statement itself, so its place around the read shows."""
+    reads: list = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        if "plan_cache_mode" in statement:
+            reads.append(statement)
+        elif "batch_peak_occurrence" in statement and "GROUP BY" in statement:
+            if "peak_assignment.level" in statement.split("GROUP BY")[1]:
+                reads.append(tuple(parameters))
+
+    return reads, capture
+
+
+async def test_a_filtered_ledger_reads_only_its_rows_members(
+    guest_client, async_session_factory, async_engine, ledger
+):
+    await _state_levels(async_session_factory, ledger)
+    reads, capture = _member_level_reads(async_engine)
+
+    event.listen(async_engine.sync_engine, "before_cursor_execute", capture)
+    try:
+        # The default occupancy floor of 2 keeps glucose and leaves out the
+        # unassigned peak seen in one sample.
+        response = await guest_client.get(
+            f"/api/batch-peaks/batch/{ledger['batch_id']}"
+        )
+    finally:
+        event.remove(async_engine.sync_engine, "before_cursor_execute", capture)
+
+    assert response.status_code == 200, response.text
+    [glucose] = response.json()["data"]
+    assert glucose["member_levels"] == {"4a": 1, "5a": 1}
+    async with async_session_factory() as session:
+        whole = (
+            (
+                await session.execute(
+                    select(BatchPeak.batch_peak_id).where(
+                        BatchPeak.sample_batch_id == ledger["batch_id"]
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(whole) == 2
+    # One read, over the served anchor's members alone, not the batch's, and
+    # planned for those ids: a generic plan cannot see how many they are.
+    [custom, read, back] = reads
+    assert custom == "SET LOCAL plan_cache_mode = force_custom_plan"
+    assert [p for p in read if isinstance(p, list)] == [[glucose["batch_peak_id"]]]
+    assert back == "SET LOCAL plan_cache_mode = DEFAULT"
+
+
+async def test_a_ledger_that_serves_no_row_reads_no_members(
+    guest_client, async_session_factory, async_engine, ledger
+):
+    await _state_levels(async_session_factory, ledger)
+    reads, capture = _member_level_reads(async_engine)
+
+    event.listen(async_engine.sync_engine, "before_cursor_execute", capture)
+    try:
+        response = await guest_client.get(
+            f"/api/batch-peaks/batch/{ledger['batch_id']}",
+            # No anchor of this batch reads as a candidate.
+            params={"tier": "candidate"},
+        )
+    finally:
+        event.remove(async_engine.sync_engine, "before_cursor_execute", capture)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"] == []
+    assert reads == []
 
 
 async def test_the_members_route_carries_an_imports_level(

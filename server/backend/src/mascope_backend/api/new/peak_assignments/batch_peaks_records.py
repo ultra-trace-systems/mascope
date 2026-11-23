@@ -12,7 +12,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from sqlalchemy import func, select
+from sqlalchemy import String, any_, bindparam, func, select, text
+from sqlalchemy.dialects.postgresql import ARRAY
 
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
@@ -204,9 +205,7 @@ def _batch_peak_meta(bp) -> dict:
     }
 
 
-async def _with_member_levels(
-    session, data: list[dict], sample_batch_id: str
-) -> list[dict]:
+async def _with_member_levels(session, data: list[dict]) -> list[dict]:
     """Put on each anchor the identification levels its members' runs stated.
 
     The batch states no level of its own yet (step 5.8c of the assignment
@@ -214,20 +213,23 @@ async def _with_member_levels(
     its sample's run stated (``PeakAssignment.level``). A member counts where
     its run's row commits the consensus formula: a member a batch operation
     re-pointed to another reading, or one that dissents, carries a level about
-    another formula. One grouped read over the batch's members, on the level
-    column rather than the rows' provenance.
+    another formula. One grouped read over the served anchors' members, on
+    the level column rather than the rows' provenance: a ledger filtered to a
+    few anchors reads only theirs, not the whole batch's occurrence table.
+    The ids go as one array parameter, so a ledger of any size stays one
+    statement, planned for that array.
 
     :param session: An open async session.
     :param data: The served records, one per live anchor, modified in place:
         ``member_levels`` (level -> members, in the scale's order) and
         ``member_level`` (:func:`identification_level.members_level`), each
         None where no such member states one.
-    :param sample_batch_id: The batch.
     :return: ``data``.
     """
     counts: dict[str, dict[str, int]] = defaultdict(dict)
-    rows = (
-        await session.execute(
+    served = [record["batch_peak_id"] for record in data]
+    if served:
+        query = (
             select(
                 BatchPeakOccurrence.batch_peak_id,
                 PeakAssignment.level,
@@ -243,13 +245,24 @@ async def _with_member_levels(
                 == BatchPeakOccurrence.peak_assignment_id,
             )
             .where(
-                BatchPeak.sample_batch_id == sample_batch_id,
+                # On the anchor, not its members: the planner then reads a
+                # large ledger's members as the whole batch's, in one pass.
+                BatchPeak.batch_peak_id
+                == any_(bindparam("served", served, type_=ARRAY(String))),
                 PeakAssignment.level.is_not(None),
                 PeakAssignment.assigned_formula == BatchPeak.consensus_formula,
             )
             .group_by(BatchPeakOccurrence.batch_peak_id, PeakAssignment.level)
         )
-    ).all()
+        # A plan for the ids at hand: from the sixth call on a connection
+        # Postgres may reuse a generic plan, which cannot see how many ids the
+        # array holds and walks a ledger of most of a large batch member by
+        # member, twice as slow as the plan this array gets.
+        await session.execute(text("SET LOCAL plan_cache_mode = force_custom_plan"))
+        rows = (await session.execute(query)).all()
+        await session.execute(text("SET LOCAL plan_cache_mode = DEFAULT"))
+    else:
+        rows = []
     for batch_peak_id, level, count in rows:
         counts[batch_peak_id][level] = int(count)
     for record in data:
@@ -444,9 +457,9 @@ async def get_batch_peak_ledger(
 
     One row per batch peak with its consensus (m/z, formula, tier, prevalence,
     brightest member, isotopologue parent) but WITHOUT the per-sample series, so
-    a 1000+ row ledger stays cheap: it reads the occurrence table once, grouped,
-    for the members' levels. The chart fetches series only for the rows the
-    user selects.
+    a 1000+ row ledger stays cheap: it reads the occurrence table once, grouped
+    and only for the rows it serves, for the members' levels. The chart fetches
+    series only for the rows the user selects.
 
     ``isotopologue_of`` is one hop: it names the batch peak whose family this one
     belongs to as its own members observed it. An isotopologue whose parent is
@@ -465,8 +478,8 @@ async def get_batch_peak_ledger(
 
     ``member_level`` and ``member_levels`` are the identification levels the
     anchor's members' runs stated for its consensus formula
-    (:func:`_with_member_levels`): the one grouped read over the members this
-    feed makes, on a column. None on an earlier run's snapshot.
+    (:func:`_with_member_levels`): one grouped read over the served rows'
+    members, on a column. None on an earlier run's snapshot.
     """
     async with async_session() as session:
         # An earlier run's ledger comes off its snapshot, in the same shape.
@@ -519,7 +532,7 @@ async def get_batch_peak_ledger(
         bp_rows = (await session.execute(query.order_by(BatchPeak.mz))).scalars().all()
         data = [_batch_peak_meta(bp) for bp in bp_rows]
         await _with_consensus_targets(session, data, bp_rows)
-        await _with_member_levels(session, data, sample_batch_id)
+        await _with_member_levels(session, data)
         # The groups span the whole batch, whatever the rows' filters: a
         # sample's detail row reads the same (``batch_series.batch_groups``).
         groups = await read_batch_groups(session, sample_batch_id)
