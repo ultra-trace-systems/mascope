@@ -794,8 +794,10 @@ fit = mascope.peak_assignments.fit_aggregate(
 - `stage_b_confidence=True` measures the shortlist of the untargeted
   stage's winners, the `stage_b_confidence_peaks` most intense of them (200
   by default), and stores each one's `confidence`, `n_candidates` and
-  `is_tie` in its `provenance`, as the database stage does. It changes no
-  tier. The run's `config.search_scope.winner_confidence` says how many
+  `is_tie` in its `provenance`, as the database stage does. A measured
+  formula that the evidence cannot separate from its winner counts in the
+  winner's `candidate_density`, which can cap the winner at `candidate`. The
+  run's `config.search_scope.winner_confidence` says how many
   winners it measured and how long it took.
 - **`verify`** records a verdict: `confirmed`, `rejected` or `unsure`.
   `confirmed` needs an `evidence_level`: `reference_standard`, `msms`,

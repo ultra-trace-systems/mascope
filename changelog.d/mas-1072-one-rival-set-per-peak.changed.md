@@ -7,4 +7,7 @@
   lists all come from that one set (`provenance.rival_set`). A run that takes
   its second model reads a list compound's confidence, tie and density at it,
   and a list compound's rivals from the formula search are measured beside its
-  own. The identification level's rules version is 2.
+  own. With `stage_b_confidence` on, the option is no longer reported only: a
+  shortlist formula that the evidence cannot separate from its winner counts
+  among the winner's *rivals left standing*, which can cap the winner at
+  candidate. The identification level's rules version is 2.

@@ -427,8 +427,10 @@ no backend or DB, only `mascope_tools` + tests.
   stored in provenance under Stage A's keys, so the inspector's confidence row reads them
   unchanged. A winner past the budget records none — a share of part of the field would
   read as a share of all of it — and one with no shortlist records its share among the
-  rivals it already carries, at no cost. Nothing else moves: the tier, the fit and the
-  alternatives stay what the run decided. The run records the counts and the seconds the
+  rivals it already carries, at no cost. The fit and the alternatives stay what the run
+  decided. The tier can move since MAS-1072: each measured formula joins the winner's
+  rival set before the caps, so one the evidence cannot separate from the winner counts
+  in its `candidate_density`, and the density rule can cap the winner at candidate. The run records the counts and the seconds the
   pass took in `search_scope.winner_confidence`, which is where the gate-set measurement
   reads the cost.
 
