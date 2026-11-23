@@ -249,7 +249,7 @@ def _figure(
         rows = data[data["key"] == s.key]
         entries.append({**s.to_dict(), **_entry(rows, zone)})
 
-    label = common.y_label(store, attrs)
+    label = common.value_label(store, attrs)
     rules = common.run_rules(attrs)
     encodings = {"x": "t", "y": "value", "group": "key", "name": "name"}
     if attrs["band"] is not None:
@@ -259,7 +259,7 @@ def _figure(
         moved = any(common.depends_on_run(k, attrs) for k in keys)
         return Panel(
             "series",
-            axes=Axes(x=Axis(common.time_axis(zone)), y=Axis(label, y)),
+            axes=Axes(x=Axis(common.time_label(zone)), y=Axis(label, y)),
             encodings=encodings,
             options={"spans": spans, "rules": rules if moved else []},
             title=title,
@@ -334,12 +334,7 @@ KIND = registry.register(
                 CADENCES,
                 help="the bins: auto (the samples' spacing), or every sample at raw",
             ),
-            Param(
-                "normalise",
-                "normaliser",
-                "none",
-                help="none, tic, a series key, or a list of keys whose sum divides",
-            ),
+            common.NORMALISE_PARAM,
             Param("y", "text", "log", SCALES, help="the y scale"),
             Param(
                 "events",
@@ -353,9 +348,7 @@ KIND = registry.register(
                 BUDGET,
                 help="the marks a figure holds before it coarsens to 10min, 1h, 1d",
             ),
-            Param("tz", "text", None, help="the zone: an IANA name or instrument"),
-            Param("start", "time", None, help="the window's start"),
-            Param("end", "time", None, help="the window's end, excluded"),
+            *common.WINDOW_PARAMS,
         ),
         summary=(
             "species",

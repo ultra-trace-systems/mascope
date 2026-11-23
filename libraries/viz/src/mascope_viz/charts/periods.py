@@ -50,7 +50,7 @@ SCALES = ("linear", "log")
 _LABELS = {"day": "%Y-%m-%d", "week": "%Y-%m-%d", "month": "%Y-%m"}
 
 #: The x axis' label, by period.
-_AXES = {"day": "day", "week": "week from Monday", "month": "month"}
+_AXES = {"day": "Day", "week": "Week from Monday", "month": "Month"}
 
 #: What a hollow box means, in its legend entry.
 THIN = "under half its fullest period's samples"
@@ -160,7 +160,7 @@ def _figure(
             }
         )
 
-    label = common.y_label(store, attrs)
+    label = common.value_label(store, attrs)
     panels = [
         Panel(
             "box",
@@ -221,16 +221,9 @@ KIND = registry.register(
                 PERIODS,
                 help="the calendar period of a box: weeks run Monday to Sunday",
             ),
-            Param(
-                "normalise",
-                "normaliser",
-                "none",
-                help="none, tic, a series key, or a list of keys whose sum divides",
-            ),
+            common.NORMALISE_PARAM,
             Param("y", "text", "linear", SCALES, help="the y scale"),
-            Param("tz", "text", None, help="the zone: an IANA name or instrument"),
-            Param("start", "time", None, help="the window's start"),
-            Param("end", "time", None, help="the window's end, excluded"),
+            *common.WINDOW_PARAMS,
         ),
         summary=(
             "species",

@@ -549,34 +549,21 @@ species the store does not hold raises `UnknownSpecies`, which lists the
 nearest names. The resolved list is in the summary, `species`, and the
 parameter as given in `requested`, so a rerun can pin the list.
 
-What the three charts share:
+Besides what every chart kind does the same way (above), the three:
 
-- **Signal, not concentration.** No calibration factor is applied, so the y
-  axis names the intensity the server gives: peak area on a TOF, peak
-  height on an Orbitrap. A normalised value is unitless, labelled
-  `signal / <normaliser>`.
-- **`normalise`** is `none` (the default), `tic`, a series key, or a list
-  of keys whose per-sample sum divides, as the views take it. The subtitle
-  names it; when a sum lacked a member in some samples, a note says in
-  what share of them.
-- **The face** says the cadence, the statistic and band, the window and
-  the zone, from the view's frame.
-- **A run change is drawn.** When the engine run that reads the formulas
-  changes in the window, a note says where, the summary lists the changes,
-  and a `species_series` panel whose values the run moves (a formula's, or
-  any divided by a formula) has a rule at each.
-- **Below detection is missing, not zero**, so every statistic is over the
-  detected values only. Each species' `presence` in the summary is its
-  values over the samples that could have held one, and a note names the
-  species detected in under 90 % of them.
-- **Summaries are plain JSON**: times in ISO 8601 with their offset in the
-  display zone, NaN as null, a species as `key`, `name` and `formula`, with
-  the `normalise`, `cadence`, `tz`, `start`, `end`, `mixed_runs` and
-  `run_changes` of the figure.
-- A parameter a chart cannot draw, or a window without a value of any of
-  its species, raises `InvalidChart`, whose message says what to change.
-  That includes what the views refuse (`normalise`, `tz`, `start`, `end`)
-  and what the spec does (an event's times), with their message.
+- **Say on their face** the cadence, the statistic and the band, the
+  window and the zone, from the view's frame.
+- **Draw a run change on the panels it moves**: a `species_series` panel
+  whose values the run moves (a formula's, or any divided by a formula)
+  has a rule at each.
+- **Name the species seldom detected.** Each species' `presence` is in
+  the summary, and a note names those detected in under 90 % of the
+  samples that could have held a value. The summary also gives a sum's
+  `normalise_members` and `normalise_complete`.
+- **Raise `InvalidChart`** for a parameter a chart cannot draw, or a window
+  without a value of any of its species, with a message that says what to
+  change. That includes what the views refuse (`normalise`, `tz`, `start`,
+  `end`) and what the spec does (an event's times).
 
 `species_series` bins at `cadence` `auto` (the samples' spacing), `10min`,
 `1h`, `1d`, or every sample at `raw`. When the bins times the series pass
