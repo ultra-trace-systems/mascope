@@ -360,6 +360,22 @@ As built (`batch_stages.py`):
   four samples, the judging went from 159 to 143 s of a 189 s pass, with the same
   members, tiers and consensus. What is left is the election and the caps over every
   reading, which #3483 takes up.
+- MAS-1172 (#3483) took the rest of a later judging's cost. The pass keeps, per sample,
+  the file's resolving power (read once while the sample's peaks stay the same), what
+  its lists hold (read once per resolving power, mechanisms, floor, known window and
+  purity) and each ion's predicted envelope (`envelope_memo.py`: an ion is predicted
+  once at a floor, a resolving power and a purity, and both tiering rules, the peak
+  separation, the claims and every round read that prediction; a run's judging opens a
+  memo of its own). Stage A's election (`invert_matches_to_peak_assignments`) picks each
+  ion's monoisotopic row off the frame's columns at once
+  (`monoisotopic.monoisotopic_positions`, the row `monoisotopic_row` picks, ties in the
+  order pandas' sort leaves them), and builds no frame for a peak with one candidate,
+  nearly every peak of a judging. The election took about 2.9 s of a judging and 2.6 s
+  of a run's Stage A, and takes about 0.2 s of each. A later judging now takes 1.3 to
+  1.7 s on four samples, with a median of 2.3 s over the 81-sample batch, where the pass
+  took 1,889 s, against develop's 5,810 s on a busier box; the first judging of a sample in a pass takes 9 to 13 s, of it about 4 s
+  scoring every reading, 2.4 s predicting every ion's envelope at the file's resolving
+  power and 1.7 s resolving the lists' lines at it (#3500).
 - A sample's own run reads the records (MAS-985, `batch_decisions.py`): once, in its
   resolve stage, as a declared input of the stage list (`pipeline.BATCH_INPUTS`). A known
   species and a water-ladder rung enter at the claim stage, a listed compound at the

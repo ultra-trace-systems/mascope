@@ -1611,6 +1611,113 @@ async def test_a_judging_after_a_stage_wrote_one_member_scores_that_member_alone
     assert judged["d"] != tier_code("unassigned")
 
 
+async def test_a_judging_with_what_the_pass_read_judges_as_a_judging_without(
+    async_session_factory, known_batch, monkeypatch
+):
+    """MAS-1172: a pass reads a sample's resolving power and lists once and
+    predicts each ion's envelope once, for all its judgings of the sample. A
+    later judging then reads and predicts nothing again, and judges every row
+    as a judging with nothing kept does."""
+    from mascope_backend.api.new.peak_assignments import (
+        batch_rejudge,
+        model_readers,
+        sample_inputs,
+    )
+    from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+    from mascope_backend.api.new.peak_assignments.kept_measurement import (
+        KeptMeasurement,
+    )
+
+    samples, batch_id = known_batch["samples"], known_batch["batch_id"]
+    sample = samples["S02"]
+    async with async_session_factory() as session:
+        await session.execute(
+            update(PeakAssignmentRun)
+            .where(
+                PeakAssignmentRun.peak_assignment_run_id == known_batch["runs"]["S02"]
+            )
+            .values(
+                config={
+                    MEASUREMENT_MODEL_KEY: {
+                        "version": 2,
+                        "mu_ppm": 0.0,
+                        "mu_source": "fitted",
+                        "sigma_ppm": 0.1,
+                        "fallback_sigma_ppm": 0.54,
+                    }
+                }
+            )
+        )
+        await session.commit()
+    _stub_the_stage_list(monkeypatch, {})
+    reads = {"resolution": 0, "lists": 0}
+
+    async def resolution_of(sample_row):
+        # A new function on every read, as the file's instrument functions
+        # give one.
+        reads["resolution"] += 1
+        return lambda mz: 60_000.0
+
+    lists_of = sample_inputs._fetch_known_isotopes
+
+    async def known_isotopes(*args, **kwargs):
+        reads["lists"] += 1
+        return await lists_of(*args, **kwargs)
+
+    for module in (sample_inputs, model_readers):
+        monkeypatch.setattr(module, "_resolution_of", resolution_of)
+    monkeypatch.setattr(sample_inputs, "_fetch_known_isotopes", known_isotopes)
+    judged: list = []
+    stage_list = batch_rejudge.run_stages
+
+    async def keep_rows(ctx):
+        ctx = await stage_list(ctx)
+        judged.append((ctx.result, ctx.kept))
+        return ctx
+
+    monkeypatch.setattr(batch_rejudge, "run_stages", keep_rows)
+    anchors = frozenset(await _held_anchors(async_session_factory, sample))
+    kept, config = KeptMeasurement(), PeakAssignmentConfig()
+
+    await batch_rejudge.rejudge_sample(
+        batch_id, sample, config, corroborated=anchors, kept=kept
+    )
+    memo = kept.envelopes[sample]
+    predicted = memo.predicted
+    assert predicted > 0
+    assert reads == {"resolution": 1, "lists": 1}
+    await batch_rejudge.rejudge_sample(
+        batch_id, sample, config, corroborated=anchors, kept=kept
+    )
+    assert reads == {"resolution": 1, "lists": 1}
+    assert memo.predicted == predicted
+    assert memo.asked > predicted
+    await batch_rejudge.rejudge_sample(batch_id, sample, config, corroborated=anchors)
+    assert reads == {"resolution": 2, "lists": 2}
+
+    with_kept, without = judged[1][0], judged[2][0]
+    assert judged[2][1] is None
+    assert with_kept and _as_judged(with_kept) == _as_judged(without)
+
+
+def _as_judged(rows: list[dict]) -> list[dict]:
+    """Judged rows as what they say: each row's id, and every id of another
+    row in it, as the peak that row is on."""
+    peak_of = {row["peak_assignment_id"]: row["sample_peak_id"] for row in rows}
+
+    def named(value):
+        if isinstance(value, dict):
+            return {key: named(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [named(item) for item in value]
+        return peak_of.get(value, value) if isinstance(value, str) else value
+
+    return sorted(
+        (named(row) for row in rows),
+        key=lambda row: (row["sample_peak_id"], str(row.get("assigned_formula"))),
+    )
+
+
 async def _held_anchors(session_factory, sample_item_id) -> set[str]:
     """The batch peaks a sample holds a member of."""
     async with session_factory() as session:

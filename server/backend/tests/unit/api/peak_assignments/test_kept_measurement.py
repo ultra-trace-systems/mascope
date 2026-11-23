@@ -7,8 +7,9 @@ order the scorer builds its frame; a listed reading is measured again when the
 claims it is measured without move; a sample whose peaks, match parameters or
 model moved is measured whole; and so is one whose model no record held,
 which keeps nothing. With the real seeded chain, the frame put together from
-two scorings is the frame one scoring of every reading gives. See
-``kept_measurement.py``.
+two scorings is the frame one scoring of every reading gives. The pass also
+reads a sample's resolving power and its lists once, and keeps one envelope
+memo per sample (MAS-1172). See ``kept_measurement.py``.
 """
 
 from collections import Counter
@@ -25,6 +26,9 @@ from mascope_backend.api.new.peak_assignments import (
 )
 from mascope_backend.api.new.peak_assignments.kept_measurement import (
     KeptMeasurement,
+    envelopes_of,
+    kept_lists,
+    kept_resolution,
     score_kept,
 )
 from mascope_backend.api.new.peak_assignments.seeded_scoring import (
@@ -320,3 +324,147 @@ async def test_on_the_real_chain_the_pieces_are_one_scoring_of_every_reading(cha
     assert set(ions) == set(whole_ions)
     for seed in whole_ions:
         assert fits.get(ions[seed]) == whole_fits.get(whole_ions[seed])
+
+
+# --- what the pass reads of a sample (MAS-1172) -----------------------------------
+
+
+class Reader:
+    """A stand-in for a sample read: a new answer on every call, counted."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def __call__(self, *args):
+        self.calls += 1
+        return SimpleNamespace(read=self.calls)
+
+
+def _read_ctx(kept, *, peaks=PEAKS, sample="si-1", resolution=None, **chemistry):
+    chemistry = {
+        "threshold": 0.01,
+        "mechanism_ids": ["mech-h"],
+        "judged": ["mech-h"],
+        "window": None,
+        **chemistry,
+    }
+    return SimpleNamespace(
+        kept=kept,
+        sample=SimpleNamespace(sample_item_id=sample),
+        peaks_df=peaks,
+        resolution=resolution,
+        match_params=SimpleNamespace(
+            isotope_abundance_threshold=chemistry["threshold"]
+        ),
+        mechanism_ids=list(chemistry["mechanism_ids"]),
+        judged_mechanisms=[
+            SimpleNamespace(ionization_mechanism_id=m) for m in chemistry["judged"]
+        ],
+        resolved_profile=SimpleNamespace(
+            context=SimpleNamespace(known_window=chemistry["window"])
+        ),
+    )
+
+
+@pytest.fixture
+def resolution_reads(monkeypatch):
+    reader = Reader()
+    monkeypatch.setattr(sample_inputs, "_resolution_of", reader)
+    return reader
+
+
+async def test_the_resolving_power_is_read_once_a_pass(resolution_reads):
+    kept = KeptMeasurement()
+    first = await kept_resolution(_read_ctx(kept))
+    again = await kept_resolution(_read_ctx(kept))
+    other = await kept_resolution(_read_ctx(kept, sample="si-2"))
+    assert again is first
+    assert other is not first
+    assert resolution_reads.calls == 2
+
+
+async def test_without_a_store_the_resolving_power_is_read_every_time(
+    resolution_reads,
+):
+    await kept_resolution(_read_ctx(None))
+    await kept_resolution(_read_ctx(None))
+    assert resolution_reads.calls == 2
+
+
+async def test_peaks_read_again_read_the_resolving_power_again(resolution_reads):
+    """And forget the envelopes predicted at the old one, and the lists."""
+    kept = KeptMeasurement()
+    first = await kept_resolution(_read_ctx(kept))
+    memo = envelopes_of(_read_ctx(kept))
+    memo.envelopes["x"] = (first, None)
+    lists = Reader()
+    await kept_lists(_read_ctx(kept, resolution=first), lists)
+    moved = PEAKS.assign(intensity=[1.0, 3.0])
+    second = await kept_resolution(_read_ctx(kept, peaks=moved))
+    assert second is not first
+    assert resolution_reads.calls == 2
+    assert memo.envelopes == {}
+    await kept_lists(_read_ctx(kept, resolution=second), lists)
+    assert lists.calls == 2
+
+
+async def test_a_sample_keeps_one_envelope_memo_a_pass():
+    kept = KeptMeasurement()
+    memo = envelopes_of(_read_ctx(kept))
+    assert envelopes_of(_read_ctx(kept)) is memo
+    assert envelopes_of(_read_ctx(kept, sample="si-2")) is not memo
+    assert envelopes_of(_read_ctx(None)) is None
+
+
+async def test_the_lists_are_read_once_a_pass_at_the_same_inputs(resolution_reads):
+    kept, lists = KeptMeasurement(), Reader()
+    resolution = await kept_resolution(_read_ctx(kept))
+    first = await kept_lists(_read_ctx(kept, resolution=resolution), lists)
+    again = await kept_lists(_read_ctx(kept, resolution=resolution), lists)
+    assert again is first
+    assert lists.calls == 1
+
+
+@pytest.mark.parametrize(
+    "moved",
+    [
+        {"threshold": 0.02},
+        {"mechanism_ids": ["mech-h", "mech-nh4"]},
+        # A given reading through a channel the spectrum did not open.
+        {"judged": ["mech-h", "mech-nh4"]},
+        {"window": "another window"},
+    ],
+    ids=["floor", "mechanisms", "judged mechanisms", "known window"],
+)
+async def test_the_lists_read_at_other_inputs_are_read_again(resolution_reads, moved):
+    kept, lists = KeptMeasurement(), Reader()
+    resolution = await kept_resolution(_read_ctx(kept))
+    first = await kept_lists(_read_ctx(kept, resolution=resolution), lists)
+    other = await kept_lists(_read_ctx(kept, resolution=resolution, **moved), lists)
+    back = await kept_lists(_read_ctx(kept, resolution=resolution), lists)
+    assert other is not first
+    assert back is first
+    assert lists.calls == 2
+
+
+async def test_the_lists_at_another_labelled_purity_are_read_again(resolution_reads):
+    kept, lists = KeptMeasurement(), Reader()
+    resolution = await kept_resolution(_read_ctx(kept))
+    await kept_lists(_read_ctx(kept, resolution=resolution), lists)
+    with labelled_purity(0.9):
+        await kept_lists(_read_ctx(kept, resolution=resolution), lists)
+    assert lists.calls == 2
+
+
+async def test_the_lists_at_a_resolving_power_the_pass_did_not_read_are_read(
+    resolution_reads,
+):
+    """A caller that hands the pass its own resolving power, or a pass with no
+    store, reads the lists every time."""
+    kept, lists = KeptMeasurement(), Reader()
+    await kept_resolution(_read_ctx(kept))
+    await kept_lists(_read_ctx(kept, resolution=object()), lists)
+    await kept_lists(_read_ctx(kept, resolution=object()), lists)
+    await kept_lists(_read_ctx(None), lists)
+    await kept_lists(_read_ctx(None), lists)
+    assert lists.calls == 4

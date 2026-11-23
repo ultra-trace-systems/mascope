@@ -240,6 +240,7 @@ from typing import Any, Iterable, Sequence
 
 import numpy as np
 
+from mascope_backend.api.new.peak_assignments import envelope_memo
 from mascope_backend.api.new.peak_assignments.cross_channel import (
     AMBIGUITY_REASONS,
     CHANNELS_FOR_CORROBORATION,
@@ -2126,6 +2127,7 @@ def envelope_neighbours(
     return found
 
 
+@envelope_memo.memoised
 def predicted_envelope(
     ion_formula,
     abundance_floor: float,
