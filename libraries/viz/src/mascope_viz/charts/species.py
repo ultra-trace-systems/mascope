@@ -8,7 +8,8 @@ Each item names a species as the store does, tried in this order:
 - else a literal, case-sensitive match on a species' name, its neutral
   formula or its ion formula;
 - or ``top:N``: the N species with the highest median over the chart's own
-  window, under its own normalisation (:func:`mascope_viz.data.views.top`).
+  window, under its own normalisation (:func:`mascope_viz.data.views.top`),
+  one per ion formula.
 
 A formula held both as a target ion and as an assigned formula under the
 same mechanism resolves to the target ion's ``ion:`` key: the collection's
@@ -17,6 +18,14 @@ does not. A formula read under several mechanisms resolves to every one of
 them, a series each, the mechanism named in its legend
 (``docs/dev/time_scopes.md``, decision 3). An item that matches nothing is
 an error that lists the store's nearest names.
+
+Two target ions of different neutrals can read one ion: an adduct of one
+neutral is the protonated ion of another (C10H16O2 [M+NH4]+ and C10H19NO2
+[M+H]+ are both C10H20NO2+), and both series are that one peak's values.
+``top:N`` draws such an ion once, as the species ranked first of those that
+read it (a target ion before a formula on a tie), and names the others in
+:attr:`Resolved.same_ion`, which the summary and a note give. A species
+named outright is drawn as asked.
 
 A recipe's named list of species is such a list of items. The resolved
 list goes into each chart's summary, so that a caption can cite it and a
@@ -69,16 +78,41 @@ class Species:
 
 
 @dataclass(frozen=True)
+class SameIon:
+    """An ion ``top:N`` drew once, and the species it left out that read
+    the same ion.
+
+    :ivar key: The species drawn for it.
+    :ivar ion_formula: The ion they all read.
+    :ivar left_out: The others, ``{key, name, formula}`` each.
+    """
+
+    key: str
+    ion_formula: str
+    left_out: tuple[dict[str, Any], ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "key": self.key,
+            "ion_formula": self.ion_formula,
+            "left_out": [dict(s) for s in self.left_out],
+        }
+
+
+@dataclass(frozen=True)
 class Resolved:
     """The species a ``species`` parameter names, in order, each once.
 
     :ivar species: The species, in the order the items name them.
     :ivar given: The parameter as given, as plain JSON: a text or a list
         of them.
+    :ivar same_ion: The ions ``top:N`` drew once though several species
+        read them, with those it left out; none drawn as asked.
     """
 
     species: tuple[Species, ...]
     given: Any
+    same_ion: tuple[SameIon, ...] = ()
 
     @property
     def keys(self) -> list[str]:
@@ -190,10 +224,15 @@ def _top(
     tz: str | None,
     start: Any,
     end: Any,
-) -> list[str]:
+) -> tuple[list[str], dict[str, list[str]]]:
     """The *n* species of the highest median, each once: a formula a target
-    ion holds counts as that ion, and the normaliser's own keys, which it
-    divides to one, are left out."""
+    ion holds counts as that ion, the species that read one ion formula
+    count once, and the normaliser's own keys, which it divides to one, are
+    left out.
+
+    :return: The keys, best first, and for each that reads an ion other
+        candidates read too, those others' keys.
+    """
     members = set(views._members(views._check_normalise(normalise)))
     candidates = [
         key
@@ -205,9 +244,11 @@ def _top(
             "top:N has no species to rank: the store holds none besides the "
             "normaliser's"
         )
+    # Every candidate ranked, since a place a second reading of an ion
+    # would take goes to the next ion
     ranked = views.top(
         store,
-        n,
+        len(candidates),
         "median",
         keys=candidates,
         normalise=normalise,
@@ -215,7 +256,31 @@ def _top(
         start=start,
         end=end,
     )
-    return [str(key) for key in ranked["key"]]
+    ranked = ranked.assign(
+        formula_first=~ranked["key"].astype(str).str.startswith("ion:")
+    ).sort_values(["value", "formula_first", "key"], ascending=[False, True, True])
+    ion_of = dict(zip(table["series_key"], table["ion_formula"]))
+    reading: dict[str, list[str]] = {}
+    for key in candidates:
+        if ion_of.get(key):
+            reading.setdefault(ion_of[key], []).append(key)
+    kept: list[str] = []
+    seen: set[str] = set()
+    for key in map(str, ranked["key"]):
+        ion = ion_of.get(key)
+        if ion in seen:
+            continue
+        if ion:
+            seen.add(ion)
+        kept.append(key)
+        if len(kept) == n:
+            break
+    shared = {
+        key: [k for k in reading[ion_of[key]] if k != key]
+        for key in kept
+        if ion_of.get(key) and len(reading[ion_of[key]]) > 1
+    }
+    return kept, shared
 
 
 def resolve(
@@ -245,13 +310,14 @@ def resolve(
     identities = _identities(table)
     held = set(table["series_key"])
     keys: list[str] = []
+    shared: dict[str, list[str]] = {}
     for item in items:
         top = _TOP.match(item)
         if top:
             n = int(top.group(1))
             if n < 1:
                 raise InvalidChart(f"{item!r}: top:N takes N of at least 1")
-            found = _top(
+            found, also = _top(
                 store,
                 n,
                 table,
@@ -265,6 +331,9 @@ def resolve(
                 raise InvalidChart(
                     f"{item!r}: no species has a value in the window to rank"
                 )
+            for key, others in also.items():
+                shared.setdefault(key, [])
+                shared[key] += [k for k in others if k not in shared[key]]
         elif item == views.TIC or item in held:
             found = [item]
         else:
@@ -273,7 +342,43 @@ def resolve(
                 raise UnknownSpecies(item, _near(table, item))
         keys.extend(k for k in found if k not in keys)
     given = species if isinstance(species, str) else list(items)
-    return Resolved(_named(table, keys), given)
+    return Resolved(_named(table, keys), given, _same_ion(table, keys, shared))
+
+
+def _same_ion(
+    table: pd.DataFrame, keys: list[str], shared: dict[str, list[str]]
+) -> tuple[SameIon, ...]:
+    """The ions ``top:N`` drew once, in the order drawn, each with the
+    species it left out that read it: those drawn after all, named outright,
+    are not left out."""
+    by_key = table.drop_duplicates("series_key").set_index("series_key")
+    out = []
+    for key in keys:
+        left = [k for k in shared.get(key, []) if k not in keys]
+        if not left:
+            continue
+        out.append(
+            SameIon(
+                key,
+                by_key.at[key, "ion_formula"],
+                tuple(
+                    {
+                        "key": k,
+                        "name": _label(by_key.loc[k]),
+                        "formula": by_key.at[k, "formula"],
+                    }
+                    for k in left
+                ),
+            )
+        )
+    return tuple(out)
+
+
+def _label(row: pd.Series) -> str:
+    """A species outside the drawn list as a note names it: its name, else
+    its formula, else its key, and its mechanism."""
+    name = row["name"] or row["formula"] or row.name
+    return f"{name} {row['mechanism']}" if row["mechanism"] else name
 
 
 def _named(table: pd.DataFrame, keys: list[str]) -> tuple[Species, ...]:

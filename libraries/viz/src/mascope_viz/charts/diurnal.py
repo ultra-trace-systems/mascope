@@ -322,7 +322,7 @@ def _figure(
         )
         for s in resolved.species
     ]
-    notes = [CLOCK_NOTE.format(zone=zone), *common.notes(attrs, entries)]
+    notes = [CLOCK_NOTE.format(zone=zone), *common.notes(attrs, entries, resolved)]
     if sparse:
         notes.append(
             "An hour sampled on few days is no cycle. Under half the samples "
@@ -431,11 +431,16 @@ KIND = registry.register(
             "by",
             "day_hours",
             "night_hours",
+            "day",
+            "night",
             "cadence",
+            "stat",
+            "band",
             "normalise",
             "normalise_name",
             "normalise_members",
             "normalise_complete",
+            "same_ion",
             "tz",
             "start",
             "end",

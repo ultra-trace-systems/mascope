@@ -433,18 +433,43 @@ def summary(
         **face(attrs, zone, start=start, end=end),
         "normalise_members": list(attrs.get("normalise_members") or []),
         "normalise_complete": number(attrs.get("normalise_complete")),
+        "same_ion": [same.to_dict() for same in resolved.same_ion],
         **extra,
     }
 
 
-def notes(attrs: Mapping[str, Any], entries: Sequence[Mapping[str, Any]]) -> list[str]:
+def same_ion_note(resolved: Resolved) -> str | None:
+    """The line a figure prints when ``top:N`` left out species that read
+    an ion it draws; None when it left none out."""
+    if not resolved.same_ion:
+        return None
+    parts = []
+    for same in resolved.same_ion:
+        others = [s["name"] for s in same.left_out]
+        parts.append(
+            f"{resolved.name(same.key)} reads {same.ion_formula}, as "
+            f"{', '.join(others)} {'does' if len(others) == 1 else 'do'}"
+        )
+    return (
+        "top:N draws one series per ion, the species ranked first of those "
+        "that read it: " + "; ".join(parts) + ". The others are left out: "
+        "their values are that ion's too."
+    )
+
+
+def notes(
+    attrs: Mapping[str, Any],
+    entries: Sequence[Mapping[str, Any]],
+    resolved: Resolved | None = None,
+) -> list[str]:
     """The notes every species chart prints, those that apply."""
-    seldom = seldom_note(entries)
-    return [
+    lines = [
         *run_notes(attrs, attrs["tz"]),
         *normalise_notes(attrs),
-        *([seldom] if seldom else []),
+        same_ion_note(resolved) if resolved is not None else None,
+        seldom_note(entries),
     ]
+    return [line for line in lines if line]
 
 
 def named(frame: pd.DataFrame, resolved: Resolved) -> pd.DataFrame:

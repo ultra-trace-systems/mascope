@@ -540,6 +540,8 @@ such as a recipe's named list, of these, tried in this order:
   literally, case included;
 - `top:N`, the N species with the highest median over the chart's own
   window, under its own normalisation, the normaliser's own ions left out.
+  It ranks those present in at least half the samples that could hold
+  them, as `views.top` does by default.
 
 A formula held both by a target ion and by the engine under the same
 mechanism is the target ion's `ion:` key: that identity survives a change
@@ -548,6 +550,15 @@ mechanisms is a series per mechanism, its legend naming the mechanism. A
 species the store does not hold raises `UnknownSpecies`, which lists the
 nearest names. The resolved list is in the summary, `species`, and the
 parameter as given in `requested`, so a rerun can pin the list.
+
+Two target ions of different neutrals can read one ion, and their series
+are then one peak's values: C10H16O2 [M+NH4]+ and C10H19NO2 [M+H]+ are both
+C10H20NO2+. `top:N` draws such an ion once, as the species ranked first of
+those that read it, a target ion before a formula on a tie, and gives the
+place the others would take to the next ion. A note names those it left
+out, and so does the summary's `same_ion`: each ion drawn once, its
+`ion_formula` and the species `left_out`. A species named outright is drawn
+as asked.
 
 Besides what every chart kind does the same way (above), the three:
 
