@@ -310,6 +310,9 @@ def compose(monkeypatch):
     # `prod up` checks bind-mount dirs; harmless against the temp home, but
     # keep the compose command the only observable side effect.
     monkeypatch.setattr(prod_main, "check_data_dirs", lambda mode: None)
+    # An "up" reads the compose file's secrets with `docker compose config`
+    # first; no docker here, and the check is test_prod_compose.py's.
+    monkeypatch.setattr(prod_main, "_compose_config", lambda env: None)
     return recorder
 
 

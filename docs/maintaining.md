@@ -481,6 +481,21 @@ Each run:
   once you fixed the cause in place, with no redeploy, `--confirm`
   acknowledges that: the next run finds the stack up to date and only clears
   the record. After a rollback, a `--confirm` retries the release instead.
+- **A secret file is missing** (see the next paragraph) -> not applied, and
+  nothing is touched: the stack keeps running the release it ran. The run
+  exits 2 and its status names each missing file. It is not held: the next
+  window applies the release once the file is there.
+
+Before any start of the stack, the CLI checks every secret file the compose
+file in use declares. That is every `mascope prod up` and every update, by
+hand or by the timer. A file the compose file's `x-mascope-secrets` block
+says how to make is made when it is missing: the MFA key as a random value,
+the origin-pull CA and the Turnstile secret key empty. The block is read from
+the compose file itself, so a CLI older than that file still makes a secret a
+newer release added. Any other missing file stops the start before compose
+touches a container, with an error naming it: the database password, the JWT
+and owner keys, and the TLS pair are never invented. Restore each from the
+deployment's copy of its secrets, or supply it.
 
 An applied update also moves the deployment checkout to the release it
 deployed, so a reboot redeploys that same release and `mascope prod doctor`
@@ -496,9 +511,12 @@ stays clean.
     on the new release, so it reports clean.
 
     The next `mascope prod up` - a restart, or a reboot - then drives the new
-    compose file with the old CLI. If the release added a compose secret, as
-    1.8.0 does with `mfa_encryption_key`, compose refuses to create the backend
-    *after* stopping the running one, and the server comes up with no backend.
+    compose file with the old CLI. A CLI from before the `x-mascope-secrets`
+    block does not read it: if the release added a compose secret, as 1.16.0
+    does with `turnstile_secret_key`, compose refuses to create the backend
+    *after* replacing Postgres and Redis, and the server comes up with no
+    database. A CLI that reads the block makes such a secret, or refuses the
+    start with nothing touched; it still runs the old CLI's code.
 
     So when the timer reports a release applied, reinstall the CLI from the
     checkout before the next restart:

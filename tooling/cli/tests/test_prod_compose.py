@@ -19,9 +19,11 @@ import shutil
 import stat
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 import typer
+import yaml
 
 from mascope_cli.cmd import init as init_cmd
 from mascope_cli.cmd.init import AUTO_PROVISIONED_SECRETS, GENERATED_SECRETS
@@ -58,30 +60,62 @@ UP_SHAPES = (
 )
 
 
+# The TLS pair the frontend mounts: the operator's, never made by the CLI.
+TLS_FILES = ("mascope.app.pem", "mascope.app.key")
+
+
+def bundled_config() -> dict:
+    """
+    The bundled compose file as `docker compose config` gives it to
+    `_compose_config`, near enough: secrets, services and the top-level
+    blocks, with no docker in the test.
+    """
+    text = (
+        Path(init_cmd.__file__).parent.parent / "data" / "docker-compose.yaml"
+    ).read_text(encoding="utf-8")
+    return yaml.safe_load(text)
+
+
 @pytest.fixture
 def compose_env(monkeypatch):
-    """Stub out config resolution and the subprocess itself."""
+    """
+    Stub out config resolution and the subprocess itself; the compose file
+    read is the bundled one.
+
+    Returns a setter for compose's exit code. ``set_result.calls`` collects
+    the commands compose was run with.
+    """
     monkeypatch.setattr(
         prod_main,
         "_compose_env",
         lambda building=False: {"MASCOPE_DB_NAME": "db", "MASCOPE_TIMEZONE": "UTC"},
     )
+    monkeypatch.setattr(prod_main, "_compose_config", lambda env: bundled_config())
+    calls = []
 
     def set_result(returncode: int):
-        monkeypatch.setattr(
-            prod_main.lib,
-            "run",
-            lambda **kwargs: subprocess.CompletedProcess([], returncode),
-        )
+        def run(**kwargs):
+            calls.append(kwargs["command"])
+            return subprocess.CompletedProcess([], returncode)
 
+        monkeypatch.setattr(prod_main.lib, "run", run)
+
+    set_result.calls = calls
     return set_result
 
 
 @pytest.fixture
 def secrets_dir(mascope_home):
-    """An absent .runtime/secrets under the temp home, before and after."""
+    """
+    The .runtime/secrets of a running deployment under the temp home: the
+    long-standing secrets and the TLS pair, and none of the files `up` makes.
+    Removed after.
+    """
     path = mascope_home / ".runtime" / "secrets"
     shutil.rmtree(path, ignore_errors=True)
+    path.mkdir(parents=True)
+    for name in LONG_STANDING_SECRETS + TLS_FILES:
+        (path / name).write_text("in use\n", encoding="utf-8")
     yield path
     shutil.rmtree(path, ignore_errors=True)
 
@@ -250,14 +284,383 @@ def test_only_an_up_creates_the_placeholder(compose_env, secrets_dir, args):
 
 def test_up_never_invents_a_long_standing_secret(compose_env, secrets_dir):
     compose_env(0)
+    for name in LONG_STANDING_SECRETS:
+        (secrets_dir / name).unlink()
 
-    prod_main._run_compose(["up", "--detach"])
+    with pytest.raises(prod_main.SecretsMissing):
+        prod_main._run_compose(["up", "--detach"])
 
     for name in LONG_STANDING_SECRETS:
         assert not (secrets_dir / name).exists(), (
             f"{name} was auto-provisioned; a missing one means an existing "
             "secret was lost, which must be surfaced rather than replaced"
         )
+    assert compose_env.calls == []
+
+
+# --- the compose file in use names its secrets ---
+
+
+@pytest.mark.parametrize("name", LONG_STANDING_SECRETS + TLS_FILES)
+def test_up_refuses_before_compose_runs_on_a_missing_declared_secret(
+    compose_env, secrets_dir, monkeypatch, name
+):
+    # Compose checks a service's secret files only as it creates that
+    # service's container, by when it has replaced Postgres and Redis and left
+    # them created and stopped. So the CLI checks every one first, and a
+    # missing one stops the "up" with no container touched.
+    compose_env(0)
+    (secrets_dir / name).unlink()
+    errors = []
+    monkeypatch.setattr(prod_main.runtime.logger, "error", errors.append)
+
+    with pytest.raises(prod_main.SecretsMissing) as excinfo:
+        prod_main._run_compose(["up", "--detach"])
+
+    assert excinfo.value.exit_code == 1
+    assert compose_env.calls == []
+    assert not (secrets_dir / name).exists()
+    message = str(excinfo.value)
+    assert f"({secrets_dir / name})" in message
+    assert "No container has been touched" in message
+    assert errors == [message]
+
+
+def test_the_refusal_names_every_missing_file(compose_env, secrets_dir):
+    compose_env(0)
+    for name in TLS_FILES:
+        (secrets_dir / name).unlink()
+
+    with pytest.raises(prod_main.SecretsMissing) as excinfo:
+        prod_main._run_compose(["up"])
+
+    message = str(excinfo.value)
+    assert "ssl_certificate" in message and "ssl_secret_key" in message
+
+
+def test_up_with_every_declared_file_present_runs_compose(compose_env, secrets_dir):
+    compose_env(0)
+
+    prod_main._run_compose(["up", "--detach"])
+
+    assert len(compose_env.calls) == 1 and compose_env.calls[0].endswith("up --detach")
+
+
+def _stale_cli(monkeypatch):
+    """This CLI as the one installed from a release before Turnstile."""
+    monkeypatch.setattr(init_cmd, "PLACEHOLDER_SECRETS", ("origin_pull_ca.pem",))
+    monkeypatch.setattr(init_cmd, "PRIVATE_PLACEHOLDER_SECRETS", ())
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no owner-only file mode")
+def test_a_cli_older_than_the_compose_file_makes_the_secret_it_names(
+    compose_env, secrets_dir, monkeypatch, open_umask
+):
+    # The incident: the installed CLI knew no Turnstile secret, the compose
+    # file in use declared one, and compose stopped at the backend with
+    # Postgres and Redis already replaced. The compose file now says how to
+    # make it, and the CLI reads that.
+    compose_env(0)
+    _stale_cli(monkeypatch)
+
+    prod_main._run_compose(["up", "--detach"])
+
+    secret = secrets_dir / TURNSTILE_SECRET
+    assert secret.read_bytes() == b""
+    assert stat.S_IMODE(secret.stat().st_mode) == 0o600
+    assert len(compose_env.calls) == 1
+
+
+def test_a_cli_older_than_the_compose_file_refuses_without_its_block(
+    compose_env, secrets_dir, monkeypatch
+):
+    # A compose file whose block does not name the new secret: the CLI cannot
+    # know how to make it, and refuses with the stack untouched.
+    compose_env(0)
+    _stale_cli(monkeypatch)
+    config = bundled_config()
+    config[prod_main.SECRETS_BLOCK]["private_placeholder"] = []
+    monkeypatch.setattr(prod_main, "_compose_config", lambda env: config)
+
+    with pytest.raises(prod_main.SecretsMissing) as excinfo:
+        prod_main._run_compose(["up", "--detach"])
+
+    assert "turnstile_secret_key" in str(excinfo.value)
+    assert not (secrets_dir / TURNSTILE_SECRET).exists()
+    assert compose_env.calls == []
+
+
+def _with_new_secret(config: dict, kind, file=".runtime/secrets/new_secret.txt"):
+    """``config`` with one more secret the backend mounts, made as ``kind``."""
+    config["secrets"]["new_secret"] = {"file": file}
+    config["services"]["backend"]["secrets"].append("new_secret")
+    if kind is not None:
+        config[prod_main.SECRETS_BLOCK].setdefault(kind, []).append("new_secret")
+    return config
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no owner-only file mode")
+@pytest.mark.parametrize(
+    "kind, mode, empty",
+    [
+        ("generate", 0o600, False),
+        ("placeholder", 0o644, True),
+        ("private_placeholder", 0o600, True),
+    ],
+)
+def test_up_makes_a_secret_only_the_compose_file_names(
+    compose_env, secrets_dir, monkeypatch, open_umask, kind, mode, empty
+):
+    compose_env(0)
+    config = _with_new_secret(bundled_config(), kind)
+    monkeypatch.setattr(prod_main, "_compose_config", lambda env: config)
+
+    prod_main._run_compose(["up", "--detach"])
+
+    made = secrets_dir / "new_secret.txt"
+    assert stat.S_IMODE(made.stat().st_mode) == mode
+    content = made.read_text(encoding="utf-8").strip()
+    assert (content == "") if empty else len(content) >= 32
+    assert len(compose_env.calls) == 1
+
+
+def test_up_never_overwrites_a_secret_the_compose_file_names(
+    compose_env, secrets_dir, monkeypatch
+):
+    compose_env(0)
+    config = _with_new_secret(bundled_config(), "generate")
+    monkeypatch.setattr(prod_main, "_compose_config", lambda env: config)
+    (secrets_dir / "new_secret.txt").write_text("in use\n", encoding="utf-8")
+
+    prod_main._run_compose(["up", "--detach"])
+
+    assert (secrets_dir / "new_secret.txt").read_text() == "in use\n"
+
+
+@pytest.mark.parametrize("name", LONG_STANDING_SECRETS)
+def test_the_compose_file_cannot_make_the_cli_invent_a_long_standing_secret(
+    compose_env, secrets_dir, monkeypatch, name
+):
+    compose_env(0)
+    (secrets_dir / name).unlink()
+    config = bundled_config()
+    key = name.removesuffix(".txt")
+    config[prod_main.SECRETS_BLOCK]["generate"].append(key)
+    monkeypatch.setattr(prod_main, "_compose_config", lambda env: config)
+
+    with pytest.raises(prod_main.SecretsMissing):
+        prod_main._run_compose(["up", "--detach"])
+
+    assert not (secrets_dir / name).exists()
+
+
+def test_the_compose_file_makes_nothing_outside_the_secrets_dir(
+    compose_env, secrets_dir, monkeypatch, mascope_home
+):
+    compose_env(0)
+    config = _with_new_secret(
+        bundled_config(), "placeholder", file=".runtime/elsewhere.txt"
+    )
+    monkeypatch.setattr(prod_main, "_compose_config", lambda env: config)
+
+    with pytest.raises(prod_main.SecretsMissing):
+        prod_main._run_compose(["up", "--detach"])
+
+    assert not (mascope_home / ".runtime" / "elsewhere.txt").exists()
+
+
+def test_a_secret_named_under_two_kinds_is_made_under_neither(
+    compose_env, secrets_dir, monkeypatch
+):
+    compose_env(0)
+    config = _with_new_secret(bundled_config(), "generate")
+    config[prod_main.SECRETS_BLOCK]["placeholder"].append("new_secret")
+    monkeypatch.setattr(prod_main, "_compose_config", lambda env: config)
+
+    with pytest.raises(prod_main.SecretsMissing):
+        prod_main._run_compose(["up", "--detach"])
+
+    assert not (secrets_dir / "new_secret.txt").exists()
+
+
+def test_the_compose_file_is_read_with_the_environment_up_runs_with(
+    compose_env, secrets_dir, monkeypatch
+):
+    # The services compose creates depend on the environment it interpolates.
+    compose_env(0)
+    seen = []
+    monkeypatch.setattr(
+        prod_main, "_compose_config", lambda env: seen.append(env) or bundled_config()
+    )
+
+    prod_main._run_compose(["up", "--detach"])
+
+    assert seen == [{"MASCOPE_DB_NAME": "db", "MASCOPE_TIMEZONE": "UTC"}]
+
+
+def test_a_secret_no_service_mounts_is_not_looked_for(
+    compose_env, secrets_dir, monkeypatch
+):
+    # Compose never opens the file of a secret no service mounts.
+    compose_env(0)
+    config = bundled_config()
+    config["secrets"]["unused"] = {"file": ".runtime/secrets/unused.txt"}
+    monkeypatch.setattr(prod_main, "_compose_config", lambda env: config)
+
+    prod_main._run_compose(["up", "--detach"])
+
+    assert len(compose_env.calls) == 1
+
+
+def test_an_unreadable_compose_file_falls_back_to_the_clis_own_list(
+    compose_env, secrets_dir, monkeypatch
+):
+    # Compose names a missing file itself then; the CLI still makes its own.
+    compose_env(0)
+    for name in TLS_FILES:
+        (secrets_dir / name).unlink()
+    monkeypatch.setattr(prod_main, "_compose_config", lambda env: None)
+
+    prod_main._run_compose(["up", "--detach"])
+
+    assert (secrets_dir / TURNSTILE_SECRET).exists()
+    assert len(compose_env.calls) == 1
+
+
+def test_the_refusal_names_the_reinstall_when_the_cli_trails_the_checkout(
+    compose_env, secrets_dir, monkeypatch
+):
+    compose_env(0)
+    (secrets_dir / "mascope.app.key").unlink()
+    monkeypatch.setattr(
+        prod_main.cli_drift,
+        "detect",
+        lambda path: prod_main.cli_drift.DriftResult(
+            drifted=True, reason="older", reinstall="uv tool install the-checkout"
+        ),
+    )
+
+    with pytest.raises(prod_main.SecretsMissing) as excinfo:
+        prod_main._run_compose(["up"])
+
+    assert str(excinfo.value).endswith(
+        "The installed CLI is older than the checkout: uv tool install the-checkout"
+    )
+
+
+def test_declared_secrets_reads_what_docker_compose_config_prints(tmp_path):
+    # `docker compose config --format json` writes a service's secrets as
+    # objects, resolves `file` to an absolute path, and keeps the block.
+    config = {
+        "services": {
+            "a": {"secrets": [{"source": "s1", "target": "/run/secrets/s1"}]},
+            "b": {"secrets": ["s2", "s3"]},
+            "c": {},
+        },
+        "secrets": {
+            "s1": {"name": "p_s1", "file": "/abs/s1.txt"},
+            "s2": {"name": "p_s2", "file": "rel/s2.txt"},
+            "s3": {"name": "p_s3", "environment": "S3"},
+            "s4": {"name": "p_s4", "file": "/abs/s4.txt"},
+        },
+        prod_main.SECRETS_BLOCK: {"placeholder": ["s2"], "unknown_kind": ["s1"]},
+    }
+
+    declared = prod_main.declared_secrets(config, tmp_path)
+
+    assert declared == [
+        prod_main.DeclaredSecret("s1", Path("/abs/s1.txt"), None),
+        prod_main.DeclaredSecret("s2", tmp_path / "rel" / "s2.txt", "placeholder"),
+    ]
+
+
+def test_the_bundled_block_says_what_the_clis_lists_say():
+    # A CLI older than the compose file makes what the block says, a current
+    # one what its lists say: the two have to agree, or which one runs decides
+    # how a secret is made.
+    config = bundled_config()
+    files = {name: Path(spec["file"]).name for name, spec in config["secrets"].items()}
+    block = config[prod_main.SECRETS_BLOCK]
+    assert set(block) <= set(prod_main.SECRET_KINDS)
+
+    def named(kind):
+        return {files[name] for name in block.get(kind, [])}
+
+    assert named("generate") == set(AUTO_PROVISIONED_SECRETS)
+    assert named("private_placeholder") == set(init_cmd.PRIVATE_PLACEHOLDER_SECRETS)
+    assert named("placeholder") == set(init_cmd.PLACEHOLDER_SECRETS) - set(
+        init_cmd.PRIVATE_PLACEHOLDER_SECRETS
+    )
+
+
+def test_the_root_compose_file_is_the_bundled_one():
+    root = Path(init_cmd.__file__).parents[5] / "docker-compose.yaml"
+    bundled = Path(init_cmd.__file__).parent.parent / "data" / "docker-compose.yaml"
+    assert root.read_bytes() == bundled.read_bytes()
+
+
+# --- reading the compose file in use ---
+
+
+def _fake_run(monkeypatch, result=None, raises=None):
+    seen = {}
+
+    def run(command, **kwargs):
+        seen["command"], seen["kwargs"] = command, kwargs
+        if raises is not None:
+            raise raises
+        return result
+
+    monkeypatch.setattr(prod_main.subprocess, "run", run)
+    return seen
+
+
+def test_compose_config_reads_the_compose_file_in_use(monkeypatch, mascope_home):
+    seen = _fake_run(
+        monkeypatch,
+        subprocess.CompletedProcess([], 0, stdout='{"secrets": {}}', stderr=""),
+    )
+
+    config = prod_main._compose_config({"MASCOPE_VERSION": "v9.9.9"})
+
+    assert config == {"secrets": {}}
+    assert seen["command"] == [
+        "docker",
+        "compose",
+        "--file",
+        str(mascope_home / "docker-compose.yaml"),
+        "config",
+        "--format",
+        "json",
+    ]
+    assert seen["kwargs"]["cwd"] == str(mascope_home)
+    assert seen["kwargs"]["env"]["MASCOPE_VERSION"] == "v9.9.9"
+    assert seen["kwargs"]["env"]["MASCOPE_PATH"] == os.environ["MASCOPE_PATH"]
+
+
+@pytest.mark.parametrize(
+    "result, raises",
+    [
+        # Even with JSON on stdout, a failed compose is not believed.
+        (subprocess.CompletedProcess([], 1, stdout="{}", stderr="bad file"), None),
+        (subprocess.CompletedProcess([], 0, stdout="not json", stderr=""), None),
+        (subprocess.CompletedProcess([], 0, stdout="[]", stderr=""), None),
+        (None, FileNotFoundError("docker")),
+        (None, subprocess.TimeoutExpired("docker", 120)),
+    ],
+    ids=["exit-1", "not-json", "not-an-object", "no-docker", "timeout"],
+)
+def test_compose_config_is_none_when_compose_cannot_read_it(
+    monkeypatch, result, raises
+):
+    _fake_run(monkeypatch, result, raises)
+    warnings = []
+    monkeypatch.setattr(prod_main.runtime.logger, "warning", warnings.append)
+
+    assert prod_main._compose_config({}) is None
+    assert len(warnings) == 1, warnings
+    if result is not None and result.returncode:
+        assert "bad file" in warnings[0]
 
 
 def test_auto_provisioned_secrets_are_declared_secrets():
