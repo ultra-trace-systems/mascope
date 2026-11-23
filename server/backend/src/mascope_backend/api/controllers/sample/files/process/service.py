@@ -1869,18 +1869,27 @@ async def _auto_process_sample_file(
         and not is_blank_sample_file
         and sample_file.instrument_type == "tof"
     ):
+        # Any error, not only an ApiException: the transfer is not an
+        # @api_controller, and what it reads is the neighbours' files as well
+        # as this one, so an error in it holds this file back with a reason
+        # rather than failing its processing.
         try:
             transfer = await calibration_mz_transfer(
                 sample_file_id, user_id=user_id, process_id=process_id
             )
-        except ApiException as error:
+        except Exception as error:
             runtime.logger.exception(
                 "Failed to transfer an m/z calibration to "
-                f"'{sample_file.filename}': {error}"
+                f"'{sample_file.filename}': {error!r}"
+            )
+            why = (
+                _calibration_error_reason(error)
+                if isinstance(error, ApiException)
+                else "an unexpected error"
             )
             not_calibrated_reason = (
                 f"{not_calibrated_reason}, and the transfer of a neighbouring "
-                f"file's calibration failed: {_calibration_error_reason(error)}"
+                f"file's calibration failed: {why}"
             )
         else:
             transferred = transfer.applied

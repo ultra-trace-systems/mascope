@@ -375,3 +375,31 @@ async def test_the_plan_refuses_where_a_cut_cannot_be_read(unread):
     assert plan.record is None
     assert "raw TOF axis" in plan.reason
     assert ("the file" in plan.reason) == (unread == "file-sf-1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unread", ["file-sf-1", "file-a"])
+@pytest.mark.parametrize(
+    "error",
+    [OSError("Unable to open file (truncated file)"), KeyError("FullSpectra")],
+)
+async def test_the_plan_refuses_where_reading_a_cut_raises(unread, error):
+    """A truncated or incomplete .h5 of the file or of a neighbour is a
+    reason, not an error the pipeline would fail the file on."""
+    offsets = {"file-sf-1": 100, "file-a": 110}
+
+    def read(name):
+        if name == unread:
+            raise error
+        return offsets[name]
+
+    with (
+        patch.object(
+            transfer, "candidate_sources", AsyncMock(return_value=[source("a", -8)])
+        ),
+        patch.object(transfer, "raw_index_offset", side_effect=read),
+    ):
+        plan = await transfer.plan_transfer(_File())
+    assert plan.record is None
+    assert "raw TOF axis" in plan.reason
+    assert ("the file" in plan.reason) == (unread == "file-sf-1")
