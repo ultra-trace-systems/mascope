@@ -16,9 +16,9 @@ import { ROLE_BUCKETS, bucketRank, tierName } from '@/lib/tiers'
 import { isLevel, isOpenRival, levelMeta, unlistedRivalsLine } from '@/lib/levels'
 import { sourceLabel } from '@/lib/assignmentSources'
 import { EVIDENCE_LEVELS, VERDICT_META, claimCandidates } from '@/lib/verification'
-import { canEditWorkspace } from '@/lib/permissions'
 import { useBatchPeakJump } from '@/lib/panes/PaneBrowserMatch/stores/batchPeakJump.js'
 import { useBatchPeakCuration } from '../stores/batchPeakCuration.js'
+import { useChangeGate } from '../changeGate.js'
 import {
   bandMissed,
   barPosition,
@@ -28,7 +28,6 @@ import {
   isotopeTile,
   orderedReasons,
   reasonGroup,
-  runNotice,
   shareDigits,
   whyTitle
 } from './cardReadings.js'
@@ -112,27 +111,13 @@ export function useAssignmentCard({ showSearch }) {
   // selector can set to an earlier run or, asked for, a decoy. Neither is the
   // sample's result: the card says which run it is, and offers nothing that
   // would record a verdict or a change on it.
-  const viewedRun = computed(() => app.data.peakAssignment.peak.run ?? null)
-  const notice = computed(() =>
-    runNotice(
-      viewedRun.value,
-      app.data.peakAssignment.run?.latestCompleted ?? null,
-      app.data.peakAssignment.run?.list ?? []
-    )
-  )
-  const readOnly = computed(() => notice.value != null)
-  const readOnlyReason = computed(() => notice.value?.reason ?? '')
-
-  // Whether the account may write in the workspace, checked before anything
-  // is offered, as the ledger's verdict popovers check it. A viewer sees the
-  // recorded verdict and no controls; the 403 a refused write earns stays the
-  // fallback (`denied`, `curateDenied`).
-  const canEdit = computed(() =>
-    canEditWorkspace(app.data.workspace?.focused ?? null, app.auth?.user ?? null)
-  )
-  // What the verdict bar and the changes by hand both need: an editor, on
-  // the sample's own result.
-  const canChange = computed(() => canEdit.value && !readOnly.value)
+  // The same gate checks whether the account may write in the workspace,
+  // before anything is offered: a viewer sees the recorded verdict and no
+  // controls, and the 403 a refused write earns stays the fallback (`denied`,
+  // `curateDenied`). `canChange` is what the verdict bar and the changes by
+  // hand both need: an editor, on the sample's own result. The composition
+  // search's hand button reads the same gate.
+  const { viewedRun, notice, readOnly, readOnlyReason, canEdit, canChange } = useChangeGate()
 
   // --- Opened from the batch scope ----------------------------------------------
   // The batch ledger opens a batch peak in its brightest sample

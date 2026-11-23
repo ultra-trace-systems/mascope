@@ -1475,15 +1475,17 @@ In a narrow column the four measurements stand one above another, and the chips 
 
   The verdict bar's buttons are disabled, and a line under them says why: verdicts and
   changes are recorded on the latest completed run. *Use* and *Undo* are hidden, and so is
-  a batch pin's *Release*. A verdict already recorded still shows. Select the latest run
-  again to record one.
+  a batch pin's *Release*. The hand button of *Find other formulas for this peak* is
+  hidden too ([searching one peak](#searching-one-peak)). A verdict already recorded
+  still shows. Select the latest run again to record one.
 - **A decoy run.** A notice names the [arm](#decoy-runs), *A decoy run, arm
   mz_shift_ppm=+9*. A decoy is never the sample's result, so the card is read only, as on
   any other run that is not the result.
 - **The viewer role.** The card checks your role in the workspace before it offers
   anything. A viewer sees the recorded verdict and no *Confirm*, *Reject*, *Unsure* or
   *Change*. Where no verdict is recorded, a line says verifying needs editor access.
-  *Use*, *Undo* and *Release* are not offered either.
+  *Use*, *Undo* and *Release* are not offered either, nor the composition search's hand
+  button.
 - **Loading.** While the row's detail is on its way, the Why box, the four measurements
   and the folded sections are grey placeholder lines. The answer and the verdict bar show
   at once. A row from the batch ledger draws its measurement tiles the same way while its
@@ -1539,6 +1541,13 @@ records the peak as that isotopologue of the compound. Reading every line finds 
 twice as many candidates as reading the monoisotopic line alone; most of the extra ones
 are compounds whose monoisotopic line the spectrum does not hold, which the fit score
 ranks low.
+
+The hand button on a result assigns that composition to the peak
+([assigning a peak yourself](#assigning-a-peak-yourself)). It follows the inspector's
+rule. A viewer of the workspace is not offered it. Nor is anyone on a run that is not
+the sample's result: an earlier run, a newer one that has not completed, the batch
+ledger or a decoy. A lock stands where the button would be, and its tooltip says why.
+The search itself works on any run.
 
 ### Curating a species for the whole batch
 

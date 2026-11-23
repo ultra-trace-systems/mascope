@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
-import { h, ref, Fragment } from 'vue'
+import { h, reactive, ref, Fragment } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 
 // Every pane goes when its test does. A pane left mounted keeps its debounced
@@ -60,6 +60,15 @@ let socketHandlers
 let focusedPeak
 let ledger // String(peak_id) -> assignment row, or null for "no run covers it"
 
+// What the card's gate reads (changeGate.js): the run on view, the sample's
+// runs and its latest completed one, the account and its workspace role. Read
+// through getters, so a change after the mount reaches the pane's computeds.
+// Unset, as most tests leave it, nothing is loaded and the gate lets the
+// request be the judge.
+const gateState = reactive({})
+const RUN_NEW = { peak_assignment_run_id: 'run-new', status: 'completed', engine: 'v2' }
+const RUN_OLD = { peak_assignment_run_id: 'run-old', status: 'completed', engine: 'v2' }
+
 const helpStub = {
   docUrl: (path = '') => `/docs/${path}`,
   top: () => ({}),
@@ -71,7 +80,17 @@ const helpStub = {
 
 function makeApp() {
   return {
+    auth: {
+      get user() {
+        return gateState.user
+      }
+    },
     data: {
+      workspace: {
+        get focused() {
+          return gateState.role ? { workspace_id: 'w-1', my_role: gateState.role } : null
+        }
+      },
       sample: { focusedId: 'si-1', focused: null },
       // A getter over a ref so the pane's computeds re-evaluate when a test
       // moves the focus after mounting.
@@ -85,7 +104,18 @@ function makeApp() {
       ionization: { mode: { list: [] }, mechanism: { list: [] } },
       match: { params: { typeDefaults: {} } },
       peakAssignment: {
+        run: {
+          get list() {
+            return gateState.runs
+          },
+          get latestCompleted() {
+            return gateState.latest
+          }
+        },
         peak: {
+          get run() {
+            return gateState.run
+          },
           forPeak: (peakId) => (peakId == null ? null : (ledger.get(String(peakId)) ?? null)),
           curate
         }
@@ -279,6 +309,13 @@ beforeEach(() => {
   served.clear()
   socketHandlers = new Map()
   focusedPeak = ref(PEAK_A)
+  Object.assign(gateState, {
+    user: null,
+    role: null,
+    run: null,
+    runs: [],
+    latest: null
+  })
   ledger = new Map([
     [String(PEAK_A.peak_id), assignmentRow(PEAK_A, 'pa-a')],
     [String(PEAK_B.peak_id), assignmentRow(PEAK_B, 'pa-b')]
@@ -496,6 +533,115 @@ describe('PanePeakSearch assigning a hit by hand', () => {
 
     expect(wrapper.findAll('.dt-row')).toHaveLength(2)
     expect(handButtons(wrapper)).toHaveLength(1)
+  })
+})
+
+// The inspector card's gate, read by the search too: a change by hand is
+// recorded only by an editor, and only on the sample's own result. The search
+// itself stays usable; where the hand would be, a lock says why.
+describe('PanePeakSearch withholding the hand as the card does', () => {
+  const lock = (wrapper) => wrapper.find('.dt-row [data-testid="hand-withheld"]')
+  const headerPin = (wrapper) => wrapper.find('.curate-header .ph-push-pin')
+
+  function onRun(run) {
+    Object.assign(gateState, {
+      user: { id: 1, is_superuser: false },
+      role: 'editor',
+      runs: [RUN_NEW, RUN_OLD],
+      latest: RUN_NEW,
+      run
+    })
+  }
+
+  it('offers the hand to an editor on the sample latest completed run', async () => {
+    onRun(RUN_NEW)
+    const wrapper = await mountPane()
+    await deliverResults(wrapper, PEAK_A, [hit('C6H12O6')])
+
+    expect(handButtons(wrapper)).toHaveLength(1)
+    expect(lock(wrapper).exists()).toBe(false)
+    expect(headerPin(wrapper).exists()).toBe(true)
+  })
+
+  it('offers a viewer no hand, and says an editor is needed', async () => {
+    onRun(RUN_NEW)
+    gateState.role = 'viewer'
+    const wrapper = await mountPane()
+    await deliverResults(wrapper, PEAK_A, [hit('C6H12O6')])
+
+    expect(wrapper.findAll('.dt-row')).toHaveLength(1)
+    expect(handButtons(wrapper)).toHaveLength(0)
+    expect(headerPin(wrapper).exists()).toBe(false)
+    expect(lock(wrapper).attributes('aria-label')).toBe(
+      'Editor access is required to change an assignment.'
+    )
+
+    await wrapper.vm.assignToPeak(hit('C6H12O6'))
+    expect(curate).not.toHaveBeenCalled()
+  })
+
+  it('writes nothing on an earlier run, and says where changes are recorded', async () => {
+    onRun(RUN_OLD)
+    const wrapper = await mountPane()
+    await deliverResults(wrapper, PEAK_A, [hit('C6H12O6')])
+
+    expect(handButtons(wrapper)).toHaveLength(0)
+    expect(headerPin(wrapper).exists()).toBe(false)
+    expect(lock(wrapper).attributes('aria-label')).toContain(
+      "Verdicts and changes are recorded on the sample's latest completed run."
+    )
+
+    // The click that was already on its way when the run changed.
+    await wrapper.vm.assignToPeak(hit('C6H12O6'))
+    expect(curate).not.toHaveBeenCalled()
+  })
+
+  it('writes nothing on a decoy run, even the latest one', async () => {
+    onRun({ ...RUN_NEW, decoy: 'swap' })
+    const wrapper = await mountPane()
+    await deliverResults(wrapper, PEAK_A, [hit('C6H12O6')])
+
+    expect(handButtons(wrapper)).toHaveLength(0)
+    expect(lock(wrapper).attributes('aria-label')).toContain("A decoy run is never the sample's")
+
+    await wrapper.vm.assignToPeak(hit('C6H12O6'))
+    expect(curate).not.toHaveBeenCalled()
+  })
+
+  it('gives the hand back when the run selector returns to the result', async () => {
+    onRun(RUN_OLD)
+    const wrapper = await mountPane()
+    await deliverResults(wrapper, PEAK_A, [hit('C6H12O6')])
+    expect(handButtons(wrapper)).toHaveLength(0)
+
+    gateState.run = RUN_NEW
+    await wrapper.vm.$nextTick()
+
+    expect(handButtons(wrapper)).toHaveLength(1)
+    await handButtons(wrapper)[0].trigger('click')
+    expect(curate).toHaveBeenCalledTimes(1)
+  })
+
+  it('says an editor is needed once the write comes back 403', async () => {
+    curate.mockRejectedValueOnce(Object.assign(new Error('no'), { response: { status: 403 } }))
+    const wrapper = await mountPane()
+    await deliverResults(wrapper, PEAK_A, [hit('C6H12O6')])
+
+    await handButtons(wrapper)[0].trigger('click')
+    await flushPromises()
+
+    expect(lock(wrapper).attributes('aria-label')).toBe(
+      'Editor access is required to change an assignment.'
+    )
+  })
+
+  it('keeps the search and its rows on a read-only run', async () => {
+    onRun(RUN_OLD)
+    const wrapper = await mountPane()
+    await deliverResults(wrapper, PEAK_A, [hit('C6H12O6'), hit('C9H8O4')])
+
+    expect(wrapper.findAll('.dt-row')).toHaveLength(2)
+    expect(wrapper.findAll('.dt-row .target-add')).toHaveLength(2)
   })
 })
 
