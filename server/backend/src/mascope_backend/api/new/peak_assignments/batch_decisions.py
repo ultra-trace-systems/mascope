@@ -18,8 +18,11 @@ record enters the stage list at the stage that decides what it decides
 - **a known species**, a library ion the batch decided present
   (``batch_known_species``), and **a water-ladder rung** the batch passed in
   the segment the sample was acquired in (``batch_water_ladder``), are the
-  source's: the claim stage claims them on the sample's corrected mass where
-  its own claim did not (``reagent_pass.claim_batch_species``). A sample
+  source's: the claim stage matches them on the sample's corrected mass where
+  its own claim did not (``reagent_pass.claim_batch_species``), and the elect
+  stage claims them on the rows of the known set and the search, by the keep
+  rules the batch's own claims take a member by (:func:`claim_source_ions`,
+  MAS-1089). A sample
   acquired outside every segment the rung passed in reads no rung: a rung is
   evidence about the segment it was measured in (decided 2026-11-17).
 - **a listed compound** the batch decided present is proposed for its peak,
@@ -83,6 +86,7 @@ from mascope_backend.api.new.peak_assignments.batch_staleness import (
 )
 from mascope_backend.api.new.peak_assignments.engine import (
     build_unassigned_assignments,
+    is_reference_mirror_row,
     is_target_library_row,
 )
 from mascope_backend.api.new.peak_assignments.known_species import (
@@ -103,12 +107,23 @@ from mascope_backend.api.new.peak_assignments.reagent_pass import (
     REASON_BATCH_WATER_LADDER,
     BatchSpecies,
 )
-from mascope_backend.api.new.peak_assignments.row_terms import ROLE_ISO_CHILD, ROLE_M0
+from mascope_backend.api.new.peak_assignments.row_terms import (
+    ROLE_ISO_CHILD,
+    ROLE_M0,
+    ROLE_REAGENT,
+    SOURCE_MANUAL,
+)
 from mascope_backend.api.new.peak_assignments.tiers import TIER_ASSIGNED, TIER_CANDIDATE
-from mascope_backend.db import BatchPeak, BatchPeakOccurrence, async_session
-from mascope_tools.composition.known_species import KIND_LISTED
+from mascope_backend.db import (
+    BatchPeak,
+    BatchPeakOccurrence,
+    PeakAssignment,
+    async_session,
+)
+from mascope_tools.composition.known_species import KIND_LIBRARY, KIND_LISTED
 from mascope_tools.composition.reagents import (
     WATER_RUNG_REFERENCES,
+    ReagentHit,
     WaterLadder,
     water_ladders,
 )
@@ -240,7 +255,7 @@ class BatchDecisions:
     series: Mapping[str, dict] = field(default_factory=dict)
 
     def source_ions(self) -> list[BatchSpecies]:
-        """The source ions the claim stage claims on the batch's word, one
+        """The source ions a run claims on the batch's word, one
         entry per ion: the known species first, the batch's own decision over
         its whole partition, then each rung no species names."""
         named = {(one.cluster.formula, one.cluster.charge) for one in self.species}
@@ -720,7 +735,175 @@ async def read_batch_decisions(
     )
 
 
+async def control_source_claims(control_run_id: str) -> frozenset[str]:
+    """The peaks a decoy arm's control claimed for the source on the batch's
+    word: the arm claims those (:func:`claim_source_ions`), so it claims what
+    its control claims whatever its own rows read.
+
+    :param control_run_id: The control run.
+    :return: The sample peaks of the control's monoisotopic rows that name a
+        batch decision as their reason.
+    """
+    async with async_session() as session:
+        found = (
+            await session.execute(
+                select(PeakAssignment.sample_peak_id, PeakAssignment.provenance).where(
+                    PeakAssignment.peak_assignment_run_id == control_run_id,
+                    PeakAssignment.role == ROLE_REAGENT,
+                    PeakAssignment.owner_peak_assignment_id.is_(None),
+                )
+            )
+        ).all()
+    return frozenset(
+        str(peak_id)
+        for peak_id, provenance in found
+        if ((provenance or {}).get("reagent") or {}).get("reason")
+        in (REASON_BATCH_KNOWN_SPECIES, REASON_BATCH_WATER_LADDER)
+    )
+
+
 # --- the decisions on a run's rows (pure) -------------------------------------------
+
+
+#: What became of a source ion the batch decided is there, on the peak the
+#: claim stage matched it at: claimed, or a ``known_species.KEPT_*`` reason
+#: where the batch claim's keep rules leave the run's reading
+#: (:func:`claim_source_ions`).
+SOURCE_CLAIMED = "claimed"
+#: A decoy arm's peak its control did not claim on the batch's word: an arm
+#: claims what its control claims.
+SOURCE_KEPT_BY_CONTROL = "control_kept"
+
+
+def run_reading(
+    rows_on_peak: list[dict],
+    *,
+    lines_of: Mapping[str, list[dict]],
+    claimed: bool,
+) -> known_species.PeakReading:
+    """What a claim on the batch's word asks of a run's rows on a peak
+    (``known_species.claim_keeps``), as the batch's own claims ask a member
+    (``known_species.member_reading``).
+
+    :param rows_on_peak: The run's elected rows on the peak.
+    :param lines_of: Row id -> the rows that name it the owner of their line.
+    :param claimed: Whether a claim of the claim stage took the peak.
+    """
+    m0 = next((r for r in rows_on_peak if r.get("role") == ROLE_M0), None)
+    lines = [] if m0 is None else lines_of.get(str(m0.get("peak_assignment_id")), [])
+    return known_species.PeakReading(
+        hand=any(r.get("source") == SOURCE_MANUAL for r in rows_on_peak),
+        target=m0 is not None and is_target_library_row(m0),
+        listed=m0 is not None and is_reference_mirror_row(m0),
+        line_of_another=any(
+            r.get("role") == ROLE_ISO_CHILD or r.get("owner_peak_assignment_id")
+            for r in rows_on_peak
+        ),
+        claimed_otherwise=claimed,
+        lines=tuple(line.get("isotope_label") for line in lines),
+    )
+
+
+def claim_source_ions(
+    stage_a: list[dict],
+    stage_b: list[dict],
+    hits: Iterable[ReagentHit],
+    decided: Mapping[str, BatchSpecies],
+    *,
+    peak_ids: list[str],
+    claimed_peak_ids: set[str],
+    control: Optional[frozenset[str]] = None,
+) -> tuple[list[ReagentHit], list[dict], list[dict], dict[str, str], dict[str, dict]]:
+    """Claim the source ions the batch decided are there on a run's rows,
+    after Stage A and the search, by the keep rules the batch's own claims
+    take a member by (``known_species.claim_keeps``, MAS-1089).
+
+    The claim stage matched each ion on the file's corrected mass
+    (``prepasses.SourceIonHits``); here each is asked what the run reads on
+    its peak. The run's reading is kept where the target library names the
+    peak, where a reference list does and the ion is a water-ladder rung,
+    where the peak is another reading's isotope line or another claim's, and
+    where the reading carries an isotope line the ion cannot have: what the
+    batch's claim keeps in a file, so the next fold agrees with it. Where the
+    ion is claimed, the run's rows on its peak and the lines they own are
+    displaced, and so are its own lines; an ion's line is claimed with it on
+    a peak no other reading of the run holds.
+
+    :param stage_a: Stage A's rows.
+    :param stage_b: The search's rows.
+    :param hits: The matched ions, monoisotopic before their lines.
+    :param decided: Ion formula -> the batch's decision.
+    :param peak_ids: The sample's peak ids, in the order the hits index them.
+    :param claimed_peak_ids: The peaks the claim stage took.
+    :param control: A decoy arm's: the peaks its control claimed on the
+        batch's word. The arm claims those and no other, whatever its own
+        rows read (:data:`SOURCE_KEPT_BY_CONTROL`). None for every other pass.
+    :return: The hits claimed, Stage A's and the search's rows left, what
+        became of each ion by its peak (:data:`SOURCE_CLAIMED` or why it was
+        kept), and the run's reading each claim displaced, by its peak.
+    """
+    hits = list(hits)
+    rows = [*stage_a, *stage_b]
+    on_peak: dict[str, list[dict]] = defaultdict(list)
+    lines_of: dict[str, list[dict]] = defaultdict(list)
+    for row in rows:
+        on_peak[str(row.get("sample_peak_id"))].append(row)
+        if row.get("owner_peak_assignment_id"):
+            lines_of[str(row["owner_peak_assignment_id"])].append(row)
+    ion_lines: dict[int, list[ReagentHit]] = defaultdict(list)
+    for hit in hits:
+        if hit.is_isotopologue:
+            ion_lines[hit.parent_index].append(hit)
+    claimed: list[ReagentHit] = []
+    displaced: set[int] = set()
+    outcomes: dict[str, str] = {}
+    readings: dict[str, dict] = {}
+    for ion in (hit for hit in hits if not hit.is_isotopologue):
+        peak_id = str(peak_ids[ion.index])
+        here = on_peak.get(peak_id, [])
+        one = decided.get(ion.cluster.formula)
+        if control is not None:
+            kept = None if peak_id in control else SOURCE_KEPT_BY_CONTROL
+        else:
+            kept = known_species.claim_keeps(
+                run_reading(
+                    here, lines_of=lines_of, claimed=peak_id in claimed_peak_ids
+                ),
+                owns_line=Species(KIND_LIBRARY, ion.cluster.formula).can_have,
+                keep_listed=one is not None and one.reason == REASON_BATCH_WATER_LADDER,
+            )
+        outcomes[peak_id] = kept or SOURCE_CLAIMED
+        if kept is not None:
+            continue
+        gone = [
+            *here,
+            *(
+                line
+                for row in here
+                for line in lines_of.get(str(row.get("peak_assignment_id")), [])
+            ),
+        ]
+        gone_ids = {id(row) for row in gone}
+        displaced |= gone_ids
+        m0 = next((r for r in here if r.get("role") == ROLE_M0), None)
+        if m0 is not None:
+            readings[peak_id] = m0
+        claimed.append(ion)
+        for line in ion_lines.get(ion.index, []):
+            others = [
+                row
+                for row in on_peak.get(str(peak_ids[line.index]), [])
+                if id(row) not in displaced
+            ]
+            if not others:
+                claimed.append(line)
+    return (
+        claimed,
+        [row for row in stage_a if id(row) not in displaced],
+        [row for row in stage_b if id(row) not in displaced],
+        outcomes,
+        readings,
+    )
 
 
 def listed_decision(
@@ -1024,6 +1207,8 @@ __all__ = [
     "LISTED_LIFTED",
     "MONOISOTOPIC_TRACK",
     "PEAK_ABSENT",
+    "SOURCE_CLAIMED",
+    "SOURCE_KEPT_BY_CONTROL",
     "STAGE_OF_KIND",
     "STRIP_KEPT_CARRIES_LINES",
     "STRIP_KEPT_CLAIMED",
@@ -1034,6 +1219,8 @@ __all__ = [
     "StripDecision",
     "acquired_at",
     "cite_listed",
+    "claim_source_ions",
+    "control_source_claims",
     "elect_listed",
     "listed_decision",
     "listed_from",
@@ -1041,6 +1228,7 @@ __all__ = [
     "read_batch_decisions",
     "read_strips",
     "rung_from",
+    "run_reading",
     "rungs_for",
     "segment_of",
     "stage_versions",

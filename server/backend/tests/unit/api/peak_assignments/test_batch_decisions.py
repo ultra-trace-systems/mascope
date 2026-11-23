@@ -51,16 +51,24 @@ from mascope_backend.api.new.peak_assignments.known_species import (
     ALREADY,
     KEPT_CARRIES_LINES,
     KEPT_CLAIMED_OTHERWISE,
+    KEPT_HAND_ASSIGNED,
     KEPT_LINE_OF_ANOTHER,
+    KEPT_LISTED,
     KEPT_ON_TWIN,
     KEPT_TARGET_LIBRARY,
 )
+from mascope_backend.api.new.peak_assignments.prepasses import SourceIonHits
 from mascope_backend.api.new.peak_assignments.reagent_pass import (
     REASON_BATCH_KNOWN_SPECIES,
     REASON_BATCH_WATER_LADDER,
     BatchSpecies,
 )
-from mascope_tools.composition.reagents import ReagentCluster, ion_mz, water_ladders
+from mascope_tools.composition.reagents import (
+    ReagentCluster,
+    ReagentHit,
+    ion_mz,
+    water_ladders,
+)
 
 
 BROMIDE = water_ladders("BR")[0]
@@ -842,8 +850,8 @@ class TestTheStripReadOnTheRows:
 class TestTheStageListsInputs:
     def test_each_kind_enters_at_its_stage_and_a_decoy_reads_the_claims(self):
         assert {one.kind: (one.stage, one.decoy) for one in pipeline.BATCH_INPUTS} == {
-            KIND_KNOWN_SPECIES: (pipeline.Stage.CLAIM, True),
-            KIND_WATER_RUNG: (pipeline.Stage.CLAIM, True),
+            KIND_KNOWN_SPECIES: (pipeline.Stage.ELECT, True),
+            KIND_WATER_RUNG: (pipeline.Stage.ELECT, True),
             KIND_LISTED_COMPOUND: (pipeline.Stage.PROPOSE, True),
             KIND_ISOTOPOLOGUE_STRIP: (pipeline.Stage.JUDGE, False),
             KIND_SERIES: (pipeline.Stage.JUDGE, False),
@@ -1243,3 +1251,265 @@ class TestALineOffAnUnreadPeak:
         rows = {r["sample_peak_id"]: r for r in ctx.stage_a}
         assert rows["x"]["role"] == "iso_child"
         assert rows["x"]["owner_peak_assignment_id"] == "id-p"
+
+
+# --- the source ions claimed on the run's rows (MAS-1089) ---------------------------
+
+
+#: A carbon-bearing ion and a carbon-free one, each decided present by the
+#: batch as a known species, and a rung its water ladder passed.
+TRIMER = ReagentCluster("C3H13N6O3", 1, "[(CH4N2O)3+H]+", "cluster")
+HYDRONIUM = ReagentCluster("H5O2", 1, "[H3O+H2O]+", "cluster")
+SPECIES = BatchSpecies(TRIMER, {"batch_peak_id": "T", "verdict": "present"})
+WATERLESS = BatchSpecies(HYDRONIUM, {"batch_peak_id": "H", "verdict": "present"})
+RUNG = BatchSpecies(
+    TRIMER, {"batch_peak_id": "R", "segment": 0}, reason=REASON_BATCH_WATER_LADDER
+)
+
+
+def _ion(index, cluster=TRIMER, **line):
+    return ReagentHit(
+        cluster=cluster,
+        index=index,
+        mz=199.0976,
+        intensity=1e6,
+        mz_error_ppm=0.1,
+        **line,
+    )
+
+
+#: The ion on ``p`` and its 13C line on ``x``, in ``_context``'s peaks.
+ION, LINE = _ion(1), _ion(2, isotope_label="13C", parent_index=1)
+
+
+def _claim(stage_a=(), stage_b=(), hits=(ION,), one=SPECIES, **kwargs):
+    kwargs.setdefault("claimed_peak_ids", set())
+    return batch_decisions.claim_source_ions(
+        list(stage_a),
+        list(stage_b),
+        hits,
+        {one.cluster.formula: one},
+        peak_ids=["d", "p", "x"],
+        **kwargs,
+    )
+
+
+class TestTheSourceIonsClaimedOnTheRows:
+    """A run claims its batch's source ions after Stage A and the search, by
+    the keep rules the batch's own claims take a member by (MAS-1089)."""
+
+    def test_a_peak_the_target_library_names_is_kept(self):
+        target = _row("p", "C3H12N6O3", source="database", target_compound_id="tc")
+        claimed, stage_a, _, outcomes, displaced = _claim([target])
+
+        assert (claimed, stage_a, displaced) == ([], [target], {})
+        assert outcomes == {"p": KEPT_TARGET_LIBRARY}
+
+    def test_a_searched_reading_is_displaced(self):
+        searched = _row("p", "C10H16O4")
+        claimed, _, stage_b, outcomes, displaced = _claim(stage_b=[searched])
+
+        assert (claimed, stage_b) == ([ION], [])
+        assert outcomes == {"p": batch_decisions.SOURCE_CLAIMED}
+        assert displaced == {"p": searched}
+
+    @pytest.mark.parametrize(
+        "one, outcome",
+        [
+            (SPECIES, batch_decisions.SOURCE_CLAIMED),
+            (RUNG, KEPT_LISTED),
+        ],
+        ids=["known species", "water rung"],
+    )
+    def test_a_reference_lists_reading_keeps_a_rungs_peak_only(self, one, outcome):
+        listed = _row("p", "C10H16O4", source="database")
+        _, _, _, outcomes, _ = _claim([listed], one=one)
+
+        assert outcomes == {"p": outcome}
+
+    def test_a_peak_a_person_assigned_is_kept(self):
+        hand = _row("p", "C10H16O4", source="manual")
+        _, _, _, outcomes, _ = _claim([hand])
+
+        assert outcomes == {"p": KEPT_HAND_ASSIGNED}
+
+    def test_another_readings_isotope_line_is_kept(self):
+        parent = _row("d", "C10H16O4")
+        line = _row(
+            "p",
+            "C10H16O4",
+            role="iso_child",
+            isotope_label="13C2",
+            owner_peak_assignment_id="id-d",
+        )
+        claimed, stage_a, _, outcomes, _ = _claim([parent, line])
+
+        assert (claimed, stage_a) == ([], [parent, line])
+        assert outcomes == {"p": KEPT_LINE_OF_ANOTHER}
+
+    def test_a_peak_another_claim_took_is_kept(self):
+        claimed, _, _, outcomes, _ = _claim(claimed_peak_ids={"p"})
+
+        assert (claimed, outcomes) == ([], {"p": KEPT_CLAIMED_OTHERWISE})
+
+    def test_a_reading_with_a_line_the_ion_cannot_have_is_kept(self):
+        m0 = _row("p", "C10H16O4")
+        line = _row(
+            "x",
+            "C10H16O4",
+            role="iso_child",
+            isotope_label="13C",
+            owner_peak_assignment_id="id-p",
+        )
+        hits = (_ion(1, HYDRONIUM),)
+        claimed, stage_a, _, outcomes, _ = _claim([m0, line], hits=hits, one=WATERLESS)
+
+        assert (claimed, stage_a) == ([], [m0, line])
+        assert outcomes == {"p": KEPT_CARRIES_LINES}
+
+    def test_a_reading_with_lines_the_ion_can_have_goes_with_them(self):
+        m0 = _row("p", "C10H16O4")
+        line = _row(
+            "x",
+            "C10H16O4",
+            role="iso_child",
+            isotope_label="13C",
+            owner_peak_assignment_id="id-p",
+        )
+        claimed, stage_a, _, outcomes, displaced = _claim([m0, line], hits=(ION, LINE))
+
+        # The reading's line leaves with it, and the ion's line takes its peak.
+        assert (claimed, stage_a) == ([ION, LINE], [])
+        assert outcomes == {"p": batch_decisions.SOURCE_CLAIMED}
+        assert displaced == {"p": m0}
+
+    def test_an_ions_line_is_left_on_a_peak_another_reading_holds(self):
+        other = _row("x", "C9H12N2O2")
+        claimed, stage_a, _, _, _ = _claim([other], hits=(ION, LINE))
+
+        assert (claimed, stage_a) == ([ION], [other])
+        assert _claim(hits=(ION, LINE))[0] == [ION, LINE]
+
+    def test_a_decoy_arm_claims_what_its_control_claimed(self):
+        target = _row("p", "C3H12N6O3", source="database", target_compound_id="tc")
+        claimed, stage_a, _, outcomes, _ = _claim([target], control=frozenset({"p"}))
+        assert (claimed, stage_a) == ([ION], [])
+        assert outcomes == {"p": batch_decisions.SOURCE_CLAIMED}
+
+        claimed, _, _, outcomes, _ = _claim(control=frozenset())
+        assert claimed == []
+        assert outcomes == {"p": batch_decisions.SOURCE_KEPT_BY_CONTROL}
+
+
+class TestTheRunClaimsThemInItsElectStage:
+    @staticmethod
+    def _found(*hits, one=SPECIES):
+        return SourceIonHits(tuple(hits), {one.cluster.formula: one})
+
+    @pytest.mark.asyncio
+    async def test_a_kept_peak_stays_the_known_sets(self):
+        ctx = _context()
+        target = _row("p", "C3H12N6O3", source="database", target_compound_id="tc")
+        ctx.stage_a = [target]
+        ctx.batch_source = self._found(ION)
+        with patch.object(
+            pipeline.stage_a_pass, "_record_same_ion_readings", return_value=0
+        ):
+            await pipeline.elect(ctx)
+
+        assert ctx.stage_a == [target]
+        assert (ctx.reagent_rows, ctx.reagent_peak_ids) == ([], set())
+        assert ctx.batch_applied == {"source": {KEPT_TARGET_LIBRARY: 1}}
+
+    @pytest.mark.asyncio
+    async def test_a_claimed_peak_is_the_sources_and_says_what_it_read(self):
+        ctx = _context(listed={"p": replace(DECIDED, sample_peak_id="p")})
+        ctx.decided = dict(ctx.batch.listed)
+        searched = _row("p", "C10H16O4", sample_peak_mz=199.0976)
+        ctx.stage_b = [searched]
+        ctx.batch_source = self._found(ION)
+        with patch.object(
+            pipeline.stage_a_pass, "_record_same_ion_readings", return_value=0
+        ):
+            await pipeline.elect(ctx)
+
+        assert ctx.stage_a + ctx.stage_b == []
+        [row] = ctx.reagent_rows
+        assert (row["sample_peak_id"], row["role"]) == ("p", "reagent")
+        assert row["ion_formula"] == "C3H13N6O3+"
+        reagent = row["provenance"]["reagent"]
+        assert reagent["reason"] == REASON_BATCH_KNOWN_SPECIES
+        assert reagent["read_as"]["formula"] == "C10H16O4"
+        assert row["alternatives"][0]["assigned_formula"] == "C10H16O4"
+        assert row["alternatives"][0]["displaced_by_claim"] is True
+        assert ctx.reagent_peak_ids == {"p"}
+        # The listed compound the batch decided on the same peak is elected
+        # after the source claim, which took it.
+        assert ctx.listed_outcomes == {"p": KEPT_CLAIMED_OTHERWISE}
+        assert ctx.batch_applied == {
+            "claimed": {REASON_BATCH_KNOWN_SPECIES: 1},
+            "source": {batch_decisions.SOURCE_CLAIMED: 1},
+            "listed": {KEPT_CLAIMED_OTHERWISE: 1},
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_decoy_arm_reads_its_controls_claims(self):
+        ctx = _context()
+        ctx.path = pipeline.DECOY
+        ctx.decoy_plan = SimpleNamespace(control_source_claims=frozenset())
+        ctx.batch_source = self._found(ION)
+        with patch.object(
+            pipeline.stage_a_pass, "_record_same_ion_readings", return_value=0
+        ):
+            await pipeline.elect(ctx)
+
+        assert ctx.reagent_rows == []
+        assert ctx.batch_applied["source"] == {
+            batch_decisions.SOURCE_KEPT_BY_CONTROL: 1
+        }
+
+    @pytest.mark.parametrize(
+        "path, deferred",
+        [
+            (pipeline.RUN, True),
+            (pipeline.DECOY, True),
+            (pipeline.INGEST_FOLD, True),
+            (pipeline.BATCH_SEARCH, False),
+            (pipeline.PROPAGATION, False),
+            (pipeline.PERSONS_CHOICE, False),
+        ],
+        ids=lambda value: getattr(value, "name", None),
+    )
+    @pytest.mark.asyncio
+    async def test_the_claim_stage_claims_them_only_on_a_path_with_no_known_set(
+        self, path, deferred
+    ):
+        ctx = _context()
+        ctx.path = path
+        ctx.resolved_profile = SimpleNamespace(profile=SimpleNamespace(name="UR"))
+        found = self._found(ION)
+        with (
+            patch.object(
+                pipeline.prepasses,
+                "_reagent_assignments",
+                return_value=([], set(), None, found),
+            ),
+            patch.object(
+                pipeline.prepasses, "_artifact_assignments", return_value=([], set())
+            ) as artifacts,
+        ):
+            await pipeline.claim(ctx)
+
+        assert pipeline.claims_after_the_known_set(path) is deferred
+        if deferred:
+            assert ctx.batch_source == found
+            assert ctx.reagent_rows == []
+            assert artifacts.call_args.kwargs["claimed_peak_ids"] == set()
+        else:
+            assert ctx.batch_source == SourceIonHits()
+            [row] = ctx.reagent_rows
+            assert row["sample_peak_id"] == "p"
+            assert row["provenance"]["reagent"]["reason"] == REASON_BATCH_KNOWN_SPECIES
+            assert ctx.batch_applied == {"claimed": {REASON_BATCH_KNOWN_SPECIES: 1}}
+            # The artifact pass leaves what the batch's word claimed.
+            assert artifacts.call_args.kwargs["claimed_peak_ids"] == {"p"}

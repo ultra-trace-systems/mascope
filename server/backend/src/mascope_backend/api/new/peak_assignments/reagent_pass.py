@@ -71,6 +71,13 @@ acquisition segment (step 4.2j, ``batch_water_ladder``), the files of that
 segment read the rung's peak as the reagent's ion (:func:`water_rung_row`), and
 a file's next run, or the fold of a file acquired in that segment, claims the
 rung on the same word (:func:`claim_batch_species`, MAS-985).
+
+A claim on the batch's word is wider than the file's own: a rung the grammar
+builds, a library ion with no height floor. So a run matches it here but
+claims it only after Stage A and the search, on what they read of the peak,
+by the keep rules the batch's own claims take a member by
+(``batch_decisions.claim_source_ions``, MAS-1089): the cost of the ordering
+above is the file's own claims' alone.
 """
 
 from __future__ import annotations
@@ -127,6 +134,8 @@ __all__ = [
     "batch_species_from",
     "library_ion",
     "batch_species_row",
+    "read_as",
+    "record_displaced",
     "build_reagent_assignments",
     "claim_batch_species",
     "claim_fragments",
@@ -529,10 +538,12 @@ def claim_batch_species(
     purity: float | None = None,
     resolution: Callable[[float], float] | None = None,
 ) -> list[ReagentHit]:
-    """Claim the source ions the file's batch decided are there, where the
+    """Match the source ions the file's batch decided are there, where the
     file's own claims did not (``reagents.match_batch_species``): the library
     ions it decided present, and the rungs its water ladder passed in the
-    file's acquisition segment.
+    file's acquisition segment. A run claims the hits after Stage A and the
+    search, by the batch claim's keep rules
+    (``batch_decisions.claim_source_ions``).
 
     Made after :func:`claim_reagent_peaks` and :func:`claim_ladder_peaks`, on
     the masses their anchors corrected and the peaks they left. An ion either
@@ -565,6 +576,43 @@ def claim_batch_species(
         purity=purity,
         resolution=resolution,
     )
+
+
+def read_as(row: dict) -> dict:
+    """The reading a claim on the batch's word displaced, as the claimed row
+    records it under ``provenance.reagent.read_as``.
+
+    :param row: The row the reading was, before the claim.
+    """
+    return {
+        "role": row.get("role"),
+        "formula": row.get("assigned_formula"),
+        "ion_formula": row.get("ion_formula"),
+        "ionization_mechanism_id": row.get("ionization_mechanism_id"),
+        "isotope_label": row.get("isotope_label"),
+        "source": row.get("source"),
+        "tier": row.get("tier"),
+    }
+
+
+def record_displaced(row: dict, displaced: dict) -> None:
+    """Record on a row a run claimed on the batch's word the reading of the
+    run's own it displaced from the peak (``batch_decisions
+    .claim_source_ions``), as the batch's own claim records the reading it
+    rewrites (:func:`batch_species_row`): under ``provenance.reagent.read_as``,
+    and first among the row's alternatives where it named a formula, so "use
+    this" puts it back.
+
+    :param row: The claimed row, from :func:`build_reagent_assignments`;
+        written into.
+    :param displaced: The run's row the claim displaced.
+    """
+    row["provenance"]["reagent"]["read_as"] = read_as(displaced)
+    if displaced.get("assigned_formula"):
+        row["alternatives"] = [
+            reading_as_alternative(displaced, DISPLACED_BY_CLAIM),
+            *(displaced.get("alternatives") or []),
+        ][:MAX_ALTERNATIVES_CEILING]
 
 
 def batch_species_row(
@@ -603,15 +651,7 @@ def batch_species_row(
         "mz": round(exact, 5),
         "reason": REASON_BATCH_KNOWN_SPECIES,
         REASON_BATCH_KNOWN_SPECIES: dict(species.record),
-        "read_as": {
-            "role": row.get("role"),
-            "formula": row.get("assigned_formula"),
-            "ion_formula": row.get("ion_formula"),
-            "ionization_mechanism_id": row.get("ionization_mechanism_id"),
-            "isotope_label": row.get("isotope_label"),
-            "source": row.get("source"),
-            "tier": row.get("tier"),
-        },
+        "read_as": read_as(row),
     }
     if cluster.observed:
         record["observed"] = cluster.observed
@@ -699,15 +739,7 @@ def water_rung_row(
         "mz": round(exact_mz, 5),
         "reason": REASON_BATCH_WATER_LADDER,
         REASON_BATCH_WATER_LADDER: dict(record),
-        "read_as": {
-            "role": row.get("role"),
-            "formula": row.get("assigned_formula"),
-            "ion_formula": row.get("ion_formula"),
-            "ionization_mechanism_id": row.get("ionization_mechanism_id"),
-            "isotope_label": row.get("isotope_label"),
-            "source": row.get("source"),
-            "tier": row.get("tier"),
-        },
+        "read_as": read_as(row),
     }
     if rung.observed:
         reagent["observed"] = rung.observed

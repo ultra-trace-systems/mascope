@@ -41,6 +41,9 @@ from mascope_backend.api.new.peak_assignments import (
     batch_peaks_routes,
     pipeline,
 )
+from mascope_backend.api.new.peak_assignments.batch_decisions import (
+    control_source_claims,
+)
 from mascope_backend.api.new.peak_assignments.batch_known_species import (
     run_batch_known_species,
 )
@@ -60,6 +63,7 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     start_run,
 )
 from mascope_backend.api.new.peak_assignments.batch_stages import assign_batch
+from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.known_species import batch_species_for
 from mascope_backend.api.new.peak_assignments.row_terms import MEASUREMENT_MODEL_KEY
 from mascope_backend.db import (
@@ -1437,6 +1441,97 @@ async def test_a_samples_next_run_keeps_what_the_batchs_claim_keeps(
     record = _record((await _anchors(async_session_factory, batch))["d"])
     assert record["verdict"] == "present"
     assert record["test_held"] == 2
+
+
+async def test_a_samples_next_run_keeps_a_peak_the_batchs_claim_kept(
+    async_session_factory, known_batch, monkeypatch, only_its_own_stage
+):
+    """The batch kept a sample's reading of the trimer's peak because the
+    target library names it. Assigned again, the sample's run claims the
+    trimer on the batch's word only after Stage A, by the same keep rule: it
+    leaves the target's reading, and its fold brings no reagent member into
+    the batch peak. A sample the batch claimed is claimed on its word. The
+    batch's next decision then rewrites no member: the two ledgers agree
+    with no further pass (MAS-1089's Verify)."""
+    batch, samples, ids = known_batch, known_batch["samples"], known_batch["ids"]
+    compound_id = gen_id(16)
+    async with async_session_factory() as session:
+        session.add(
+            TargetCompound(
+                target_compound_id=compound_id, target_compound_formula="C3H12N6O3"
+            )
+        )
+        await session.flush()
+        await session.execute(
+            update(PeakAssignment)
+            .where(
+                PeakAssignment.peak_assignment_run_id == batch["runs"]["S00"],
+                PeakAssignment.sample_peak_id.in_(("t", "t13")),
+            )
+            .values(target_compound_id=compound_id, source="database")
+        )
+        await session.commit()
+    await _decided_through_the_stage(batch, monkeypatch)
+    record = _record((await _anchors(async_session_factory, batch))["t"])
+    assert record["verdict"] == "present"
+    assert record["files_by_reason"] == {"target_library": 1}
+
+    names = {sample: name for name, sample in samples.items()}
+    target = {"target_compound_id": compound_id, "source": "database"}
+    stub_known_set(
+        monkeypatch,
+        lambda sample_item_id, run_id: [
+            {
+                **row,
+                **(
+                    target
+                    if names[sample_item_id] == "S00"
+                    and row["sample_peak_id"] in ("t", "t13")
+                    else {}
+                ),
+            }
+            for row in _rows(sample_item_id, names[sample_item_id], run_id=run_id)
+            if row["role"] in ("M0", "iso_child")
+        ],
+    )
+    # Under the urea source, whose own claim takes the monomer and anchors
+    # the file's mass on it; the trimer is too faint for its own claim.
+    heights = {"m": 1e8, "t": 1e3, "t13": 3e1}
+    stub_sample_reads(
+        monkeypatch,
+        lambda sample_item_id: frame(
+            (peak, mz, heights.get(peak, 1e5)) for peak, mz in MZ.items()
+        ),
+        [mechanism_row(NOTATION, MECH)],
+    )
+    urea = PeakAssignmentConfig(profile="UR", run_untargeted=False)
+    kept = await run_sample(samples["S00"], urea)
+    claimed = await run_sample(samples["S04"], urea)
+
+    rows = await _run_rows(async_session_factory, kept.run_id)
+    assert (rows["t"].role, rows["t"].assigned_formula) == ("M0", "C3H12N6O3")
+    assert rows["t"].target_compound_id == compound_id
+    assert rows["t13"].owner_peak_assignment_id == rows["t"].peak_assignment_id
+    assert "t" not in kept.reagent_peak_ids
+    assert kept.batch_applied["source"] == {"target_library": 1}
+    member = (await _members(async_session_factory, ids["t"]))[samples["S00"]]
+    assert member.role == role_code("M0")
+
+    rows = await _run_rows(async_session_factory, claimed.run_id)
+    assert rows["t"].role == "reagent"
+    assert rows["t"].provenance["reagent"]["reason"] == "batch_known_species"
+    assert rows["t"].provenance["reagent"]["read_as"]["formula"] == "C3H12N6O3"
+    assert claimed.batch_applied["source"] == {"claimed": 1}
+    member = (await _members(async_session_factory, ids["t"]))[samples["S04"]]
+    assert member.role == role_code("reagent")
+
+    again = await run_batch_known_species(batch["batch_id"])
+    assert again["members_rewritten"] == 0
+    record = _record((await _anchors(async_session_factory, batch))["t"])
+    assert record["files_by_reason"] == {"target_library": 1}
+    # What a decoy arm of each run would claim on the batch's word.
+    assert await control_source_claims(kept.run_id) == frozenset()
+    assert await control_source_claims(claimed.run_id) == frozenset({"t"})
 
 
 async def test_a_samples_next_run_keeps_its_reading_on_a_twin(

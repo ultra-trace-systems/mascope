@@ -344,6 +344,50 @@ async def test_a_decoy_is_planned_against_the_control_and_not_another_decoy(
     assert plan.model.scoring_mu_ppm == pytest.approx(-0.2)
 
 
+async def test_a_decoy_plans_to_claim_what_its_control_claimed_on_the_batchs_word(
+    async_session_factory, decoyed
+):
+    """A run claims its batch's source ions after Stage A, on what its own
+    rows read, and an arm's rows read otherwise: the arm takes the peaks its
+    control claimed on the batch's word, a known species or a water-ladder
+    rung, and not the ones the control's own claim took (MAS-1089)."""
+    owner = gen_id(32)
+
+    def reagent(peak, reason=None, *, row_id=None, owner_id=None):
+        record = {"ion": "x"} | ({"reason": reason} if reason else {})
+        return PeakAssignment(
+            peak_assignment_id=row_id or gen_id(32),
+            peak_assignment_run_id=decoyed["control"],
+            sample_item_id=decoyed["sample"],
+            sample_peak_id=peak,
+            sample_peak_mz=100.0,
+            sample_peak_intensity=5000.0,
+            role="reagent",
+            source="reagent",
+            tier="unassigned",
+            owner_peak_assignment_id=owner_id,
+            provenance={"reagent": record},
+        )
+
+    async with async_session_factory() as session:
+        session.add(reagent("pk", "batch_known_species", row_id=owner))
+        await session.flush()
+        session.add_all(
+            [
+                reagent("pw", "batch_water_ladder"),
+                reagent("po"),
+                reagent("pl", "batch_known_species", owner_id=owner),
+            ]
+        )
+        await session.commit()
+
+    plan = await plan_sample_decoy(
+        await fetch_sample(decoyed["sample"]), PeakAssignmentConfig(decoy=ARM)
+    )
+
+    assert plan.control_source_claims == frozenset({"pk", "pw"})
+
+
 async def test_a_decoy_run_is_marked_on_its_row(async_session_factory, decoyed):
     decoy = await _create_run(decoyed["sample"], PeakAssignmentConfig(decoy=ARM))
     control = await _create_run(decoyed["sample"], PeakAssignmentConfig())

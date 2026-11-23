@@ -251,7 +251,8 @@ def _run_pre_pass(
     channels: tuple[str, ...] = ("[M+H]+",),
 ):
     """The pre-pass as a run calls it, with the chemistry a run would resolve
-    and the channels it searches."""
+    and the channels it searches: its rows, the peaks they take and the
+    offset (a sample in no batch matches none of its batch's ions)."""
     from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
     from mascope_backend.api.new.peak_assignments.prepasses import _reagent_assignments
     from mascope_backend.api.new.peak_assignments.profiles import resolve_profile
@@ -262,7 +263,7 @@ def _run_pre_pass(
         instrument_type=instrument_type,
         polarity="+",
     )
-    return _reagent_assignments(
+    rows, claimed, offset, _ = _reagent_assignments(
         peaks,
         resolved,
         "sample1",
@@ -273,6 +274,7 @@ def _run_pre_pass(
         ],
         sample_name="sample",
     )
+    return rows, claimed, offset
 
 
 class TestWhereTheClaimedLinesPutTheAxis:

@@ -39,6 +39,9 @@ from mascope_backend.api.new.peak_assignments.admission import (
     assignment_claim,
     in_flight_run_id,
 )
+from mascope_backend.api.new.peak_assignments.batch_decisions import (
+    control_source_claims,
+)
 from mascope_backend.api.new.peak_assignments.batch_fold import (
     fold_sample_peaks_without_run,
 )
@@ -343,6 +346,12 @@ async def plan_sample_decoy(sample, config: PeakAssignmentConfig) -> DecoyPlan:
     """
     control_run_id, control_config = await _latest_in_app_run(sample.sample_item_id)
     plan = plan_decoy(config.decoy, config, control_run_id, control_config)
+    # What the control claimed on its batch's word, which the arm claims: a
+    # run claims it after Stage A, on what its own rows read, and an arm's
+    # rows read otherwise (`batch_decisions.claim_source_ions`).
+    plan = replace(
+        plan, control_source_claims=await control_source_claims(control_run_id)
+    )
     # The context it searches under is its control's: resolved under the
     # control's settings and the context the control's batch and dataset named
     # (`decoy.recorded_named_context`), never what they name now. Refused where

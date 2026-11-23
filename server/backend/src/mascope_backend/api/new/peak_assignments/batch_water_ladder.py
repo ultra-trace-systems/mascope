@@ -73,7 +73,6 @@ from sqlalchemy import or_, select
 
 from mascope_backend.api.lib.api_features import api_controller_background_task
 from mascope_backend.api.new.peak_assignments.batch_known_species import (
-    KEPT_HAND_ASSIGNED,
     ROW_KEPT_IMPORTED,
     ROW_KEPT_NO_ROW,
     Row,
@@ -120,13 +119,13 @@ from mascope_backend.api.new.peak_assignments.config import (
 )
 from mascope_backend.api.new.peak_assignments.known_species import (
     ALREADY,
-    KEPT_CARRIES_LINES,
-    KEPT_CLAIMED_OTHERWISE,
     KEPT_LINE_OF_ANOTHER,
-    KEPT_TARGET_LIBRARY,
+    KEPT_LISTED,
     Member,
     Partition,
     Species,
+    claim_keeps,
+    member_reading,
     partition_of,
 )
 from mascope_backend.api.new.peak_assignments.reagent_pass import water_rung_row
@@ -164,9 +163,6 @@ from mascope_tools.composition.water_ladder import (
 from mascope_tools.composition.water_ladder import Partition as LadderPartition
 
 
-#: Kept: the sample's reading names a reference list's identity, a cited
-#: analyte the ladder does not displace.
-KEPT_LISTED = "listed"
 #: A heavier line's peak the sample reads as the line of the rung's
 #: monoisotopic peak: the claim on that peak moves it, as its line.
 WITH_MONOISOTOPIC = "with_monoisotopic"
@@ -484,30 +480,31 @@ def sample_decision(
     line = claim.line
     if reads_rung(member, line):
         return ALREADY
-    if member.hand:
-        return KEPT_HAND_ASSIGNED
-    if member.target:
-        return KEPT_TARGET_LIBRARY
-    if _listed(member, claim.row.anchor):
-        return KEPT_LISTED
+    kept = claim_keeps(
+        member_reading(
+            member,
+            lines.get((member.sample_item_id, claim.batch_peak_id), ()),
+            listed=_listed(member, claim.row.anchor),
+        ),
+        owns_line=lambda carried: rungs_own_line(line, *carried),
+        keep_listed=True,
+    )
     mono = monoisotopic or {}
-    if member.role == ROLE_ISO_CHILD or member.owner_batch_peak_id:
+    if (
+        kept == KEPT_LINE_OF_ANOTHER
         # A monoisotopic track's claim names no monoisotopic peak of its own.
-        if (
-            member.owner_batch_peak_id in claim.monoisotopic
-            and member.sample_item_id in mono
-            and mono[member.sample_item_id] is None
-        ):
-            return WITH_MONOISOTOPIC
-        return KEPT_LINE_OF_ANOTHER
-    if member.role in SOURCE_ROLES:
-        return KEPT_CLAIMED_OTHERWISE
-    carried = lines.get((member.sample_item_id, claim.batch_peak_id), ())
-    if not all(rungs_own_line(line, *carried_line) for carried_line in carried):
-        return KEPT_CARRIES_LINES
-    if monoisotopic is not None and member.sample_item_id not in monoisotopic:
+        and member.owner_batch_peak_id in claim.monoisotopic
+        and member.sample_item_id in mono
+        and mono[member.sample_item_id] is None
+    ):
+        return WITH_MONOISOTOPIC
+    if (
+        kept is None
+        and monoisotopic is not None
+        and member.sample_item_id not in monoisotopic
+    ):
         return KEPT_NO_MONOISOTOPIC
-    return None
+    return kept
 
 
 def decide_claim(

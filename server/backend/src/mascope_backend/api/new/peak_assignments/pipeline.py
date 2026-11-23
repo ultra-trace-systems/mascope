@@ -131,14 +131,13 @@ from mascope_backend.api.new.peak_assignments.mass_gate import (
     BELOW_ASSIGNABILITY_Z,
     SpectrumLines,
 )
+from mascope_backend.api.new.peak_assignments.prepasses import SourceIonHits
 from mascope_backend.api.new.peak_assignments.profile_preview import named_context_for
 from mascope_backend.api.new.peak_assignments.profiles import (
     resolve_profile,
     with_fitted_window,
 )
 from mascope_backend.api.new.peak_assignments.reagent_pass import (
-    REASON_BATCH_KNOWN_SPECIES,
-    REASON_BATCH_WATER_LADDER,
     FragmentClaims,
     fragment_ladders_for,
 )
@@ -358,10 +357,11 @@ class BatchInput:
 #: What a pass reads of its batch's decisions, the stage each enters at, and
 #: what a decoy arm does with it.
 BATCH_INPUTS: tuple[BatchInput, ...] = (
-    # A library ion the batch decided present: claimed as the source's.
-    BatchInput(KIND_KNOWN_SPECIES, Stage.CLAIM, decoy=True),
+    # A library ion the batch decided present: claimed as the source's on the
+    # known set's rows (:func:`claims_after_the_known_set`).
+    BatchInput(KIND_KNOWN_SPECIES, Stage.ELECT, decoy=True),
     # A rung the water ladder passed in the sample's segment: claimed so too.
-    BatchInput(KIND_WATER_RUNG, Stage.CLAIM, decoy=True),
+    BatchInput(KIND_WATER_RUNG, Stage.ELECT, decoy=True),
     # A listed compound decided present: proposed at candidate, citing it.
     BatchInput(KIND_LISTED_COMPOUND, Stage.PROPOSE, decoy=True),
     # A stripped row: read as the parent's line, which the judging reads.
@@ -370,6 +370,13 @@ BATCH_INPUTS: tuple[BatchInput, ...] = (
     # (``tiering.series_anchor``).
     BatchInput(KIND_SERIES, Stage.JUDGE, decoy=False),
 )
+
+
+def claims_after_the_known_set(path: AssignmentPath) -> bool:
+    """Whether a path claims its batch's source ions on the known set's rows
+    (``batch_decisions.claim_source_ions``): the batch's own passes have none
+    for the keep rules to ask, and claim them in the claim stage."""
+    return path.proposal in (Proposal.KNOWN_AND_SEARCH, Proposal.KNOWN)
 
 
 def batch_kinds(path: AssignmentPath, *, decoy: bool) -> frozenset[str]:
@@ -529,6 +536,9 @@ class RunContext:
     reagent_rows: list[dict] = field(default_factory=list)
     reagent_peak_ids: set[str] = field(default_factory=set)
     reagent_offset: Any = None
+    #: The batch's source ions matched, claimed at the elect stage
+    #: (:func:`claims_after_the_known_set`).
+    batch_source: SourceIonHits = field(default_factory=SourceIonHits)
     artifact_rows: list[dict] = field(default_factory=list)
     artifact_peak_ids: set[str] = field(default_factory=set)
     # -- propose
@@ -762,8 +772,11 @@ async def claim(ctx: RunContext) -> None:
     offered the peak, so nothing can overwrite it. The library ions the
     sample's batch decided present (step 4.2h), and the rungs its water
     ladder passed in the sample's acquisition segment (step 4.2j), are
-    claimed on the batch's word where the file's own claim does not take
-    them, each row naming the decision.
+    matched on the batch's word where the file's own claim does not take
+    them. A run claims them after the known set and the search, where the
+    batch claim's keep rules can read what they read (:func:`elect`,
+    MAS-1089); a path with no known set claims them here, each row naming
+    the decision.
 
     Then the artifact pre-pass on the same footing: ringing around a very
     intense centroid is the detector's answer to a neighbour, not a species.
@@ -773,6 +786,7 @@ async def claim(ctx: RunContext) -> None:
         ctx.reagent_rows,
         ctx.reagent_peak_ids,
         ctx.reagent_offset,
+        found,
     ) = prepasses._reagent_assignments(
         ctx.peaks_df,
         ctx.resolved_profile,
@@ -783,15 +797,10 @@ async def claim(ctx: RunContext) -> None:
         sample_name=sample.sample_item_name,
         batch_species=ctx.batch.source_ions(),
     )
-    batch_claims = Counter(
-        row["provenance"]["reagent"]["reason"]
-        for row in ctx.reagent_rows
-        if not row.get("owner_peak_assignment_id")
-        and (row.get("provenance") or {}).get("reagent", {}).get("reason")
-        in (REASON_BATCH_KNOWN_SPECIES, REASON_BATCH_WATER_LADDER)
-    )
-    if batch_claims:
-        ctx.batch_applied["claimed"] = dict(sorted(batch_claims.items()))
+    if claims_after_the_known_set(ctx.path):
+        ctx.batch_source = found
+    else:
+        prepasses.take_batch_source(ctx, found)
     if ctx.reagent_rows:
         runtime.logger.info(
             f"Reagent pre-pass claimed {len(ctx.reagent_rows)} of "
@@ -1423,9 +1432,10 @@ async def elect(ctx: RunContext) -> None:
       ledger is the control's chemistry, not the arm's.
 
     The batch's decisions enter here as :data:`BATCH_INPUTS` says. Before
-    any of the above, each listed compound the batch decided present is
-    elected on its peak as the batch's own claim takes a member
-    (``batch_decisions.elect_listed``). After the same-ion readings, and
+    any of the above, the batch's source ions are claimed and each listed
+    compound it decided present is elected on its peak, each as the batch's
+    own claim takes a member (``batch_decisions.claim_source_ions``,
+    ``batch_decisions.elect_listed``). After the same-ion readings, and
     before the series' records, each row the batch stripped as a parent's
     isotope line is read as that line (``batch_decisions.read_strips``): the
     judging then reads the line, and the series, as the batch decided them,
@@ -1541,6 +1551,7 @@ def _elect_rows(ctx: RunContext) -> None:
                 f"lost it to one ({held} held by the search) "
                 f"({time.perf_counter() - search.started:.1f} s)"
             )
+    prepasses.claim_batch_source_on_known_set(ctx)
     if ctx.decided:
         _elect_batch_listed(ctx)
     ctx.same_ion_families = _record_stage_a_families(ctx)

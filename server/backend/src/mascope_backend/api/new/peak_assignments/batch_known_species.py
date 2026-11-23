@@ -50,8 +50,10 @@ its partition and decides it once (``mascope_tools.composition.known_species``):
    partition and lists the species.
 
 A sample's next run takes the batch's word for both (``batch_decisions``,
-MAS-985). Its reagent pass claims a library ion where its own claim did not
-(``reagent_pass.claim_batch_species``, :func:`batch_species_for`), and its
+MAS-985). It claims a library ion where its own reagent pass did not, after
+Stage A and the search and by the keep rules the claim here takes a member by
+(``known_species.claim_keeps``, ``batch_decisions.claim_source_ions``,
+MAS-1089), so a sample this claim keeps its next run keeps too; and its
 elect stage elects a listed compound on its peak by the rules the claim here
 takes a member by (``batch_decisions.elect_listed``), naming the decision; a
 run that commits the compound on its own names none, and stays its file's own
@@ -83,7 +85,6 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     ROLE_ISO_CHILD,
     ROLE_M0,
     ROLE_REAGENT,
-    SOURCE_ROLES,
     batch_mark_of,
     candidate_index,
     is_isotope_line,
@@ -115,17 +116,16 @@ from mascope_backend.api.new.peak_assignments.config import IN_APP_ENGINE
 from mascope_backend.api.new.peak_assignments.known_species import (
     _COMMITTED,
     ALREADY,
-    KEPT_CARRIES_LINES,
-    KEPT_CLAIMED_OTHERWISE,
-    KEPT_LINE_OF_ANOTHER,
+    KEPT_HAND_ASSIGNED,
     KEPT_ON_TWIN,
-    KEPT_TARGET_LIBRARY,
     LISTED_CLAIM_TIER,
     Member,
     Partition,
     Species,
     _registry_exemplar,
+    claim_keeps,
     listed_species_row,
+    member_reading,
     partition_of,
 )
 from mascope_backend.api.new.peak_assignments.reagent_pass import (
@@ -168,10 +168,6 @@ from mascope_tools.composition.reagents import (
 #: The tag a reference list marks a compound the batch may decide as
 #: background with (``listing.reference_listing``'s ``tags``).
 BACKGROUND_TAG = "background"
-
-
-#: Why a sample of a present species is kept as it is.
-KEPT_HAND_ASSIGNED = "hand_assigned"
 
 
 #: A file whose own claim stands against a verdict that is not present.
@@ -515,23 +511,10 @@ def sample_decision(
     """
     if species.reads(member):
         return ALREADY
-    if member.hand:
-        return KEPT_HAND_ASSIGNED
-    if member.target:
-        return KEPT_TARGET_LIBRARY
-    if member.role == ROLE_ISO_CHILD or member.owner_batch_peak_id:
-        return KEPT_LINE_OF_ANOTHER
-    if member.role in SOURCE_ROLES:
-        return KEPT_CLAIMED_OTHERWISE
-    if lines and species.kind == KIND_LISTED and not species.lifts(member):
-        return KEPT_CARRIES_LINES
-    if (
-        lines
-        and species.kind == KIND_LIBRARY
-        and not all(species.can_have(label) for label in lines)
-    ):
-        return KEPT_CARRIES_LINES
-    return None
+    if species.kind == KIND_LISTED:
+        lifts = species.lifts(member)
+        return claim_keeps(member_reading(member, lines), owns_line=lambda _: lifts)
+    return claim_keeps(member_reading(member, lines), owns_line=species.can_have)
 
 
 def _claimed_member(member: Member, species: Species) -> dict:

@@ -1781,7 +1781,11 @@ class TestTheFilesClaim:
         )
         assert "reason" not in own["provenance"]["reagent"]
 
-    def test_the_pre_pass_claims_the_batchs_ions_and_records_why(self):
+    def test_the_pre_pass_matches_the_batchs_ions_and_claims_none(self):
+        """The claim stage matches the batch's ions on the file's peaks and
+        claims none of them: a run claims them on its rows after Stage A
+        (``batch_decisions.claim_source_ions``), and their rows name the
+        decision (``prepasses._batch_source_rows``)."""
         species = batch_species_from(self._record(), "T")
         resolved = SimpleNamespace(
             profile=SimpleNamespace(name="UR", label_purity=None),
@@ -1798,7 +1802,7 @@ class TestTheFilesClaim:
             patch.object(prepasses, "_claimed_lines_offset", return_value=None),
             patch.object(prepasses, "claim_ladder_peaks", return_value=([], None)),
         ):
-            rows, taken, _ = prepasses._reagent_assignments(
+            rows, taken, _, found = prepasses._reagent_assignments(
                 peaks,
                 resolved,
                 "sample1",
@@ -1808,7 +1812,7 @@ class TestTheFilesClaim:
                 sample_name="sample",
                 batch_species=[species],
             )
-            alone, _, _ = prepasses._reagent_assignments(
+            _, _, _, alone = prepasses._reagent_assignments(
                 peaks,
                 resolved,
                 "sample1",
@@ -1818,8 +1822,21 @@ class TestTheFilesClaim:
                 sample_name="sample",
             )
 
-        [row] = [r for r in rows if r["isotope_label"] is None]
+        assert (rows, taken) == ([], set())
+        assert [hit.index for hit in found.hits if not hit.is_isotopologue] == [0]
+        assert found.decided == {species.cluster.formula: species}
+        assert alone.hits == ()
+        [row] = [
+            r
+            for r in prepasses._batch_source_rows(
+                found,
+                found.hits,
+                peaks,
+                SimpleNamespace(sample_item_id="sample1", sample_item_name="s"),
+                "run1",
+            )
+            if r["isotope_label"] is None
+        ]
         assert row["ion_formula"] == TRIMER
+        assert row["sample_peak_id"] == "p0"
         assert row["provenance"]["reagent"]["reason"] == REASON_BATCH_KNOWN_SPECIES
-        assert "p0" in taken
-        assert alone == []
