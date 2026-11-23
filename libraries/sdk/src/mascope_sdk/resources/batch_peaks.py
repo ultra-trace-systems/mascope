@@ -672,6 +672,15 @@ class BatchPeaksResource(BaseResource):
         name. Curated and isotopologue batch peaks are left alone. The run's
         ``summary`` counts what landed and, by reason, what did not.
 
+        A batch that holds files of both instrument types has a batch peak
+        of each type for one species. A row then lands on the nearest batch
+        peak of each type, each measured on its own type's members, and is
+        skipped only when it landed on neither. The summary's
+        ``rows_landed`` counts the rows, ``anchors_matched`` the batch peaks
+        they landed on, and ``anchors_matched_by_instrument_type`` those per
+        type (``orbi``, ``tof``, or ``unnamed`` for batch peaks folded before
+        the ledger kept the types apart).
+
         The engine's own verdict rides along when the rows carry it:
         ``engine_tier`` (``assigned`` | ``candidate`` | ``below_assignability``
         | ``unassigned``, the vocabulary of the per-sample import) and

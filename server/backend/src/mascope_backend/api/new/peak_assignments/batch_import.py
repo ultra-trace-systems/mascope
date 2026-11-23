@@ -8,7 +8,11 @@ This module lands that table on the batch ledger the way the untargeted search
 lands its own findings (``batch_untargeted``): each row is matched to the batch
 peak nearest its m/z within a tolerance, and the identity is then MEASURED
 against every member of that anchor with the seeded scorer, so a member carries
-this server's fit of the engine's formula rather than the engine's score. The
+this server's fit of the engine's formula rather than the engine's score. A
+batch that holds files of both instrument types keeps a set of anchors per type
+(an Orbitrap member's intensity is a height, a TOF member's an area), and one
+species then has an anchor in each: a row lands on the nearest anchor of every
+partition, each landing measured on its own anchor's members. The
 engine's own numbers are provenance the client keeps; the ledger column means
 what it means for every other source, and the registry entry names the engine.
 
@@ -24,9 +28,11 @@ What the import does, and does not do, deliberately:
   disagreement about the peak's role, which is not an identity to write.
 - A row whose adduct resolved to no mechanism id cannot be measured and is
   skipped: the mechanism is what the seeded scorer builds the ion from.
-- Two rows nearest the same anchor: the closer one takes it.
+- Two rows nearest the same anchor: the closer one takes it. That is decided
+  per anchor, so a row that loses one partition's anchor can still land in
+  another, and a row counts as skipped only when it landed in no partition.
 - It keeps the engine's verdict beside this server's, never in its place. A
-  row's ``engine_tier`` and ``engine_claim`` go onto the anchor it landed on
+  row's ``engine_tier`` and ``engine_claim`` go onto every anchor it landed on
   once the consensus is recomputed, and only where the consensus then names
   the row's identity: a verdict beside another formula would be about nothing
   the ledger shows. Every other anchor of the batch loses the verdict an
@@ -50,7 +56,11 @@ from sqlalchemy import select
 
 from mascope_backend.api.lib.api_features import api_controller_background_task
 from mascope_backend.api.new.peak_assignments.batch_lock import _acquire_batch_fold_lock
-from mascope_backend.api.new.peak_assignments.batch_peaks import ROLE_M0, manual_pin_of
+from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    ROLE_M0,
+    instrument_type_of,
+    manual_pin_of,
+)
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     clear_engine_verdicts_statement,
     recompute_batch_consensus,
@@ -109,16 +119,23 @@ REASON_COLLISION = "closer_row_took_the_anchor"
 REASON_CURATED = "anchor_curated"
 REASON_ISOTOPOLOGUE = "anchor_is_isotopologue"
 
+#: The summary's name for the partition of anchors whose intensity unit names
+#: no instrument type (a batch folded before the ledger kept the two apart).
+PARTITION_UNNAMED = "unnamed"
+
 
 @dataclass(frozen=True)
 class AnchorRef:
-    """What the matcher needs of an anchor: where it is and which polarity its
+    """What the matcher needs of an anchor: where it is, which polarity its
     samples were measured in (None when the anchor carries no ionization mode,
-    in which case it accepts a row of either polarity)."""
+    in which case it accepts a row of either polarity), and the instrument
+    partition it belongs to (``orbi`` or ``tof``, None when its intensity unit
+    names neither: such anchors are a partition of their own)."""
 
     batch_peak_id: str
     mz: float
     polarity: Optional[str]
+    partition: Optional[str] = None
 
 
 def match_rows_to_anchors(
@@ -127,60 +144,76 @@ def match_rows_to_anchors(
     tolerance_ppm: float,
     mechanism_polarity: dict[str, str],
 ) -> tuple[dict[str, int], dict[int, str]]:
-    """Match each row to the batch peak nearest its m/z, within the tolerance
-    and of the polarity its mechanism implies.
+    """Match each row to the batch peak nearest its m/z in every instrument
+    partition, within the tolerance and of the polarity its mechanism implies.
 
     Pure. ``rows`` need ``mz`` and ``ionization_mechanism_id``; a row without
-    a mechanism is not matched at all, since it could not be measured. When
-    two rows are nearest the same anchor the closer one takes it.
+    a mechanism is not matched at all, since it could not be measured. A row
+    reaches at most one anchor per partition, the nearest; when two rows are
+    nearest the same anchor the closer one takes it, the earlier on a tie. A
+    row is unmatched only when it holds no anchor in any partition: a
+    collision when it reached one and lost it, no anchor when it reached none.
 
     :param rows: The import's rows, in request order.
     :param anchors: The batch's anchors.
     :param tolerance_ppm: The widest m/z distance that still lands.
     :param mechanism_polarity: Mechanism id -> polarity (``+``/``-``).
-    :return: ``(anchor id -> row index, row index -> reason)`` for the rows
-        that landed and the ones that did not.
+    :return: ``(anchor id -> row index, row index -> reason)`` for the
+        landings and the rows that made none. A row can be the value of
+        several anchors, one per partition.
     """
-    grouped: dict[Optional[str], list[tuple[float, str]]] = defaultdict(list)
+    grouped: dict[tuple[Optional[str], Optional[str]], list[tuple[float, str]]] = (
+        defaultdict(list)
+    )
     for anchor in anchors:
-        grouped[anchor.polarity].append((anchor.mz, anchor.batch_peak_id))
-    lanes: dict[Optional[str], tuple[list[float], list[str]]] = {}
-    for polarity, pairs in grouped.items():
+        grouped[(anchor.partition, anchor.polarity)].append(
+            (anchor.mz, anchor.batch_peak_id)
+        )
+    lanes: dict[tuple[Optional[str], Optional[str]], tuple[list[float], list[str]]] = {}
+    for key, pairs in grouped.items():
         pairs.sort()
-        lanes[polarity] = ([mz for mz, _ in pairs], [aid for _, aid in pairs])
+        lanes[key] = ([mz for mz, _ in pairs], [aid for _, aid in pairs])
+    partitions = list(dict.fromkeys(anchor.partition for anchor in anchors))
 
     best: dict[str, tuple[float, int]] = {}
     unmatched: dict[int, str] = {}
+    contenders: list[int] = []
     for index, row in enumerate(rows):
         mechanism = row.ionization_mechanism_id
         if not mechanism:
             unmatched[index] = REASON_NO_MECHANISM
             continue
         polarity = mechanism_polarity.get(mechanism)
-        nearest: Optional[tuple[float, str]] = None
-        # The row's own polarity lane, and the anchors that have no mode at all.
-        for lane_polarity in dict.fromkeys((polarity, None)):
-            lane = lanes.get(lane_polarity)
-            if lane is None:
-                continue
-            mzs, ids = lane
-            position = bisect.bisect_left(mzs, row.mz)
-            for candidate in (position - 1, position):
-                if not 0 <= candidate < len(mzs):
+        reached = False
+        for partition in partitions:
+            nearest: Optional[tuple[float, str]] = None
+            # The row's own polarity lane, and the anchors that have no mode.
+            for lane_polarity in dict.fromkeys((polarity, None)):
+                lane = lanes.get((partition, lane_polarity))
+                if lane is None:
                     continue
-                ppm = abs(mzs[candidate] - row.mz) / mzs[candidate] * 1e6
-                if ppm <= tolerance_ppm and (nearest is None or ppm < nearest[0]):
-                    nearest = (ppm, ids[candidate])
-        if nearest is None:
-            unmatched[index] = REASON_NO_ANCHOR
-            continue
-        ppm, anchor_id = nearest
-        held = best.get(anchor_id)
-        if held is None or ppm < held[0]:
-            if held is not None:
-                unmatched[held[1]] = REASON_COLLISION
-            best[anchor_id] = (ppm, index)
+                mzs, ids = lane
+                position = bisect.bisect_left(mzs, row.mz)
+                for candidate in (position - 1, position):
+                    if not 0 <= candidate < len(mzs):
+                        continue
+                    ppm = abs(mzs[candidate] - row.mz) / mzs[candidate] * 1e6
+                    if ppm <= tolerance_ppm and (nearest is None or ppm < nearest[0]):
+                        nearest = (ppm, ids[candidate])
+            if nearest is None:
+                continue
+            reached = True
+            ppm, anchor_id = nearest
+            held = best.get(anchor_id)
+            if held is None or ppm < held[0]:
+                best[anchor_id] = (ppm, index)
+        if reached:
+            contenders.append(index)
         else:
+            unmatched[index] = REASON_NO_ANCHOR
+    holding = {index for _, index in best.values()}
+    for index in contenders:
+        if index not in holding:
             unmatched[index] = REASON_COLLISION
     return {anchor_id: index for anchor_id, (_, index) in best.items()}, unmatched
 
@@ -390,6 +423,85 @@ def _progress(
     )
 
 
+def _verdict_of(row: Any) -> Optional[EngineVerdict]:
+    """The engine's verdict a row carries, or None when it states none."""
+    engine_tier = getattr(row, "engine_tier", None)
+    engine_claim = getattr(row, "engine_claim", None)
+    engine_level = getattr(row, "engine_level", None)
+    engine_evidence = getattr(row, "engine_evidence", None) or None
+    engine_lift = getattr(row, "engine_lift", None) or None
+    if (
+        engine_tier is None
+        and not engine_claim
+        and engine_level is None
+        and not engine_evidence
+        and not engine_lift
+    ):
+        return None
+    return EngineVerdict(
+        formula=row.formula,
+        ionization_mechanism_id=row.ionization_mechanism_id,
+        engine_tier=engine_tier,
+        engine_claim=engine_claim or None,
+        engine_level=engine_level,
+        engine_evidence=engine_evidence,
+        engine_lift=engine_lift,
+    )
+
+
+def _land(
+    rows: Sequence[Any],
+    matched: dict[str, int],
+    anchors: Sequence[Any],
+    refs: Sequence[AnchorRef],
+    skipped: Counter,
+) -> tuple[dict[str, "Annotation"], dict[str, EngineVerdict], set[int], Counter]:
+    """What the matched rows write: an annotation and the row's verdict per
+    anchor that accepts it, the rows that landed, and the landings per
+    instrument partition.
+
+    A curated or isotopologue anchor refuses its row. A row refused on one
+    partition's anchor and annotated on another's has landed; one refused on
+    every anchor it reached is counted in ``skipped`` once, for the human pin
+    when one of them is pinned.
+
+    :return: ``(annotations, verdicts, landed row indexes, by partition)``.
+    """
+    by_id = {anchor.batch_peak_id: anchor for anchor in anchors}
+    partition_of = {ref.batch_peak_id: ref.partition for ref in refs}
+    annotations: dict[str, Annotation] = {}
+    verdicts: dict[str, EngineVerdict] = {}
+    refused: dict[int, set[str]] = defaultdict(set)
+    landed: set[int] = set()
+    by_partition: Counter = Counter()
+    for anchor_id, index in matched.items():
+        anchor = by_id[anchor_id]
+        if manual_pin_of(anchor) is not None:
+            refused[index].add(REASON_CURATED)
+            continue
+        if anchor.isotopologue_of:
+            refused[index].add(REASON_ISOTOPOLOGUE)
+            continue
+        landed.add(index)
+        by_partition[partition_of[anchor_id] or PARTITION_UNNAMED] += 1
+        row = rows[index]
+        annotations[anchor_id] = Annotation(
+            formula=row.formula,
+            ion_formula=row.ion_formula,
+            ionization_mechanism_id=row.ionization_mechanism_id,
+            role=ROLE_M0,
+            owner_batch_peak_id=None,
+        )
+        if (verdict := _verdict_of(row)) is not None:
+            verdicts[anchor_id] = verdict
+    for index, reasons in refused.items():
+        if index not in landed:
+            skipped[
+                REASON_CURATED if REASON_CURATED in reasons else REASON_ISOTOPOLOGUE
+            ] += 1
+    return annotations, verdicts, landed, by_partition
+
+
 async def run_batch_import(
     sample_batch_id: str,
     engine: str,
@@ -412,57 +524,29 @@ async def run_batch_import(
     """
     anchors, polarity_by_mode = await _batch_anchors(sample_batch_id)
     refs = [
-        AnchorRef(a.batch_peak_id, a.mz, polarity_by_mode.get(a.ionization_mode_id))
+        AnchorRef(
+            a.batch_peak_id,
+            a.mz,
+            polarity_by_mode.get(a.ionization_mode_id),
+            instrument_type_of(a.intensity_variable),
+        )
         for a in anchors
     ]
     matched, unmatched = match_rows_to_anchors(
         rows, refs, tolerance_ppm, mechanism_polarity
     )
     skipped: Counter = Counter(unmatched.values())
-    by_id = {anchor.batch_peak_id: anchor for anchor in anchors}
-    annotations: dict[str, Annotation] = {}
-    verdicts: dict[str, EngineVerdict] = {}
-    for anchor_id, index in matched.items():
-        anchor = by_id[anchor_id]
-        if manual_pin_of(anchor) is not None:
-            skipped[REASON_CURATED] += 1
-            continue
-        if anchor.isotopologue_of:
-            skipped[REASON_ISOTOPOLOGUE] += 1
-            continue
-        row = rows[index]
-        annotations[anchor_id] = Annotation(
-            formula=row.formula,
-            ion_formula=row.ion_formula,
-            ionization_mechanism_id=row.ionization_mechanism_id,
-            role=ROLE_M0,
-            owner_batch_peak_id=None,
-        )
-        engine_tier = getattr(row, "engine_tier", None)
-        engine_claim = getattr(row, "engine_claim", None)
-        engine_level = getattr(row, "engine_level", None)
-        engine_evidence = getattr(row, "engine_evidence", None) or None
-        engine_lift = getattr(row, "engine_lift", None) or None
-        if (
-            engine_tier is not None
-            or engine_claim
-            or engine_level is not None
-            or engine_evidence
-            or engine_lift
-        ):
-            verdicts[anchor_id] = EngineVerdict(
-                formula=row.formula,
-                ionization_mechanism_id=row.ionization_mechanism_id,
-                engine_tier=engine_tier,
-                engine_claim=engine_claim or None,
-                engine_level=engine_level,
-                engine_evidence=engine_evidence,
-                engine_lift=engine_lift,
-            )
+    annotations, verdicts, landed, by_partition = _land(
+        rows, matched, anchors, refs, skipped
+    )
     counts: dict[str, Any] = {
         "rows": len(rows),
         "anchors": len(anchors),
         "anchors_matched": len(annotations),
+        "rows_landed": len(landed),
+        # The landings each instrument type's anchors took: in a mixed batch a
+        # row lands once per partition, so these add up to anchors_matched.
+        "anchors_matched_by_instrument_type": dict(sorted(by_partition.items())),
         "members_measured": 0,
         "samples_rescored": 0,
         "samples_failed": 0,
@@ -595,16 +679,26 @@ def import_outcome(counts: dict, sample_batch_id: str, engine: str) -> dict:
         if failed
         else ""
     )
+    # A mixed batch says what each instrument type took: a row lands on an
+    # anchor of each, so the rows that landed are fewer than the anchors.
+    by_type = counts.get("anchors_matched_by_instrument_type") or {}
+    by_type_text = (
+        " Batch peaks per instrument type: "
+        + ", ".join(f"{name} {n}" for name, n in by_type.items())
+        + "."
+        if len(by_type) > 1
+        else ""
+    )
     return {
         "status": "partial" if failed else "success",
         "message": (
-            f"Imported {engine}: {counts['anchors_matched']} of {counts['rows']} row"
+            f"Imported {engine}: {counts['rows_landed']} of {counts['rows']} row"
             f"{'s' if counts['rows'] != 1 else ''} landed on a batch peak, and "
             f"{counts['members_measured']} member peak"
             f"{'s' if counts['members_measured'] != 1 else ''} across "
             f"{counts['samples_rescored']} sample"
             f"{'s' if counts['samples_rescored'] != 1 else ''} measured against "
-            f"them.{skipped_text}{failed_text}"
+            f"them.{by_type_text}{skipped_text}{failed_text}"
         ),
         "data": counts,
         "_notification_data": notification_data,

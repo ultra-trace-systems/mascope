@@ -3228,7 +3228,9 @@ the SDK's member rows, beside `intensity_variable`, the unit of the row's
 `instrument_type` before summing an intensity, or heights and areas add together. A
 verdict or a pin is on one batch peak, so on
 such a batch it covers one instrument type's samples: the Orbitrap and the TOF row of
-one species each take their own.
+one species each take their own. An engine's batch result imported into such a batch
+lands each row on the nearest batch peak of each instrument type, and each is measured
+on its own type's samples ([Importing an engine's batch result](#importing-an-engines-batch-result)).
 
 The *Verdict* column, last in the ledger, records and shows a
 [batch-level verdict](#batch-level-verdicts) on the species: one judgment that covers
@@ -3337,7 +3339,20 @@ every sample that holds that peak, so the ledger shows Mascope's own fit of the 
 formula, at the tier an assignment run of that sample gives the same reading, with the
 engine named as the source. Curated batch peaks are left alone, as are
 isotopologue peaks, and rows whose adduct could not be resolved to a mechanism; the run's
-summary counts what landed and why the rest did not. The ledger as it was stays under
+summary counts what landed and why the rest did not. Two rows nearest the same batch
+peak: the closer takes it.
+
+In a batch that holds files of both instrument types, one species has a batch peak of
+each type. A row then lands on the nearest batch peak of each type, within the same
+tolerance, and each is measured on that type's own samples. A row that loses one type's
+batch peak to a closer row, or finds none there, still lands on the other type's. It
+counts as skipped only when it landed on neither. The summary says how many rows
+landed (`rows_landed`), how many batch peaks took one (`anchors_matched`), and how many
+of those each instrument type has (`anchors_matched_by_instrument_type`, `orbi` and
+`tof`; `unnamed` for a batch folded before the ledger kept the two types apart). The
+engine's verdict goes on each batch peak the row landed on.
+
+The ledger as it was stays under
 the previous run in Run history, so the two views can be compared, and *Rebuild
 batch ledger* puts Mascope's own view back.
 
