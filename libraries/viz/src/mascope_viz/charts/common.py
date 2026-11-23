@@ -635,17 +635,32 @@ def context_summary(attrs: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def run_moments(attrs: Mapping[str, Any]) -> list[Any]:
+    """The moments the view's engine run changes at, in time order, each
+    once and as the view gives it: the view gives a change per followed
+    polarity, so a ``+-`` batch whose reading changes gives two at one
+    moment."""
+    moments: dict[pd.Timestamp, Any] = {}
+    for change in attrs.get("run_changes") or []:
+        stamp = pd.Timestamp(change["at"])
+        if stamp.tz is None:
+            stamp = stamp.tz_localize("UTC")
+        moments.setdefault(stamp, change["at"])
+    return [moments[stamp] for stamp in sorted(moments)]
+
+
 def formula_run_notes(attrs: Mapping[str, Any]) -> list[str]:
     """A note when the view's formulas come from more than one engine run:
-    where the run changes, and that the two readings are not joined."""
-    changes = attrs.get("run_changes") or []
-    if not attrs.get("mixed_runs") or not changes:
+    how often and where the run changes, a moment counted once, and that
+    the two readings are not joined."""
+    moments = run_moments(attrs)
+    if not attrs.get("mixed_runs") or not moments:
         return []
     zone = attrs.get("tz")
-    times = ", ".join(sorted({wall(change["at"], zone) for change in changes}))
-    many = len(changes) > 1
+    times = ", ".join(wall(moment, zone) for moment in moments)
+    many = len(moments) > 1
     return [
-        f"The engine run that read the formulas changes {len(changes)} "
+        f"The engine run that read the formulas changes {len(moments)} "
         f"time{'s' * many}, at {times}: a formula one run reads and the other "
         "does not shows on one side of a change only, and the two readings "
         "are not joined."
@@ -656,8 +671,7 @@ def formula_run_rules(attrs: Mapping[str, Any]) -> list[dict[str, Any]]:
     """A rule at each run change, for a panel over time; one per moment."""
     if not attrs.get("mixed_runs"):
         return []
-    moments = sorted({change["at"] for change in attrs.get("run_changes") or []})
-    return [{"at": at, "label": RUN_CHANGE_LABEL} for at in moments]
+    return [{"at": at, "label": RUN_CHANGE_LABEL} for at in run_moments(attrs)]
 
 
 def normaliser_notes(attrs: Mapping[str, Any]) -> list[str]:
