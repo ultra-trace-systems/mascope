@@ -796,6 +796,56 @@ def test_each_chart_of_a_store_without_a_formula_draws_empty(
     _drawn(fig)
 
 
+def test_a_run_change_of_both_polarities_is_one_change(
+    short_campaign,  # noqa: F811
+    tmp_path,
+):
+    """A ``+-`` batch whose engine run changes gives a change per polarity
+    at one moment: the note counts it once, and the spectrogram draws one
+    rule; the summary keeps both."""
+    client = FakeClient(short_campaign)
+    first, middle, last = client.batch_ids
+    client.runs[first] = f"run-1:{first}"
+    client.runs[middle] = f"run-2:{middle}"
+    client.runs[last] = f"run-2:{last}"
+    for batch in client.batch_ids:
+        client.batch_polarity[batch] = "+-"
+    store = _sync(client, tmp_path)
+    changes = store.status().run_changes
+    assert sorted(c.polarity for c in changes) == ["+", "-"]
+    assert len({c.at for c in changes}) == 1
+    at = chart_common.wall(changes[0].at, ZONE)
+
+    for fig in (spectrogram(store), van_krevelen(store)):
+        assert len(fig.summary["run_changes"]) == 2
+        (note,) = [n for n in fig.notes if "engine run" in n]
+        assert f"changes 1 time, at {at}:" in note
+    rules = spectrogram(store).panels[0].options["rules"]
+    assert [rule["label"] for rule in rules] == [chart_common.RUN_CHANGE_LABEL]
+    # Two moments are two changes
+    (note,) = chart_common.formula_run_notes(
+        {
+            "mixed_runs": True,
+            "tz": "UTC",
+            "run_changes": [
+                {"at": "2026-06-16T00:00:00+00:00", "polarity": "-"},
+                {"at": "2026-06-02T00:00:00+00:00", "polarity": "+"},
+                {"at": "2026-06-16T03:00:00+03:00", "polarity": "+"},
+                # A time without a zone is UTC, as everywhere in a summary
+                {"at": "2026-06-16T00:00:00", "polarity": "+"},
+            ],
+        }
+    )
+    assert "changes 2 times, at 2026-06-02 00:00, 2026-06-16 00:00:" in note
+    # A view not flagged mixed has no change to note or draw
+    unmixed = {"mixed_runs": False, "tz": "UTC", "run_changes": [{"at": at}]}
+    assert (
+        chart_common.formula_run_notes(unmixed)
+        == chart_common.formula_run_rules(unmixed)
+        == []
+    )
+
+
 class _Samples:
     """A store whose samples are of the instrument types given."""
 
