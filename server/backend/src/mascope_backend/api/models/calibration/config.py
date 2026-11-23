@@ -81,9 +81,17 @@ class CalibrationConfig(BaseModel):
     # or more points sit well within 1 ppm unless their calibrants disagree,
     # and two calibrants that disagree by 2.5 ppm leave 1.27 ppm. TOF fits on
     # lower-resolution APi-TOFs leave 3-4 ppm as a matter of course, while the
-    # broken TOF fits seen sat at 11 ppm and beyond.
+    # broken TOF fits seen sat at 11 ppm and beyond. The TOF bound is read off
+    # the fleet baseline (docs/dev/tof_calibration.md, section 2): per
+    # instrument and mode the stored fits' error has a median of 0.5 to 3.8
+    # ppm and an upper quartile of 4.5 ppm at most. The two noisiest modes, a
+    # propylamine TOF and a bromide APi-TOF, spread by an interquartile range
+    # of 1.6 ppm, which puts the upper fence of their own spread (Tukey's,
+    # the upper quartile plus 1.5 times the range: Tukey, Exploratory Data
+    # Analysis, 1977) at 6.6 and 6.9 ppm. A TOF fit past 7 ppm reads worse
+    # than the noisiest instrument's own fits do.
     ORBI_MAX_POST_FIT_MZ_ERROR_PPM: float = 1.0
-    TOF_MAX_POST_FIT_MZ_ERROR_PPM: float = 10.0
+    TOF_MAX_POST_FIT_MZ_ERROR_PPM: float = 7.0
     # A fit on a single point zeroes its own residual, and two isotopes of one
     # ion agree with each other whatever peak they sit on, so such a fit says
     # nothing about whether it found the right peak. It is only trusted while
@@ -109,6 +117,20 @@ class CalibrationConfig(BaseModel):
     # from this many ions, or it is one ion's isotopes agreeing with each
     # other.
     MIN_VERIFIED_CALIBRATION_IONS: int = 2
+    # A TOF fit is judged on its points and ions by the model it fitted,
+    # keyed by Tofwerk mode, in place of the two bounds above: it must keep
+    # one calibrant more than the model has parameters, and draw them from
+    # as many ions. A model passes through as many points as it has
+    # parameters, whatever peaks they sit on, so only a point beyond them
+    # can disagree with the rest. On a TOF a calibrant's place on the axis is
+    # its ion: the two lines of a bromide ion, 2 Th apart, read the axis at
+    # one place. So the two-parameter mode 0 needs three ions, and the
+    # three-parameter mode 2 four: the model check of MAS-183 kept mode 2 on
+    # most files of the fleet's propylamine TOF, on five. The node fits on no
+    # fewer points than these (TOF_MINIMUM_CALIBRATION_POINTS); a record of a
+    # mode not listed is held to the largest.
+    TOF_MIN_VERIFIED_CALIBRATION_POINTS: dict[int, int] = {0: 3, 2: 4}
+    TOF_MIN_VERIFIED_CALIBRATION_IONS: dict[int, int] = {0: 3, 2: 4}
     # A TOF fit must keep at least this share of the distinct lines its
     # calibration collection offers above the abundance floor, None
     # disabling the check. A TOF axis read further off than the refine

@@ -205,6 +205,18 @@ class TestQualityIssues:
         assert _codes({**GOOD, "post_fit_mz_error_ppm": 4.3}, TOF_FILE) == []
         assert _codes({**GOOD, "post_fit_mz_error_ppm": 11.5}, TOF_FILE) == ["residual"]
 
+    def test_the_tof_bound_lies_at_the_noisiest_modes_fence(self):
+        # The baseline's noisiest TOF modes have an upper fence of 6.6 and 6.9
+        # ppm; a fit past 7 ppm reads worse than they do
+        assert _codes({**GOOD, "post_fit_mz_error_ppm": 7.0}, TOF_FILE) == []
+        assert _codes({**GOOD, "post_fit_mz_error_ppm": 7.01}, TOF_FILE) == ["residual"]
+        (issue,) = calibration_quality_issues(
+            {**GOOD, "post_fit_mz_error_ppm": 8.4}, TOF_FILE
+        )
+        assert issue["message"] == (
+            "Mean m/z error after calibration is 8.40 ppm (limit 7 ppm)."
+        )
+
     def test_the_bound_itself_passes(self):
         quality = {
             **GOOD,
@@ -303,6 +315,112 @@ class TestKeptLineShare:
         monkeypatch.setattr(calibration_config, "TOF_MIN_KEPT_LINE_SHARE", None)
 
         assert _codes({**GOOD, "n_points": 3, "n_lines": 11}, TOF_FILE) == []
+
+
+def _fitted(mode, n_points, n_ions):
+    """A TOF block of a fit in ``mode`` on ``n_points`` points of ``n_ions``
+    ions."""
+    return {
+        **GOOD,
+        "n_points": n_points,
+        "n_ions": n_ions,
+        "model": {"mode": mode, "equation": "...", "compared": None},
+    }
+
+
+class TestTofPointsAndIons:
+    """A TOF fit must keep a calibrant ion, and a point, more than its model
+    has parameters: three for the square-root model (mode 0), four for the
+    three-parameter one (mode 2). A model passes through as many as it has
+    parameters whatever peaks they sit on."""
+
+    @pytest.mark.parametrize(
+        ("mode", "n_points", "n_ions", "codes"),
+        [
+            # The nitrate sets' three ions, one line each
+            pytest.param(0, 3, 3, [], id="mode 0 on 3 ions"),
+            # Br- and Br3-: five lines at two places on the axis
+            pytest.param(0, 5, 2, ["ions"], id="mode 0 on 2 ions"),
+            pytest.param(2, 4, 4, [], id="mode 2 on 4 ions"),
+            pytest.param(2, 5, 5, [], id="mode 2 on 5 ions"),
+            pytest.param(2, 5, 3, ["ions"], id="mode 2 on 3 ions"),
+            pytest.param(2, 3, 3, ["points"], id="mode 2 on 3 points"),
+            pytest.param(0, 2, 2, ["points"], id="mode 0 on 2 points"),
+        ],
+    )
+    def test_the_bar_follows_the_model(self, mode, n_points, n_ions, codes):
+        assert _codes(_fitted(mode, n_points, n_ions), TOF_FILE) == codes
+
+    def test_the_messages_name_the_model_and_the_bound(self):
+        (points,) = calibration_quality_issues(_fitted(2, 3, 3), TOF_FILE)
+        (ions,) = calibration_quality_issues(_fitted(0, 5, 2), TOF_FILE)
+
+        assert points["message"] == (
+            "Fitted on 3 calibration points in the three-parameter model, which "
+            "needs at least 4: one more than its parameters, so that the points "
+            "check each other."
+        )
+        assert ions["message"] == (
+            "All calibration points come from 2 ions (at least 3 needed in the "
+            "square-root model)."
+        )
+
+    def test_no_small_correction_makes_up_for_too_few_points(self):
+        # The Orbitrap bar trusts two points of two ions, and one point that
+        # moves the axis a few ppm; a TOF model passes through both
+        for n_points in (1, 2):
+            quality = {
+                **_fitted(0, n_points, n_points),
+                "pre_fit_mz_error_ppm": 0.9,
+                "axis_correction_ppm": 0.9,
+            }
+            assert _codes(quality) == []
+            assert _codes(quality, TOF_FILE) == ["points"]
+
+    def test_a_record_without_a_model_was_fitted_in_mode_0(self):
+        # Node version 1 fitted mode 0 alone and recorded no model
+        assert _codes({**GOOD, "n_points": 3, "n_ions": 3}, TOF_FILE) == []
+        assert _codes({**GOOD, "n_points": 3, "n_ions": 2}, TOF_FILE) == ["ions"]
+        assert _codes({**GOOD, "n_ions": 2, "model": None}, TOF_FILE) == ["ions"]
+        assert _codes({**GOOD, "n_ions": 2, "model": {"mode": None}}, TOF_FILE) == [
+            "ions"
+        ]
+
+    def test_a_mode_the_bar_does_not_list_is_held_to_the_largest(self):
+        assert _codes(_fitted(1, 4, 3), TOF_FILE) == ["ions"]
+        assert _codes(_fitted(1, 3, 3), TOF_FILE) == ["points"]
+        assert _codes(_fitted(1, 4, 4), TOF_FILE) == []
+
+    def test_an_unrecorded_ion_count_is_not_held_against_it(self):
+        assert _codes(_fitted(0, 3, None), TOF_FILE) == []
+        assert _codes(_fitted(2, 4, None), TOF_FILE) == []
+
+    def test_a_fit_on_no_points_is_caught(self):
+        (issue,) = calibration_quality_issues(_fitted(0, 0, None), TOF_FILE)
+
+        assert issue == {
+            "code": "points",
+            "message": "Fitted on no calibration points.",
+        }
+
+    def test_it_follows_the_settings(self, monkeypatch):
+        quality = _fitted(0, 4, 3)
+        assert _codes(quality, TOF_FILE) == []
+
+        monkeypatch.setattr(
+            calibration_config, "TOF_MIN_VERIFIED_CALIBRATION_IONS", {0: 4, 2: 4}
+        )
+        assert _codes(quality, TOF_FILE) == ["ions"]
+
+        monkeypatch.setattr(
+            calibration_config, "TOF_MIN_VERIFIED_CALIBRATION_POINTS", {0: 5, 2: 5}
+        )
+        assert _codes(quality, TOF_FILE) == ["points"]
+
+    def test_the_orbitrap_bar_is_its_own(self):
+        # Two ions are enough for an Orbitrap fit on three points or more
+        assert _codes({**GOOD, "n_ions": 2}) == []
+        assert _codes({**GOOD, "n_ions": 2}, TOF_FILE) == ["ions"]
 
 
 def _reach(span, peaks):

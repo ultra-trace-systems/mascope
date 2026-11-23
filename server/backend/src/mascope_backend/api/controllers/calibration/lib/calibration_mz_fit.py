@@ -2796,10 +2796,11 @@ def _quality_block_issues(
     The bar (``calibration_config``) is the fit's mean post-fit residual
     against an instrument-class bound; for a fit on one point, or on two
     isotopes of one ion, how far it moved the axis; for one on three or more,
-    how many ions the points came from; for a TOF fit, the share of its
-    collection's lines it kept and how far past its calibrants the file's
-    strong peaks reach (:func:`extrapolation_issues`); and, where a bound
-    is set, the
+    how many ions the points came from (:func:`_point_issues`); for a TOF
+    fit, in place of those two, how many points and ions it kept for its
+    model (:func:`_tof_point_issues`), the share of its collection's lines
+    it kept, and how far past its calibrants the file's strong peaks reach
+    (:func:`extrapolation_issues`); and, where a bound is set, the
     calibrants' share of the TIC. A fit with no quality
     block cannot be judged and is reported as such rather than let through.
 
@@ -2854,63 +2855,10 @@ def _quality_block_issues(
         )
 
     n_points = quality.get("n_points") or 0
-    n_ions = quality.get("n_ions")
-    min_points = calibration_config.MIN_VERIFIED_CALIBRATION_POINTS
-    min_ions = calibration_config.MIN_VERIFIED_CALIBRATION_IONS
-    max_shift = calibration_config.LOW_POINT_MAX_AXIS_CORRECTION_PPM
-    # Below min_points, a fit is corroborated only when its points come from
-    # different ions, or when another stream of the file vouches for it
-    corroborated = vouched or _corroborates_itself(quality)
-    # How far the fit puts the axis from the acquisition axis. The pre-fit
-    # error measures that only on a file no fit has moved yet: an Orbitrap
-    # apply rescales the stored axis in place, so a refit of a file a wrong
-    # fit displaced sees that fit's peak on its target and a pre-fit error
-    # near zero. The Orbitrap fit's cumulative factor is the correction from
-    # the acquisition axis whatever came before (see axis_correction_ppm), so
-    # it is used where recorded. TOF fits never get here on fewer than three
-    # points.
-    shift_ppm = quality.get("axis_correction_ppm")
-    if shift_ppm is None:
-        shift_ppm = quality.get("pre_fit_mz_error_ppm")
-    points = f"{n_points} calibration point{'' if n_points == 1 else 's'}"
-    if n_points > 1 and n_ions == 1:
-        points += " from a single ion"
-    if n_points == 0:
-        issues.append({"code": "points", "message": "Fitted on no calibration points."})
-    elif (
-        n_points < min_points
-        and not corroborated
-        and (shift_ppm is None or abs(shift_ppm) > max_shift)
-    ):
-        shift = (
-            "an unrecorded amount" if shift_ppm is None else f"{abs(shift_ppm):.2f} ppm"
-        )
-        issues.append(
-            {
-                "code": "points",
-                "message": (
-                    f"Fitted on {points} but moves the m/z axis {shift} from "
-                    "the acquisition axis; a fit nothing corroborates is "
-                    f"trusted with a correction of at most {max_shift:g} ppm."
-                ),
-            }
-        )
-
-    if (
-        n_points >= min_points
-        and n_ions is not None
-        and n_ions < min_ions
-        and not vouched
-    ):
-        issues.append(
-            {
-                "code": "ions",
-                "message": (
-                    f"All calibration points come from {n_ions} ion"
-                    f"{'' if n_ions == 1 else 's'} (at least {min_ions} needed)."
-                ),
-            }
-        )
+    if tof:
+        issues.extend(_tof_point_issues(quality))
+    else:
+        issues.extend(_point_issues(quality, vouched))
 
     # A TOF fit kept on a few of its collection's lines is likelier fitted
     # on neighbours of them than on the calibrants: see
@@ -2963,6 +2911,156 @@ def _quality_block_issues(
             }
         )
     return issues
+
+
+def _point_issues(quality: dict, vouched: bool = False) -> list[dict]:
+    """
+    Whether a fit other than a TOF's kept enough calibrants, from enough ions.
+
+    A fit on fewer than ``MIN_VERIFIED_CALIBRATION_POINTS`` that nothing
+    corroborates - one point, or isotopes of one ion, with no other stream
+    of the file vouching for it - is trusted only with a correction of at
+    most ``LOW_POINT_MAX_AXIS_CORRECTION_PPM``; one on that many or more
+    must draw them from ``MIN_VERIFIED_CALIBRATION_IONS`` ions.
+
+    :param quality: The fit's ``quality`` block (see :func:`fit_quality`).
+    :param vouched: Whether another stream of the file vouches for the
+        correction (see :func:`calibration_quality_issues`).
+    :return: A ``points`` or an ``ions`` issue, or none.
+    """
+    issues = []
+    n_points = quality.get("n_points") or 0
+    n_ions = quality.get("n_ions")
+    min_points = calibration_config.MIN_VERIFIED_CALIBRATION_POINTS
+    min_ions = calibration_config.MIN_VERIFIED_CALIBRATION_IONS
+    max_shift = calibration_config.LOW_POINT_MAX_AXIS_CORRECTION_PPM
+    # Below min_points, a fit is corroborated only when its points come from
+    # different ions, or when another stream of the file vouches for it
+    corroborated = vouched or _corroborates_itself(quality)
+    # How far the fit puts the axis from the acquisition axis. The pre-fit
+    # error measures that only on a file no fit has moved yet: an Orbitrap
+    # apply rescales the stored axis in place, so a refit of a file a wrong
+    # fit displaced sees that fit's peak on its target and a pre-fit error
+    # near zero. The Orbitrap fit's cumulative factor is the correction from
+    # the acquisition axis whatever came before (see axis_correction_ppm), so
+    # it is used where recorded.
+    shift_ppm = quality.get("axis_correction_ppm")
+    if shift_ppm is None:
+        shift_ppm = quality.get("pre_fit_mz_error_ppm")
+    points = f"{n_points} calibration point{'' if n_points == 1 else 's'}"
+    if n_points > 1 and n_ions == 1:
+        points += " from a single ion"
+    if n_points == 0:
+        issues.append({"code": "points", "message": "Fitted on no calibration points."})
+    elif (
+        n_points < min_points
+        and not corroborated
+        and (shift_ppm is None or abs(shift_ppm) > max_shift)
+    ):
+        shift = (
+            "an unrecorded amount" if shift_ppm is None else f"{abs(shift_ppm):.2f} ppm"
+        )
+        issues.append(
+            {
+                "code": "points",
+                "message": (
+                    f"Fitted on {points} but moves the m/z axis {shift} from "
+                    "the acquisition axis; a fit nothing corroborates is "
+                    f"trusted with a correction of at most {max_shift:g} ppm."
+                ),
+            }
+        )
+
+    if (
+        n_points >= min_points
+        and n_ions is not None
+        and n_ions < min_ions
+        and not vouched
+    ):
+        issues.append(
+            {
+                "code": "ions",
+                "message": (
+                    f"All calibration points come from {n_ions} ion"
+                    f"{'' if n_ions == 1 else 's'} (at least {min_ions} needed)."
+                ),
+            }
+        )
+    return issues
+
+
+#: How a TOF fit's quality issues name its model, by Tofwerk mode
+_TOF_MODEL_NAMES = {0: "the square-root model", 2: "the three-parameter model"}
+
+
+def tof_fit_mode(quality: dict) -> int:
+    """
+    The Tofwerk mode a TOF fit's record says it fitted.
+
+    Its ``model`` names it from node version 2 on; a record without one was
+    fitted in mode 0, the one model the node fitted before it compared two.
+
+    :param quality: A TOF fit's ``quality`` block (see :func:`fit_quality`).
+    :return: The mode.
+    """
+    model = quality.get("model")
+    mode = model.get("mode") if isinstance(model, dict) else None
+    return mode if isinstance(mode, int) else 0
+
+
+def _tof_point_issues(quality: dict) -> list[dict]:
+    """
+    Whether a TOF fit kept enough calibrants, from enough ions, for its model.
+
+    A model passes through as many points as it has parameters, whatever
+    peaks they sit on, and on a TOF a calibrant's place on the axis is its
+    ion. So the fit must keep a point more than its model has parameters
+    (``TOF_MIN_VERIFIED_CALIBRATION_POINTS``) and draw its points from as
+    many ions (``TOF_MIN_VERIFIED_CALIBRATION_IONS``), by the model it
+    fitted (:func:`tof_fit_mode`); a mode neither lists is held to the
+    larger of each. No correction makes up for too few: the node never fits
+    a TOF on fewer points than its model needs, so a record that has fewer
+    was not made by it. An ion count the block does not carry is not held
+    against it. A TOF file is fitted whole, never stream by stream, so no
+    other stream vouches for its fit.
+
+    :param quality: A TOF fit's ``quality`` block (see :func:`fit_quality`).
+    :return: A ``points`` or an ``ions`` issue, or none.
+    """
+    mode = tof_fit_mode(quality)
+    model = _TOF_MODEL_NAMES.get(mode, f"Tofwerk mode {mode}")
+    by_points = calibration_config.TOF_MIN_VERIFIED_CALIBRATION_POINTS
+    by_ions = calibration_config.TOF_MIN_VERIFIED_CALIBRATION_IONS
+    min_points = by_points.get(mode, max(by_points.values()))
+    min_ions = by_ions.get(mode, max(by_ions.values()))
+    n_points = quality.get("n_points") or 0
+    n_ions = quality.get("n_ions")
+    if n_points == 0:
+        return [{"code": "points", "message": "Fitted on no calibration points."}]
+    if n_points < min_points:
+        return [
+            {
+                "code": "points",
+                "message": (
+                    f"Fitted on {n_points} calibration point"
+                    f"{'' if n_points == 1 else 's'} in {model}, which needs at "
+                    f"least {min_points}: one more than its parameters, so that "
+                    "the points check each other."
+                ),
+            }
+        ]
+    if n_ions is not None and n_ions < min_ions:
+        return [
+            {
+                "code": "ions",
+                "message": (
+                    f"All calibration points come from {n_ions} ion"
+                    f"{'' if n_ions == 1 else 's'} (at least {min_ions} needed "
+                    f"in {model})."
+                ),
+            }
+        ]
+    return []
 
 
 def extrapolation_issues(quality: dict) -> list[dict]:
