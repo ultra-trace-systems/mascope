@@ -60,6 +60,11 @@ vi.mock('@/lib/base', async () => ({
     template: '<span class="level-tag" :data-level="level" :data-tooltip="tooltip" />'
   },
   BaseVerdictBadge: true,
+  // Rendered, so a failed load's message can be read where the table would be.
+  BaseLoadError: {
+    props: ['error', 'fallback', 'onRetry'],
+    template: '<div class="load-error">{{ fallback }}</div>'
+  },
   // Real: the tier header's provisional mark is read off what it draws.
   BaseProvisionalMark: (await vi.importActual('@/lib/base/BaseProvisionalMark.vue')).default,
   // Real: the formula cell's badges are read off the reading and tone they draw.
@@ -478,6 +483,49 @@ describe('PaneBrowserBatchPeaks tier strip', () => {
     ])
     // Set off from the tiers: what follows is not a confidence.
     expect(chips[4].classes()).toContain('roles-start')
+  })
+
+  // The ledger's count is in its header line, in species.
+  it('counts the batch peaks in its header line', async () => {
+    wrapper = await mountPane({ peaks })
+
+    expect(wrapper.find('[data-testid="ledger-count"]').text()).toBe('4 batch peaks')
+  })
+
+  it('counts nothing while the batch has no batch peaks', async () => {
+    wrapper = await mountPane({ peaks: [] })
+
+    expect(wrapper.find('[data-testid="ledger-count"]').exists()).toBe(false)
+  })
+
+  // The store keeps the last good load's rows when a reload fails (or the
+  // next batch's load does). Their count, in the header or on the chips,
+  // would read as this load's.
+  it('shows no count and no chip counts after a failed reload', async () => {
+    wrapper = await mountPane({ peaks })
+    app.data.batchPeak.error = new Error('boom')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('.load-error').text()).toBe('Could not load the batch peaks.')
+    expect(wrapper.find('[data-testid="ledger-count"]').exists()).toBe(false)
+    expect(wrapper.findAll('.tier-stat').map((chip) => chip.text())).toEqual([
+      'assigned',
+      'candidate',
+      'below',
+      'unassigned',
+      'reagent',
+      'artifact'
+    ])
+  })
+
+  // A batch with no batch peaks draws no strip; a first load that failed
+  // still does, with the view menu, as the docs say.
+  it('keeps the strip and the view menu after a failed first load', async () => {
+    wrapper = await mountPane({ peaks: [], ledger: { error: new Error('boom') } })
+
+    expect(wrapper.find('.load-error').exists()).toBe(true)
+    expect(wrapper.findAll('.tier-stat')).toHaveLength(6)
+    expect(wrapper.find('.view-menu-button').exists()).toBe(true)
   })
 
   // Step 3.3c's follow-up, built in 3.4d: an anchor whose members the reagent
