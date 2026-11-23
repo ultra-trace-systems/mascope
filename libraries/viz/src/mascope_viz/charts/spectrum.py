@@ -76,7 +76,7 @@ def period_spectrum(
     )
     attrs = frame.attrs
     zone = attrs["tz"]
-    signal = common.signal_label(store, attrs, "Mean")
+    signal = common.value_label(store, attrs, "Mean")
     frame = frame.copy()
     frame["presence"] = _presence(frame["n"], frame["n_samples"])
     if compare:
@@ -103,7 +103,7 @@ def period_spectrum(
             "and is marked as only in the other."
         )
         notes += _drift_notes(attrs, zone)
-    notes += common.formula_run_notes(attrs) + common.normaliser_notes(attrs)
+    notes += common.run_notes(attrs, zone) + common.normalise_notes(attrs)
     empty = [period_name] if not (frame["n"] > 0).any() else []
     if compare and not (frame["other_n"] > 0).any():
         empty.append(other_name)
@@ -431,7 +431,8 @@ def _summary(
     period = attrs["period"]
     summary = {
         # The window is the period's, as the figure's context says
-        **common.context_summary(dict(attrs, start=period[0], end=period[1])),
+        **common.face(dict(attrs, start=period[0], end=period[1]), zone),
+        **common.normaliser_fields(attrs),
         "stat": "mean",
         "period": window("period"),
         "other": window("other"),
@@ -486,16 +487,12 @@ KIND = registry.register(
             registry.Param(
                 "top_n", "int", 10, help="the sticks labelled and listed per side"
             ),
-            registry.Param(
-                "normalise",
-                "normalise",
-                "none",
-                help="none, tic, a series key, or keys whose sum divides",
-            ),
+            common.NORMALISE_PARAM,
             registry.Param("tz", "text", None, help="the zone times are in"),
         ),
         summary=(
-            *common.CONTEXT_SUMMARY,
+            *common.FACE_FIELDS,
+            *common.NORMALISER_FIELDS,
             "stat",
             "period",
             "other",

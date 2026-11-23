@@ -161,12 +161,15 @@ def test_the_spectrogram_marks_the_run_change_on_its_time_axis(month):
 
     (rule,) = fig.panels[0].options["rules"]
     assert rule["at"] == change.at
-    assert rule["label"] == chart_common.RUN_CHANGE_LABEL
+    # The rule names the run the formulas are read by after it
+    (summary_change,) = fig.summary["run_changes"]
+    assert rule["label"] == f"engine run: {summary_change['after']}"
     assert fig.summary["mixed_runs"]
     assert [c["at"] for c in fig.summary["run_changes"]] == [
         change.at.tz_convert(ZONE).isoformat()
     ]
-    assert any("engine run" in note and "not joined" in note for note in fig.notes)
+    (note,) = [n for n in fig.notes if n.startswith("The engine run that reads")]
+    assert "two readings, not one series" in note
     assert fig.context.mixed_runs
     assert not before.summary["mixed_runs"]
     assert before.panels[0].options["rules"] == []
@@ -252,7 +255,7 @@ def test_a_normalised_spectrogram_labels_its_signal(month):
 
     fig = spectrogram(store, normalise="tic", cadence="1D")
 
-    assert fig.panels[0].axes.colour.label == "Signal / TIC, bin mean"
+    assert fig.panels[0].axes.colour.label == "signal / TIC, bin mean"
     assert "normalised to TIC" in fig.subtitle
     assert fig.summary["normalise"] == "tic"
     assert fig.summary["cadence"] == "1D"
@@ -330,7 +333,10 @@ def test_under_the_reagent_sum_the_difference_is_the_episodes_and_names_both(
     share = 1 - partial.summary["normalise_complete"]
     assert 0 < share < 1
     (note,) = [n for n in partial.notes if "partial sum" in n]
-    assert note.startswith(f"In {chart_common.percent(share)} of the samples")
+    assert note == (
+        f"The denominator was a partial sum in {share:.1%} of the samples: "
+        "one of its ions had no value there, and the others divided."
+    )
     # By the cluster alone, those samples have no value at all
     alone = period_spectrum(
         store, start=lost[0] - DAY / 4, end=lost[1], normalise=reagents[1]
@@ -823,12 +829,90 @@ def test_each_summary_carries_its_fields_and_the_views_context(month, chart):
     fig = kind.build(store, normalise="tic")
 
     assert set(fig.summary) <= set(kind.summary)
-    for field in chart_common.CONTEXT_SUMMARY + ("stat",):
+    for field in (*chart_common.FACE_FIELDS, *chart_common.NORMALISER_FIELDS, "stat"):
         assert field in fig.summary, field
     assert fig.summary["tz"] == ZONE and fig.summary["normalise"] == "tic"
     assert fig.summary["normalise_name"] == "TIC"
     json.dumps(fig.summary, allow_nan=False)
     assert fig.id == chart
+
+
+@pytest.mark.parametrize("chart", IDS)
+def test_each_chart_says_where_its_normaliser_was_not_whole(clusters, chart):
+    """Over the stretch the reagent's cluster is below detection, the sum
+    of the two ions is partial, and by the cluster alone those samples
+    have no value at all: each chart's notes say which, and in what share
+    of the samples."""
+    campaign, store = clusters
+    reagents = list(campaign.truth.shares.series_keys)
+    lost = campaign.truth.shares.lost
+    kind = registry.get(chart)
+    window = {"start": lost[0] - DAY / 4, "end": lost[1]}
+
+    summed = kind.build(store, normalise=reagents, **window)
+    alone = kind.build(store, normalise=reagents[1], **window)
+
+    share = 1 - summed.summary["normalise_complete"]
+    assert 0 < share < 1
+    assert (
+        f"The denominator was a partial sum in {share:.1%} of the samples: "
+        "one of its ions had no value there, and the others divided."
+    ) in summed.notes
+    missing = 1 - alone.summary["normalise_complete"]
+    assert 0 < missing < 1
+    assert (
+        f"In {missing:.1%} of the samples reagent water cluster had no value, "
+        "so those samples have none either."
+    ) in alone.notes
+    assert not any("partial sum" in note for note in alone.notes)
+
+
+def _summary_species(fig) -> list[dict]:
+    """Every species a composition chart's summary names."""
+    summary = fig.summary
+    if fig.id == "spectrogram":
+        return [row["species"] for row in summary["top_rows"]]
+    if fig.id == "period_spectrum":
+        return [row["species"] for row in summary["top"]]
+    return [row["species"] for row in summary["top"]] + [
+        one for point in summary["shared_points"] for one in point["species"]
+    ]
+
+
+@pytest.mark.parametrize("campaign", ["halide_negative"], indirect=True)
+@pytest.mark.parametrize("chart", IDS)
+def test_a_species_without_a_name_is_named_by_its_formula_then_its_key(
+    month, chart, monkeypatch
+):
+    """A summary names a species as every chart does: by its name, else its
+    formula, else its key. A store's row may hold a blank name, as one
+    synced before blank names were dropped does."""
+    _, store = month
+    kind = registry.get(chart)
+    named = _summary_species(kind.build(store))
+    assert named and all(one["name"] == one["formula"] for one in named)
+    table = store.table
+
+    def planted(**columns):
+        def read(which, **kw):
+            rows = table(which, **kw)
+            if which == "species":
+                formula = rows["series_key"].astype(str).str.startswith("formula:")
+                rows = rows.copy()
+                for column, value in columns.items():
+                    rows.loc[formula, column] = value
+            return rows
+
+        monkeypatch.setattr(store, "table", read)
+
+    planted(name=" ")
+    unnamed = _summary_species(kind.build(store))
+    assert [one["name"] for one in unnamed] == [one["formula"] for one in named]
+    planted(name=None, formula=None)
+    keyed = _summary_species(kind.build(store))
+    assert [(one["name"], one["formula"]) for one in keyed] == [
+        (one["key"], None) for one in named
+    ]
 
 
 #: The window before the campaign, which holds no sample.
@@ -979,7 +1063,7 @@ def test_unnamed_reagent_ions_are_named_by_their_formulas(tmp_path):
     labels = {
         "spectrogram": (
             figures["spectrogram"].panels[0].axes.colour.label,
-            "Signal / I + H2IO, bin mean",
+            "signal / I + H2IO, bin mean",
         ),
         "period_spectrum": (
             figures["period_spectrum"].panels[0].axes.y.label,
@@ -997,13 +1081,13 @@ def test_unnamed_reagent_ions_are_named_by_their_formulas(tmp_path):
         assert fig.summary["normalise_members"] == reagents
 
 
-def test_a_run_change_of_both_polarities_is_one_change(
+def test_a_run_change_of_both_polarities_draws_one_rule(
     short_campaign,  # noqa: F811
     tmp_path,
 ):
     """A ``+-`` batch whose engine run changes gives a change per polarity
-    at one moment: the note counts it once, and the spectrogram draws one
-    rule; the summary keeps both."""
+    at one moment: the spectrogram draws one rule, each polarity's change
+    has its note at that moment, and the summary keeps both."""
     client = FakeClient(short_campaign)
     first, middle, last = client.batch_ids
     client.runs[first] = f"run-1:{first}"
@@ -1017,34 +1101,19 @@ def test_a_run_change_of_both_polarities_is_one_change(
     assert len({c.at for c in changes}) == 1
     at = chart_common.wall(changes[0].at, ZONE)
 
-    for fig in (spectrogram(store), van_krevelen(store)):
+    for fig in (spectrogram(store), period_spectrum(store), van_krevelen(store)):
         assert len(fig.summary["run_changes"]) == 2
-        (note,) = [n for n in fig.notes if "engine run" in n]
-        assert f"changes 1 time, at {at}:" in note
-    rules = spectrogram(store).panels[0].options["rules"]
-    assert [rule["label"] for rule in rules] == [chart_common.RUN_CHANGE_LABEL]
-    # Two moments are two changes
-    (note,) = chart_common.formula_run_notes(
-        {
-            "mixed_runs": True,
-            "tz": "UTC",
-            "run_changes": [
-                {"at": "2026-06-16T00:00:00+00:00", "polarity": "-"},
-                {"at": "2026-06-02T00:00:00+00:00", "polarity": "+"},
-                {"at": "2026-06-16T03:00:00+03:00", "polarity": "+"},
-                # A time without a zone is UTC, as everywhere in a summary
-                {"at": "2026-06-16T00:00:00", "polarity": "+"},
-            ],
-        }
-    )
-    assert "changes 2 times, at 2026-06-02 00:00, 2026-06-16 00:00:" in note
-    # A view not flagged mixed has no change to note or draw
-    unmixed = {"mixed_runs": False, "tz": "UTC", "run_changes": [{"at": at}]}
-    assert (
-        chart_common.formula_run_notes(unmixed)
-        == chart_common.formula_run_rules(unmixed)
-        == []
-    )
+        notes = [n for n in fig.notes if n.startswith("The engine run that reads")]
+        assert sorted(n.split("(")[1].split(" ")[0] for n in notes) == [
+            "negative",
+            "positive",
+        ]
+        assert all(f"changes at {at} (" in n for n in notes)
+    fig = spectrogram(store)
+    afters = {change["after"] for change in fig.summary["run_changes"]}
+    assert len(afters) == 1
+    rules = fig.panels[0].options["rules"]
+    assert [rule["label"] for rule in rules] == [f"engine run: {afters.pop()}"]
 
 
 class _Samples:
@@ -1063,20 +1132,24 @@ class _Samples:
     [
         (("TOF", "tof"), "peak area"),
         (("Orbitrap", "orbi"), "peak height"),
-        (("tof", "orbi"), "signal"),
-        ((None,), "signal"),
+        (("tof", "orbi"), "peak area or peak height"),
+        ((None,), None),
     ],
 )
 def test_the_signal_is_named_by_the_instrument_type(types, variable):
     store = _Samples(*types)
 
-    assert chart_common.signal_variable(store) == variable
-    assert chart_common.signal_label(store, {"normalise": "none"}, "Mean") == (
-        f"Mean {variable}"
+    assert chart_common.intensity_variable(store) == variable
+    assert chart_common.value_label(store, {"normalise": "none"}, "Mean") == (
+        f"Mean {variable or 'signal'}"
     )
-    assert chart_common.signal_label(
-        store, {"normalise": ["ion:a", "ion:b"], "normalise_name": "I- + IH2O-"}
-    ) == ("Signal / I- + IH2O-")
+    raw = chart_common.value_label(store, {"normalise": "none"})
+    assert raw == (variable or "signal").capitalize()
+    divided = {"normalise": ["ion:a", "ion:b"], "normalise_name": "I- + IH2O-"}
+    assert chart_common.value_label(store, divided) == "signal / I- + IH2O-"
+    assert chart_common.value_label(store, divided, "Median") == (
+        "Median signal / I- + IH2O-"
+    )
 
 
 @pytest.mark.parametrize(

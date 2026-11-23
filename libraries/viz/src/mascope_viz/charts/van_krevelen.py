@@ -160,7 +160,7 @@ def van_krevelen(
                 "The amplitude of raw values includes the instrument's drift: "
                 "normalise by the reagent ions to take it out."
             )
-    notes += common.formula_run_notes(attrs) + common.normaliser_notes(attrs)
+    notes += common.run_notes(attrs, attrs["tz"]) + common.normalise_notes(attrs)
     if formulas.empty:
         window = common.window_name([attrs["start"], attrs["end"]], attrs["tz"])
         notes = common.empty_notes(store, [window]) + notes
@@ -181,7 +181,7 @@ def van_krevelen(
                     "x": {"label": "O/C (neutral formula)"},
                     "y": {"label": "H/C (neutral formula)"},
                     "colour": colour_axis,
-                    "size": {"label": common.signal_label(store, attrs, "Median")},
+                    "size": {"label": common.value_label(store, attrs, "Median")},
                 },
                 encodings=encodings,
                 options=options,
@@ -301,7 +301,8 @@ def _summary(
         ["median", "key"], ascending=[False, True], kind="stable"
     ).head(top_n)
     return {
-        **common.context_summary(attrs),
+        **common.face(attrs, attrs["tz"]),
+        **common.normaliser_fields(attrs),
         "stat": "median",
         "colour": colour,
         "tiers": list(tiers),
@@ -360,21 +361,15 @@ KIND = registry.register(
                 ["assigned"],
                 help=f"the tiers drawn, of {', '.join(views.TIERS)}; others hollow",
             ),
-            registry.Param(
-                "normalise",
-                "normalise",
-                "none",
-                help="none, tic, a series key, or keys whose sum divides",
-            ),
-            registry.Param("tz", "text", None, help="the zone times are in"),
-            registry.Param("start", "time", None, help="the window's start"),
-            registry.Param("end", "time", None, help="the window's end"),
+            common.NORMALISE_PARAM,
+            *common.WINDOW_PARAMS,
             registry.Param(
                 "top_n", "int", 10, help="the largest points labelled and listed"
             ),
         ),
         summary=(
-            *common.CONTEXT_SUMMARY,
+            *common.FACE_FIELDS,
+            *common.NORMALISER_FIELDS,
             "stat",
             "colour",
             "tiers",

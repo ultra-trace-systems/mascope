@@ -490,7 +490,8 @@ What every chart kind does the same way:
   `signal / <normaliser>`. The TIC is the mean intensity per scan.
 - **`normalise`** is `none` by default, `tic`, a series key, or a list of
   keys whose per-sample sum divides. The subtitle names it, and a note says
-  in what share of the samples the sum was partial.
+  in what share of the samples the sum was partial, or a single key had no
+  value, which leaves those samples without one.
 - **A run change is drawn**, never joined: a line in the notes, the
   summary's `run_changes`, and a rule on a time axis at each change.
 - **Both polarities are said.** When the window's samples are of both
