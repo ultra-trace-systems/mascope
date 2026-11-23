@@ -36,14 +36,14 @@ describe('useLedgerSortStore', () => {
 
   it('hands a change to the next pane that asks, and writes it through to storage', async () => {
     const sort = useLedgerSortStore()
-    sort.store.sample.field = 'sample_peak_intensity'
-    sort.store.sample.order = -1
+    sort.store.sample.field = 'sample_peak_mz'
+    sort.store.sample.order = 1
     await nextTick()
 
     // The remounted pane gets the same store, so the same sort.
-    expect(useLedgerSortStore().sample.field).toBe('sample_peak_intensity')
+    expect(useLedgerSortStore().sample.field).toBe('sample_peak_mz')
     const stored = JSON.parse(localStorage.getItem(KEY))
-    expect(sortOf(stored.sample)).toEqual({ field: 'sample_peak_intensity', order: -1 })
+    expect(sortOf(stored.sample)).toEqual({ field: 'sample_peak_mz', order: 1 })
     expect(sortOf(stored.batch)).toEqual({ ...DEFAULT_LEDGER_SORT.batch })
     // The other ledger's sort is untouched by it.
     expect({ ...sort.batch }).toEqual(DEFAULT_LEDGER_SORT.batch)

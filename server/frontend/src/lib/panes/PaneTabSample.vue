@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onScopeDispose } from 'vue'
 
 import { useWindowSize } from '@vueuse/core'
 
@@ -9,6 +9,7 @@ import SplitterPanel from 'primevue/splitterpanel'
 import { PaneBrowserPeak, PanePeakAssign, PanePeakSearch } from '@/lib/panes'
 import { ChartSampleSpectrum, ChartAssignmentTimeseries } from '@/lib/charts'
 import { peakAssignmentEnabled } from '@/lib/features'
+import { usePeakSearch } from '@/lib/panes/PanePeakAssign/stores/peakSearch.js'
 
 const { height } = useWindowSize()
 
@@ -55,8 +56,14 @@ const legacyTopHeight = computed(() => topSplit.value)
 const legacyBottomHeight = computed(() => ((height.value - padding) * bottomSplit.value) / 100 - 50)
 
 // The bottom pane shows the assignment time series by default; "Re-search" in
-// the inspector flips it to the composition search for the focused peak.
-const showSearch = ref(false)
+// the inspector, or Curate on a row of the sample ledger, flips it to the
+// composition search for the focused peak. Closed when this view goes.
+const peakSearch = usePeakSearch()
+const showSearch = computed({
+  get: () => peakSearch.open,
+  set: (open) => (peakSearch.open = open)
+})
+onScopeDispose(() => (peakSearch.open = false))
 </script>
 
 <template>

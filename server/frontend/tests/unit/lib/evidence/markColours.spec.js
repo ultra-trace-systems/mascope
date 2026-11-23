@@ -136,11 +136,12 @@ describe('the marks drawn outside the badge', () => {
   const colourOf = (source, selector) =>
     source.match(new RegExp(`\\n${literal(selector)} \\{[^}]*?color: ([^;]+);`))?.[1]
 
-  it('colours the ratio grades in the registry’s tones', () => {
+  // The batch ledger draws the ratio grade as the registry's badge, in Across
+  // the batch, and colours no grade of its own.
+  it('leaves the ratio grades to the registry in the batch ledger', () => {
     const ledger = sfc('lib', 'panes', 'PaneBrowserMatch', 'PaneBrowserBatchPeaks.vue')
-    expect(colourOf(ledger, '.continuity.stable')).toBe(TONES.supports.color)
-    expect(colourOf(ledger, '.continuity.drift')).toBe(TONES.drifted.color)
-    expect(colourOf(ledger, '.continuity.red')).toBe(TONES['holds-back'].color)
+    expect(colourOf(ledger, '.continuity.stable')).toBeUndefined()
+    expect(colourOf(ledger, '.continuity.red')).toBeUndefined()
   })
 
   it('draws the card’s hand in the human tone, never the accent', () => {

@@ -7,6 +7,7 @@ import { MAX_SELECTED_BATCH_PEAKS } from '@/stores/data/modules/batchPeak/ledger
 import { TIERING_PROVISIONAL } from '@/lib/tiers'
 import { LEVELS } from '@/lib/levels'
 import { SORT_FIELDS } from '@/lib/ledger/useLedgerView.js'
+import { listingName } from '@/lib/referenceListings'
 
 // The tier strip and the tier column's sort: both read the confidence order out
 // of @/lib/tiers, and both used to be wrong in the same direction (alphabetical,
@@ -44,10 +45,16 @@ vi.mock('@/lib/base', async () => ({
   },
   // Rendered, so a test that renders the cells can read the chip's role and
   // the formula a cell would copy.
+  // Its cap mark drawn as the chip draws it (BaseTierTag.spec.js pins the
+  // chip's own).
   BaseTierTag: {
     name: 'BaseTierTag',
-    props: ['tier', 'role'],
-    template: '<span class="tier-tag" :data-tier="tier" :data-role="role" />'
+    props: { tier: String, role: String, cap: Object, outlined: Boolean, tooltip: String },
+    template:
+      '<span class="tier-tag" :data-tier="tier" :data-role="role" ' +
+      ':data-outlined="String(outlined)" :data-tooltip="tooltip">' +
+      '<span v-if="cap" data-testid="tier-reason-mark" :aria-label="cap.label" ' +
+      'v-tooltip.top="cap.tooltip" /></span>'
   },
   BaseCopyableField: {
     props: ['field', 'tooltip'],
@@ -57,8 +64,10 @@ vi.mock('@/lib/base', async () => ({
   // text the pane handed the chip; the chip has a spec of its own.
   BaseLevelTag: {
     name: 'BaseLevelTag',
-    props: ['level', 'tooltip'],
-    template: '<span class="level-tag" :data-level="level" :data-tooltip="tooltip" />'
+    props: { level: String, tooltip: String, outlined: Boolean },
+    template:
+      '<span class="level-tag" :data-level="level" :data-tooltip="tooltip" ' +
+      ':data-outlined="String(outlined)" />'
   },
   BaseVerdictBadge: true,
   // Rendered, so a failed load's message can be read where the table would be.
@@ -850,13 +859,14 @@ describe('PaneBrowserBatchPeaks tier ordering', () => {
       .map((span) => [span.text(), span.attributes('data-tooltip')])
     expect(tips.map(([label]) => label)).toEqual([
       'm/z',
-      'Intensity',
-      'Formula',
-      'Listed', // the listing header, the column folded
+      'Compound',
+      'Ion',
+      'Max intensity',
       'Tier',
       // The tiering is still being built, and the tier header says so.
       TIERING_PROVISIONAL.label,
       'Samples',
+      'Across the batch',
       '' // the verdict header is an icon
     ])
     for (const [, tip] of tips) expect(tip.length).toBeGreaterThan(20)
@@ -864,8 +874,9 @@ describe('PaneBrowserBatchPeaks tier ordering', () => {
       TIERING_PROVISIONAL.tooltip
     )
     expect(tips.find(([label]) => label === 'm/z')[1]).toMatch(/anchor/i)
-    expect(tips.find(([label]) => label === 'Intensity')[1]).toMatch(/any sample/)
-    expect(tips.find(([label]) => label === 'Formula')[1]).toMatch(/consensus/i)
+    expect(tips.find(([label]) => label === 'Max intensity')[1]).toMatch(/any sample/)
+    expect(tips.find(([label]) => label === 'Compound')[1]).toMatch(/consensus/i)
+    expect(tips.find(([label]) => label === 'Ion')[1]).toMatch(/channels/)
   })
 
   it('sorts the tier column on the rank, which is what the header click reads', async () => {
@@ -968,8 +979,12 @@ describe('PaneBrowserBatchPeaks reference-list column', () => {
     return rendered
   }
 
+  // The listing is the Compound cell's second line, the Listed as column gone
+  // (docs/dev/assignment_ledger_and_card.md, section 3.2).
   const listingColumn = () =>
-    wrapper.findAll('.column-stub').find((col) => col.attributes('data-field') === 'listingName')
+    wrapper
+      .findAll('.column-stub')
+      .find((col) => col.attributes('data-field') === 'consensus_formula')
 
   // No flask: the name is written out, cut short, and the list is left to
   // the hover.
@@ -987,7 +1002,8 @@ describe('PaneBrowserBatchPeaks reference-list column', () => {
     expect(listed.find('[data-testid="listing-folded"]').classes()).toContain('folded')
     expect(listed.find('.listing-source').exists()).toBe(false)
     expect(listed.find('[data-testid="list-tag-background"]').exists()).toBe(true)
-    expect(unlisted.text()).toBe('')
+    expect(unlisted.find('[data-testid="listed-as"]').exists()).toBe(false)
+    expect(unlisted.find('.copyable').text()).toBe('C6H12O6')
   })
 
   it("writes the column out from the overflow menu's switch", async () => {
@@ -998,7 +1014,6 @@ describe('PaneBrowserBatchPeaks reference-list column', () => {
     await toggle.trigger('click')
     const listed = listingColumn().find('.stub-cell')
     expect(listed.find('.listing-name').text()).toBe('decamethylcyclopentasiloxane +1')
-    expect(listingColumn().text()).toContain('Listed as')
     expect(JSON.parse(localStorage.getItem('mascope.browser.match.ledgerView')).listingFull).toBe(
       true
     )
@@ -1012,18 +1027,20 @@ describe('PaneBrowserBatchPeaks reference-list column', () => {
       ],
       { full: true }
     )
-    const column = wrapper
-      .findAll('.column-stub')
-      .find((col) => col.attributes('data-field') === 'listingName')
-    const [listed, unlisted] = column.findAll('.stub-cell')
+    const [listed, unlisted] = listingColumn().findAll('.stub-cell')
 
-    expect(listed.find('.listing-name').text()).toBe('decamethylcyclopentasiloxane +1')
+    // Under the formula, in the Compound cell.
+    const compound = listed.find('[data-testid="compound-cell"]')
+    expect(compound.find('.compound-formula .copyable').text()).toBe('C6H12O6')
+    expect(compound.find('.compound-listing .listing-name').text()).toBe(
+      'decamethylcyclopentasiloxane +1'
+    )
     expect(listed.find('.listing-source').text()).toBe('cyclic-siloxanes')
     expect(listed.find('[data-testid="list-tag-background"]').exists()).toBe(true)
-    expect(unlisted.text()).toBe('')
+    expect(unlisted.find('[data-testid="listed-as"]').exists()).toBe(false)
   })
 
-  it('reads the listing onto the row, and sorts on its name', async () => {
+  it('reads the listing onto the row, with no column of its own', async () => {
     wrapper = await mountPane({
       peaks: [
         peak('bp-1', 'assigned', 0.9, { reference_listing: LISTING }),
@@ -1032,9 +1049,9 @@ describe('PaneBrowserBatchPeaks reference-list column', () => {
     })
     const rows = new Map(wrapper.vm.rows.map((row) => [row.batch_peak_id, row]))
 
-    expect(rows.get('bp-1').listingName).toBe('decamethylcyclopentasiloxane +1')
-    expect(rows.get('bp-2').listingName).toBeNull()
-    expect(columnFor('listingName').props('sortable')).toBe(true)
+    expect(listingName(rows.get('bp-1').listing)).toBe('decamethylcyclopentasiloxane +1')
+    expect(rows.get('bp-2').listing).toBeNull()
+    expect(columnFor('listingName')).toBeUndefined()
   })
 
   // What the target the consensus was matched to declares (identification
@@ -1050,7 +1067,7 @@ describe('PaneBrowserBatchPeaks reference-list column', () => {
     target: { label: 'target', name: 'glucose', inchikey: GLUCOSE, listed: false }
   }
 
-  it("reads the consensus's target as target and its name, and sorts on it", async () => {
+  it("reads the consensus's target as target and its name", async () => {
     wrapper = await renderedCells(
       [
         peak('bp-1', 'assigned', 0.9, { reference_listing: TARGETED }),
@@ -1063,9 +1080,7 @@ describe('PaneBrowserBatchPeaks reference-list column', () => {
     expect(listed.find('[data-testid="target-as"]').text()).toBe('target')
     expect(listed.find('.listing-name').text()).toBe('glucose')
     expect(listed.find('[data-testid="target-unlisted"]').exists()).toBe(true)
-    expect(unlisted.text()).toBe('')
-    const rows = new Map(wrapper.vm.rows.map((row) => [row.batch_peak_id, row]))
-    expect(rows.get('bp-1').listingName).toBe('glucose')
+    expect(unlisted.find('[data-testid="listed-as"]').exists()).toBe(false)
   })
 
   it('shows a target a list names by the same structure once, with both labels', async () => {
@@ -1107,7 +1122,7 @@ describe('PaneBrowserBatchPeaks series mark', () => {
   }
 
   // Renders the formula cells through a column stub that hands each its row.
-  async function formulaCells(peaks) {
+  async function formulaCells(peaks, field = 'consensus_formula') {
     const tableRows = ref([])
     app = makeApp({ peaks })
     localStorage.clear()
@@ -1137,15 +1152,19 @@ describe('PaneBrowserBatchPeaks series mark', () => {
     await wrapper.vm.$nextTick()
     return wrapper
       .findAll('.column-stub')
-      .find((col) => col.attributes('data-field') === 'consensus_formula')
+      .find((col) => col.attributes('data-field') === field)
       .findAll('.stub-cell')
   }
 
+  // The batch's readings are badges in Across the batch.
   it('marks a row a series vouches for, and says which', async () => {
-    const cells = await formulaCells([
-      peak('bp-1', 'candidate', 0.7, { series: SERIES }),
-      peak('bp-2', 'assigned', 0.9, { mz: 200.1, series: null })
-    ])
+    const cells = await formulaCells(
+      [
+        peak('bp-1', 'candidate', 0.7, { series: SERIES }),
+        peak('bp-2', 'assigned', 0.9, { mz: 200.1, series: null })
+      ],
+      'acrossRank'
+    )
     const marks = cells
       .map((cell) => cell.find('[data-testid="mark-series"]'))
       .filter((m) => m.exists())
@@ -1161,10 +1180,13 @@ describe('PaneBrowserBatchPeaks series mark', () => {
   // A row curated for the whole batch: the hand, in the human tone - an
   // outline in the text colour, never the accent.
   it('marks a row curated by hand with the hand, in the human tone', async () => {
-    const cells = await formulaCells([
-      peak('bp-1', 'assigned', 0.9, { curated: true }),
-      peak('bp-2', 'assigned', 0.9, { mz: 200.1 })
-    ])
+    const cells = await formulaCells(
+      [
+        peak('bp-1', 'assigned', 0.9, { curated: true }),
+        peak('bp-2', 'assigned', 0.9, { mz: 200.1 })
+      ],
+      'acrossRank'
+    )
     const hand = cells[0].find('[data-testid="mark-manual"]')
     expect(hand.attributes('aria-label')).toBe('Curated by hand for the whole batch')
     expect(hand.attributes('data-tone')).toBe('human')
@@ -1172,13 +1194,14 @@ describe('PaneBrowserBatchPeaks series mark', () => {
     expect(cells[1].find('[data-testid="mark-manual"]').exists()).toBe(false)
   })
 
-  // The co-variation, facts and ratio-stability readings keep their columns;
-  // beside the formula they would say the same thing twice. The others line
-  // up in the registry's order: what supports, what holds back, what moves
-  // nothing, a person's act.
-  it("draws the formula cell's readings in the registry's order, and not the columns'", async () => {
-    const cells = await formulaCells([
+  // Across the batch (docs/dev/assignment_ledger_and_card.md, section 3.2):
+  // at most three badges, the ones that hold the reading back first, the rest
+  // in the registry's order, then "+n" naming the others on hover. The
+  // formula's cell carries none.
+  it('draws at most three badges, what holds it back first, then +n', async () => {
+    const rows = [
       peak('bp-1', 'candidate', 0.7, {
+        max_intensity: 1000,
         curated: true,
         series: SERIES,
         blend: { formulas: ['C6H12O6', 'C7H16O5'], axis: 'time', time: null, intensity: null },
@@ -1186,11 +1209,61 @@ describe('PaneBrowserBatchPeaks series mark', () => {
         batch_checks: { halogen_lock: { element: 'Br', verdict: 'locked' } },
         continuity: { pairs: [] },
         continuity_grade: 'stable'
-      })
+      }),
+      peak('bp-2', 'assigned', 0.9, {
+        mz: 200.1,
+        max_intensity: 500,
+        series: SERIES,
+        curated: true
+      }),
+      peak('bp-3', 'assigned', 0.9, { mz: 210.1, max_intensity: 100 })
+    ]
+    const cells = await formulaCells(rows, 'acrossRank')
+    const marks = (cell) =>
+      cell.findAll('.evidence-badge').map((badge) => badge.attributes('data-mark'))
+    expect(marks(cells[0])).toEqual(['blend', 'series', 'coVariation'])
+    expect(cells[0].find('[data-testid="across-more"]').text()).toBe('+3')
+    expect(wrapper.vm.acrossMore(wrapper.vm.rows[0]).map((m) => m.id)).toEqual([
+      'ratio',
+      'facts',
+      'manual'
     ])
-    expect(
-      cells[0].findAll('.evidence-badge').map((badge) => badge.attributes('data-mark'))
-    ).toEqual(['series', 'blend', 'manual'])
+    expect(wrapper.vm.acrossMoreTooltip(wrapper.vm.rows[0]).split('\n')).toHaveLength(3)
+    // Two badges: both, and no count.
+    expect(marks(cells[1])).toEqual(['series', 'manual'])
+    expect(cells[1].find('[data-testid="across-more"]').exists()).toBe(false)
+    // None: the cell is empty.
+    expect(cells[2].findAll('.evidence-badge')).toHaveLength(0)
+
+    wrapper.unmount()
+    const formula = await formulaCells(rows)
+    expect(formula[0].findAll('.evidence-badge')).toHaveLength(0)
+  })
+
+  // The column sorts the rows most held back first, then the most badges, a
+  // row with none last.
+  it('sorts Across the batch on what holds it back, then on the count', async () => {
+    wrapper = await mountPane({
+      peaks: [
+        peak('bp-none', 'assigned', 0.9, { mz: 100 }),
+        peak('bp-one', 'assigned', 0.9, { mz: 110, series: SERIES }),
+        peak('bp-held', 'candidate', 0.7, {
+          mz: 120,
+          blend: { formulas: ['C6H12O6', 'C7H16O5'], axis: 'time', time: null, intensity: null }
+        }),
+        peak('bp-two', 'assigned', 0.9, { mz: 130, series: SERIES, curated: true })
+      ]
+    })
+    expect(columnFor('acrossRank').props('sortable')).toBe(true)
+    wrapper.vm.sortField = 'acrossRank'
+    wrapper.vm.sortOrder = 1
+    await wrapper.vm.$nextTick()
+    expect(wrapper.vm.rows.map((row) => row.batch_peak_id)).toEqual([
+      'bp-held',
+      'bp-two',
+      'bp-one',
+      'bp-none'
+    ])
   })
 })
 
@@ -1296,7 +1369,7 @@ describe('PaneBrowserBatchPeaks isotopologue stamps', () => {
   })
 
   // Renders the formula cells through a column stub that hands each its row.
-  async function formulaCells(peaks) {
+  async function formulaCells(peaks, field = 'consensus_formula') {
     const tableRows = ref([])
     app = makeApp({ peaks })
     localStorage.clear()
@@ -1328,7 +1401,7 @@ describe('PaneBrowserBatchPeaks isotopologue stamps', () => {
     await wrapper.vm.$nextTick()
     const column = wrapper
       .findAll('.column-stub')
-      .find((col) => col.attributes('data-field') === 'consensus_formula')
+      .find((col) => col.attributes('data-field') === field)
     return Object.fromEntries(
       column.findAll('.stub-cell').map((cell) => [cell.attributes('data-row'), cell])
     )
@@ -1392,7 +1465,7 @@ describe('PaneBrowserBatchPeaks isotopologue stamps', () => {
       mz: 260.1,
       diagnostic_isotopologues: isotopologues({ n_found: 0, n_stamped: 0 })
     })
-    const cells = await formulaCells([PARENT, LINE, FOUND, NONE, OTHER])
+    const cells = await formulaCells([PARENT, LINE, FOUND, NONE, OTHER], 'acrossRank')
     const mark = cells['bp-p'].find('[data-testid="mark-isotopes"]')
     expect(mark.attributes('aria-label')).toBe('1 of 2 isotope lines stamped')
     expect(mark.attributes('data-tone')).toBe('supports')
@@ -1423,7 +1496,7 @@ describe('PaneBrowserBatchPeaks probable blends', () => {
   const OTHER = peak('bp-other', 'candidate', 0.5, { mz: 300.2, consensus_formula: 'C12H18O5' })
   const ids = () => wrapper.vm.rows.map((row) => row.batch_peak_id)
 
-  async function formulaCells(peaks) {
+  async function formulaCells(peaks, field = 'consensus_formula') {
     const tableRows = ref([])
     app = makeApp({ peaks })
     localStorage.clear()
@@ -1455,14 +1528,14 @@ describe('PaneBrowserBatchPeaks probable blends', () => {
     await wrapper.vm.$nextTick()
     const column = wrapper
       .findAll('.column-stub')
-      .find((col) => col.attributes('data-field') === 'consensus_formula')
+      .find((col) => col.attributes('data-field') === field)
     return Object.fromEntries(
       column.findAll('.stub-cell').map((cell) => [cell.attributes('data-row'), cell])
     )
   }
 
   it('marks a blended batch peak beside its formula, and no other', async () => {
-    const cells = await formulaCells([BLENDED, OTHER])
+    const cells = await formulaCells([BLENDED, OTHER], 'acrossRank')
     const mark = cells['bp-b'].find('[data-testid="mark-blend"]')
     expect(mark.exists()).toBe(true)
     expect(mark.attributes('aria-label')).toBe(
@@ -1583,7 +1656,7 @@ describe('PaneBrowserBatchPeaks flat series', () => {
           .findAll('.stub-cell')
           .map((cell) => [cell.attributes('data-row'), cell])
       )
-    return { formula: column('consensus_formula'), tier: column('tierRank') }
+    return { formula: column('acrossRank'), tier: column('tierRank') }
   }
 
   it('marks a flat batch peak beside its formula, and moves no tier', async () => {
@@ -1732,18 +1805,23 @@ describe('PaneBrowserBatchPeaks merged isotopologue rows', () => {
   it('names an unfolded stripped row by its line, and marks the compound that took it', async () => {
     const TWO = { ...PARENT, merged_isotopologues: took(2) }
     const cells = await formulaCells([TWO, LINE, OTHER])
+    const across = async () => {
+      wrapper.unmount()
+      return formulaCells([TWO, LINE, OTHER], 'acrossRank')
+    }
     const tag = cells['bp-x'].find('[data-testid="strip-tag"]')
     expect(tag.text()).toBe('[13C]')
     expect(tag.classes()).toContain('stripped')
     expect(tag.classes()).not.toContain('stamped')
     const row = wrapper.vm.rows.find((r) => r.batch_peak_id === 'bp-x')
     expect(wrapper.vm.lineTooltip(row)).toMatch(/^Stripped from the ledger as the 13C isotopologue/)
+    expect(cells['bp-other'].find('[data-testid="strip-tag"]').exists()).toBe(false)
     // The rows it took are its isotope lines, the same reading as the stamp's.
-    const mark = cells['bp-p'].find('[data-testid="mark-isotopes"]')
+    const badges = await across()
+    const mark = badges['bp-p'].find('[data-testid="mark-isotopes"]')
     expect(mark.attributes('aria-label')).toBe("2 rows stripped to this compound's isotope lines")
     expect(mark.attributes('data-tone')).toBe('supports')
-    expect(cells['bp-other'].find('[data-testid="mark-isotopes"]').exists()).toBe(false)
-    expect(cells['bp-other'].find('[data-testid="strip-tag"]').exists()).toBe(false)
+    expect(badges['bp-other'].find('[data-testid="mark-isotopes"]').exists()).toBe(false)
   })
 
   // The known-species decision's mark sits beside the strip's in the same cell:
@@ -1756,11 +1834,14 @@ describe('PaneBrowserBatchPeaks merged isotopologue rows', () => {
       present: verdict === 'unpooled' ? 1 : 5,
       test_held: 1
     })
-    const cells = await formulaCells([
-      { ...PARENT, known_species: decided('present') },
-      { ...OTHER, known_species: decided('unpooled') },
-      LINE
-    ])
+    const cells = await formulaCells(
+      [
+        { ...PARENT, known_species: decided('present') },
+        { ...OTHER, known_species: decided('unpooled') },
+        LINE
+      ],
+      'acrossRank'
+    )
     const present = cells['bp-p'].find('[data-testid="mark-reagent"]')
     expect(present.attributes('aria-label')).toBe('[(CH4N2O)3+H]+: present across the batch')
     expect(present.attributes('data-tone')).toBe('neutral')
@@ -1802,7 +1883,7 @@ describe('PaneBrowserBatchPeaks merged isotopologue rows', () => {
       BELOW,
       LINE
     ]
-    const cells = await formulaCells(peaks, 'consensus_formula', { tooltips: true })
+    const cells = await formulaCells(peaks, 'acrossRank', { tooltips: true })
     const mark = cells['bp-p'].find('[data-testid="mark-persistence"]')
     expect(mark.attributes('aria-label')).toBe(
       'Searched on persistence: in 11 of 12 spectra (92 %)'
@@ -1845,11 +1926,10 @@ describe('PaneBrowserBatchPeaks merged isotopologue rows', () => {
       passed_in: [0],
       reads: { role }
     })
-    const cells = await formulaCells([
-      { ...PARENT, water_ladder: rung('reagent') },
-      { ...OTHER, water_ladder: rung(null) },
-      LINE
-    ])
+    const cells = await formulaCells(
+      [{ ...PARENT, water_ladder: rung('reagent') }, { ...OTHER, water_ladder: rung(null) }, LINE],
+      'acrossRank'
+    )
     expect(cells['bp-x'].find('[data-testid="mark-reagent"]').exists()).toBe(false)
     const claimed = cells['bp-p'].find('[data-testid="mark-reagent"]')
     expect(claimed.attributes('aria-label')).toBe(
@@ -1860,7 +1940,8 @@ describe('PaneBrowserBatchPeaks merged isotopologue rows', () => {
     expect(kept.attributes('data-tone')).toBe('neutral')
   })
 
-  it('marks a heavier line of a rung folded under it', async () => {
+  // A line is a sub-row and repeats nothing: its rung's row carries the badge.
+  it('marks no heavier line of a rung folded under it', async () => {
     const line = {
       rung: { core: '[Br]-', ion: '[Br+16xH2O]-', track: '81Br', waters: 16 },
       segments: [],
@@ -1868,200 +1949,18 @@ describe('PaneBrowserBatchPeaks merged isotopologue rows', () => {
       reads: { role: 'reagent' }
     }
     const cells = await formulaCells([PARENT, { ...LINE, water_ladder: line }, OTHER])
-    const mark = cells['bp-x'].find('.child-cell [data-testid="mark-reagent"]')
-    expect(mark.attributes('aria-label')).toMatch(/^\[Br\+16xH2O\]- \(81Br line\): /)
-    expect(mark.attributes('data-tone')).toBe('neutral')
-  })
-})
-
-describe('PaneBrowserBatchPeaks co-variation column', () => {
-  const reading = (verdict, r, extra = {}) => ({
-    formula: 'C6H12O6',
-    ionization_mechanism_id: 'm-1',
-    channel: '[M-H]-',
-    verdict,
-    r,
-    n_spectra: 412,
-    reason: null,
-    partner_batch_peak_id: 'bp-other',
-    partner_channel: '[M+NO3]-',
-    partners: [
-      { batch_peak_id: 'bp-other', channel: '[M+NO3]-', verdict, r, n_spectra: 412, reason: null }
-    ],
-    normalised: true,
-    ...extra
-  })
-  const peaks = () => [
-    peak('bp-1', 'assigned', 0.9, { mz: 100.1, co_variation: reading('co_varying', 0.82) }),
-    peak('bp-2', 'candidate', 0.6, { mz: 200.1, co_variation: reading('not_co_varying', -0.4) }),
-    peak('bp-3', 'assigned', 0.8, {
-      mz: 300.1,
-      co_variation: reading('untestable', null, { reason: 'flat' })
-    }),
-    peak('bp-4', 'assigned', 0.95, { mz: 400.1, co_variation: null }),
-    peak('bp-5', 'assigned', 0.7, { mz: 401.1, isotopologue_of: 'bp-4' })
-  ]
-
-  it('is absent from a ledger no reading reached', async () => {
-    wrapper = await mountPane({ peaks: peaks().map(({ co_variation, ...bp }) => bp) })
-    expect(columnFor('coVariationRank')).toBeUndefined()
-  })
-
-  it("shows the strongest partner's r, or that the pair cannot be read", async () => {
-    const cells = await cellsOf('coVariationRank', peaks())
-    expect(cells['bp-1'].find('[data-testid="co-variation"]').text()).toBe('r 0.82')
-    expect(cells['bp-1'].find('.co-variation').classes()).toContain('co_varying')
-    expect(cells['bp-2'].find('.co-variation').text()).toBe('r -0.40')
-    expect(cells['bp-2'].find('.co-variation').classes()).toContain('not_co_varying')
-    expect(cells['bp-3'].find('.co-variation').text()).toBe('untestable')
-    // No reading: a blank cell.
-    expect(cells['bp-4'].find('.co-variation').exists()).toBe(false)
-    expect(cells['bp-4'].text()).toBe('')
-  })
-
-  it('leaves an unfolded isotopologue row blank', async () => {
-    await cellsOf('coVariationRank', peaks())
-    wrapper.vm.showIsotopologues = true
-    await wrapper.vm.$nextTick()
-    const column = wrapper
-      .findAll('.column-stub')
-      .find((col) => col.attributes('data-field') === 'coVariationRank')
-    const child = column.findAll('.stub-cell').find((c) => c.attributes('data-row') === 'bp-5')
-    expect(child.exists()).toBe(true)
-    expect(child.text()).toBe('')
-  })
-
-  it('sorts on r, an unread pair last in both directions', async () => {
-    wrapper = await mountPane({ peaks: peaks() })
-    expect(columnFor('coVariationRank').props('sortable')).toBe(true)
-    const byId = Object.fromEntries(wrapper.vm.rows.map((row) => [row.batch_peak_id, row]))
-    expect(byId['bp-1'].coVariationRank).toBe(0.82)
-    expect(byId['bp-3'].coVariationRank).toBeNull()
-    wrapper.vm.sortField = 'coVariationRank'
-    wrapper.vm.sortOrder = -1
-    await wrapper.vm.$nextTick()
-    const top = () => wrapper.vm.rows.filter((row) => !row.parentId).map((row) => row.batch_peak_id)
-    expect(top().slice(0, 2)).toEqual(['bp-1', 'bp-2'])
-    wrapper.vm.sortOrder = 1
-    await wrapper.vm.$nextTick()
-    expect(top().slice(0, 2)).toEqual(['bp-2', 'bp-1'])
-  })
-
-  it('explains the column, and that no tier moves on it', async () => {
-    wrapper = await mountPane({ peaks: peaks() })
-    expect(wrapper.vm.HEADER_TOOLTIPS.coVariation).toMatch(/0\.6 or more co-varies/)
-    expect(wrapper.vm.HEADER_TOOLTIPS.coVariation).toMatch(/No tier moves on it$/)
-  })
-})
-
-describe('PaneBrowserBatchPeaks facts column', () => {
-  const checks = (facts) => ({
-    formula: 'C2H4O2',
-    ion_formula: 'C2H4BrO2-',
-    ionization_mechanism_id: 'm-1',
-    ...facts
-  })
-  const lock = (verdict, extra = {}) => ({
-    halogen_lock: {
-      element: 'Br',
-      label: '81Br',
-      n_ion: 1,
-      n_neutral: 0,
-      judged: 6,
-      holds: 6,
-      share: 1,
-      verdict,
-      ...extra
-    }
-  })
-  const twin = (verdict) => ({ label_twin: { judged: 6, present: 0, excess: null, verdict } })
-  const peaks = () => [
-    peak('bp-1', 'assigned', 0.9, { mz: 100.1, batch_checks: checks(lock('locked')) }),
-    peak('bp-2', 'candidate', 0.6, {
-      mz: 200.1,
-      batch_checks: checks({ ...lock('untestable', { reason: 'few_spectra' }), ...twin('absent') })
-    }),
-    peak('bp-3', 'assigned', 0.95, { mz: 300.1, batch_checks: null }),
-    peak('bp-4', 'assigned', 0.7, { mz: 301.1, isotopologue_of: 'bp-3' })
-  ]
-
-  // Renders the column's cells through a stub that hands each its row.
-  async function cells(rows) {
-    const tableRows = ref([])
-    app = makeApp({ peaks: rows })
-    localStorage.clear()
-    setActivePinia(createPinia())
-    wrapper = mount(PaneBrowserBatchPeaks, {
-      global: {
-        stubs: {
-          ...GLOBAL_STUBS,
-          DataTable: {
-            ...DataTableStub,
-            watch: { value: { handler: (value) => (tableRows.value = value), immediate: true } }
-          },
-          Column: {
-            ...ColumnStub,
-            setup: () => ({ rows: tableRows }),
-            template:
-              '<div class="column-stub" :data-field="field">' +
-              '<template v-for="(row, i) in rows" :key="i">' +
-              '<div class="stub-cell" :data-row="row.batch_peak_id">' +
-              '<slot name="body" :data="row" /></div></template></div>'
-          }
-        },
-        directives: { tooltip: {}, help: {} }
-      }
-    })
-    await wrapper.vm.$nextTick()
-    const column = wrapper
-      .findAll('.column-stub')
-      .find((col) => col.attributes('data-field') === 'checksRank')
-    return Object.fromEntries(
-      column.findAll('.stub-cell').map((cell) => [cell.attributes('data-row'), cell])
+    expect(cells['bp-x'].find('.child-label').exists()).toBe(true)
+    expect(cells['bp-x'].find('[data-testid="mark-reagent"]').exists()).toBe(false)
+    wrapper.unmount()
+    const badges = await formulaCells(
+      [PARENT, { ...LINE, water_ladder: line }, OTHER],
+      'acrossRank'
     )
-  }
-
-  it('is absent from a ledger no reading reached', async () => {
-    wrapper = await mountPane({ peaks: peaks().map(({ batch_checks, ...bp }) => bp) })
-    expect(columnFor('checksRank')).toBeUndefined()
-  })
-
-  it('shows a tag per fact, each in its tone', async () => {
-    const found = await cells(peaks())
-    const tags = (id) =>
-      found[id].findAll('[data-testid="check-tag"]').map((tag) => [tag.text(), tag.classes()])
-    expect(tags('bp-1')).toEqual([['Br lock', ['check-tag', 'holds']]])
-    expect(tags('bp-2')).toEqual([
-      ['Br lock?', ['check-tag', 'unread']],
-      ['no 14N twin', ['check-tag', 'refutes']]
-    ])
-    // None read: a blank cell, as an unfolded isotopologue row's is.
-    expect(found['bp-3'].find('[data-testid="batch-checks"]').exists()).toBe(false)
-    expect(found['bp-3'].text()).toBe('')
-  })
-
-  it('sorts the facts that hold first, a row with none last', async () => {
-    wrapper = await mountPane({ peaks: peaks() })
-    expect(columnFor('checksRank').props('sortable')).toBe(true)
-    const byId = Object.fromEntries(wrapper.vm.rows.map((row) => [row.batch_peak_id, row]))
-    expect(byId['bp-1'].checksRank).toBe(1)
-    expect(byId['bp-2'].checksRank).toBe(-1)
-    expect(byId['bp-3'].checksRank).toBeNull()
-    wrapper.vm.sortField = 'checksRank'
-    wrapper.vm.sortOrder = -1
-    await wrapper.vm.$nextTick()
-    const top = () => wrapper.vm.rows.filter((row) => !row.parentId).map((row) => row.batch_peak_id)
-    expect(top()).toEqual(['bp-1', 'bp-2', 'bp-3'])
-  })
-
-  it('explains the column, and that no tier moves on it', async () => {
-    wrapper = await mountPane({ peaks: peaks() })
-    expect(wrapper.vm.HEADER_TOOLTIPS.facts).toMatch(/14N twin/)
-    expect(wrapper.vm.HEADER_TOOLTIPS.facts).toMatch(/No tier moves on them$/)
+    expect(badges['bp-x'].find('[data-testid="mark-reagent"]').exists()).toBe(false)
   })
 })
 
-describe('PaneBrowserBatchPeaks continuity column', () => {
+describe('PaneBrowserBatchPeaks ratio stability, across the batch', () => {
   // A pair entry as the continuity pass records it on an anchor.
   const pair = (grade, extra = {}) => ({
     kind: 'adduct',
@@ -2142,132 +2041,37 @@ describe('PaneBrowserBatchPeaks continuity column', () => {
   ]
   const continuityCell = (cells, id) => cells[id].find('[data-testid="continuity"]')
 
-  it('is absent from a ledger the pass has not graded', async () => {
-    wrapper = await mountPane({
-      peaks: peaks().map(({ continuity, continuity_grade, ...bp }) => bp)
-    })
-    expect(columnFor('continuityRank')).toBeUndefined()
-  })
-
-  it('draws the three claims as a badge and the two non-readings muted', async () => {
-    const cells = await cellsOf('continuityRank', peaks())
-    // The label is the reader's word; the class is the stored grade, so
-    // red's badge reads Unstable and keeps its `.red` class.
-    for (const [id, label, grade] of [
-      ['bp-stable', 'Stable', 'stable'],
-      ['bp-drift', 'Drift', 'drift'],
-      ['bp-red', 'Unstable', 'red']
-    ]) {
-      const cell = continuityCell(cells, id)
-      expect(cell.text()).toBe(label)
-      expect(cell.classes()).toContain('claim')
-      expect(cell.classes()).toContain(grade)
-    }
-    for (const [id, label] of [
-      ['bp-inconclusive', 'Inconclusive'],
-      ['bp-insufficient', 'Insufficient']
-    ]) {
-      const cell = continuityCell(cells, id)
-      expect(cell.text()).toBe(label)
-      expect(cell.classes()).not.toContain('claim')
-      expect(cell.classes()).toContain(label.toLowerCase())
-    }
-  })
-
-  // The out-of-date arrows, not the clock, which means history alone; and no
-  // dashed border, which means not yet known.
-  it('marks a partial grade and a grade behind the ledger, with the out-of-date arrows', async () => {
-    const cells = await cellsOf('continuityRank', peaks())
-    const partial = continuityCell(cells, 'bp-partial')
-    expect(partial.classes()).toContain('partial')
-    expect(partial.find('[data-testid="continuity-partial"]').text()).toBe('partial')
-    expect(partial.classes()).not.toContain('stale')
-    const stale = continuityCell(cells, 'bp-stale')
-    expect(stale.classes()).toContain('stale')
-    expect(stale.classes()).not.toContain('partial')
-    expect(stale.find('[data-testid="continuity-stale"]').classes()).toContain(
-      'ph-arrows-clockwise'
+  // The grade is the registry's badge in Across the batch, in its tone, and a
+  // button that opens the pairs behind it. A line repeats none of its
+  // family's: the M0's pairs hold the line's.
+  it('draws a graded anchor as a badge in its tone, and a line none', async () => {
+    const cells = await cellsOf('acrossRank', peaks())
+    const badge = (id) => cells[id]?.find('[data-testid="mark-ratio"]')
+    expect(badge('bp-stable').attributes('data-tone')).toBe('supports')
+    expect(badge('bp-drift').attributes('data-tone')).toBe('drifted')
+    expect(badge('bp-red').attributes('data-tone')).toBe('holds-back')
+    expect(badge('bp-inconclusive').attributes('data-tone')).toBe('neutral')
+    expect(badge('bp-none').exists()).toBe(false)
+    expect(continuityCell(cells, 'bp-red').attributes('aria-label')).toBe(
+      'Ratio stability: open the pairs behind the grade'
     )
-    expect(stale.find('.ph-clock-counter-clockwise').exists()).toBe(false)
-    // A current, complete grade is neither.
-    const plain = continuityCell(cells, 'bp-stable')
-    expect(plain.classes()).not.toContain('partial')
-    expect(plain.classes()).not.toContain('stale')
-    expect(plain.find('[data-testid="continuity-stale"]').exists()).toBe(false)
-    expect(plain.find('[data-testid="continuity-partial"]').exists()).toBe(false)
-    expect(stale.find('[data-testid="continuity-partial"]').exists()).toBe(false)
-  })
-
-  it('says a batch that is not time-ordered was not graded, and leaves an ungraded peak blank', async () => {
-    const cells = await cellsOf('continuityRank', peaks())
-    const withdrawn = continuityCell(cells, 'bp-withdrawn')
-    expect(withdrawn.text()).toBe('Not graded')
-    expect(withdrawn.classes()).toContain('withdrawn')
-    expect(continuityCell(cells, 'bp-none').exists()).toBe(false)
-    expect(cells['bp-none'].text()).toBe('')
-  })
-
-  it('says an anchor whose pairs all fell past the cap was not graded, outlined', async () => {
-    const cells = await cellsOf('continuityRank', peaks())
-    const ungraded = continuityCell(cells, 'bp-ungraded')
-    // "Not graded" says it all: no "partial" beside it.
-    expect(ungraded.text()).toBe('Not graded')
-    expect(ungraded.find('[data-testid="continuity-partial"]').exists()).toBe(false)
-    expect(ungraded.attributes('aria-label')).toBe('Ratio stability: Not graded')
-    expect(ungraded.classes()).toContain('partial')
-    expect(ungraded.classes()).not.toContain('claim')
-  })
-
-  it("shows an isotope line's own grade only while the isotopologues are unfolded", async () => {
-    const cells = await cellsOf('continuityRank', peaks())
+    // Folded, the lines are not drawn; unfolded, they carry no badge.
     expect(cells['bp-m1']).toBeUndefined()
-    expect(continuityCell(cells, 'bp-m0').text()).toBe('Stable')
-
-    const childCell = () =>
-      wrapper
-        .findAll('.column-stub')
-        .find((col) => col.attributes('data-field') === 'continuityRank')
-        .findAll('.stub-cell')
-        .find((c) => c.attributes('data-row') === 'bp-m1')
     wrapper.vm.showIsotopologues = true
     await wrapper.vm.$nextTick()
-    expect(childCell().find('[data-testid="continuity"]').text()).toBe('Unstable')
-    // An isotope line with nothing on it gets no dash: its main peak speaks for it.
-    const ungradedChild = wrapper
-      .findAll('.column-stub')
-      .find((col) => col.attributes('data-field') === 'continuityRank')
-      .findAll('.stub-cell')
-      .find((c) => c.attributes('data-row') === 'bp-m2')
-    expect(ungradedChild.find('[data-testid="continuity"]').exists()).toBe(false)
-    expect(ungradedChild.text()).toBe('')
-
-    wrapper.vm.showIsotopologues = false
-    await wrapper.vm.$nextTick()
-    expect(childCell()).toBeUndefined()
-  })
-
-  it('sorts on the order of alarm, unstable first, an ungraded peak last in both directions', async () => {
-    wrapper = await mountPane({ peaks: peaks() })
-    expect(columnFor('continuityRank').props('sortable')).toBe(true)
-    const byId = Object.fromEntries(wrapper.vm.parents.map((row) => [row.batch_peak_id, row]))
-    expect(byId['bp-red'].continuityRank).toBe(0)
-    expect(byId['bp-insufficient'].continuityRank).toBe(4)
-    expect(byId['bp-none'].continuityRank).toBeNull()
-    expect(byId['bp-withdrawn'].continuityRank).toBeNull()
-    wrapper.vm.sortField = 'continuityRank'
-    wrapper.vm.sortOrder = 1
-    await wrapper.vm.$nextTick()
-    const top = () => wrapper.vm.rows.map((row) => row.batch_peak_id)
-    expect(top()[0]).toBe('bp-red')
-    expect(top().slice(-3).sort()).toEqual(['bp-none', 'bp-ungraded', 'bp-withdrawn'])
-    wrapper.vm.sortOrder = -1
-    await wrapper.vm.$nextTick()
-    expect(top()[0]).toBe('bp-insufficient')
-    expect(top().slice(-3).sort()).toEqual(['bp-none', 'bp-ungraded', 'bp-withdrawn'])
+    const unfolded = Object.fromEntries(
+      wrapper
+        .findAll('.column-stub')
+        .find((col) => col.attributes('data-field') === 'acrossRank')
+        .findAll('.stub-cell')
+        .map((cell) => [cell.attributes('data-row'), cell])
+    )
+    expect(unfolded['bp-m1'].find('[data-testid="mark-ratio"]').exists()).toBe(false)
+    expect(unfolded['bp-m0'].find('[data-testid="mark-ratio"]').exists()).toBe(true)
   })
 
   it('opens the pairs of the row whose cell was clicked', async () => {
-    const cells = await cellsOf('continuityRank', peaks())
+    const cells = await cellsOf('acrossRank', peaks())
     await continuityCell(cells, 'bp-red').trigger('click')
     await wrapper.vm.$nextTick()
     expect(wrapper.vm.continuityTarget.batch_peak_id).toBe('bp-red')
@@ -2277,7 +2081,7 @@ describe('PaneBrowserBatchPeaks continuity column', () => {
   })
 
   it('closes the verdict popover when a continuity cell opens, and the other way round', async () => {
-    const cells = await cellsOf('continuityRank', peaks())
+    const cells = await cellsOf('acrossRank', peaks())
     const verdictCell = () =>
       wrapper
         .findAll('.column-stub')
@@ -2296,7 +2100,7 @@ describe('PaneBrowserBatchPeaks continuity column', () => {
   // A batch peak nobody has judged draws no mark in its verdict cell: the cell
   // is still the button that records one.
   it('draws nothing in an unjudged verdict cell, and keeps it the button that judges', async () => {
-    await cellsOf('continuityRank', peaks())
+    await cellsOf('acrossRank', peaks())
     const cell = wrapper
       .findAll('.column-stub')
       .find((col) => col.attributes('data-field') === 'verdictRank')
@@ -2306,29 +2110,6 @@ describe('PaneBrowserBatchPeaks continuity column', () => {
     expect(cell.attributes('aria-label')).toBe('Record a batch-level verdict')
     expect(cell.classes()).toContain('unjudged')
     expect(cell.find('.pi').exists()).toBe(false)
-  })
-
-  it("opens an isotope line's pairs as the main peak's partner", async () => {
-    await cellsOf('continuityRank', peaks())
-    wrapper.vm.showIsotopologues = true
-    await wrapper.vm.$nextTick()
-    await wrapper
-      .findAll('.column-stub')
-      .find((col) => col.attributes('data-field') === 'continuityRank')
-      .findAll('.stub-cell')
-      .find((c) => c.attributes('data-row') === 'bp-m1')
-      .find('[data-testid="continuity"]')
-      .trigger('click')
-    await wrapper.vm.$nextTick()
-    const popover = wrapper.findComponent({ name: 'BatchPeakContinuityPopover' })
-    expect(popover.props('row').batch_peak_id).toBe('bp-m1')
-    expect(popover.props('isotopeLine')).toBe(true)
-  })
-
-  it('says the column never identifies and moves no tier', async () => {
-    wrapper = await mountPane({ peaks: peaks() })
-    expect(wrapper.vm.HEADER_TOOLTIPS.continuity).toMatch(/never identifies/)
-    expect(wrapper.vm.HEADER_TOOLTIPS.continuity).toMatch(/No tier moves on it$/)
   })
 })
 
@@ -2679,15 +2460,13 @@ describe('PaneBrowserBatchPeaks filtering under the pane-owned table', () => {
       .findAllComponents(ColumnStub)
       .filter((column) => column.props('sortable'))
       .map((column) => column.props('sortField') ?? column.props('field'))
-    for (const field of [
-      'engineTierRank',
-      'memberLevelRank',
-      'engineLevelRank',
-      'coVariationRank',
-      'checksRank',
-      'continuityRank'
-    ]) {
+    for (const field of ['consensus_ion_formula', 'memberLevelRank', 'n_present', 'acrossRank']) {
       expect(sorted).toContain(field)
+    }
+    // The engine's readings are chips, and the batch's readings badges: no
+    // column of their own.
+    for (const field of ['engineTierRank', 'engineLevelRank', 'continuityRank', 'listingName']) {
+      expect(sorted).not.toContain(field)
     }
     expect(SORT_FIELDS.batch).toEqual(expect.arrayContaining(sorted))
   })
@@ -2863,7 +2642,8 @@ describe('PaneBrowserBatchPeaks intensity column', () => {
     // which one - and in what, since the unit is the instrument's.
     wrapper = await mountPane({ peaks })
 
-    expect(wrapper.vm.intensityTooltip).toMatch(/highest intensity/i)
+    expect(wrapper.vm.intensityTooltip).toMatch(/^Max intensity: the brightest sample's/)
+    expect(wrapper.vm.intensityTooltip).toMatch(/highest/i)
     expect(wrapper.vm.intensityTooltip).toMatch(/any sample/i)
     expect(wrapper.vm.intensityTooltip).toMatch(/summed peak height/i)
   })
@@ -2883,22 +2663,58 @@ describe('PaneBrowserBatchPeaks selection across the fold', () => {
   const table = () => wrapper.findComponent(DataTableStub)
   const selectedIds = () => app.data.batchPeak.selected.map((row) => row.batch_peak_id)
 
-  it('drops the isotopologues it hides from the selection', async () => {
-    // The selection is what the chart plots. Leaving a hidden row in it draws a
-    // trace with no ticked row behind it, and spends the cap on a row the user
-    // can no longer see to release.
+  // A line is a sub-row and carries no box (docs/dev/assignment_ledger_and_card.md,
+  // section 3.3): its family's row plots it. A range or a select-all across
+  // unfolded lines selects their families only.
+  it('selects no isotopologue line, folded or not', async () => {
     wrapper = await mountPane({ peaks: [M0, ISO, OTHER] })
     wrapper.vm.showIsotopologues = true
     await wrapper.vm.$nextTick()
+    expect(wrapper.vm.rows.map((row) => row.batch_peak_id)).toEqual(['bp-m0', 'bp-iso', 'bp-other'])
 
     table().vm.$emit('update:selection', wrapper.vm.rows)
     await wrapper.vm.$nextTick()
-    expect(selectedIds()).toEqual(['bp-m0', 'bp-iso', 'bp-other'])
-
-    wrapper.vm.showIsotopologues = false
-    await wrapper.vm.$nextTick()
-
     expect(selectedIds()).toEqual(['bp-m0', 'bp-other'])
+
+    // A click on the line alone selects nothing.
+    table().vm.$emit('update:selection', [...app.data.batchPeak.selected, wrapper.vm.rows[1]])
+    await wrapper.vm.$nextTick()
+    expect(selectedIds()).toEqual(['bp-m0', 'bp-other'])
+
+    // Select all: the families, not their lines; and the header box reads
+    // checked once they are, the lines it cannot hold aside.
+    table().vm.$emit('select-all-change', { checked: true })
+    await wrapper.vm.$nextTick()
+    expect(selectedIds()).toEqual(['bp-m0', 'bp-other'])
+    expect(table().props('selectAll')).toBe(true)
+  })
+
+  // A line handed over is no row the cap refused: a click on one beside a
+  // full selection is no click on a row of its own.
+  it('reads a click on a line beside a full selection as no refusal', async () => {
+    const families = Array.from({ length: MAX_SELECTED_BATCH_PEAKS }, (_, i) =>
+      peak(`bp-${i}`, 'assigned', 0.9, { mz: 400 + i })
+    )
+    wrapper = await mountPane({ peaks: [M0, ISO, ...families] })
+    wrapper.vm.showIsotopologues = true
+    await wrapper.vm.$nextTick()
+    const full = wrapper.vm.rows.filter((row) => !row.parentId).slice(0, MAX_SELECTED_BATCH_PEAKS)
+    table().vm.$emit('update:selection', full)
+    await wrapper.vm.$nextTick()
+    const line = wrapper.vm.rows.find((row) => row.batch_peak_id === 'bp-iso')
+    table().vm.$emit('update:selection', [...full, line])
+    await wrapper.vm.$nextTick()
+    expect(wrapper.vm.selectionNotice).toBeNull()
+    expect(app.data.batchPeak.selected).toHaveLength(MAX_SELECTED_BATCH_PEAKS)
+  })
+
+  // A selection made elsewhere, or before the lines lost their box, can still
+  // hold one: it leaves the selection.
+  it('drops a line a selection still holds', async () => {
+    wrapper = await mountPane({ peaks: [M0, ISO, OTHER] })
+    app.data.batchPeak.selected = [served(M0), served(ISO)]
+    await wrapper.vm.$nextTick()
+    expect(selectedIds()).toEqual(['bp-m0'])
   })
 
   it('leaves the selection alone when a tier chip hides a row', async () => {
@@ -2980,9 +2796,12 @@ describe('PaneBrowserBatchPeaks batch-level verdicts', () => {
   it('offers a sortable verdict column after Samples, sorting on that rank', async () => {
     wrapper = await mountPane({ peaks: PEAKS, verdicts: VERDICTS })
 
+    // After Samples and Across the batch; the row's actions close the row.
     const columns = wrapper.findAllComponents(ColumnStub).map((column) => column.props('field'))
-    expect(columns.at(-1)).toBe('verdictRank')
-    expect(columns.at(-2)).toBe('n_present')
+    expect(columns.at(-1)).toBeUndefined()
+    expect(columns.at(-2)).toBe('verdictRank')
+    expect(columns.at(-3)).toBe('acrossRank')
+    expect(columns.at(-4)).toBe('n_present')
     expect(columnFor('verdictRank').props('sortable')).toBe(true)
   })
 
@@ -3193,18 +3012,26 @@ describe('PaneBrowserBatchPeaks engine tier', () => {
     expect(toggle('batch-engine-disagrees')).toBeUndefined()
   })
 
-  it("shows the engine's tier in a column of its own, the consensus left as it is", async () => {
-    wrapper = await mountPane({ peaks: peaks() })
-    // An isotopologue line is its family's identity again: no chip of its own.
-    expect(wrapper.findComponent({ name: 'AssignmentLedger' }).props('engineTierOnLines')).toBe(
-      false
-    )
+  // Owner's decision of 2026-11-22: a second, outlined chip in the Tier cell
+  // behind Show > Engine readings, not a column of its own.
+  it("shows the engine's tier as an outlined chip in the Tier cell, the consensus left as it is", async () => {
+    await cellsOf('tierRank', peaks())
+    const tierCell = (id) =>
+      wrapper
+        .findAll('.column-stub')
+        .find((col) => col.attributes('data-field') === 'tierRank')
+        .find(`.stub-cell[data-row="${id}"]`)
+    expect(columnFor('engineTierRank')).toBeUndefined()
+    expect(tierCell('bp-1').findAll('.tier-tag')).toHaveLength(1)
 
-    expect(columnFor('engineTierRank')).toBeDefined()
-    expect(columnFor('tierRank')).toBeDefined()
-    const byId = Object.fromEntries(wrapper.vm.rows.map((row) => [row.batch_peak_id, row]))
-    expect(byId['bp-1'].engineTierRank).toBe(1)
-    expect(byId['bp-3'].engineTierRank).toBeNull()
+    wrapper.vm.engineView = true
+    await wrapper.vm.$nextTick()
+    const chips = tierCell('bp-1').findAll('.tier-tag')
+    expect(chips.map((chip) => chip.attributes('data-tier'))).toEqual(['assigned', 'candidate'])
+    expect(chips[1].attributes('data-outlined')).toBe('true')
+    expect(chips[1].attributes('data-tooltip')).toContain("The importing engine's own tier")
+    // A formula the engine stated no tier for: its own chip alone.
+    expect(tierCell('bp-3').findAll('.tier-tag')).toHaveLength(1)
     // Ordered by the consensus, not by the engine.
     expect(ids()).toEqual(['bp-1', 'bp-2', 'bp-3', 'bp-4'])
   })
@@ -3427,23 +3254,45 @@ describe('PaneBrowserBatchPeaks identification level', () => {
     expect(ids()).toHaveLength(4)
   })
 
-  it("shows the importing engine's level in a column of its own, beside the members'", async () => {
-    const cells = await cellsOf('engineLevelRank', peaks())
+  // As the engine's tier is: an outlined chip in the Level cell, behind Show >
+  // Engine readings.
+  it("shows the importing engine's level as an outlined chip beside the members'", async () => {
+    await cellsOf('member_level', peaks())
+    const levelCell = (id) =>
+      wrapper
+        .findAll('.column-stub')
+        .find((col) => col.attributes('data-field') === 'member_level')
+        .find(`.stub-cell[data-row="${id}"]`)
+    expect(columnFor('engineLevelRank')).toBeUndefined()
+    expect(levelCell('bp-1').find('[data-testid="engine-level-chip"]').exists()).toBe(false)
 
-    expect(cells['bp-1'].find('.level-tag').attributes('data-level')).toBe('4a')
-    expect(cells['bp-2'].find('.level-tag').attributes('data-level')).toBe('4b')
-    expect(cells['bp-4'].find('.level-tag').exists()).toBe(false)
-    expect(cells['bp-4'].text()).toBe('')
-    const byId = Object.fromEntries(wrapper.vm.rows.map((row) => [row.batch_peak_id, row]))
-    expect(byId['bp-2'].engineLevelRank).toBe(LEVELS.indexOf('4b'))
-    expect(byId['bp-4'].engineLevelRank).toBeNull()
+    wrapper.vm.engineView = true
+    await wrapper.vm.$nextTick()
+    const chip = (id) => levelCell(id).find('[data-testid="engine-level-chip"]')
+    expect(chip('bp-1').attributes('data-level')).toBe('4a')
+    expect(chip('bp-1').attributes('data-outlined')).toBe('true')
+    expect(chip('bp-2').attributes('data-level')).toBe('4b')
+    expect(chip('bp-4').exists()).toBe(false)
   })
 
-  it("is offered only where some batch peak carries the engine's level", async () => {
-    wrapper = await mountPane({ peaks: peaks().map(({ engine_level, ...bp }) => bp) })
-
+  // Show offers its engine readings where the batch carries any, a level alone
+  // included, and the Level column opens for an engine level the members do not
+  // state.
+  it("offers the engine's readings, and the Level column, for an engine level alone", async () => {
+    wrapper = await mountPane({
+      peaks: peaks().map(({ engine_tier, member_level, ...bp }) => bp)
+    })
+    expect(wrapper.vm.hasEngineReadings).toBe(true)
+    expect(columnFor('member_level')).toBeUndefined()
+    wrapper.vm.engineView = true
+    await wrapper.vm.$nextTick()
     expect(columnFor('member_level')).toBeDefined()
-    expect(columnFor('engineLevelRank')).toBeUndefined()
+    // No engine tier: nothing to disagree with.
+    expect(
+      wrapper
+        .findAllComponents({ name: 'ToggleSwitch' })
+        .find((component) => component.props('inputId') === 'batch-engine-disagrees')
+    ).toBeUndefined()
   })
 
   it("names the engine's level, and whether the members' runs agree", async () => {
@@ -3502,7 +3351,7 @@ describe('PaneBrowserBatchPeaks identification level', () => {
     expect(headers.Level.attributes('data-tooltip')).toContain("members' runs")
     expect(headers.Level.attributes('data-tooltip')).toContain('no tier moves on it')
     expect(headers.Level.attributes('data-help')).toBe('assignment-level')
-    expect(headers['Engine level'].attributes('data-tooltip')).toContain('imported')
+    expect(headers['Engine level']).toBeUndefined()
   })
 })
 
@@ -3757,5 +3606,125 @@ describe('PaneBrowserBatchPeaks Show and its persistence', () => {
 
     expect([...wrapper.vm.activeTiers]).toEqual(['candidate'])
     expect(ids()).toEqual(['bp-1'])
+  })
+})
+
+// The rows and their actions (docs/dev/assignment_ledger_and_card.md,
+// sections 3.2 and 3.3), as this scope configures the shared ledger.
+describe('PaneBrowserBatchPeaks rows and their actions', () => {
+  const ledgerOf = () => wrapper.findComponent({ name: 'AssignmentLedger' })
+  const ids = () => wrapper.vm.rows.map((row) => row.batch_peak_id)
+  const PEAKS = () => [
+    peak('bp-dim', 'assigned', 0.95, { mz: 100.1, max_intensity: 20, n_present: 9 }),
+    peak('bp-bright', 'candidate', 0.6, { mz: 200.1, max_intensity: 9000, n_present: 2 }),
+    peak('bp-line', 'candidate', 0.6, {
+      mz: 201.1,
+      max_intensity: 900,
+      n_present: 2,
+      isotopologue_of: 'bp-bright'
+    }),
+    peak('bp-mid', 'assigned', 0.9, { mz: 150.1, max_intensity: 400, n_present: 9 })
+  ]
+
+  // Owner's decision of 2026-11-22: intensity, descending, the brightest
+  // sample's; the sample count no longer leads with a screen of equal rows.
+  it('opens sorted by its max intensity, brightest first', async () => {
+    wrapper = await mountPane({ peaks: PEAKS() })
+    expect(wrapper.vm.sortField).toBe('max_intensity')
+    expect(wrapper.vm.sortOrder).toBe(-1)
+    expect(ids()).toEqual(['bp-bright', 'bp-mid', 'bp-dim'])
+    expect(ledgerOf().props('intensityLabel')).toBe('Max intensity')
+  })
+
+  it("names the batch peak's ion in the Ion column", async () => {
+    wrapper = await mountPane({ peaks: PEAKS() })
+    expect(ledgerOf().props('fields').ion).toBe('consensus_ion_formula')
+    expect(columnFor('consensus_ion_formula').props('sortable')).toBe(true)
+  })
+
+  it('counts the samples as n of the batch', async () => {
+    const cells = await cellsOf('n_present', PEAKS())
+    // The batch's one sample in makeApp's default list: two of them now.
+    expect(wrapper.vm.samplesLabel({ n_present: 2 })).toBe('2/1')
+    app.data.sample.list = [{}, {}, {}, {}, {}, {}, {}, {}, {}]
+    await wrapper.vm.$nextTick()
+    expect(cells['bp-dim'].find('[data-testid="samples"]').text()).toBe('9/9')
+    // No samples listed: the count alone.
+    app.data.sample.list = []
+    await wrapper.vm.$nextTick()
+    expect(wrapper.vm.samplesLabel({ n_present: 9 })).toBe('9')
+    expect(columnFor('n_present').props('sortable')).toBe(true)
+  })
+
+  // The m/z and the row's action open the batch peak in its brightest sample.
+  it('opens the brightest sample from the m/z and from the row action', async () => {
+    const { useBatchPeakJump } =
+      await import('@/lib/panes/PaneBrowserMatch/stores/batchPeakJump.js')
+    await cellsOf('', PEAKS())
+    const jump = useBatchPeakJump()
+    const spy = vi.spyOn(jump, 'jumpToBrightest').mockResolvedValue(undefined)
+    const bright = wrapper.vm.rows.find((row) => row.batch_peak_id === 'bp-bright')
+
+    expect(ledgerOf().props('mzAction')).toBe('Open the brightest sample with this peak in focus')
+    ledgerOf().vm.$emit('open-mz', bright)
+    expect(spy).toHaveBeenLastCalledWith(bright)
+
+    spy.mockClear()
+    const action = wrapper
+      .findAll('.column-stub')
+      .filter((col) => col.attributes('data-field') === undefined)
+      .at(-1)
+      .find('.stub-cell[data-row="bp-bright"] .jump-cell')
+    await action.trigger('click')
+    expect(spy).toHaveBeenCalledWith(expect.objectContaining({ batch_peak_id: 'bp-bright' }))
+
+    // A batch peak in no sample has no sample to open.
+    spy.mockClear()
+    wrapper.vm.openBrightest({ ...bright, n_present: 0 })
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it("unfolds one family from its caret, and Show's switch sets them all again", async () => {
+    wrapper = await mountPane({ peaks: PEAKS() })
+    const bright = wrapper.vm.rows[0]
+    expect(ledgerOf().props('familySize')(bright)).toBe(1)
+    expect(ledgerOf().props('familyOpen')(bright)).toBe(false)
+
+    ledgerOf().vm.$emit('toggle-family', bright)
+    await wrapper.vm.$nextTick()
+    expect(ids()).toEqual(['bp-bright', 'bp-line', 'bp-mid', 'bp-dim'])
+    // A line folds nothing of its own.
+    expect(ledgerOf().props('familySize')(wrapper.vm.rows[1])).toBe(0)
+
+    wrapper.vm.showIsotopologues = true
+    await wrapper.vm.$nextTick()
+    expect(ids()).toEqual(['bp-bright', 'bp-line', 'bp-mid', 'bp-dim'])
+    ledgerOf().vm.$emit('toggle-family', bright)
+    await wrapper.vm.$nextTick()
+    expect(ids()).toEqual(['bp-bright', 'bp-mid', 'bp-dim'])
+  })
+
+  it('draws the intensity bars over every batch peak shown', async () => {
+    wrapper = await mountPane({ peaks: PEAKS() })
+    wrapper.vm.toggleTier('assigned')
+    await wrapper.vm.$nextTick()
+    expect(ids()).toEqual(['bp-mid', 'bp-dim'])
+    expect(ledgerOf().props('intensities')).toEqual([20, 9000, 900, 400])
+  })
+
+  // What the batch's own rules hold the tier down on: the cap mark on the chip.
+  it('hands the tier chip the reasons that hold it down', async () => {
+    const held = [{ rule: 'persistence_only', detail: 'searched because ...', caps: true }]
+    const kept = [{ rule: 'second_line', detail: 'a line of ...', caps: false }]
+    wrapper = await mountPane({
+      peaks: [
+        peak('bp-held', 'candidate', 0.6, { tier_reasons: held }),
+        peak('bp-kept', 'assigned', 0.9, { mz: 300, tier_reasons: kept })
+      ]
+    })
+    const cap = ledgerOf().props('tierCap')
+    const [first, second] = wrapper.vm.rows
+    expect(cap(first.batch_peak_id === 'bp-held' ? first : second).label).toBe('persistence only')
+    expect(cap(first.batch_peak_id === 'bp-kept' ? first : second)).toBeNull()
   })
 })

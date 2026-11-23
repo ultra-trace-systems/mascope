@@ -2,6 +2,7 @@
 import { ref, reactive, computed, watch, nextTick, onScopeDispose } from 'vue'
 
 import Button from 'primevue/button'
+import Checkbox from 'primevue/checkbox'
 import Column from 'primevue/column'
 import Dialog from 'primevue/dialog'
 import Message from 'primevue/message'
@@ -27,6 +28,7 @@ import {
 import { neutralKey } from '@/lib/chem'
 import { isIsotopeLine } from '@/lib/isotopeLines'
 import { ledgerListing, listingName, targetName, targetOf } from '@/lib/referenceListings'
+import { cappingRulesOf, reasonTooltip } from '@/lib/tierReasons'
 import {
   ENGINE_UNSTATED,
   ROLE_BUCKETS,
@@ -41,18 +43,21 @@ import { queueReason, queueRows, queueTooltip } from '@/lib/verificationQueue'
 import { scrollVirtualRowIntoView } from '@/lib/virtualScroll'
 import {
   AssignmentLedger,
+  LEDGER_ROW_HEIGHT,
   LedgerMenuChoice,
   LedgerVerdictPopover,
   LedgerViewToggle,
   ledgerTierChips,
   runSearchWindow,
   sampleLineLabel,
+  useFamilyFold,
   useLedgerFilters,
   useLedgerSort,
   useLedgerView,
   useRowPopover,
   verdictRank
 } from '@/lib/ledger'
+import { usePeakSearch } from '@/lib/panes/PanePeakAssign/stores/peakSearch.js'
 import { useApp } from '@/stores'
 
 import { useAssignmentLauncher } from './stores'
@@ -61,10 +66,11 @@ import { useBatchChartSelection } from './stores/batchChartSelection.js'
 /**
  * The sample scope of the assignment ledger (lib/ledger/AssignmentLedger.vue):
  * every peak of the focused sample with its committed assignment from the
- * selected run. This pane is the scope's configuration - its rows, its extra
- * columns (the chart toggle, the ionization, the queue's reason), its strip
- * items (the verification queue) and its single selection, tied to the
- * focused peak - and owns the Assign sample dialog.
+ * selected run. This pane is the scope's configuration - its rows, its Plot
+ * box, its Ion cell (the mechanism, and how many of the sample's rows read the
+ * same neutral), the queue's reason, its strip item (the verification queue),
+ * its row action (Curate) and its single selection, tied to the focused peak -
+ * and owns the Assign sample dialog.
  */
 const app = useApp()
 const launcher = useAssignmentLauncher()
@@ -323,6 +329,15 @@ function focusPeak(assignment) {
     app.data.peak.focus(peak)
     app.ui.tab.active = 'sample'
   }
+  return Boolean(peak)
+}
+
+// The row's action: curate it, in the formula search for its peak, where a
+// person picks another formula or confirms this one. The search opens beside
+// the inspector on the Sample tab, which the focus brings forward.
+const peakSearch = usePeakSearch()
+function curate(row) {
+  if (focusPeak(row)) peakSearch.open = true
 }
 
 // --- Rows whose peak the sample no longer has --------------------------------
@@ -412,6 +427,8 @@ const searchTooltip = computed(() => {
 // plus unassigned/reagent peaks, which keeps this a flat, fixed-height list
 // compatible with virtual scrolling.
 const showIsotopologues = viewChoice('isotopologues')
+// One family at a time, from the caret on its row, against Show's choice.
+const families = useFamilyFold(showIsotopologues)
 
 // --- One row per neutral --------------------------------------------------------
 
@@ -452,16 +469,45 @@ watch(groupByFormula, (on) => {
 })
 const groupKeyOf = (row) =>
   row.assigned_formula && !ROLE_BUCKETS.includes(row.role) ? neutralKey(row.assigned_formula) : ''
-// What the head's toggle says: the channels it would show, and what clicking
-// does.
-const groupTooltip = (row) => {
-  const channels = (row.channelRows ?? []).map((channel) => channel.mech ?? 'another channel')
+
+// The Ion cell's pill: how many of the sample's own rows read the row's
+// neutral, through how many channels (section 3.2: `xN`, counted on the
+// sample's rows, which needs no batch). Counted over the run's rows, not the
+// rows the filters leave, so the pill says the same whatever the reader has
+// narrowed the ledger to. An isotope line is its M0's reading again and does
+// not count.
+const channelsByNeutral = computed(() => {
+  const byKey = new Map()
+  for (const row of assignments.value.list) {
+    if (isIsotopeLine(row)) continue
+    const key = groupKeyOf(row)
+    if (!key) continue
+    if (byKey.has(key)) byKey.get(key).push(row)
+    else byKey.set(key, [row])
+  }
+  return byKey
+})
+const channelsOf = (row) => {
+  const key = groupKeyOf(row)
+  return key ? (channelsByNeutral.value.get(key) ?? []) : []
+}
+const channelCount = (row) => channelsOf(row).length
+// The pill's hover: the channels the neutral is read through, and on a
+// group's head what clicking does.
+const channelTooltip = (row) => {
+  const mechs = [
+    ...new Set(
+      channelsOf(row).map(
+        (other) => mechById.value.get(other.ionization_mechanism_id) ?? 'another channel'
+      )
+    )
+  ]
+  const line =
+    `The same neutral is read through ${channelCount(row)} channels of this sample: ` +
+    mechs.join(', ')
+  if (!row.channelRows?.length) return line
   const shown = openGroups.has(row.groupKey)
-  return (
-    `Also read through ${channels.join(', ')}: the same neutral, as ` +
-    `${channels.length === 1 ? 'another ion' : 'other ions'}. Click to ` +
-    `${shown ? 'fold' : 'show'} ${channels.length === 1 ? 'it' : 'them'} under this row`
-  )
+  return `${line}. Click to ${shown ? 'fold' : 'show'} the others under this row`
 }
 
 // --- Sorting ----------------------------------------------------------------
@@ -480,11 +526,7 @@ const {
   field: sortField,
   order: sortOrder,
   sort
-} = useLedgerSort('sample', {
-  assigned_formula: (row) => formulaOf(row),
-  listing: (row) =>
-    row.target ? targetName(row.target) : row.listing ? listingName(row.listing) : null
-})
+} = useLedgerSort('sample', { assigned_formula: (row) => formulaOf(row) })
 
 // The ledger's resting order: most confident first, best fit first within a
 // tier. Also the tie-breaker under every other column, and what an unsorted
@@ -497,17 +539,6 @@ watch(queueMode, (on) => {
   if (on) sortField.value = null
 })
 
-// What a row of the run shows of the channels that committed its neutral: the
-// ledger-measured channel count first - it reaches every committed row, where
-// the curated per-compound count reaches only what Stage A claimed - and the
-// curated one where it is all there is. Where both exist the first is a
-// superset of the second, so preferring it never shrinks the marker.
-const channelCount = (row) =>
-  row.corroboration_channels ??
-  row.provenance?.cross_channel?.channels?.length ??
-  row.corroboration_adducts ??
-  row.provenance?.corroboration?.n_adducts
-
 // The isotope lines of a row, as rows under it: an analyte's isotopologues, a
 // source ion's heavier lines (isIsotopeLine), ordered by m/z among themselves.
 // `underChannel` marks the lines of a grouped channel's row, indented a step
@@ -517,28 +548,19 @@ function isotopologuesOf(parent, underChannel = false) {
     .childrenOf(parent.peak_assignment_id)
     .slice()
     .sort((a, b) => (a.sample_peak_mz ?? 0) - (b.sample_peak_mz ?? 0))
-    .map((child) => {
-      // Corroboration is written onto the M0 winner alone: an isotopologue is
-      // the same ion measured at another isotope, so it shows its parent's
-      // count, and the marker says where it came from.
-      const own = channelCount(child)
-      return {
-        ...child,
-        // Only the parents are sorted - children are spliced in under their
-        // parent whatever the sort - so a family sorts as one block.
-        tierRank: parent.tierRank,
-        // An isotopologue is its M0's formula measured again; the listing is
-        // on the M0's row, not repeated on each line.
-        listing: null,
-        corrobAdducts: own ?? parent.corrobAdducts,
-        // True whenever the count on this row is the parent's, independent of
-        // whether it clears the marker's threshold.
-        corrobInherited: own == null && parent.corrobAdducts > 0,
-        mech: mechById.value.get(child.ionization_mechanism_id) ?? null,
-        isChild: true,
-        underChannel
-      }
-    })
+    .map((child) => ({
+      ...child,
+      // Only the parents are sorted - children are spliced in under their
+      // parent whatever the sort - so a family sorts as one block.
+      tierRank: parent.tierRank,
+      // A line is its M0's formula measured again: it shows its label, its m/z
+      // and its intensity, and repeats nothing of its M0's row.
+      listing: null,
+      target: null,
+      mech: mechById.value.get(child.ionization_mechanism_id) ?? null,
+      isChild: true,
+      underChannel
+    }))
 }
 
 // Table rows. Parents (M0 + unassigned/reagent) are filtered by the active
@@ -566,8 +588,6 @@ const rows = computed(() => {
         verdictRank: verdictRank(effectiveVerdictFor(row)),
         listing,
         target: targetOf(row.reference_listing, listing),
-        corrobAdducts: channelCount(row) ?? 0,
-        corrobInherited: false,
         mech: mechById.value.get(row.ionization_mechanism_id) ?? null,
         isChild: false,
         isChannel: false
@@ -602,11 +622,13 @@ const rows = computed(() => {
   const result = []
   for (const head of heads) {
     result.push(head)
-    if (showIsotopologues.value) result.push(...isotopologuesOf(head))
+    if (families.isOpen(head.peak_assignment_id)) result.push(...isotopologuesOf(head))
     if (head.channelRows && openGroups.has(head.groupKey)) {
       for (const channel of head.channelRows) {
         result.push(channel)
-        if (showIsotopologues.value) result.push(...isotopologuesOf(channel, true))
+        if (families.isOpen(channel.peak_assignment_id)) {
+          result.push(...isotopologuesOf(channel, true))
+        }
       }
     }
   }
@@ -628,20 +650,6 @@ const headOfGrouped = computed(() => {
 // An unfolded line's label: its substitution wherever the row names one,
 // counted from the family's M0 (lib/ledger/rows.js).
 const childLabel = (row) => sampleLineLabel(row, assignments.value.m0Of(row))
-
-// A borrowed count is parenthesised, so an isotopologue does not read at a glance as
-// a peak seen through several adducts in its own right.
-const corrobLabel = (row) =>
-  row.corrobInherited ? `(${row.corrobAdducts})` : `${row.corrobAdducts}`
-
-// Tooltip for the corroboration marker, beside the ionization it counts
-// channels of. An isotopologue shows the count its M0 was corroborated by, so
-// it says the evidence is the family's. No calibrated probability is named:
-// it is read off a curve nobody has verified yet (step 3.4d of the plan).
-const corrobTooltip = (row) =>
-  row.corrobInherited
-    ? `Supported by ${row.corrobAdducts} channels, via the M0 of this isotopologue family`
-    : `Supported by ${row.corrobAdducts} channels`
 
 // Two-way selection tied to the focused peak: clicking a row focuses its peak,
 // and focusing a peak elsewhere (spectrum click, inspector) highlights its row.
@@ -701,7 +709,9 @@ function scrollToFocusedRow() {
   const row = selectedRow.value
   if (!row) return
   const index = rows.value.indexOf(row)
-  nextTick(() => scrollVirtualRowIntoView(ledgerRef.value?.table, index))
+  nextTick(() =>
+    scrollVirtualRowIntoView(ledgerRef.value?.table, index, { itemSize: LEDGER_ROW_HEIGHT })
+  )
 }
 watch([() => selectedRow.value?.sample_peak_id, () => rows.value.length], scrollToFocusedRow, {
   immediate: true
@@ -716,8 +726,27 @@ const engineTierTooltip = (row) =>
     : `The producing engine's own tier: ${tierName(row.engine_tier)}, where this server's ` +
       `banding of the evidence says ${tierName(row.tier)}`
 
-// Isotopologues folded under a formula's M0.
+// Isotopologues folded under a formula's M0: the count beside the family's
+// caret, and whether they are unfolded under it.
 const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).length
+const familyOpen = (row) => families.isOpen(row.peak_assignment_id)
+const toggleFamily = (row) => families.toggle(row.peak_assignment_id)
+
+// The tier chip's cap mark: the reasons that take the row's top tier, as the
+// run recorded them. Named on hover with what each did at the row's tier; the
+// card says why at length.
+const tierCap = (row) => {
+  const caps = cappingRulesOf(row.tier_reason_rules)
+  if (!caps.length) return null
+  const did = reasonTooltip({ caps: true }, row.tier)
+  return {
+    label: `Held down by: ${caps.map((cap) => cap.label).join(', ')}`,
+    tooltip: `${did}: ${caps.map((cap) => cap.label).join(', ')}. Open the row for why.`
+  }
+}
+
+// The bars of the intensity column are drawn over every peak of the run.
+const intensities = computed(() => assignments.value.list.map((row) => row.sample_peak_intensity))
 
 // The ledger's count, in its header line: the shell's breadcrumb names the
 // batch and the sample.
@@ -730,16 +759,16 @@ const FIELDS = {
   mz: 'sample_peak_mz',
   intensity: 'sample_peak_intensity',
   formula: 'assigned_formula',
-  listing: 'listing',
+  ion: 'mech',
   level: 'level',
   levelSort: 'levelRank'
 }
 const HEADERS = {
-  listing:
-    'What a reference list calls the formula: the first name the run matched from a list, ' +
-    "that list, and the list's tags. A formula match names candidate compounds; it is not an " +
-    'identification.',
-  engineTier: "The producing engine's own tier, beside this server's",
+  formula:
+    'The formula, with what a reference list or a target names it under it: the first name ' +
+    "the run matched from a list, that list, and the list's tags. A formula match names " +
+    'candidate compounds; it is not an identification.',
+  ion: 'Ionization mechanism (adduct): the channel the neutral was read through',
   level:
     'Identification level: what a reader may state of the row, from 5 (a measured mass) ' +
     'to 1 (a confirmed structure). Shown beside the tier; no tier moves on it',
@@ -787,7 +816,8 @@ const HEADERS = {
     :onRetry="() => assignments.load('retry')"
     emptyTitle="No peaks match these filters"
     :rows="rows"
-    :rowHeight="35.5"
+    :intensities="intensities"
+    mzAction="Open this peak in the inspector"
     v-model:sortField="sortField"
     v-model:sortOrder="sortOrder"
     :fields="FIELDS"
@@ -833,9 +863,12 @@ const HEADERS = {
         { doc: app.ui.help.docUrl('how-it-works/peak-assignment/') }
       )
     "
-    :hasEngineTiers="hasEngineTiers"
+    :engineReadings="readsEngineTiers"
     :engineTierTooltip="engineTierTooltip"
     :hasLevels="hasLevels"
+    :tierCap="tierCap"
+    :familySize="isoCount"
+    :familyOpen="familyOpen"
     :verdictCell="verdictCell"
     :verdictHelp="{
       title: 'Verification',
@@ -850,6 +883,8 @@ const HEADERS = {
     :rowClass="rowClass"
     @toggle-tier="toggleTier"
     @open-verdict="openVerdict"
+    @open-mz="focusPeak"
+    @toggle-family="toggleFamily"
   >
     <template #notices>
       <Message
@@ -974,7 +1009,7 @@ const HEADERS = {
           v-model="engineView"
           id="engine-tier-view"
           label="Engine tier"
-          tooltip="Count and filter the tier chips by the producing engine's own tier, not this server's"
+          tooltip="Show the producing engine's own tier as a second, outlined chip in the Tier cell, and count and filter the tier chips by it"
         />
       </div>
       <LedgerMenuChoice
@@ -1008,17 +1043,20 @@ const HEADERS = {
          the row's species into it, or takes it out, without leaving the
          sample. -->
     <template #lead-column>
-      <Column style="min-width: 3rem">
+      <Column style="width: 2.5rem">
         <template #header>
-          <span class="pi ph ph-chart-line" v-tooltip.top="'In the batch chart'" />
+          <span class="pi ph ph-chart-line" v-tooltip.top="'Plot in the batch chart'" />
         </template>
+        <!-- An isotope line is its family's species: it carries no box. -->
         <template #body="{ data }">
-          <button
-            type="button"
-            class="chart-cell"
-            :class="{ plotted: chart.isPlotted(data) }"
+          <Checkbox
+            v-if="!data.isChild"
+            class="plot-box"
+            binary
+            :modelValue="chart.isPlotted(data)"
             :disabled="!chart.canPlot(data)"
-            :aria-label="
+            :inputId="`plot-${data.peak_assignment_id}`"
+            :ariaLabel="
               chart.isPlotted(data) ? 'Remove from the batch chart' : 'Plot in the batch chart'
             "
             v-tooltip.top="
@@ -1028,97 +1066,80 @@ const HEADERS = {
                   ? 'Remove this species from the batch chart'
                   : 'Plot this species in the batch chart'
             "
-            @click.stop="chart.toggle(data)"
-          >
-            <span class="pi ph ph-chart-line" />
-          </button>
+            @click.stop
+            @update:modelValue="chart.toggle(data)"
+          />
         </template>
       </Column>
     </template>
 
-    <template #formula="{ data }">
-      <span v-if="data.isChild" class="child-cell" :class="{ deeper: data.underChannel }">
+    <!-- An unfolded line: named by its substitution. -->
+    <template #line-label="{ data }">
+      <span class="child-cell" :class="{ deeper: data.underChannel }">
         <span class="child-caret">&#8627;</span>
         <span class="child-label" v-tooltip.top="data.isotope_formula || data.isotope_label">{{
           childLabel(data)
         }}</span>
       </span>
+    </template>
+
+    <template #formula="{ data }">
       <!-- The same neutral read through another channel, under the row that
            heads its group: indented, and named again so the row reads on its
            own. -->
       <span
-        v-else-if="data.isChannel"
-        class="child-cell channel-cell"
+        v-if="data.isChannel"
+        class="channel-cell"
         v-tooltip.top="'The same neutral, read through another ionization channel'"
       >
         <span class="child-caret">&#8627;</span>
         <span class="formula">{{ formulaOf(data) }}</span>
-        <span v-if="isoCount(data)" class="iso-count">+{{ isoCount(data) }}</span>
       </span>
-      <!-- The formula carries hover-to-copy; the isotopologue count rides in the
-           slot, outside what gets copied. -->
+      <!-- The formula carries hover-to-copy. -->
       <BaseCopyableField
         v-else-if="formulaOf(data)"
         class="formula"
         :field="formulaOf(data)"
         :tooltip="data.assigned_formula ? null : ION_TOOLTIP"
+      />
+    </template>
+
+    <!-- The mechanism, and the xN pill where the sample's rows read the same
+         neutral through N channels. On a group's head the pill is the button
+         that shows the others under it. -->
+    <template #ion="{ data }">
+      <span class="mech">{{ data.mech || '' }}</span>
+      <button
+        v-if="data.channelRows?.length"
+        type="button"
+        class="channel-pill group-toggle"
+        data-testid="group-toggle"
+        :aria-expanded="openGroups.has(data.groupKey)"
+        :aria-label="
+          `${openGroups.has(data.groupKey) ? 'Fold' : 'Show'} the other ` +
+          `${data.channelRows.length === 1 ? 'channel' : 'channels'} of ${data.assigned_formula}`
+        "
+        v-tooltip.top="channelTooltip(data)"
+        @click.stop="toggleGroup(data.groupKey)"
       >
-        <span
-          v-if="isoCount(data)"
-          class="iso-count"
-          v-tooltip.top="`${isoCount(data)} isotopologue peak${isoCount(data) === 1 ? '' : 's'}`"
-          >+{{ isoCount(data) }}</span
-        >
-      </BaseCopyableField>
+        &times;{{ channelCount(data) }}
+      </button>
+      <span
+        v-else-if="channelCount(data) > 1"
+        class="channel-pill"
+        data-testid="channel-pill"
+        v-tooltip.top="channelTooltip(data)"
+        >&times;{{ channelCount(data) }}</span
+      >
     </template>
 
-    <template #middle-columns>
-      <Column field="mech" sortable style="min-width: 5rem">
-        <template #header>
-          <span v-tooltip.top="'Ionization mechanism (adduct)'">Ionization</span>
-        </template>
-        <template #body="{ data }">
-          <span class="mech">{{ data.mech || '' }}</span>
-          <!-- How many of the run's channels committed the row's neutral:
-               evidence for the formula, beside the channel it was read
-               through. -->
-          <span
-            v-if="data.corrobAdducts > 1"
-            class="corrob-mark"
-            v-tooltip.top="corrobTooltip(data)"
-            ><span class="pi ph ph-link-simple" />{{ corrobLabel(data) }}</span
-          >
-          <!-- A group's head opens its other channels here. -->
-          <button
-            v-if="data.channelRows?.length"
-            type="button"
-            class="group-toggle"
-            data-testid="group-toggle"
-            :aria-expanded="openGroups.has(data.groupKey)"
-            :aria-label="
-              `${openGroups.has(data.groupKey) ? 'Fold' : 'Show'} the other ` +
-              `${data.channelRows.length === 1 ? 'channel' : 'channels'} of ${data.assigned_formula}`
-            "
-            v-tooltip.top="groupTooltip(data)"
-            @click.stop="toggleGroup(data.groupKey)"
-          >
-            <span
-              :class="[
-                'pi',
-                openGroups.has(data.groupKey) ? 'pi-chevron-down' : 'pi-chevron-right'
-              ]"
-            />+{{ data.channelRows.length }}
-          </button>
-        </template>
-      </Column>
-    </template>
-
-    <template #tier="{ data }">
+    <template #tier="{ data, cap }">
       <BaseTierTag
         :tier="data.tier"
         :evidence="queueMode ? null : data.evidence"
         :role="data.role"
         :source="data.source"
+        :cap="cap"
       />
     </template>
 
@@ -1153,6 +1174,22 @@ const HEADERS = {
           /></span>
         </template>
       </Column>
+    </template>
+
+    <!-- Curate: the formula search for the row's peak, beside the inspector. -->
+    <template #actions="{ data }">
+      <Button
+        v-if="data.assigned_formula && !isStale(data)"
+        class="curate-action"
+        icon="pi ph ph-pencil-simple"
+        text
+        rounded
+        size="small"
+        severity="secondary"
+        aria-label="Curate: search other formulas for this peak"
+        v-tooltip.top="'Curate: search other formulas for this peak, and pick one by hand'"
+        @click.stop="curate(data)"
+      />
     </template>
 
     <template #popovers>
@@ -1195,19 +1232,6 @@ const HEADERS = {
   opacity: 0.85;
   white-space: nowrap;
 }
-/* Channel-corroboration marker beside the ionization. */
-.corrob-mark {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.1rem;
-  margin-left: 0.4rem;
-  font-size: 0.7rem;
-  font-variant-numeric: tabular-nums;
-  color: var(--state-info);
-}
-.corrob-mark .pi {
-  font-size: 0.75rem;
-}
 /* An isotopologue of a grouped channel's row, a step under that row. */
 .child-cell.deeper {
   padding-left: 1.8rem;
@@ -1215,50 +1239,34 @@ const HEADERS = {
 .channel-cell .formula {
   opacity: 0.8;
 }
-/* The head's toggle for its other channels: quiet until hovered. */
-.group-toggle {
+/* The xN pill: how many channels of the sample read the neutral. On a
+   group's head it is the button that shows the others. */
+.channel-pill {
   display: inline-flex;
   align-items: center;
-  gap: 0.1rem;
-  margin-left: 0.4rem;
-  padding: 0 0.25rem;
-  border: 1px solid var(--p-content-border-color, #e3e6ec);
-  border-radius: 4px;
+  margin-left: 0.35rem;
+  padding: 0 0.3rem;
+  border: 1px solid var(--p-content-border-color);
+  border-radius: 999px;
   background: transparent;
-  color: inherit;
+  color: var(--p-text-muted-color);
   font: inherit;
-  font-size: 0.7rem;
+  font-size: 0.68rem;
   font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+}
+.group-toggle {
   cursor: pointer;
 }
-.group-toggle .pi {
-  font-size: 0.6rem;
-}
-.group-toggle:hover {
+.group-toggle:hover,
+.group-toggle[aria-expanded='true'] {
+  color: var(--p-text-color);
   background: var(--p-content-hover-background);
 }
-/* The chart cell: faint until hovered, lit in the accent colour while the
-   species is in the batch chart, greyed when the peak is not in the ledger. */
-.chart-cell {
-  padding: 0.1rem 0.3rem;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
-  opacity: 0.45;
-}
-.chart-cell:hover {
-  opacity: 1;
-  background: var(--p-content-hover-background);
-}
-.chart-cell.plotted {
-  color: var(--p-primary-color);
-  opacity: 1;
-}
-.chart-cell:disabled {
-  cursor: default;
-  opacity: 0.15;
+.channel-cell {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  padding-left: 0.9rem;
 }
 </style>

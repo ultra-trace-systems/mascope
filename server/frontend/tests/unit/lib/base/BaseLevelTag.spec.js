@@ -87,3 +87,11 @@ describe('BaseLevelTag', () => {
     expect(wrapper.find('.level-tag').attributes('data-tooltip')).toBe('say this instead')
   })
 })
+
+describe('BaseLevelTag outline', () => {
+  // An importing engine's own level beside the members', as its tier chip is.
+  it('outlines a second reading of the level', () => {
+    expect(mountTag({ level: '4a', outlined: true }).classes()).toContain('outlined')
+    expect(mountTag({ level: '4a' }).classes()).not.toContain('outlined')
+  })
+})

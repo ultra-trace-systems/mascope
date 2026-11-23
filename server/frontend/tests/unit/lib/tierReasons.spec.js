@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest'
 
 import {
+  CAPPING_RULES,
   TIER_REASON_LABELS,
+  cappingRulesOf,
   holdsTierDown,
   reasonFigure,
   reasonIcon,
@@ -295,5 +297,25 @@ describe('reasonFigure', () => {
   it('names nothing for a reason with no sentence', () => {
     expect(reasonFigure({ rule: 'x' })).toBe('')
     expect(reasonFigure(null)).toBe('')
+  })
+})
+
+// The ledger's slim rows carry their reasons' rules alone, no `caps`: the
+// capping rules are named here, and the tier chip's mark reads them.
+describe('cappingRulesOf', () => {
+  it('names the capping rules a row records, in its order, and nothing else', () => {
+    expect(
+      cappingRulesOf(['evidence_band', 'lone_peak', 'corroborated', 'off_calibration'])
+    ).toEqual([
+      { rule: 'lone_peak', label: 'one peak only' },
+      { rule: 'off_calibration', label: 'off calibration' }
+    ])
+    expect(cappingRulesOf(['second_line', 'not_measured', 'inherited_from_owner'])).toEqual([])
+    expect(cappingRulesOf(null)).toEqual([])
+    expect(cappingRulesOf('lone_peak')).toEqual([])
+  })
+
+  it('names only rules the build has a label for', () => {
+    for (const rule of CAPPING_RULES) expect(TIER_REASON_LABELS).toHaveProperty(rule)
   })
 })

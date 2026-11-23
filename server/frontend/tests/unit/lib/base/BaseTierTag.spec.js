@@ -18,10 +18,13 @@ const mountTag = (props) =>
       stubs: {
         Tag: {
           props: ['value'],
-          template: '<span class="tag"><slot name="icon" />{{ value }}</span>'
+          // As PrimeVue's Tag: a default slot stands in for its label.
+          template: '<span class="tag"><slot name="icon" /><slot>{{ value }}</slot></span>'
         }
       },
-      directives: { tooltip: {} }
+      directives: {
+        tooltip: { mounted: (el, binding) => el.setAttribute('data-tooltip', binding.value ?? '') }
+      }
     }
   })
 
@@ -285,5 +288,35 @@ describe('BaseTierTag faces', () => {
     // The hand is a person's act: the text colour, never the accent.
     expect(style).toMatch(/\.manual-icon \{[^}]*color: var\(--p-text-color\)/)
     expect(style).not.toMatch(/--p-primary-color/)
+  })
+})
+
+// The capping reason, as a mark on the chip (docs/dev/assignment_ledger_and_card.md,
+// section 3.2), and the engine's own tier, outlined beside it.
+describe('BaseTierTag cap and outline', () => {
+  it('marks the tier its cap holds, inside the chip after its word', () => {
+    const wrapper = mountTag({
+      tier: 'candidate',
+      cap: { label: 'one peak only', tooltip: 'Holds this row at candidate' }
+    })
+    const tag = wrapper.find('.tag')
+    const mark = tag.find('[data-testid="tier-reason-mark"]')
+    expect(mark.attributes('aria-label')).toBe('one peak only')
+    expect(mark.attributes('data-tooltip')).toBe('Holds this row at candidate')
+    expect(mark.classes()).toContain('ph-arrow-down')
+    expect(tag.find('.p-tag-label').text()).toBe('candidate')
+  })
+
+  it('draws no cap mark where nothing holds the tier, and none on a role chip', () => {
+    expect(mountTag({ tier: 'assigned' }).find('[data-testid="tier-reason-mark"]').exists()).toBe(
+      false
+    )
+    const role = mountTag({ tier: 'unassigned', role: 'reagent', cap: { label: 'x' } })
+    expect(role.find('[data-testid="tier-reason-mark"]').exists()).toBe(false)
+  })
+
+  it('outlines a second reading of the tier', () => {
+    expect(mountTag({ tier: 'candidate', outlined: true }).classes()).toContain('outlined')
+    expect(mountTag({ tier: 'candidate' }).classes()).not.toContain('outlined')
   })
 })

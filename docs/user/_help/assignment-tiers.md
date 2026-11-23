@@ -31,20 +31,24 @@ peak, not the chance it is right. A *batch peak*'s
 tier is a vote across the samples it appears in, so its chip names no evidence.
 A batch peak the batch's untargeted search took only because its peak recurs
 across the batch, not for its height, holds the formula it found at
-*candidate* at most (**persistence only**, a down arrow beside the chip) until
+*candidate* at most (**persistence only**, a down arrow on the chip) until
 an isotope line, another channel or a series of the batch sees it too. A
 **flat series** badge is not a tier: it flags a batch peak whose trace holds a
 constant ratio to the batch's reagent ions or total ion current, which says
 where the ion likely comes from, not whether its formula is right.
 
-A run imported from another engine can also carry that engine's own tier, in an
-**engine tier** column beside Mascope's. Where the two differ, the peak is worth
-a look: the other engine weighs things Mascope's tier does not. A dash there is
-usual: an engine tiers only the peaks it committed a formula to. Only Mascope's
-tier is used when peaks are rolled up across a batch. The ledger's **Show** menu
-then offers **Engine tier**, which makes the tier chips count and filter by the
-other engine's tier, with **not stated** for the formulas it gave none; a batch
-import that carried the engine's tiers adds the same switch, and **Engine
+A down arrow on a chip says a rule holds the tier down: hover it for the rule
+and what it did, and open the peak for why.
+
+A run imported from another engine can also carry that engine's own tier. The
+ledger's **Show** menu then offers **Engine tier**, which draws the other
+engine's tier as a second, outlined chip beside Mascope's in the same cell, and
+makes the tier chips count and filter by it, with **not stated** for the
+formulas it gave none. Where the two differ, the peak is worth a look: the other
+engine weighs things Mascope's tier does not. An engine tiers only the peaks it
+committed a formula to, so many rows show one chip. Only Mascope's tier is used
+when peaks are rolled up across a batch. A batch import that carried the
+engine's tiers adds the same switch, **Engine tier and level**, and **Engine
 disagrees**, to the *Batch peaks* ledger.
 
 Beside its tier, a peak can carry a role: **reagent** (an ion the ionization
@@ -67,14 +71,14 @@ tiers and are not in the bar, since a role is no confidence; **Show › Roles**
 hides those rows and their chips. The chips you turn on are kept for each
 ledger, through a switch between the sample and the batch and a reload.
 
-**The marks beside a formula.** Each of the batch's readings of a peak is a
-small square badge. The **Batch peaks** ledger draws them beside the formula,
-and each batch line in the inspector opens with one. Co-variation and the
-batch facts keep their own **Co-variation** and **Facts** columns in the
-ledger, and ratio stability is the grade in its **Continuity** column, in the
-same colours. A badge's glyph says which reading it is, and no two readings
-share one. Its colour says what the reading does to confidence, in the colours
-the tiers use:
+**The badges across the batch.** Each of the batch's readings of a peak is a
+small square badge. The **Batch peaks** ledger draws them in its **Across the
+batch** column, at most three to a row: the ones that hold the reading back
+first, then the others, and **+n** for the rest, named on hover. Each batch line
+in the inspector opens with one too. Click the ratio-stability badge for the
+pairs behind its grade. A badge's glyph says which reading it is, and no two
+readings share one. Its colour says what the reading does to confidence, in the
+colours the tiers use:
 
 | Colour | What it does |
 |---|---|
@@ -89,7 +93,7 @@ the tiers use:
 | <span class="ph ph-stairs" aria-hidden="true"></span> stairs | in a homologous series of the batch | green |
 | <span class="ph ph-wave-sine" aria-hidden="true"></span> wave | its ionization channels co-vary | green, grey where they do not or cannot be read |
 | <span class="ph ph-chart-bar" aria-hidden="true"></span> three bars | its isotope lines, stamped or stripped to it | green once one holds, grey otherwise |
-| <span class="ph ph-pulse" aria-hidden="true"></span> pulse | ratio stability: no badge yet, it is the **Continuity** column's grade | green when stable, teal when it drifts, amber when unstable |
+| <span class="ph ph-pulse" aria-hidden="true"></span> pulse | ratio stability, its pairs one click away | green when stable, teal when it drifts, amber when unstable |
 | <span class="ph ph-check" aria-hidden="true"></span> check | the batch facts | green, amber where a fact refutes the reading |
 | <span class="ph ph-repeat" aria-hidden="true"></span> repeat | searched on persistence alone | amber, grey where something else has seen the reading |
 | <span class="ph ph-intersect" aria-hidden="true"></span> two circles | a probable blend of two compounds | amber |

@@ -56,6 +56,47 @@ export const TIER_REASON_LABELS = Object.freeze({
 })
 
 /**
+ * The rules that take a row's top tier, as the tiering pass writes them: each
+ * is recorded with `caps` set, wherever it fires. The ledger's slim rows carry
+ * their reasons' rules alone (`tier_reason_rules`), with no `caps` beside
+ * them, so this is how the ledger's tier chip knows a capping reason stands
+ * without the row's detail read. The card reads `caps` off the detail.
+ */
+export const CAPPING_RULES = Object.freeze([
+  'odd_electron',
+  'oxygen_free_cluster',
+  'polyhalide_cluster',
+  'candidate_density',
+  'lone_peak',
+  'context_prior',
+  'nox_skeleton',
+  'persistence_only',
+  'absent_line',
+  'unresolved_peak',
+  'envelope_neighbour',
+  'oxygen_lattice',
+  'carbon_free',
+  'off_calibration',
+  'ambiguous_nitrogen',
+  'ambiguous_adduct',
+  'minor_channel'
+])
+
+/**
+ * The capping rules a slim row records, named, in the row's order; empty
+ * where none does.
+ *
+ * @param {Array<string>|null} rules - a row's `tier_reason_rules`
+ * @returns {Array<{rule: string, label: string}>}
+ */
+export function cappingRulesOf(rules) {
+  if (!Array.isArray(rules)) return []
+  return rules
+    .filter((rule) => CAPPING_RULES.includes(rule))
+    .map((rule) => ({ rule, label: tierReasonLabel(rule) }))
+}
+
+/**
  * The name a rule is shown by.
  *
  * Looked up as an own key rather than by indexing: a record whose rule read

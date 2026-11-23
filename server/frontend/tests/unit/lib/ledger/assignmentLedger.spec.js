@@ -25,8 +25,10 @@ vi.mock('@/lib/base', () => ({
   },
   BaseProvisionalMark: { template: '<span class="provisional" />' },
   BaseTierTag: {
-    props: ['tier', 'tooltip'],
-    template: '<span class="tier-tag" :data-tier="tier" />'
+    props: { tier: String, tooltip: String, outlined: Boolean, cap: Object },
+    template:
+      '<span class="tier-tag" :data-tier="tier" :data-outlined="String(outlined)" ' +
+      ':data-cap="cap?.label" />'
   },
   BaseVerdictBadge: {
     props: { record: Object, inherited: Boolean, conflict: Object, compact: Boolean },
@@ -50,13 +52,21 @@ const DataTable = {
     scrollHeight: String,
     virtualScrollerOptions: Object,
     filterDisplay: String,
-    size: String
+    size: String,
+    rowClass: Function
   },
   template: '<div class="table"><slot /><div class="empty"><slot name="empty" /></div></div>'
 }
 const Column = {
   name: 'Column',
-  props: { field: String, sortField: String, sortable: Boolean, selectionMode: String },
+  props: {
+    field: String,
+    sortField: String,
+    sortable: Boolean,
+    selectionMode: String,
+    headerClass: String,
+    bodyClass: String
+  },
   inject: ['ledgerRows'],
   template:
     '<div class="column" :data-field="field ?? selectionMode ?? \'\'">' +
@@ -97,27 +107,34 @@ const SCOPES = {
       mz: 'sample_peak_mz',
       intensity: 'sample_peak_intensity',
       formula: 'assigned_formula',
-      listing: 'listing',
+      ion: 'mech',
       level: 'level',
       levelSort: 'levelRank'
     },
     rows: [
-      { id: 'a', sample_peak_mz: 100.05, sample_peak_intensity: 500, assigned_formula: 'C2H6' },
+      {
+        id: 'a',
+        sample_peak_mz: 100.05,
+        sample_peak_intensity: 500,
+        assigned_formula: 'C2H6',
+        mech: '[M+H]+'
+      },
       { id: 'b', sample_peak_mz: 200.1, sample_peak_intensity: null, assigned_formula: null }
     ],
+    // A family's line: the sample's rows mark it `isChild`.
+    line: { isChild: true },
     // The scope's own columns, where its slots put them.
     slots: {
       'lead-column': () => h(Column, { field: 'chart' }),
-      'middle-columns': () => h(Column, { field: 'mech' }),
       'end-columns': () => h(Column, { field: 'queueRank' })
     },
+    // Plot, m/z, Compound, Ion, Intensity, Tier, the scope's, the verdict.
     columns: [
       'chart',
       'sample_peak_mz',
-      'sample_peak_intensity',
       'assigned_formula',
-      'listing',
       'mech',
+      'sample_peak_intensity',
       'tierRank',
       'queueRank',
       'verdictRank'
@@ -128,30 +145,35 @@ const SCOPES = {
       mz: 'mz',
       intensity: 'max_intensity',
       formula: 'consensus_formula',
-      listing: 'listingName',
+      ion: 'consensus_ion_formula',
       level: 'member_level',
       levelSort: 'memberLevelRank'
     },
     rows: [
-      { id: 'a', mz: 100.05, max_intensity: 500, consensus_formula: 'C2H6' },
-      { id: 'b', mz: 200.1, max_intensity: null, consensus_formula: null, parentId: 'a' }
+      {
+        id: 'a',
+        mz: 100.05,
+        max_intensity: 500,
+        consensus_formula: 'C2H6',
+        consensus_ion_formula: 'C2H7+'
+      },
+      { id: 'b', mz: 200.1, max_intensity: null, consensus_formula: null }
     ],
+    // A family's line: the batch's rows carry the family they fold under.
+    line: { parentId: 'a' },
     slots: {
       'lead-column': () => h(Column, { selectionMode: 'multiple' }),
-      'end-columns': () => [
-        h(Column, { field: 'n_present' }),
-        h(Column, { field: 'continuityRank' })
-      ]
+      'end-columns': () => [h(Column, { field: 'n_present' }), h(Column, { field: 'acrossRank' })]
     },
     columns: [
       'multiple',
       'mz',
-      'max_intensity',
       'consensus_formula',
-      'listingName',
+      'consensus_ion_formula',
+      'max_intensity',
       'tierRank',
       'n_present',
-      'continuityRank',
+      'acrossRank',
       'verdictRank'
     ]
   }
@@ -166,7 +188,6 @@ function mountLedger(scope, { props = {}, slots = {} } = {}) {
       label: scope === 'sample' ? 'Assignments' : 'Batch peaks',
       count: `${rows.length} rows`,
       rows,
-      rowHeight: 35,
       fields: config.fields,
       chips: ledgerTierChips({ assigned: 1, candidate: 3, reagent: 2 }),
       activeTiers: reactive(new Set()),
@@ -194,6 +215,12 @@ function mountLedger(scope, { props = {}, slots = {} } = {}) {
   })
 }
 
+// A row of the scope, its shared fields named as the scope names them.
+const row = (scope, { formula = null, intensity = null, mz = 100.05 } = {}) => {
+  const f = SCOPES[scope].fields
+  return { [f.mz]: mz, [f.intensity]: intensity, [f.formula]: formula }
+}
+
 const fields = (wrapper) =>
   wrapper.findAll('.column').map((column) => column.attributes('data-field'))
 const column = (wrapper, field) =>
@@ -214,18 +241,190 @@ describe.each(Object.keys(SCOPES))('AssignmentLedger, %s scope', (scope) => {
   it('heads the shared columns in sentence case', () => {
     const wrapper = mountLedger(scope)
     const heads = wrapper.findAll('.column .head').map((head) => head.text())
-    expect(heads).toEqual(expect.arrayContaining(['m/z', 'Intensity', 'Formula', 'Listed', 'Tier']))
+    expect(heads).toEqual(expect.arrayContaining(['m/z', 'Compound', 'Ion', 'Intensity', 'Tier']))
+    expect(heads).not.toContain('Formula')
+    expect(heads).not.toContain('Listed')
   })
 
-  it('adds the engine tier and the level only where a row carries one', () => {
-    expect(fields(mountLedger(scope))).not.toContain('engineTierRank')
-    const wrapper = mountLedger(scope, { props: { hasEngineTiers: true, hasLevels: true } })
-    expect(fields(wrapper)).toContain('engineTierRank')
+  // The engine's own tier is a chip in the Tier cell, never a column of its
+  // own (owner's decision of 2026-11-22); the level is a column where any row
+  // has one, dropped first at a narrow width.
+  it('adds the level only where a row carries one, and no engine column', () => {
+    expect(fields(mountLedger(scope))).not.toContain(SCOPES[scope].fields.level)
+    const wrapper = mountLedger(scope, { props: { engineReadings: true, hasLevels: true } })
+    expect(fields(wrapper)).not.toContain('engineTierRank')
     expect(fields(wrapper)).toContain(SCOPES[scope].fields.level)
     const level = wrapper
       .findAllComponents(Column)
       .find((c) => c.props('field') === SCOPES[scope].fields.level)
     expect(level.props('sortField')).toBe(SCOPES[scope].fields.levelSort)
+    expect(level.props('headerClass')).toBe('col-level')
+    expect(level.props('bodyClass')).toBe('col-level')
+  })
+
+  it('shows the compact intensity and its bar, the exact number on hover', () => {
+    const rows = [
+      { id: 'a', ...row(scope, { intensity: 19 }) },
+      { id: 'b', ...row(scope, { intensity: 8310 }) },
+      { id: 'c', ...row(scope, { intensity: 1_200_000 }) }
+    ]
+    const wrapper = mountLedger(scope, { props: { rows } })
+    const text = (id) => cell(wrapper, SCOPES[scope].fields.intensity, id).find('.intensity').text()
+    expect(['a', 'b', 'c'].map(text)).toEqual(['19', '8.31k', '1.20M'])
+    const width = (id) =>
+      cell(wrapper, SCOPES[scope].fields.intensity, id).find('.intensity-fill').element.style.width
+    // On a log scale over the rows: the faintest a sliver, the brightest whole.
+    expect(width('a')).toBe('4.0%')
+    expect(width('c')).toBe('100.0%')
+    // 8,310 sits 55 % of the way up the decades from 19 to 1.2M.
+    expect(width('b')).toBe('56.8%')
+  })
+
+  // A bar keeps its length as filters narrow the rows: it is drawn over the
+  // scope's every row when the scope gives them.
+  it('draws the bars over the intensities the scope gives', () => {
+    const rows = [{ id: 'a', ...row(scope, { intensity: 1000 }) }]
+    const wrapper = mountLedger(scope, { props: { rows, intensities: [10, 1000, 100000] } })
+    expect(
+      cell(wrapper, SCOPES[scope].fields.intensity, 'a').find('.intensity-fill').element.style.width
+    ).toBe('52.0%')
+  })
+
+  it('opens the peak from its m/z', async () => {
+    const wrapper = mountLedger(scope, { props: { mzAction: 'Open it' } })
+    const mz = cell(wrapper, SCOPES[scope].fields.mz, 'a').find('[data-testid="ledger-mz"]')
+    expect(mz.attributes('aria-label')).toBe('100.0500: Open it')
+    await mz.trigger('click')
+    expect(wrapper.emitted('open-mz')[0][0].id).toBe('a')
+  })
+
+  it("shows the Compound cell's formula, and a listed name under it only where one is", () => {
+    const listing = ledgerListing({ name: 'ethane', source: 'list' })
+    const rows = [
+      { id: 'a', ...row(scope, { formula: 'C2H6' }), listing },
+      { id: 'c', ...row(scope, { formula: 'C3H8' }) }
+    ]
+    const wrapper = mountLedger(scope, { props: { rows } })
+    const compound = (id) =>
+      cell(wrapper, SCOPES[scope].fields.formula, id).find('[data-testid="compound-cell"]')
+    expect(compound('a').find('.formula').text()).toBe('C2H6')
+    expect(compound('a').find('[data-testid="listed-as"]').text()).toContain('ethane')
+    expect(compound('c').find('.formula').text()).toBe('C3H8')
+    expect(compound('c').find('[data-testid="listed-as"]').exists()).toBe(false)
+  })
+
+  it("draws the scope's Ion cell, or the ion field where the scope draws none", () => {
+    const own = mountLedger(scope)
+    expect(cell(own, SCOPES[scope].fields.ion, 'a').text()).toBe(
+      SCOPES[scope].rows[0][SCOPES[scope].fields.ion]
+    )
+    const drawn = mountLedger(scope, {
+      slots: { ion: ({ data }) => h('span', { class: 'pill' }, `x${data.id}`) }
+    })
+    expect(cell(drawn, SCOPES[scope].fields.ion, 'a').find('.pill').text()).toBe('xa')
+  })
+
+  // A line shows its label, its m/z and its intensity, and nothing it would
+  // only repeat of its family's row.
+  it('draws a line as a sub-row: no ion, tier, level, verdict or action', () => {
+    const rows = [
+      { id: 'a', ...row(scope, { formula: 'C2H6', intensity: 500 }), engine_tier: 'assigned' },
+      {
+        id: 'l',
+        ...row(scope, { formula: 'C2H6', intensity: 20 }),
+        engine_tier: 'assigned',
+        ...SCOPES[scope].line
+      }
+    ]
+    const wrapper = mountLedger(scope, {
+      props: { rows, hasLevels: true, engineReadings: true },
+      slots: {
+        'line-label': () => h('span', { class: 'label' }, '[13C]'),
+        tier: () => h('span', { class: 'own-tier' }),
+        level: () => h('span', { class: 'own-level' }),
+        actions: () => h('button', { class: 'act' })
+      }
+    })
+    const f = SCOPES[scope].fields
+    expect(cell(wrapper, f.formula, 'l').find('.label').text()).toBe('[13C]')
+    expect(cell(wrapper, f.formula, 'l').find('[data-testid="compound-cell"]').exists()).toBe(false)
+    expect(cell(wrapper, f.mz, 'l').text()).not.toBe('')
+    expect(cell(wrapper, f.intensity, 'l').find('.intensity').text()).toBe('20')
+    expect(cell(wrapper, f.ion, 'l').text()).toBe('')
+    for (const field of ['tierRank', f.level, 'verdictRank']) {
+      expect(cell(wrapper, field, 'l').element.children).toHaveLength(0)
+      expect(cell(wrapper, field, 'a').element.children.length).toBeGreaterThan(0)
+    }
+    expect(cell(wrapper, '', 'l').find('.act').exists()).toBe(false)
+    expect(cell(wrapper, '', 'a').find('.act').exists()).toBe(true)
+    // And the table marks it a sub-row, beside the scope's own class.
+    const table = wrapper.findComponent({ name: 'DataTable' })
+    expect(table.props('rowClass')(rows[1])).toContain('ledger-line')
+    expect(table.props('rowClass')(rows[0])).not.toContain('ledger-line')
+  })
+
+  it("keeps the scope's row class beside the sub-row's", () => {
+    const wrapper = mountLedger(scope, {
+      props: { rowClass: (r) => (r.id === 'a' ? 'stale-peak' : null) }
+    })
+    const rowClass = wrapper.findComponent({ name: 'DataTable' }).props('rowClass')
+    expect(rowClass({ id: 'a' })).toEqual(['stale-peak'])
+    expect(rowClass({ id: 'a', ...SCOPES[scope].line })).toEqual(['stale-peak', 'ledger-line'])
+  })
+
+  it("draws a family's caret with its line count, and says when it is open", async () => {
+    const wrapper = mountLedger(scope, {
+      props: { familySize: (r) => (r.id === 'a' ? 3 : 0), familyOpen: () => true }
+    })
+    const caret = cell(wrapper, SCOPES[scope].fields.formula, 'a').find(
+      '[data-testid="family-caret"]'
+    )
+    expect(caret.text()).toBe('3')
+    expect(caret.attributes('aria-expanded')).toBe('true')
+    expect(caret.attributes('aria-label')).toBe('Fold 3 isotopologue lines')
+    expect(
+      cell(wrapper, SCOPES[scope].fields.formula, 'b').find('[data-testid="family-caret"]').exists()
+    ).toBe(false)
+    await caret.trigger('click')
+    expect(wrapper.emitted('toggle-family')[0][0].id).toBe('a')
+  })
+
+  it("draws the engine's tier as a second, outlined chip only with Show's engine readings", () => {
+    const rows = [{ id: 'a', ...row(scope, { formula: 'C2H6' }), engine_tier: 'candidate' }]
+    const tier = { tier: () => h('span', { class: 'own-tier' }) }
+    const off = mountLedger(scope, { props: { rows }, slots: tier })
+    expect(cell(off, 'tierRank', 'a').find('[data-testid="engine-tier-chip"]').exists()).toBe(false)
+    const on = mountLedger(scope, {
+      props: { rows, engineReadings: true, engineTierTooltip: () => 'the engine says so' },
+      slots: tier
+    })
+    const chip = cell(on, 'tierRank', 'a').find('[data-testid="engine-tier-chip"]')
+    expect(chip.attributes('data-tier')).toBe('candidate')
+    expect(chip.attributes('data-outlined')).toBe('true')
+    expect(cell(on, 'tierRank', 'a').find('.own-tier').exists()).toBe(true)
+  })
+
+  it("hands the scope's tier cell the cap mark it reads", () => {
+    const wrapper = mountLedger(scope, {
+      props: { tierCap: (r) => (r.id === 'a' ? { label: 'one peak only' } : null) },
+      slots: { tier: ({ cap }) => h('span', { class: 'own-tier' }, cap?.label ?? '') }
+    })
+    expect(cell(wrapper, 'tierRank', 'a').text()).toBe('one peak only')
+    expect(cell(wrapper, 'tierRank', 'b').text()).toBe('')
+  })
+
+  it('adds the actions column only where the scope has actions', () => {
+    expect(fields(mountLedger(scope))).not.toContain('')
+    const wrapper = mountLedger(scope, { slots: { actions: () => h('button', { class: 'act' }) } })
+    expect(fields(wrapper).at(-1)).toBe('')
+  })
+
+  it("leaves room for the scope's control after the count in the header line", () => {
+    const wrapper = mountLedger(scope, {
+      slots: { 'header-end': () => h('button', { class: 'control' }) }
+    })
+    expect(wrapper.find('.header-end .control').exists()).toBe(true)
+    expect(mountLedger(scope).find('.header-end').exists()).toBe(false)
   })
 
   it('sorts the verdict column on its rank', () => {
@@ -391,33 +590,6 @@ describe.each(Object.keys(SCOPES))('AssignmentLedger, %s scope', (scope) => {
 })
 
 describe('AssignmentLedger, the shared cells', () => {
-  it('shows no engine tier on an isotopologue line where the scope says so', () => {
-    const rows = [
-      { id: 'a', mz: 100, consensus_formula: 'C2H6', engine_tier: 'assigned' },
-      { id: 'b', mz: 101, engine_tier: 'candidate', parentId: 'a' }
-    ]
-    const wrapper = mountLedger('batch', {
-      props: { rows, hasEngineTiers: true, engineTierOnLines: false }
-    })
-    expect(cell(wrapper, 'engineTierRank', 'a').find('.tier-tag').exists()).toBe(true)
-    expect(cell(wrapper, 'engineTierRank', 'b').find('.tier-tag').exists()).toBe(false)
-    const both = mountLedger('batch', { props: { rows, hasEngineTiers: true } })
-    expect(cell(both, 'engineTierRank', 'b').find('.tier-tag').exists()).toBe(true)
-  })
-
-  it('shows no listing on an isotopologue line, and a blank cell where no list names the row', () => {
-    const listing = ledgerListing({ name: 'ethane', source: 'list' })
-    const rows = [
-      { id: 'a', mz: 100, listing },
-      { id: 'b', mz: 101, listing, parentId: 'a' },
-      { id: 'c', mz: 102 }
-    ]
-    const wrapper = mountLedger('batch', { props: { rows } })
-    expect(cell(wrapper, 'listingName', 'a').find('[data-testid="listed-as"]').exists()).toBe(true)
-    expect(cell(wrapper, 'listingName', 'b').text()).toBe('')
-    expect(cell(wrapper, 'listingName', 'c').text()).toBe('')
-  })
-
   it("hands the verdict cell the scope's record and label", () => {
     const rows = [
       { id: 'a', mz: 100, verdict: { verdict: 'confirmed' } },

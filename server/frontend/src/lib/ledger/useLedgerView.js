@@ -73,10 +73,8 @@ export const SORT_FIELDS = Object.freeze({
     'sample_peak_mz',
     'sample_peak_intensity',
     'assigned_formula',
-    'listing',
     'mech',
     'tierRank',
-    'engineTierRank',
     'levelRank',
     'verdictRank'
   ]),
@@ -84,15 +82,11 @@ export const SORT_FIELDS = Object.freeze({
     'mz',
     'max_intensity',
     'consensus_formula',
-    'listingName',
+    'consensus_ion_formula',
     'tierRank',
-    'engineTierRank',
     'memberLevelRank',
-    'engineLevelRank',
-    'coVariationRank',
-    'checksRank',
     'n_present',
-    'continuityRank',
+    'acrossRank',
     'verdictRank'
   ])
 })
@@ -100,6 +94,7 @@ export const SORT_FIELDS = Object.freeze({
 const BUCKETS = new Set([...TIERS, ENGINE_UNSTATED, ...ROLE_BUCKETS])
 
 const isBoolean = (value) => typeof value === 'boolean'
+const isPlainObject = (value) => value != null && typeof value === 'object' && !Array.isArray(value)
 const isString = (value) => typeof value === 'string'
 const oneOf = (values) => (value) => values.includes(value)
 const isTierList = (value) =>
@@ -122,13 +117,14 @@ const COMMON = {
 const SCHEMA = Object.freeze({
   sample: {
     ...COMMON,
-    field: { default: 'tierRank', check: sortFieldOf('sample') },
+    field: { default: 'sample_peak_intensity', check: sortFieldOf('sample') },
+    order: { ...COMMON.order, default: -1 },
     queue: { default: false, check: isBoolean },
     groupBy: { default: 'none', check: oneOf(GROUP_BY_OPTIONS.sample) }
   },
   batch: {
     ...COMMON,
-    field: { default: 'n_present', check: sortFieldOf('batch') },
+    field: { default: 'max_intensity', check: sortFieldOf('batch') },
     order: { ...COMMON.order, default: -1 },
     stripped: { default: false, check: isBoolean },
     blends: { default: false, check: isBoolean },
@@ -141,6 +137,39 @@ const SCHEMA = Object.freeze({
     groupBy: { default: 'none', check: oneOf(GROUP_BY_OPTIONS.batch) }
   }
 })
+
+/**
+ * The stored view's version. Version 2 made intensity, descending, the default
+ * sort of both scopes, where the sample scope's was the tier and the batch
+ * scope's the sample count (docs/dev/assignment_ledger_and_card.md, section
+ * 7.2). A view saved before it holds the former default as if it were a
+ * choice - every key is saved, chosen or not - so a sort equal to a scope's
+ * former default is read as no choice and takes the new one. A reader who had
+ * picked that very sort loses it once; one who had picked any other keeps it.
+ */
+export const LEDGER_VIEW_VERSION = 2
+const FORMER_DEFAULT_SORT = Object.freeze({
+  sample: Object.freeze({ field: 'tierRank', order: 1 }),
+  batch: Object.freeze({ field: 'n_present', order: -1 })
+})
+
+/**
+ * A scope's view as saved at `version`, brought up to this one: the former
+ * default sort dropped, so the current default applies.
+ */
+export function upgradeLedgerView(scope, stored, version) {
+  if ((typeof version === 'number' && version >= LEDGER_VIEW_VERSION) || !isPlainObject(stored)) {
+    return stored
+  }
+  const former = FORMER_DEFAULT_SORT[scope]
+  if (stored.field !== former.field || (stored.order ?? former.order) !== former.order) {
+    return stored
+  }
+  const rest = { ...stored }
+  delete rest.field
+  delete rest.order
+  return rest
+}
 
 const defaultOf = (entry) => (typeof entry.default === 'function' ? entry.default() : entry.default)
 
@@ -167,7 +196,7 @@ export const DEFAULT_LEDGER_SORT = Object.freeze(
  */
 export function restoreLedgerView(scope, stored) {
   const view = defaultLedgerView(scope)
-  if (stored == null || typeof stored !== 'object' || Array.isArray(stored)) return view
+  if (!isPlainObject(stored)) return view
   for (const [key, entry] of Object.entries(SCHEMA[scope])) {
     if (key in stored && entry.check(stored[key])) {
       view[key] = Array.isArray(stored[key]) ? [...stored[key]] : stored[key]
@@ -209,8 +238,10 @@ function save(state) {
 /** The persisted view of both scopes, and the listing switch they share. */
 export const useLedgerViewStore = defineStore('browser.match.ledgerView', () => {
   const stored = load()
-  const sample = reactive(restoreLedgerView('sample', stored?.sample))
-  const batch = reactive(restoreLedgerView('batch', stored?.batch))
+  const restore = (scope) =>
+    restoreLedgerView(scope, upgradeLedgerView(scope, stored?.[scope], stored?.version))
+  const sample = reactive(restore('sample'))
+  const batch = reactive(restore('batch'))
   // "Listed as" folded or in full: one switch for both ledgers, so a reader who
   // opened the column in one finds it open in the other.
   const listing = reactive({ full: stored?.listingFull === true })
@@ -219,6 +250,7 @@ export const useLedgerViewStore = defineStore('browser.match.ledgerView', () => 
     [sample, batch, listing],
     () =>
       save({
+        version: LEDGER_VIEW_VERSION,
         sample: { ...sample, tiers: [...sample.tiers] },
         batch: { ...batch, tiers: [...batch.tiers] },
         listingFull: listing.full
