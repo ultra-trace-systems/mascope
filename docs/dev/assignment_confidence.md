@@ -404,8 +404,9 @@ no backend or DB, only `mascope_tools` + tests.
   only. The inspector measures one peak's shortlist on request (`alternatives_scoring.py`);
   a run now affords the same measurement once it is bounded. With
   `stage_b_confidence` on (off by default until the runtime cost is measured on the gate
-  sets), `alternatives_scoring.measure_winner_confidence` takes the run's committed
-  untargeted M0 winners after the judging passes, the most intense first up to
+  sets), `alternatives_scoring.seed_shortlists` takes the run's elected
+  untargeted M0 winners before the judging (since MAS-1072; it ran after the judging
+  passes before), the most intense first up to
   `stage_b_confidence_peaks` (200) of them, and seeds each one's stored formula-only
   shortlist (at most `max_alternatives`) under every adduct the run searched, the
   secondary channels it opened included, in **one** `compute_match_isotopes` pass. A

@@ -202,17 +202,19 @@ def _search_row(mz: float, label: str = "M0", **fields) -> dict:
 
 
 class TestAKeptReading:
-    def test_its_row_counts_the_grids_rivals_and_the_marker_goes(self):
+    def test_its_row_records_the_grids_rivals_and_the_marker_goes(self):
         rows = [_list_hit("a", "p1"), _child("a-13c", "p2", "a")]
-        matches = pd.DataFrame(
-            [_kept_marker(181.0707, _rivals("C7H16O5")), _search_row(250.5)]
-        )
+        found = _rivals("C7H16O5")
+        matches = pd.DataFrame([_kept_marker(181.0707, found), _search_row(250.5)])
 
         election = settle_list_election(rows, matches, {"a": _reading(181.0707)})
 
         assert election.stage_a == rows
-        assert rows[0]["provenance"]["candidate_density"] == 2
-        assert rows[0]["provenance"][GRID_RIVALS]["added"] == 1
+        assert [r["formula"] for r in rows[0]["provenance"][GRID_RIVALS]["rivals"]] == [
+            "C7H16O5"
+        ]
+        # Measured with the hit's other rivals, in the hit's frame: by peak.
+        assert election.rivals_by_peak == {"p1": found.rivals}
         assert election.matches["mz"].tolist() == [250.5]
         assert (election.released, election.displaced) == (set(), {})
         assert election.summary == {
@@ -268,7 +270,8 @@ class TestAKeptReading:
 
         assert election.matches.empty
         assert election.summary["measured"] == 1
-        assert rows[0]["provenance"][GRID_RIVALS]["added"] == 0
+        assert rows[0]["provenance"][GRID_RIVALS]["rivals"] == []
+        assert election.rivals_by_peak == {}
 
     def test_a_reading_the_search_could_not_read_is_not_measured(self):
         rows = [_list_hit("a", "p1")]

@@ -792,6 +792,7 @@ def _ctx(path, *, recorded=False):
         model_recorded=recorded,
         stage_a_scored=_frame(2),
         seeded_frame=judging_loop.SeededFrame(_frame(1), {}),
+        shortlist=None,
         confidence_curve=CURVE,
         decoy_plan=None,
         stage_a=[],
@@ -860,6 +861,10 @@ class TestWhichPathsRefit:
             assert seeded is ctx.seeded_frame
         else:
             assert judging.rescore is None
+        # Every path reads its rows' rival sets out of the frames it scored
+        # them on, read at the model the round caps at.
+        assert judging.rival_frames is not None
+        assert judging.rival_frames.shortlists == {}
 
     def test_a_batch_decision_s_floors_reach_the_re_score(self):
         # The batch stages' judging of a sample no run recorded a model for:

@@ -230,11 +230,75 @@ class _Recorder:
         return values
 
 
+def _seeded_chain(
+    peaks: pd.DataFrame,
+    stage_b_matches: pd.DataFrame | None,
+    named_fits: dict | None = None,
+):
+    """The seeded re-score, standing down on the fits: every row keeps the
+    finder's own, as these tests declare their rows rather than measure them.
+    Its frame still holds each committed monoisotopic reading on its peak at
+    that fit, and each reading the search named against a peak
+    (``rival_set.named_rival_seeds``) whose formula ``named_fits`` measures,
+    as ``formula -> (fit, ion formula)``, which the run's rival sets read."""
+    from mascope_backend.api.new.peak_assignments.rival_set import SeededFrame
+
+    named_fits = named_fits or {}
+
+    def line(ion, formula, mechanism, ion_formula, peak, fit):
+        return {
+            "target_ion_id": ion,
+            "target_isotope_id": f"{ion}-0",
+            "target_ion_formula": ion_formula,
+            "target_compound_formula": formula,
+            "ionization_mechanism_id": mechanism,
+            "mz": 100.0,
+            "relative_abundance": 1.0,
+            "sample_peak_id": peak,
+            "sample_peak_mz": 100.0,
+            "sample_peak_intensity": 1000.0,
+            "match_mz_error": 0.3,
+            "match_score": fit,
+        }
+
+    async def rescore(_sample, _params, seeds, *, model, resolution=None, named=None):
+        peak_by_mz = {
+            round(float(mz), 6): str(peak)
+            for peak, mz in zip(peaks["sample_peak_id"], peaks["mz"], strict=True)
+        }
+        rows, ion_by_seed = [], {}
+        committed = stage_b_matches if stage_b_matches is not None else pd.DataFrame()
+        for _, row in committed.iterrows():
+            seed = (row.get("formula"), row.get("ionization_mechanism"))
+            peak = peak_by_mz.get(round(float(row["mz"]), 6))
+            if seed not in seeds or peak is None or row.get("isotope_label") != "M0":
+                continue
+            ion = f"seed-{len(rows)}"
+            ion_by_seed[seed] = ion
+            fit = float(row.get("isotopic_pattern_score") or 0.0)
+            rows.append(line(ion, seed[0], seed[1], row.get("ion"), peak, fit))
+        for seed, on in (named or {}).items():
+            if seed[0] not in named_fits or seed in seeds:
+                continue
+            fit, ion_formula = named_fits[seed[0]]
+            for peak in on:
+                ion = f"named-{len(rows)}"
+                ion_by_seed[seed] = ion
+                rows.append(line(ion, seed[0], seed[1], ion_formula, peak, fit))
+        if not rows:
+            return {}, None
+        named = {seed: on for seed, on in (named or {}).items() if seed not in seeds}
+        return {}, SeededFrame(pd.DataFrame(rows), ion_by_seed, named)
+
+    return rescore
+
+
 def _patches(
     recorder: _Recorder,
     peaks: pd.DataFrame,
     match_rows: list[dict],
     stage_b_matches: pd.DataFrame | None = None,
+    named_fits: dict | None = None,
 ):
     """Fake the orchestrator's edges, leaving its composition logic real."""
     run = MagicMock()
@@ -315,11 +379,12 @@ def _patches(
         ),
         # The seeded re-score opens the sample file again; these tests declare
         # their rows rather than measure them, so it stands down and every row
-        # keeps the finder's own fit. Its own wiring is tested separately.
+        # keeps the finder's own fit (:func:`_seeded_chain`). Its own wiring is
+        # tested separately.
         "seeded": patch(
             "mascope_backend.api.new.peak_assignments.judging_loop._seeded_rescore",
             new_callable=AsyncMock,
-            return_value=({}, None),
+            side_effect=_seeded_chain(peaks, stage_b_matches, named_fits),
         ),
         # The file's resolving power lives with its instrument functions in the
         # database; these files have none, as a file never fitted has none.
@@ -1263,6 +1328,9 @@ class TestAListHitMeetsTheGrid:
                 peaks,
                 _mirror_rows() if stage_a is None else stage_a,
                 pd.DataFrame(rows),
+                # The grid's rival, measured in the frame the reading's own
+                # rivals are, where the search named it.
+                named_fits={"C7H16O5": (0.97, "C7H17O5+")},
             )
         )
 
@@ -1440,7 +1508,10 @@ class TestAListHitMeetsTheGrid:
         assert (row["source"], row["assigned_formula"]) == ("database", "C6H12O6")
         provenance = row["provenance"]
         assert provenance["candidate_density"] == 2
-        assert provenance["grid_rivals"]["added"] == 1
+        # The grid's rival, measured at the run's model beside the reading.
+        [measured] = provenance["rival_set"]["rivals"]
+        assert (measured["formula"], measured["frame"]) == ("C7H16O5", "search")
+        assert measured["fit_score"] == 0.97
         assert "candidate_density" in {
             reason["rule"] for reason in provenance["tier_reasons"]
         }
@@ -1508,7 +1579,7 @@ class TestAListHitMeetsTheGrid:
 
         row = next(row for row in recorder.rows if row["sample_peak_id"] == "p1")
         assert row["tier"] == "assigned"
-        assert row["provenance"]["grid_rivals"]["added"] == 0
+        assert row["provenance"]["grid_rivals"]["rivals"] == []
         # The kept reading is no commit of the search's, so nothing re-measures
         # it.
         assert mocks["seeded"].call_args.args[2] == set()
@@ -3448,53 +3519,68 @@ class TestStageBWinnerConfidence:
         # The shortlist pass reads the sample file through the seeded chain;
         # here it states what it found: one entry on the winner's own peak, one
         # whose monoisotopic line sits on another peak.
+        found = (
+            {
+                ("C14H13N5O2", "im-1"): "ion-a",
+                ("C18H17N3", "im-1"): "ion-b",
+                # The second entry through the opened channel: an ion on
+                # the winner's peak, which only that channel makes of it.
+                ("C18H17N3", "im-2"): "ion-c",
+            },
+            {"ion-a": 0.9, "ion-b": 0.99, "ion-c": 0.6},
+            {},
+            pd.DataFrame(
+                [
+                    {
+                        "target_ion_id": "ion-a",
+                        "target_isotope_id": "ion-a-0",
+                        "relative_abundance": 1.0,
+                        "sample_peak_intensity": 100.0,
+                        "match_score": 0.9,
+                        "target_ion_formula": "C14H14N5O2+",
+                        "mz": 300.12,
+                        "sample_peak_id": "p3",
+                        "match_mz_error": 0.4,
+                        "match_abundance_error": 0.05,
+                    },
+                    {
+                        "target_ion_id": "ion-b",
+                        "target_isotope_id": "ion-b-0",
+                        "relative_abundance": 1.0,
+                        "sample_peak_intensity": 100.0,
+                        "match_score": 0.99,
+                        "target_ion_formula": "C18H18N3+",
+                        "mz": 276.15,
+                        "sample_peak_id": "elsewhere",
+                        "match_mz_error": 0.1,
+                        "match_abundance_error": 0.05,
+                    },
+                    {
+                        "target_ion_id": "ion-c",
+                        "target_isotope_id": "ion-c-0",
+                        "relative_abundance": 1.0,
+                        "sample_peak_intensity": 100.0,
+                        "match_score": 0.6,
+                        "target_ion_formula": "C18H17N3Na+",
+                        "mz": 300.13,
+                        "sample_peak_id": "p3",
+                        "match_mz_error": 0.6,
+                        "match_abundance_error": 0.05,
+                    },
+                ]
+            ),
+        )
+
+        async def score_seeds(_sample, seeds, _params, **_kwargs):
+            # What the chain measures of the seeds it was handed.
+            ion_by_seed = {seed: ion for seed, ion in found[0].items() if seed in seeds}
+            frame = found[3][found[3]["target_ion_id"].isin(set(ion_by_seed.values()))]
+            return ion_by_seed, found[1], found[2], frame
+
         patches["shortlist"] = patch(
             "mascope_backend.api.new.peak_assignments.alternatives_scoring.score_seeds",
             new_callable=AsyncMock,
-            return_value=(
-                {
-                    ("C14H13N5O2", "im-1"): "ion-a",
-                    ("C18H17N3", "im-1"): "ion-b",
-                    # The second entry through the opened channel: an ion on
-                    # the winner's peak, which only that channel makes of it.
-                    ("C18H17N3", "im-2"): "ion-c",
-                },
-                {"ion-a": 0.9, "ion-b": 0.99, "ion-c": 0.6},
-                {},
-                pd.DataFrame(
-                    [
-                        {
-                            "target_ion_id": "ion-a",
-                            "target_ion_formula": "C14H14N5O2+",
-                            "mz": 300.12,
-                            "sample_peak_id": "p3",
-                            "match_mz_error": 0.4,
-                            "match_abundance_error": 0.05,
-                        },
-                        {
-                            "target_ion_id": "ion-b",
-                            "target_ion_formula": "C18H18N3+",
-                            "mz": 276.15,
-                            "sample_peak_id": "elsewhere",
-                            "match_mz_error": 0.1,
-                            "match_abundance_error": 0.05,
-                        },
-                        {
-                            "target_ion_id": "ion-c",
-                            "target_ion_formula": "C18H17N3Na+",
-                            "mz": 300.13,
-                            "sample_peak_id": "p3",
-                            "match_mz_error": 0.6,
-                            "match_abundance_error": 0.05,
-                        },
-                    ]
-                ),
-            ),
-        )
-        patches["seeded"] = patch(
-            "mascope_backend.api.new.peak_assignments.judging_loop._seeded_rescore",
-            new_callable=AsyncMock,
-            return_value=({}, None),
+            side_effect=score_seeds,
         )
         if opened:
             # The run opens a secondary channel for this sample, which the
@@ -3571,7 +3657,8 @@ class TestStageBWinnerConfidence:
     @pytest.mark.asyncio
     async def test_a_run_that_takes_v2_measures_and_records_v2(self):
         # The refit puts the centre 1.5 ppm off v1's, beyond the bound: the run
-        # takes v2. The shortlist is then measured at v2, the model its
+        # takes v2. The shortlist is seeded at the model the search ranked at
+        # and read again at v2 with the winner's other rivals, the model its
         # winners were scored and capped at, and the run records v2, which
         # every reader outside it reads.
         from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
@@ -3598,14 +3685,15 @@ class TestStageBWinnerConfidence:
 
         shortlist = mocks["shortlist"].await_args.kwargs["model"]
         ranked = mocks["seeded"].call_args.kwargs["model"]
-        assert (ranked.version, shortlist.version) == (1, 2)
-        assert shortlist.scoring_mu_ppm == pytest.approx(-1.5)
+        assert shortlist is ranked and ranked.version == 1
+        winner = next(row for row in recorder.rows if row["sample_peak_id"] == "p3")
+        assert winner["provenance"]["rival_set"]["model_version"] == 2
         config = recorder.recorded_configs()[-1]
         assert config["measurement_model"]["gate"]["refit"]["adopted"] is True
         recorded = MeasurementModel.from_run_config(config)
         assert recorded.version == 2
         assert recorded.scoring_mu_ppm == pytest.approx(-1.5)
-        assert recorded.record() == shortlist.record()
+        assert config["tiering"]["rival_sets"]["model_version"] == 2
         # The v1 the search ranked at is kept beside it.
         assert config["measurement_model"]["ranked_at"] == ranked.record()
         # The library's rows were scored again at v2, and read their

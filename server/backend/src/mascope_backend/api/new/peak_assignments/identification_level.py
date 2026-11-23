@@ -42,22 +42,26 @@ Each committed monoisotopic row is read in order:
   height was measured. A stamped line under a halogen-free reading is the
   batch's fact, read from step 5.8c.
 - **5a, rivals remain.** The row's measured shortlist holds a rival no test
-  excluded; the row lists each. Stage A rows carry theirs where the formula
-  search measured their peak: the list's candidates the run competed in one
-  frame (``alternatives``) and the search's rivals its evidence could not
-  separate (``engine.GRID_RIVALS``); one the search did not measure was
-  competed against the lists' formulas alone. An untargeted winner carries one only where step
-  4.15 measured its formula-only shortlist (``engine.MEASURED_SHORTLIST``),
-  which is off by default; a row without one reads 5a with "rivals not
-  measured" and the lift "measure the shortlist", since the level does not
-  assume an exclusion it did not see. Nor does it assume one of a rival the
-  cap on stored alternatives left out (``engine.RIVALS_PAST_CAP``).
+  excluded; the row lists each. The shortlist is the row's rival set
+  (``rival_set.RIVAL_SET``), the one the density and the arbitration read:
+  every other ion the run measured on the peak, at the model its caps read.
+  A Stage A row's is complete where the formula search measured its peak
+  (``engine.GRID_RIVALS``); one the search did not measure was competed
+  against the lists' formulas alone. An untargeted winner's is complete only
+  where step 4.15 measured its formula-only shortlist
+  (``engine.MEASURED_SHORTLIST``), which is off by default; a row without one
+  reads 5a with "rivals not measured" and the lift "measure the shortlist",
+  since the level does not assume an exclusion it did not see. Nor does it
+  assume one of a rival the set does not name, or, on an untargeted winner, a
+  formula the cap on stored alternatives left out (``engine.RIVALS_PAST_CAP``).
 - **4, every rival excluded.** Each rival is out on a named test:
 
   - ``mass``: its fit at the run's width, mass and isotope pattern together,
     is under the winner's by more than the arbitration's tie margin
-    (``arbitration.DEFAULT_TIE_TOL``, floored at ``TIE_ABS_FLOOR``), or no
-    channel of the run places it on the peak at all;
+    (``arbitration.tie_gap``), or no channel of the run places it on the peak
+    at all. The test reads the fits, where the density reads the evidence
+    (fit x plausibility): a test excludes a rival on what the spectrum
+    measured, and plausibility excludes nothing (below);
   - ``isotopes``: a line of the winner's own pattern is committed with it and
     tracks it (``tiering.follows_its_owner``) and names a heavy isotope of an
     element the rival's ion lacks, or a line the rival's own envelope predicts
@@ -124,6 +128,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     ion_identity,
 )
 from mascope_backend.api.new.peak_assignments.mass_gate import SpectrumLines
+from mascope_backend.api.new.peak_assignments.rival_set import RIVAL_SET
 from mascope_backend.api.new.peak_assignments.row_terms import (
     ROLE_ISO_CHILD,
     ROLE_M0,
@@ -143,7 +148,7 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     isotope_lines,
     settled_detail,
 )
-from mascope_tools.composition.arbitration import DEFAULT_TIE_TOL, TIE_ABS_FLOOR
+from mascope_tools.composition.arbitration import tie_gap as arbitration_tie_gap
 from mascope_tools.composition.heuristic_filter import (
     PLAUSIBILITY_FLOOR,
     element_counts,
@@ -157,8 +162,9 @@ from mascope_tools.composition.profiles import ChemistryContext
 #: letter of a number changes. Recorded on the run beside the tier rule set
 #: (``tiering.TIERING_RULES_VERSION``), as ``level_rules_version``, because a
 #: level is only comparable across runs together with the rules that stated
-#: it.
-LEVEL_RULES_VERSION = 1
+#: it. 2 (MAS-1072): the shortlist is the row's rival set, the rivals its
+#: density counts, at the model its caps read.
+LEVEL_RULES_VERSION = 2
 
 #: The provenance key a committed row's level is recorded under.
 IDENTIFICATION_LEVEL = "identification_level"
@@ -258,8 +264,8 @@ def _plural(count: int, word: str) -> str:
 
 def tie_gap(best: float) -> float:
     """The arbitration's tie margin below a best value
-    (``arbitration.arbitrate_candidates``): relative, floored in absolute."""
-    return max(DEFAULT_TIE_TOL * best, TIE_ABS_FLOOR)
+    (``arbitration.tie_gap``): relative, floored in absolute."""
+    return arbitration_tie_gap(best)
 
 
 @dataclass(frozen=True)
@@ -300,130 +306,97 @@ def _key(rival: Rival) -> tuple:
 def shortlist(row: dict) -> tuple[list[Rival] | None, int]:
     """The rivals a row's measured shortlist holds, and how many it leaves unlisted.
 
-    A Stage A row's shortlist is the list's candidates the run competed for
-    the peak in one frame, each with its fit, and the formula search's rivals
-    its evidence could not separate (``engine.GRID_RIVALS``). Only where the
-    search measured the peak is the shortlist more than the lists': a row with
-    no such record - a run that did not search, or a reading the search could
-    not read - was competed against the formulas a list named and no others,
-    so it reads as not measured. The search names its rivals by evidence, so
-    one it separated by plausibility alone is not among them (#3285). An
-    untargeted winner's is its scored losers and its formula-only shortlist,
-    measured only where step 4.15 reached it. A reading of the row's own ion is no
-    rival (``same_ion``, or an entry whose ion is the row's): it is the same
-    measurement split another way, and the split is the 4b question.
+    The row's rival set (``rival_set.RIVAL_SET``): every other ion the run
+    measured on its peak, at the model its caps read, each with its fit beside
+    the row's own in the same frame. The level reads the rivals the density
+    and the arbitration read, and measures none of its own.
+
+    Where the set is all of a row's rivals is the search's to say. A Stage A
+    row's set holds the search's rivals only where the search measured its
+    peak (``engine.GRID_RIVALS``): a row with no such record - a run that did
+    not search, or a reading the search could not read - was competed against
+    the formulas a list named and no others, so it reads as not measured. An
+    untargeted winner's is complete only where step 4.15 measured its
+    formula-only shortlist (``engine.MEASURED_SHORTLIST``), off by default; a
+    formula of it that no channel placed on the peak is listed as such. A
+    reading of the row's own ion is no rival: it is the same measurement split
+    another way, and the split is the 4b question.
 
     :param row: A committed monoisotopic row.
     :return: The rivals, best fit first per ion, or None where the shortlist
         was not measured; and how many rivals the row knows of and does not
-        list (past the stored cap, or past the grid's named ones).
+        list (past the set's named ones, or, on an untargeted winner, past the
+        stored cap, whose formula-only entries no pass measured).
     """
     provenance = _provenance(row)
     source = row.get("source")
+    measured = provenance.get(MEASURED_SHORTLIST)
     if source == SOURCE_UNTARGETED:
-        measured = provenance.get(MEASURED_SHORTLIST)
         if not isinstance(measured, list):
             return None, 0
-        by_formula = {
-            formula_identity(entry.get("formula")): entry
-            for entry in measured
-            if isinstance(entry, dict) and entry.get("formula")
-        }
-    elif source == SOURCE_DATABASE:
-        if not isinstance(provenance.get(GRID_RIVALS), dict):
-            return None, 0
-        by_formula = {}
-    else:
-        # A hand row, or a source no stage of this engine is: no shortlist
-        # this run measured belongs to it.
+    elif source != SOURCE_DATABASE or not isinstance(provenance.get(GRID_RIVALS), dict):
+        # A hand row, a source no stage of this engine is, or a list row the
+        # search did not measure.
         return None, 0
-    winner_fit = _fit(row.get("fit_score"))
+    record = provenance.get(RIVAL_SET)
+    if not isinstance(record, dict):
+        return None, 0
+    against = _fit(record.get("fit_score"))
     own = formula_identity(row.get("assigned_formula"))
-    found: list[Rival] = []
+    found = [
+        Rival(
+            str(entry["formula"]),
+            entry.get("ion_formula"),
+            _fit(entry.get("fit_score")),
+            against,
+            _fit(entry.get("mz_error_ppm")),
+            bool(entry.get("monoisotopic", True)),
+            True,
+            RIVAL_SET,
+        )
+        for entry in record.get("rivals") or []
+        if isinstance(entry, dict)
+        and entry.get("formula")
+        and formula_identity(entry["formula"]) != own
+    ]
+    found += [
+        Rival(str(entry["formula"]), None, None, against, None, True, False, RIVAL_SET)
+        for entry in measured or []
+        if isinstance(entry, dict)
+        and entry.get("formula")
+        and entry.get("placed") is False
+        and formula_identity(entry["formula"]) != own
+    ]
+    # A stored alternative no frame measured is a rival nobody tested: it
+    # stays listed, open, its fit not measured.
+    tested = {formula_identity(rival.formula) for rival in found} | {
+        formula_identity(entry.get("formula"))
+        for entry in measured or []
+        if isinstance(entry, dict)
+    }
     for entry in row.get("alternatives") or []:
-        if not isinstance(entry, dict) or entry.get(SAME_ION):
+        formula = entry.get("assigned_formula") if isinstance(entry, dict) else None
+        if (
+            not formula
+            or entry.get(SAME_ION)
+            or formula_identity(formula) in tested | {own}
+        ):
             continue
-        formula = entry.get("assigned_formula")
-        if not formula or formula_identity(formula) == own:
-            continue
-        label = entry.get("isotope_label")
-        monoisotopic = label in (None, "", "M0")
-        fit = _fit(entry.get("fit_score"))
-        if fit is not None:
-            found.append(
-                Rival(
-                    str(formula),
-                    entry.get("ion_formula"),
-                    fit,
-                    winner_fit,
-                    _fit(entry.get("mz_error_ppm")),
-                    monoisotopic,
-                    True,
-                    "alternatives",
-                )
+        found.append(
+            Rival(
+                str(formula),
+                entry.get("ion_formula"),
+                None,
+                against,
+                None,
+                entry.get("isotope_label") in (None, "", "M0"),
+                True,
+                "alternatives",
             )
-            continue
-        measured_entry = by_formula.get(formula_identity(formula))
-        if measured_entry is None:
-            found.append(
-                Rival(
-                    str(formula),
-                    entry.get("ion_formula"),
-                    None,
-                    winner_fit,
-                    None,
-                    monoisotopic,
-                    True,
-                    "alternatives",
-                )
-            )
-        elif measured_entry.get("placed") is False:
-            found.append(
-                Rival(
-                    str(formula),
-                    entry.get("ion_formula"),
-                    None,
-                    winner_fit,
-                    None,
-                    True,
-                    False,
-                    MEASURED_SHORTLIST,
-                )
-            )
-        else:
-            found.append(
-                Rival(
-                    str(formula),
-                    measured_entry.get("ion_formula"),
-                    _fit(measured_entry.get("fit_score")),
-                    winner_fit,
-                    _fit(measured_entry.get("mz_error_ppm")),
-                    True,
-                    True,
-                    MEASURED_SHORTLIST,
-                )
-            )
-    unlisted = int(provenance.get(RIVALS_PAST_CAP) or 0)
-    grid = provenance.get(GRID_RIVALS)
-    if isinstance(grid, dict):
-        named = [entry for entry in grid.get("rivals") or [] if isinstance(entry, dict)]
-        against = _fit(grid.get("fit_score"))
-        for entry in named:
-            if not entry.get("formula"):
-                continue
-            found.append(
-                Rival(
-                    str(entry["formula"]),
-                    entry.get("ion_formula"),
-                    _fit(entry.get("fit_score")),
-                    against,
-                    _fit(entry.get("mz_error_ppm")),
-                    True,
-                    True,
-                    GRID_RIVALS,
-                )
-            )
-        unlisted += max(0, int(grid.get("added") or 0) - len(named))
+        )
+    unlisted = int(record.get("rivals_unlisted") or 0)
+    if source == SOURCE_UNTARGETED:
+        unlisted += int(provenance.get(RIVALS_PAST_CAP) or 0)
     winner_ion = ion_identity(row.get("ion_formula"))
     best: dict[tuple, Rival] = {}
     for rival in found:
@@ -985,13 +958,7 @@ def _level(
     facts.append(
         _fact(
             "shortlist",
-            GRID_RIVALS
-            if any(rival.record == GRID_RIVALS for rival in rivals)
-            else (
-                MEASURED_SHORTLIST
-                if row.get("source") == SOURCE_UNTARGETED
-                else "alternatives"
-            ),
+            RIVAL_SET,
             f"{len(rivals)} rival{'s' if len(rivals) != 1 else ''} listed"
             + (f", {unlisted} unlisted" if unlisted else ""),
         )

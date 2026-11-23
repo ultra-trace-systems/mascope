@@ -18,12 +18,13 @@ is actually looking at the peak.
 
 A run can afford the same measurement once it is bounded, and takes it as an
 option (``PeakAssignmentConfig.stage_b_confidence``, step 4.15 of the
-assignment quality plan): :func:`measure_winner_confidence` measures the
-shortlists of the run's brightest untargeted winners, up to a per-run budget,
-in one seeded pass, and records each winner's arbitration confidence and tie
-flag in its provenance, as Stage A records them. Both paths place a formula on
-its peak through :func:`placements`, so the inspector and the run cannot read
-one seeded pass two ways.
+assignment quality plan): :func:`seed_shortlists` measures the shortlists of
+the run's brightest untargeted winners, up to a per-run budget, in one seeded
+pass, and each formula joins its winner's rival set
+(``rival_set.measure_rival_sets``), whose arbitration the winner's confidence
+and tie flag are read off, as Stage A's are. Both paths place a formula on its
+peak as :func:`placements` does, its monoisotopic line paired to the peak, so
+the inspector and the run cannot read one seeded pass two ways.
 
 What the inspector gets back is a measurement, not a record: its endpoint
 writes nothing, and the scores are never stored onto the run's rows. A run is
@@ -46,15 +47,14 @@ from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.new.match.params import default_match_params
 from mascope_backend.api.new.peak_assignments.config import IN_APP_ENGINE
 from mascope_backend.api.new.peak_assignments.engine import (
-    MEASURED_SHORTLIST,
     evidence_for,
-    formula_identity,
-    ion_identity,
 )
 from mascope_backend.api.new.peak_assignments.fold_view import is_fold_id
 from mascope_backend.api.new.peak_assignments.model_readers import recorded_model
-from mascope_backend.api.new.peak_assignments.monoisotopic import (
-    monoisotopic_row,
+from mascope_backend.api.new.peak_assignments.rival_set import (
+    SeededFrame,
+    m0_by_ion,
+    paired_to,
 )
 from mascope_backend.api.new.peak_assignments.row_terms import (
     ROLE_M0,
@@ -69,7 +69,6 @@ from mascope_backend.api.new.peak_assignments.seeded_scoring import (
     score_seeds,
 )
 from mascope_backend.db import PeakAssignment, PeakAssignmentRun, async_session
-from mascope_tools.composition.arbitration import arbitrate_candidates
 from mascope_tools.composition.heuristic_filter import formula_plausibility
 from mascope_tools.composition.measurement_model import MeasurementModel
 
@@ -108,39 +107,6 @@ def unscorable_alternatives(alternatives: list | None) -> list[tuple[int, str]]:
     return found
 
 
-def _m0_by_ion(scored_df: pd.DataFrame) -> dict[str, pd.Series]:
-    """The monoisotopic row of each seeded ion in a scored frame.
-
-    A shortlist entry is a composition the finder proposed *for this peak's
-    own mass*, so the claim being measured is that the peak IS that ion's
-    monoisotopic peak - not that it is some isotopologue of it. The M0 is the
-    same reference the engine's roles and labels count from
-    (``engine.monoisotopic_row``): the isotopologue whose formula names no
-    isotope beyond the ion's own label, or the lightest where the frame carries
-    no formula; reading it positionally would depend on frame order, which the
-    matcher does not promise.
-
-    :param scored_df: The gated, fit-scored seeded frame.
-    :return: ion id -> its monoisotopic row.
-    """
-    if scored_df.empty or "target_ion_id" not in scored_df.columns:
-        return {}
-    return {
-        str(ion_id): monoisotopic_row(group)
-        for ion_id, group in scored_df.groupby("target_ion_id", sort=False)
-    }
-
-
-def _paired_to(row: pd.Series | None, sample_peak_id: str) -> bool:
-    """Whether a scored isotopologue row paired to this observed peak."""
-    if row is None:
-        return False
-    peak_id = row.get("sample_peak_id")
-    if peak_id is None or (isinstance(peak_id, float) and pd.isna(peak_id)):
-        return False
-    return str(peak_id) == str(sample_peak_id)
-
-
 def placements(
     formula: str,
     mechanisms: list,
@@ -153,7 +119,7 @@ def placements(
     """Every adduct that puts one shortlist formula on one observed peak.
 
     The measurement the inspector makes of one entry and a run makes of every
-    entry it measures (:func:`measure_winner_confidence`), written once so the
+    entry it measures (:func:`seed_shortlists`), written once so the
     two cannot read the same seeded pass differently: an adduct counts only
     where its ion's monoisotopic row paired to the peak and carries a fit.
 
@@ -161,7 +127,7 @@ def placements(
     :param mechanisms: The adducts it was seeded under.
     :param ion_by_seed: ``(formula, mechanism id)`` -> ion id, from the pass.
     :param fit_by_ion: Ion id -> fit, from the pass.
-    :param m0_by_ion: Ion id -> its monoisotopic row (:func:`_m0_by_ion`).
+    :param m0_by_ion: Ion id -> its monoisotopic row (``rival_set.m0_by_ion``).
     :param sample_peak_id: The peak the formula is proposed for.
     :return: Whether any adduct turned the formula into an ion at all, and one
         entry per adduct that placed it on the peak, best evidence first, then
@@ -175,7 +141,7 @@ def placements(
             continue
         generated = True
         m0 = m0_by_ion.get(str(ion_id))
-        if not _paired_to(m0, sample_peak_id):
+        if not paired_to(m0, sample_peak_id):
             continue
         fit = score_or_none(fit_by_ion.get(str(ion_id)))
         if fit is None:
@@ -318,7 +284,7 @@ async def score_row_alternatives(
             recorded=run_config if in_app and isinstance(run_config, dict) else None,
         ),
     )
-    m0_by_ion = _m0_by_ion(scored_df)
+    m0_rows = m0_by_ion(scored_df)
     mechanism_by_id = {m.ionization_mechanism_id: m for m in mechanisms}
 
     data = []
@@ -328,7 +294,7 @@ async def score_row_alternatives(
             mechanisms,
             ion_by_seed=ion_by_seed,
             fit_by_ion=fit_by_ion,
-            m0_by_ion=m0_by_ion,
+            m0_by_ion=m0_rows,
             sample_peak_id=sample_peak_id,
         )
         entry = {
@@ -407,92 +373,12 @@ def stage_b_winners(rows: list[dict]) -> list[dict]:
     ]
 
 
-def recorded_rivals(row: dict) -> list[tuple[str, float, str | None]]:
-    """The candidates a row's alternatives already carry a fit for.
-
-    The losing contenders Stage B competed for the peak and the list readings
-    it displaced, each with the fit it was measured at and the ion it was read
-    as. A reading of the winner's own ion (``same_ion``) is not among them: it
-    is the winner's measurement split another way between analyte and adduct,
-    which the finder elects before anything is ranked, so it is no competitor
-    here either (``arbitration.candidate_density``).
-
-    :param row: A committed row.
-    :return: ``(formula, fit, ion formula)`` per such alternative, in stored
-        order; the ion is None where the entry names none.
-    """
-    rivals: list[tuple[str, float, str | None]] = []
-    for entry in row.get("alternatives") or []:
-        if not isinstance(entry, dict) or entry.get("same_ion"):
-            continue
-        formula = entry.get("assigned_formula")
-        fit = score_or_none(entry.get("fit_score"))
-        if not formula or not isinstance(formula, str) or fit is None:
-            continue
-        ion = entry.get("ion_formula")
-        rivals.append((formula, fit, ion if isinstance(ion, str) else None))
-    return rivals
-
-
-def winner_arbitration(
-    row: dict, measured: list[tuple[str, float, str | None]]
-) -> dict:
-    """A winner's confidence among its peak's scored candidates, as Stage A has it.
-
-    The same three provenance keys Stage A writes, from the same
-    ``arbitrate_candidates``: the winner's share of the evidence
-    (``confidence``), how many distinct candidates it was shared across
-    (``n_candidates``), and whether the evidence could not separate it from the
-    best of them (``is_tie``).
-
-    A candidate is an ION on the peak, as it is to the finder: readings of one
-    ion are one hypothesis about the peak (:func:`ion_identity`). One that
-    reads the winner's own ion is the winner and does not compete with it; of
-    the readings of any other ion, the one with the best evidence stands for
-    it, so two splits of one ion neither share its weight nor tie with each
-    other. The shortlist carries such pairs: it lists every composition whose
-    mass fits, under every adduct of the search. Formulas are compared as
-    compositions (:func:`engine.formula_identity`), so one neutral spelled two
-    ways is one hypothesis too.
-
-    The share is read, not acted on: a winner a measured entry outweighs keeps
-    its peak and its tier, and says so by a confidence below the rival's.
-
-    :param row: A committed untargeted winner.
-    :param measured: ``(formula, fit, ion formula)`` of each shortlist entry
-        the pass placed on the row's peak.
-    :return: ``confidence``, ``n_candidates`` and ``is_tie``.
-    """
-    winner = formula_identity(row["assigned_formula"])
-    winner_ion = ion_identity(row.get("ion_formula"))
-    best_by_ion: dict[tuple, tuple[str, float, float]] = {}
-    for formula, fit, ion in recorded_rivals(row) + measured:
-        identity = formula_identity(formula)
-        key = ion_identity(ion) or ("formula", identity)
-        if winner_ion is not None and key == winner_ion:
-            continue
-        evidence = fit * float(formula_plausibility(identity))
-        held = best_by_ion.get(key)
-        if held is None or (evidence, identity) > (held[2], held[0]):
-            best_by_ion[key] = (identity, fit, evidence)
-    candidates = [(winner, score_or_none(row.get("fit_score")) or 0.0)] + [
-        (identity, fit) for identity, fit, _evidence in best_by_ion.values()
-    ]
-    arbitrated = arbitrate_candidates(candidates)
-    mine = next(c for c in arbitrated if c.formula == winner)
-    return {
-        "confidence": round(mine.confidence, 4),
-        "n_candidates": len(arbitrated),
-        "is_tie": mine.is_tie,
-    }
-
-
 def _shortlist(row: dict) -> list[str]:
     """The formulas of a row's shortlist the run has not measured, once each.
 
     The inspector's selection (:func:`unscorable_alternatives`) less any entry
     that already carries a fit: a contender whose adduct the run could not name
-    was still measured, and is one of :func:`recorded_rivals`.
+    was still measured.
     """
     alternatives = row.get("alternatives") or []
     return list(
@@ -504,7 +390,7 @@ def _shortlist(row: dict) -> list[str]:
     )
 
 
-async def measure_winner_confidence(
+async def seed_shortlists(
     sample,
     rows: list[dict],
     mechanisms: list,
@@ -512,45 +398,44 @@ async def measure_winner_confidence(
     *,
     peak_budget: int,
     model: MeasurementModel,
-) -> dict:
-    """Measure the shortlists of a run's untargeted winners and record a confidence.
+) -> tuple[SeededFrame | None, dict[str, tuple[str, ...]], dict]:
+    """Measure the shortlists of a run's untargeted winners (step 4.15).
 
     The run-level form of :func:`score_row_alternatives`: the same shortlist
     (:func:`unscorable_alternatives`, so at most the run's
     ``max_alternatives``), each formula seeded under every adduct the run
-    searched and placed on the peak by the same rule (:func:`placements`). What
-    the inspector does for one peak on request this does for the run's
-    winners, the most intense first, up to ``peak_budget`` of them, in ONE
-    seeded pass, so the cost is one ``compute_match_isotopes`` read however
-    many winners it covers.
+    searched. What the inspector does for one peak on request this does for
+    the run's winners, the most intense first, up to ``peak_budget`` of them,
+    in ONE seeded pass, so the cost is one ``compute_match_isotopes`` read
+    however many winners it covers.
 
-    The pass is scored at the run's measurement model, the one the winners'
-    own fits were scored and capped at (``model``). So the winner and its
-    rivals are judged at one centre and one width, as Stage A judges its
-    candidates inside one frame. It is never one fitted off the seeds: a
-    shortlist is mostly wrong formulas, and a frame of those fitted on its own
-    lines would judge every one of them against the width their chance
-    matches happened to make.
+    It measures and decides nothing. Each formula is a reading of its
+    winner's peak (``rival_set.SeededFrame.placed_for``), placed there as
+    :func:`placements` places one, and joins the winner's rival set, which
+    the run reads at the model its caps read
+    (``rival_set.measure_rival_sets``): the winner's share, its tie, the
+    density the tiering pass caps on and the level's exclusions are read off
+    that one set, beside the rivals the search named. The pass is scored at
+    the run's model, never at one fitted off the seeds: a shortlist is mostly
+    wrong formulas, and a frame of those fitted on its own lines would judge
+    every one of them against the width their chance matches happened to make.
 
-    A winner whose shortlist the budget did not reach records nothing: a share
+    A winner whose shortlist the budget did not reach records none: a share
     taken of part of the field would read as a share of all of it. A winner
-    with no shortlist records its share among the rivals its row already
-    measured, which costs nothing. Each measured winner also records what each
-    formula measured at (:data:`MEASURED_SHORTLIST`), so the identification
-    level can name the test each rival failed or passed. Only provenance is
-    written; the tier, the fit and the alternatives stay what the run decided.
+    with no shortlist is reached at no cost.
 
     :param sample: The sample being assigned.
-    :param rows: The run's committed rows; winners' provenance is updated in
-        place.
+    :param rows: The run's elected rows.
     :param mechanisms: The adducts a shortlist formula is tried under: every
         one the run searched, the secondary channels it opened included, since
         the finder proposed the shortlist through them all. In a decoy arm
         that swaps adducts, the swapped set.
     :param match_params: The sample's resolved match parameters.
     :param peak_budget: How many winners' shortlists to measure.
-    :param model: The model the winners were scored and capped at.
-    :return: What the pass did, for the run's record.
+    :param model: The model the run's readings were scored at.
+    :return: The seeded frame, None where it scored nothing; the reached
+        winners' peaks, each with the formulas measured for it; and what the
+        pass did, for the run's record.
     """
     started = time.perf_counter()
     winners = stage_b_winners(rows)
@@ -565,69 +450,39 @@ async def measure_winner_confidence(
             str(row.get("sample_peak_id")),
         ),
     )
-    measured_rows = waiting[:peak_budget]
     unreached = {id(row) for row in waiting[peak_budget:]}
-
-    seeds = {
-        (formula, mechanism.ionization_mechanism_id)
-        for row in measured_rows
-        for formula in shortlists[id(row)]
-        for mechanism in mechanisms
-    }
-    ion_by_seed, fit_by_ion, _errors, scored_df = await score_seeds(
-        sample, seeds, match_params, model=model
-    )
-    m0_by_ion = _m0_by_ion(scored_df)
-
-    placed = 0
-    ties = 0
-    for row in winners:
-        if id(row) in unreached:
-            continue
-        measured: list[tuple[str, float, str | None]] = []
-        record: list[dict] = []
+    placed_for: dict[tuple[str, str], set[str]] = {}
+    for row in waiting[:peak_budget]:
         for formula in shortlists[id(row)]:
-            _generated, candidates = placements(
-                formula,
-                mechanisms,
-                ion_by_seed=ion_by_seed,
-                fit_by_ion=fit_by_ion,
-                m0_by_ion=m0_by_ion,
-                sample_peak_id=row["sample_peak_id"],
-            )
-            if candidates:
-                best = candidates[0]
-                measured.append((formula, best["fit_score"], best["ion_formula"]))
-                record.append(
-                    {
-                        "formula": formula,
-                        "ion_formula": best["ion_formula"],
-                        "fit_score": round(float(best["fit_score"]), 4),
-                        "mz_error_ppm": (
-                            None
-                            if best["mz_error_ppm"] is None
-                            else round(float(best["mz_error_ppm"]), 4)
-                        ),
-                    }
-                )
-            else:
-                record.append({"formula": formula, "placed": False})
-        placed += len(measured)
-        arbitration = winner_arbitration(row, measured)
-        ties += arbitration["is_tie"]
-        row["provenance"] = {
-            **(row.get("provenance") or {}),
-            **arbitration,
-            MEASURED_SHORTLIST: record,
-        }
-
-    return {
-        "peak_budget": peak_budget,
-        "winners": len(winners),
-        "measured": len(measured_rows),
-        "unreached": len(unreached),
-        "formulas": sum(len(shortlists[id(row)]) for row in measured_rows),
-        "placed": placed,
-        "ties": ties,
-        "seconds": round(time.perf_counter() - started, 2),
+            for mechanism in mechanisms:
+                seed = (formula, mechanism.ionization_mechanism_id)
+                placed_for.setdefault(seed, set()).add(str(row["sample_peak_id"]))
+    ion_by_seed, _fits, _errors, scored_df = await score_seeds(
+        sample, set(placed_for), match_params, model=model
+    )
+    frame = (
+        None
+        if scored_df.empty
+        else SeededFrame(
+            scored_df,
+            ion_by_seed,
+            {seed: frozenset(peaks) for seed, peaks in placed_for.items()},
+        )
+    )
+    reached = {
+        str(row["sample_peak_id"]): tuple(shortlists[id(row)])
+        for row in winners
+        if id(row) not in unreached
     }
+    return (
+        frame,
+        reached,
+        {
+            "peak_budget": peak_budget,
+            "winners": len(winners),
+            "measured": min(len(waiting), peak_budget),
+            "unreached": len(unreached),
+            "formulas": sum(len(shortlists[id(row)]) for row in waiting[:peak_budget]),
+            "seconds": round(time.perf_counter() - started, 2),
+        },
+    )

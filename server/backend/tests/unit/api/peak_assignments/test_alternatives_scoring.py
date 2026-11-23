@@ -26,23 +26,25 @@ from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 from mascope_backend.api.new.peak_assignments.alternatives_scoring import (
     MAX_SCORED_FORMULAS,
     _blocked_reason,
-    _m0_by_ion,
-    _paired_to,
-    ion_identity,
-    measure_winner_confidence,
-    recorded_rivals,
     score_row_alternatives,
+    seed_shortlists,
     stage_b_winners,
     unscorable_alternatives,
-    winner_arbitration,
 )
 from mascope_backend.api.new.peak_assignments.config import (
     MAX_UNTARGETED_PEAKS_CEILING,
     PeakAssignmentConfig,
 )
 from mascope_backend.api.new.peak_assignments.engine import MEASURED_SHORTLIST
+from mascope_backend.api.new.peak_assignments.rival_set import (
+    RIVAL_SET,
+    RivalFrames,
+    SeededFrame,
+    m0_by_ion,
+    measure_rival_sets,
+    paired_to,
+)
 from mascope_tools.composition.arbitration import arbitrate_candidates
-from mascope_tools.composition.heuristic_filter import formula_plausibility
 
 
 _MOD = "mascope_backend.api.new.peak_assignments.alternatives_scoring"
@@ -224,24 +226,24 @@ class TestM0Pairing:
             ]
         )
 
-        m0 = _m0_by_ion(frame)
+        m0 = m0_by_ion(frame)
 
         assert m0["ion-a"]["mz"] == pytest.approx(200.1)
         assert m0["ion-a"]["sample_peak_id"] == PEAK_ID
         assert m0["ion-b"]["mz"] == pytest.approx(200.2)
 
     def test_an_empty_or_unscored_frame_pairs_nothing(self):
-        assert _m0_by_ion(pd.DataFrame()) == {}
-        assert _m0_by_ion(pd.DataFrame([{"mz": 1.0}])) == {}
+        assert m0_by_ion(pd.DataFrame()) == {}
+        assert m0_by_ion(pd.DataFrame([{"mz": 1.0}])) == {}
 
     def test_a_pairing_needs_this_peak_and_not_merely_some_peak(self):
-        assert _paired_to(pd.Series({"sample_peak_id": PEAK_ID}), PEAK_ID) is True
+        assert paired_to(pd.Series({"sample_peak_id": PEAK_ID}), PEAK_ID) is True
         # The peak id is a string on the row and may arrive numeric from the
         # matcher, so the comparison is on the string form of both.
-        assert _paired_to(pd.Series({"sample_peak_id": 7}), "7") is True
-        assert _paired_to(pd.Series({"sample_peak_id": "sp-9"}), PEAK_ID) is False
-        assert _paired_to(pd.Series({"sample_peak_id": float("nan")}), PEAK_ID) is False
-        assert _paired_to(None, PEAK_ID) is False
+        assert paired_to(pd.Series({"sample_peak_id": 7}), "7") is True
+        assert paired_to(pd.Series({"sample_peak_id": "sp-9"}), PEAK_ID) is False
+        assert paired_to(pd.Series({"sample_peak_id": float("nan")}), PEAK_ID) is False
+        assert paired_to(None, PEAK_ID) is False
 
 
 class TestBlockedReason:
@@ -558,6 +560,9 @@ def _winner(peak_id, intensity, alternatives=None, *, formula="C5H10O2", fit=0.9
         "source": "untargeted",
         "assigned_formula": formula,
         "fit_score": fit,
+        # One channel per winner here, so two winners of one formula on two
+        # peaks stay two readings in a test's frame.
+        "ionization_mechanism_id": f"im-{peak_id}",
         "tier": "assigned",
         "alternatives": alternatives,
         "provenance": {"evidence": fit, "plausibility": 1.0},
@@ -567,36 +572,6 @@ def _winner(peak_id, intensity, alternatives=None, *, formula="C5H10O2", fit=0.9
 #: The run's measurement model, which the pass is scored at; any object will
 #: do, since the test reads back that it was handed on.
 MODEL = SimpleNamespace(version=1, width_ppm=0.4, scoring_mu_ppm=0.1)
-
-
-async def _measure(
-    rows,
-    *,
-    peak_budget=10,
-    mechanisms=(PROTON, AMMONIUM),
-    ion_by_seed=None,
-    fit_by_ion=None,
-    scored_rows=(),
-):
-    """Run the pass with the seeded chain faked, as :func:`_run` does."""
-    score_seeds = AsyncMock(
-        return_value=(
-            ion_by_seed or {},
-            fit_by_ion or {},
-            {},
-            pd.DataFrame(list(scored_rows)),
-        )
-    )
-    with patch(f"{_MOD}.score_seeds", score_seeds):
-        summary = await measure_winner_confidence(
-            SimpleNamespace(sample_item_id="si-1", filename="s.raw", polarity="+"),
-            rows,
-            list(mechanisms),
-            SimpleNamespace(isotope_abundance_threshold=0.01),
-            peak_budget=peak_budget,
-            model=MODEL,
-        )
-    return summary, score_seeds
 
 
 class TestWhatAWinnerCompetesWith:
@@ -612,153 +587,78 @@ class TestWhatAWinnerCompetesWith:
 
         assert [row["sample_peak_id"] for row in stage_b_winners(rows)] == ["p1"]
 
-    def test_the_rivals_are_the_alternatives_with_a_fit_not_the_same_ion(self):
-        row = _winner(
-            "p1",
-            10.0,
-            [
-                # A losing contender, measured as the winner was.
-                {"assigned_formula": "C4H8N2O3", "fit_score": 0.7},
-                # The winner's own ion split another way: no competitor.
-                {"assigned_formula": "C3H6O3", "fit_score": 0.9, "same_ion": True},
-                # The finder's shortlist: nothing measured it yet.
-                {"assigned_formula": "C6H14N"},
-                # A list reading the search displaced, with the fit it had.
-                {"assigned_formula": "C4H6O3", "fit_score": 0.5, "displaced": True},
-                "C7H6O2",
-            ],
+
+def _own_frame(rows, extra=()):
+    """The seeded re-score's frame: each winner's own reading on its peak,
+    and any other committed reading's line declared in ``extra``."""
+    scored, ion_by_seed = [], {}
+    for row in rows:
+        ion = f"own-{row['sample_peak_id']}"
+        scored.append(
+            {
+                **_scored_row(ion, 300.0, row["sample_peak_id"]),
+                "target_ion_formula": row.get("ion_formula") or f"{ion}-ion",
+                "sample_peak_intensity": 1.0,
+                "match_score": row["fit_score"],
+            }
         )
-
-        assert recorded_rivals(row) == [("C4H8N2O3", 0.7, None), ("C4H6O3", 0.5, None)]
-
-    def test_a_lone_winner_won_by_default(self):
-        assert winner_arbitration(_winner("p1", 10.0), []) == {
-            "confidence": 1.0,
-            "n_candidates": 1,
-            "is_tie": False,
-        }
-
-    def test_a_measured_entry_within_the_gap_is_a_tie(self):
-        arbitration = winner_arbitration(
-            _winner("p1", 10.0), [("C4H8N2O3", 0.88, None)]
+        ion_by_seed[(row["assigned_formula"], row["ionization_mechanism_id"])] = ion
+    for formula, peak, fit in extra:
+        ion = f"other-{formula}"
+        scored.append(
+            {
+                **_scored_row(ion, 301.0, peak),
+                "sample_peak_intensity": 1.0,
+                "match_score": fit,
+            }
         )
+        ion_by_seed[(formula, "im-h")] = ion
+    return SeededFrame(pd.DataFrame(scored), ion_by_seed)
 
-        assert arbitration["is_tie"] is True
-        assert arbitration["n_candidates"] == 2
-        assert arbitration["confidence"] == pytest.approx(0.9 / 1.78, abs=1e-4)
 
-    def test_a_clearly_weaker_entry_is_no_tie(self):
-        arbitration = winner_arbitration(_winner("p1", 10.0), [("C4H8N2O3", 0.3, None)])
-
-        assert arbitration["is_tie"] is False
-        assert arbitration["confidence"] == pytest.approx(0.75)
-
-    def test_one_neutral_spelled_two_ways_is_one_hypothesis(self):
-        # Hill order against the order a finder or a list may write: one
-        # composition, so no self-tie and no share split with itself.
-        arbitration = winner_arbitration(_winner("p1", 10.0), [("O2C5H10", 0.9, None)])
-
-        assert arbitration == {"confidence": 1.0, "n_candidates": 1, "is_tie": False}
-
-    def test_so_is_a_winner_spelled_the_other_way(self):
-        arbitration = winner_arbitration(
-            _winner("p1", 10.0, formula="O2C5H10"), [("C5H10O2", 0.9, None)]
+async def _measure(
+    rows,
+    *,
+    peak_budget=10,
+    mechanisms=(PROTON, AMMONIUM),
+    ion_by_seed=None,
+    fit_by_ion=None,
+    scored_rows=(),
+    others=(),
+):
+    """Seed the shortlists with the seeded chain faked, as :func:`_run` does,
+    and read them off each winner's rival set at the run's model."""
+    fits = fit_by_ion or {}
+    scored = [
+        {**row, "match_score": fits.get(row["target_ion_id"], row["match_score"])}
+        for row in scored_rows
+    ]
+    score_seeds = AsyncMock(
+        return_value=(ion_by_seed or {}, fits, {}, pd.DataFrame(scored))
+    )
+    with patch(f"{_MOD}.score_seeds", score_seeds):
+        frame, reached, summary = await seed_shortlists(
+            SimpleNamespace(sample_item_id="si-1", filename="s.raw", polarity="+"),
+            rows,
+            list(mechanisms),
+            SimpleNamespace(isotope_abundance_threshold=0.01),
+            peak_budget=peak_budget,
+            model=MODEL,
         )
-
-        assert arbitration == {"confidence": 1.0, "n_candidates": 1, "is_tie": False}
-
-
-class TestOneIonIsOneCandidate:
-    """Readings of one ion are one hypothesis about the peak, as to the finder."""
-
-    def test_an_ion_reads_alike_however_its_neutral_and_adduct_split(self):
-        assert ion_identity("C10H18BrO3-") == ion_identity("C10H18O3Br-")
-        assert ion_identity("C10H18BrO3-") == ("C10H18BrO3", "-")
-        # The charge is the signs, one per charge: the last count stays the
-        # element's.
-        assert ion_identity("C6H11O2-") == ("C6H11O2", "-")
-        assert ion_identity("C2H8N2++") == ("C2H8N2", "++")
-        assert ion_identity("C6H11O2-") != ion_identity("C6H11O2+")
-        assert ion_identity(None) is None
-        assert ion_identity("") is None
-
-    def test_a_reading_of_the_winners_own_ion_is_the_winner(self):
-        # The bromide adduct of C10H18O3 and deprotonated C10H19BrO3 are one
-        # ion: the shortlist lists both, and the second is no rival.
-        row = _winner("p1", 10.0, formula="C10H18O3", fit=0.87)
-        row["ion_formula"] = "C10H18BrO3-"
-
-        arbitration = winner_arbitration(row, [("C10H19BrO3", 0.87, "C10H18BrO3-")])
-
-        assert arbitration == {"confidence": 1.0, "n_candidates": 1, "is_tie": False}
-
-    def test_two_readings_of_another_ion_are_one_rival(self):
-        # Two splits of one ion with one fit neither share its weight nor
-        # count twice: the winner's share is taken against the ion once.
-        row = _winner("p1", 10.0, formula="C10H18O3", fit=0.9)
-        row["ion_formula"] = "C10H18BrO3-"
-
-        arbitration = winner_arbitration(
-            row,
-            [
-                ("C8H16Cl2N3O", 0.3, "C8H16BrCl2N3O-"),
-                ("C8H17BrCl2N3O", 0.3, "C8H16BrCl2N3O-"),
-            ],
-        )
-
-        assert arbitration["n_candidates"] == 2
-        assert arbitration["confidence"] == pytest.approx(0.75)
-
-    def test_the_best_reading_stands_for_its_ion(self):
-        row = _winner("p1", 10.0, fit=0.9)
-        row["ion_formula"] = "C5H11O2+"
-        # One ion, two readings with different fits: the stronger one is the
-        # ion's candidate, whichever order they arrive in.
-        readings = [("C4H8N2O3", 0.2, "C4H9N2O3+"), ("C4H6O3", 0.9, "C4H9N2O3+")]
-
-        forward = winner_arbitration(row, readings)
-        backward = winner_arbitration(row, readings[::-1])
-
-        assert forward == backward
-        assert forward["is_tie"] is True
-        assert forward["confidence"] == pytest.approx(0.5)
-
-    def test_plausibility_picks_the_reading_that_stands_for_its_ion(self):
-        row = _winner("p1", 10.0, fit=0.9)
-        row["ion_formula"] = "C5H11O2+"
-        # Readings of one ion share one fit: one ion, one envelope. So what
-        # picks the neutral that stands for the ion is its plausibility, and
-        # here the reading that sorts last is the implausible one.
-        plausible, implausible = ("C4H6O3", 0.9, "C4H7O3+"), ("CH2O5", 0.9, "C4H7O3+")
-        assert formula_plausibility("CH2O5") < formula_plausibility("C4H6O3")
-        assert "CH2O5" > "C4H6O3"
-
-        both = winner_arbitration(row, [plausible, implausible])
-
-        assert both == winner_arbitration(row, [plausible])
-        assert both != winner_arbitration(row, [implausible])
-        assert both["is_tie"] is True
-
-    def test_a_recorded_rival_of_the_winners_ion_does_not_compete(self):
-        row = _winner(
-            "p1",
-            10.0,
-            [
-                {
-                    "assigned_formula": "C10H19BrO3",
-                    "fit_score": 0.95,
-                    "ion_formula": "C10H18BrO3-",
-                }
-            ],
-            formula="C10H18O3",
-        )
-        row["ion_formula"] = "C10H18BrO3-"
-
-        assert winner_arbitration(row, [])["n_candidates"] == 1
+    frames = RivalFrames(
+        None, (_own_frame(rows, others), frame), base=MODEL, shortlists=reached
+    )
+    sets = measure_rival_sets(rows, frames, MODEL)
+    summary = {
+        **summary,
+        "placed": sets["shortlist_placed"],
+        "ties": sets["shortlist_ties"],
+    }
+    return summary, score_seeds
 
 
 class TestTheRunMeasuresItsWinners:
-    """`measure_winner_confidence` over a faked seeded chain."""
+    """`seed_shortlists` over a faked seeded chain, read off the rival set."""
 
     @pytest.mark.asyncio
     async def test_records_the_share_the_tie_and_each_measurement_only(self):
@@ -772,23 +672,23 @@ class TestTheRunMeasuresItsWinners:
             scored_rows=[_scored_row("ion-h", 200.0, "p1")],
         )
 
-        assert row["provenance"] == {
-            "evidence": 0.9,
-            "plausibility": 1.0,
-            "confidence": pytest.approx(0.9 / 1.78, abs=1e-4),
-            "n_candidates": 2,
-            "is_tie": True,
-            # What the formula measured at, for the identification level to
-            # name the test it passed or failed.
-            MEASURED_SHORTLIST: [
-                {
-                    "formula": "C4H8N2O3",
-                    "ion_formula": "ion-h-ion",
-                    "fit_score": 0.88,
-                    "mz_error_ppm": 0.5,
-                }
-            ],
-        }
+        provenance = row["provenance"]
+        assert provenance["confidence"] == pytest.approx(0.9 / 1.78, abs=1e-4)
+        assert provenance["n_candidates"] == 2
+        assert provenance["is_tie"] is True
+        # What the formula measured at, for the identification level to name
+        # the test it passed or failed.
+        assert provenance[MEASURED_SHORTLIST] == [
+            {
+                "formula": "C4H8N2O3",
+                "ion_formula": "ion-h-ion",
+                "fit_score": 0.88,
+                "mz_error_ppm": 0.5,
+            }
+        ]
+        # The rival is one of the set the density counts.
+        assert provenance["candidate_density"] == 2
+        assert [r["formula"] for r in provenance[RIVAL_SET]["rivals"]] == ["C4H8N2O3"]
         # Reported, not acted on: the row commits what the run decided.
         assert row["tier"] == "assigned"
         assert row["fit_score"] == 0.9
@@ -877,6 +777,7 @@ class TestTheRunMeasuresItsWinners:
         assert summary["placed"] == 1
         assert row["provenance"]["n_candidates"] == 1
         assert row["provenance"]["is_tie"] is False
+        assert row["provenance"][RIVAL_SET]["rivals"] == []
 
     @pytest.mark.asyncio
     async def test_the_best_adduct_is_the_formulas_measurement(self):
@@ -890,8 +791,8 @@ class TestTheRunMeasuresItsWinners:
             },
             fit_by_ion={"ion-h": 0.2, "ion-n": 0.6},
             scored_rows=[
-                _scored_row("ion-h", 200.0, "p1"),
-                _scored_row("ion-n", 200.1, "p1"),
+                {**_scored_row("ion-h", 200.0, "p1"), "target_ion_formula": "a+"},
+                {**_scored_row("ion-n", 200.1, "p1"), "target_ion_formula": "b+"},
             ],
         )
 
@@ -925,9 +826,10 @@ class TestTheRunMeasuresItsWinners:
             [_winner("p1", 10.0, [{"assigned_formula": "C4H8N2O3"}])]
         )
 
-        # The model the winners were scored and capped at, whole: its centre,
-        # its width and its line-share tolerance, and nothing fitted off the
-        # seeds beside it.
+        # The model the run's readings were scored at, whole: its centre, its
+        # width and its line-share tolerance, and nothing fitted off the seeds
+        # beside it. The rival set reads the frame again at the model the
+        # caps read (``rival_set.RivalFrames``).
         assert score_seeds.await_args.kwargs == {"model": MODEL}
 
     @pytest.mark.asyncio
@@ -945,6 +847,8 @@ class TestTheRunMeasuresItsWinners:
         # A share taken of part of the field would read as a share of all of it.
         assert "confidence" not in dim["provenance"]
         assert "is_tie" not in dim["provenance"]
+        # Its density is still the set's: what the run measured on its peak.
+        assert dim["provenance"]["candidate_density"] == 1
         assert summary == {
             "peak_budget": 2,
             "winners": 3,
@@ -958,13 +862,16 @@ class TestTheRunMeasuresItsWinners:
 
     @pytest.mark.asyncio
     async def test_a_winner_with_no_shortlist_costs_no_budget(self):
-        lone = _winner(
-            "p-lone", 1.0, [{"assigned_formula": "C4H8N2O3", "fit_score": 0.3}]
-        )
+        lone = _winner("p-lone", 1.0, [])
         bright = _winner("p-bright", 50.0, [{"assigned_formula": "C6H14N"}])
         dimmer = _winner("p-dimmer", 20.0, [{"assigned_formula": "C4H6O3"}])
 
-        summary, _ = await _measure([lone, bright, dimmer], peak_budget=1)
+        summary, _ = await _measure(
+            [lone, bright, dimmer],
+            peak_budget=1,
+            # Another committed reading's line on the lone winner's peak.
+            others=[("C4H8N2O3", "p-lone", 0.3)],
+        )
 
         # Its rivals were measured by the run already; nothing is spent on it.
         assert lone["provenance"]["confidence"] == pytest.approx(0.75)
@@ -995,7 +902,19 @@ class TestTheRunMeasuresItsWinners:
                 _scored_row("ion-c", 200.2, PEAK_ID),
             ],
         }
-        inspected, _ = await _run(alternatives, **measurement)
+        inspected, _ = await _run(
+            alternatives,
+            **{
+                **measurement,
+                "scored_rows": [
+                    {
+                        **row,
+                        "match_score": measurement["fit_by_ion"][row["target_ion_id"]],
+                    }
+                    for row in measurement["scored_rows"]
+                ],
+            },
+        )
         row = _winner(PEAK_ID, 10.0, alternatives)
 
         await _measure([row], **measurement)

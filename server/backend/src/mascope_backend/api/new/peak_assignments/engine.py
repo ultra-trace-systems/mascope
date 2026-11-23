@@ -14,7 +14,7 @@ persistence.
 import itertools
 from collections import Counter
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
@@ -1241,7 +1241,7 @@ RIVALS_PAST_CAP = "rivals_past_cap"
 
 #: The provenance key an untargeted winner carries where the run measured its
 #: formula-only shortlist (step 4.15,
-#: ``alternatives_scoring.measure_winner_confidence``): each formula, with the
+#: ``alternatives_scoring.seed_shortlists``, ``rival_set``): each formula, with the
 #: ion, fit and mass error of the adduct that placed it on the peak best, or
 #: ``placed: False`` where no adduct of the run places it there. An empty list
 #: on a winner whose shortlist held no such formula. Absent on a winner the
@@ -2141,22 +2141,25 @@ GRID_RIVALS_KEPT = 5
 
 
 def record_grid_rivals(rows: list[dict], measured: list) -> dict:
-    """Count the formula search's rivals into each list hit's density.
+    """Record what the formula search held against each list hit's peak.
 
-    A list hit's density counts the known set's formulas its evidence could not
-    separate (:func:`invert_matches_to_peak_assignments`). The grid holds
-    formulas for the same mass that the known set never proposed, and an
-    election's density counts those. This adds the ones the list hit's
-    evidence cannot separate either, less any the known set already counted
-    (its rows' formulas are the row's alternatives), so the density rule reaches
-    a list hit as it reaches an election.
+    A list hit's rivals are measured with the rest of its peak's, in the frame
+    its own reading is and at the model the run caps at, and counted there
+    into its density (``rival_set.measure_rival_sets``); the grid's are among
+    them, seeded beside the search's readings (``ListElection.rivals_by_peak``).
+    What this records is that the search measured the peak, and what it saw
+    there at its own scale: the rivals its ranking could not separate from the
+    reading, by name, the reading's fit beside them, how many candidates the
+    window held, whether the searched element box holds the reading's formula,
+    and the rival that cleared the list's prior and still did not take the peak.
+    No count of them reaches the density from here.
 
     :param rows: The Stage A monoisotopic rows that were measured, modified in
         place.
     :param measured: What :func:`finder.rivals_of_readings` found for each, in
         the same order; None where it could not measure a row.
     :return: What the run records: how many rows were measured, and how many
-        the grid added a rival to.
+        the search named a rival against.
     """
     with_rivals = 0
     for row, found in zip(rows, measured, strict=True):
@@ -2166,20 +2169,8 @@ def record_grid_rivals(rows: list[dict], measured: list) -> dict:
         if not isinstance(provenance, dict):
             provenance = {}
             row["provenance"] = provenance
-        known = {
-            formula_identity(alternative.get("assigned_formula"))
-            for alternative in row.get("alternatives") or []
-        }
-        added = [
-            rival
-            for rival in found.rivals
-            if formula_identity(rival["formula"]) not in known
-        ]
-        known_density = provenance.get(CANDIDATE_DENSITY)
-        known_density = known_density if isinstance(known_density, int) else 1
         provenance[GRID_RIVALS] = {
-            "known_density": known_density,
-            "added": len(added),
+            # The search's own ranking: the rivals it named, at its scale.
             "rivals": [
                 {
                     "formula": rival["formula"],
@@ -2192,26 +2183,20 @@ def record_grid_rivals(rows: list[dict], measured: list) -> dict:
                         else round(float(rival["mz_error_ppm"]), 4)
                     ),
                 }
-                for rival in added[:GRID_RIVALS_KEPT]
+                for rival in found.rivals[:GRID_RIVALS_KEPT]
             ],
-            # The row's fit on the search's own scale, beside which the rivals
-            # were counted.
             "fit_score": round(float(found.fit_score), 4),
             "grid_candidates": found.candidates,
             # Uniqueness is relative to the searched box: a formula outside it
             # only meets the rivals the box builds.
             "in_grid": found.in_grid,
-            # The rival that cleared the list's prior and still did not take the
-            # peak, and why.
             **(
                 {"held_against": _held_against_record(found.held_against)}
                 if found.held_against
                 else {}
             ),
         }
-        provenance[CANDIDATE_DENSITY] = known_density + len(added)
-        if added:
-            with_rivals += 1
+        with_rivals += bool(found.rivals)
     return {
         "measured": sum(1 for found in measured if found is not None),
         "with_rivals": with_rivals,
@@ -2288,6 +2273,9 @@ class ListElection:
     :param displaced: Peak id -> the list hit a rival took it from, and the
         weighing.
     :param summary: What the run records under its search scope.
+    :param rivals_by_peak: The grid's rivals of each kept list hit, by its
+        peak, which the run measures with the hit's other rivals
+        (``rival_set.named_rival_seeds``).
     """
 
     stage_a: list[dict]
@@ -2295,6 +2283,7 @@ class ListElection:
     released: set[str]
     displaced: dict[str, tuple[dict, dict]]
     summary: dict
+    rivals_by_peak: dict[str, tuple[dict, ...]] = field(default_factory=dict)
 
 
 def settle_list_election(
@@ -2364,6 +2353,11 @@ def settle_list_election(
         matches=commits,
         released=released,
         displaced=displaced,
+        rivals_by_peak={
+            str(row["sample_peak_id"]): found.rivals
+            for row, found in zip(kept_rows, kept_measured, strict=True)
+            if found is not None and found.rivals
+        },
         summary={
             "measured": recorded["measured"] + len(displaced),
             "with_rivals": recorded["with_rivals"],
