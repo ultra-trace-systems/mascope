@@ -224,9 +224,10 @@ Feature) carries the kind. Milestones are not used.
   cycle and none that takes in another module, no more imports of the
   package made inside a function, no module over 1,500 lines growing by more
   than 2 % and none crossing it, no function over 100 lines growing and none
-  crossing it. A reading that got better fails too, as a stale baseline:
-  `uv run python tooling/structure.py baseline` writes it down. A PR that has
-  to make a reading worse runs the same command, commits
+  crossing it. A reading that got better passes, and the PR leaves the
+  baseline alone: `structure.py tighten` locks gains in on develop, from the
+  `Structure tighten` workflow. A PR touches the baseline only to make a
+  reading worse: it runs `uv run python tooling/structure.py baseline`, commits
   `tooling/structure_baseline.json`, and says why under a `## Structure`
   heading in its body. `structure.py measure` prints the readings.
 - **Dependency licences are gated**, both ecosystems - CI fails if any package
