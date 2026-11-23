@@ -1938,7 +1938,9 @@ async def calibration_mz_calibrate_batch(
         # The batch goes to rematch, unless it waited on a recalibration
         # that this run did not do for every file: then it still owes it.
         # A run whose samples were all re-fitted, some of them below the
-        # quality bar, did the recalibration.
+        # quality bar, did the recalibration. The write never lowers a
+        # "recalibrate" written over "processing" while the run went on,
+        # as the success path's does not.
         status = "rematch"
         if sample_batch.status == "recalibrate" and not _every_sample_refitted(e):
             status = "recalibrate"
@@ -1946,6 +1948,7 @@ async def calibration_mz_calibrate_batch(
             sample_batch_ids=[sample_batch_id],
             status=status,
             independent_transaction=True,
+            never_lower=True,
         )
         # Re-raise the exception to propagate the error
         raise

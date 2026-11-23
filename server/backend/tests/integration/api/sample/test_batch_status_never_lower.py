@@ -1142,3 +1142,38 @@ async def test_a_batch_recalibration_keeps_a_recalibrate_set_while_it_ran(
 
     assert seen["start"] == "processing"
     assert await _status(async_session_factory, batch_id) == "recalibrate"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("before", "error"),
+    [
+        pytest.param("ready", _warning(failed=1, below_bar=0), id="ready-failed"),
+        pytest.param(
+            "ready", ApiException("failed", {"error_id": "x"}, 500), id="ready-error"
+        ),
+        pytest.param(
+            "recalibrate", _warning(failed=0, below_bar=1), id="recalibrate-below-bar"
+        ),
+    ],
+)
+async def test_a_failed_batch_recalibration_keeps_a_recalibrate_set_while_it_ran(
+    async_session_factory, status_dataset, sample_view, monkeypatch, before, error
+):
+    """A ``recalibrate`` written over the batch's ``processing`` while a batch
+    **Recalibrate** went on asked for a recalibration after this one, so the
+    failed run's ``rematch`` write keeps it, as the finished run's does."""
+    batch_id = await _batch(async_session_factory, status_dataset, before)
+    seen = {}
+
+    async def _during():
+        seen["start"] = await _status(async_session_factory, batch_id)
+        await service.update_sample_batch_status(
+            sample_batch_ids=[batch_id], status="recalibrate"
+        )
+
+    with pytest.raises(ApiException):
+        await _recalibrate_batch(monkeypatch, batch_id, error=error, during=_during)
+
+    assert seen["start"] == "processing"
+    assert await _status(async_session_factory, batch_id) == "recalibrate"
