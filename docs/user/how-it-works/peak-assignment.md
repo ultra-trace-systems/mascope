@@ -2030,7 +2030,11 @@ made for.
   to a parent's isotope line - then judges that sample again through the same stages a run
   of the sample goes through, with every reading the sample's members carry proposed
   together. Each member the batch wrote takes the tier the run's rules give its reading:
-  another channel of the same compound, the mass gate, the lone-peak rule. A listed
+  another channel of the same compound, the mass gate, the lone-peak rule. A reading
+  the sample's lists hold is fitted as the run fits that list's ion: without its lines
+  on peaks the reagent or artifact pass claimed, so such a line counts neither as found
+  nor as missing. Any other reading is fitted as the search fits its own, with those
+  lines, and is then kept off the claimed peaks. A listed
   compound the batch decided present is proposed at candidate, and the run's caps may
   lower it; its evidence alone does not, even where the sample's own commits refit the
   measurement model. A series that proposes the formula a member already reads is a

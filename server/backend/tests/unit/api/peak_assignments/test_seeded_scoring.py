@@ -499,3 +499,56 @@ async def test_a_runs_re_score_is_handed_the_runs_resolution(stubbed, monkeypatc
     )
 
     assert len(stubbed[-1]) == merged
+
+
+#: A seed the sample's lists do not hold, beside the target.
+OTHER = ("C20H36O2", MECH)
+
+
+def _line_peaks(frame: pd.DataFrame, formula: str) -> list[str]:
+    """The peaks a seed's found lines paired to, its M0's first."""
+    lines = frame[
+        (frame["target_compound_formula"] == formula) & frame["sample_peak_id"].notna()
+    ]
+    return lines.sort_values("relative_abundance", ascending=False)[
+        "sample_peak_id"
+    ].tolist()
+
+
+async def test_only_a_listed_seed_is_measured_without_its_claimed_lines(stubbed):
+    """MAS-1047: a seed the sample's lists hold is measured as Stage A measures
+    a list's ion, its lines on the peaks the claim stage took dropped before
+    the gating and the fit; another seed keeps them as its pattern's context."""
+    await score_seeds(SAMPLE, {TARGET, OTHER}, OrbiMatchParams())
+    target_lines = _line_peaks(stubbed[-1], TARGET[0])
+    other_lines = _line_peaks(stubbed[-1], OTHER[0])
+    claimed = {target_lines[1], other_lines[1]}
+
+    _ions, _fits, errors, scored = await score_seeds(
+        SAMPLE,
+        {TARGET, OTHER},
+        OrbiMatchParams(),
+        claimed_peak_ids=claimed,
+        listed_seeds={TARGET},
+    )
+
+    assert _line_peaks(scored, TARGET[0]) == [target_lines[0], *target_lines[2:]]
+    assert _line_peaks(scored, OTHER[0]) == other_lines
+    assert target_lines[1] not in {peak for _ion, peak in errors}
+
+
+async def test_a_listed_seed_whose_m0_is_claimed_is_not_measured(stubbed):
+    await score_seeds(SAMPLE, {TARGET}, OrbiMatchParams())
+    (mono, *_rest) = _line_peaks(stubbed[-1], TARGET[0])
+
+    ion_by_seed, fit_by_ion, _errors, scored = await score_seeds(
+        SAMPLE,
+        {TARGET},
+        OrbiMatchParams(),
+        claimed_peak_ids={mono},
+        listed_seeds={TARGET},
+    )
+
+    assert TARGET in ion_by_seed
+    assert fit_by_ion == {}
+    assert scored.empty

@@ -26,7 +26,7 @@ caller outside a run, the model the sample's latest run recorded.
 """
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from types import SimpleNamespace
 
 import numpy as np
@@ -42,6 +42,7 @@ from mascope_backend.api.new.match.params.lib import apply_match_params
 from mascope_backend.api.new.peak_assignments import model_readers, sample_inputs
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import (
+    drop_ions_claimed_elsewhere,
     line_heights_within,
     score_ions_by_fit,
 )
@@ -317,6 +318,8 @@ async def score_seeds(
     model: MeasurementModel | object = RESOLVE_MODEL,
     config: PeakAssignmentConfig | None = None,
     resolution: Callable[[float], float] | None | object = RESOLVE_RESOLUTION,
+    claimed_peak_ids: Collection[str] = frozenset(),
+    listed_seeds: Collection[tuple[str, str]] = frozenset(),
 ) -> tuple[
     dict[tuple[str, str], str],
     dict[str, float | None],
@@ -350,6 +353,15 @@ async def score_seeds(
     :param resolution: The file's resolving power, which the seeds' lines are
         resolved at as Stage A resolves its known set's: a run's own reading;
         left out, it is read here.
+    :param claimed_peak_ids: The peaks the claim stage took, which the ions of
+        ``listed_seeds`` are measured without.
+    :param listed_seeds: The seeds the sample's lists hold, measured as Stage
+        A measures a list's ion: before the gating, an ion whose monoisotopic
+        line fell on a claimed peak is dropped, and any other line on one
+        (``engine.drop_ions_claimed_elsewhere``), so its fit counts such a
+        line neither present nor missing. Every other seed keeps its lines
+        on claimed peaks as the pattern's context, as the search's re-score
+        keeps them, and its caller drops what it elects there.
     :return: ``(ion by seed, fit by ion, errors by pairing, the scored frame)``.
     """
     if not seeds:
@@ -362,6 +374,8 @@ async def score_seeds(
             model=model,
             config=config,
             resolution=resolution,
+            claimed_peak_ids=claimed_peak_ids,
+            listed_seeds=listed_seeds,
         )
 
 
@@ -373,6 +387,8 @@ async def _score_seeds(
     model: MeasurementModel | object,
     config: PeakAssignmentConfig | None,
     resolution: Callable[[float], float] | None | object = RESOLVE_RESOLUTION,
+    claimed_peak_ids: Collection[str] = frozenset(),
+    listed_seeds: Collection[tuple[str, str]] = frozenset(),
 ) -> tuple[
     dict[tuple[str, str], str],
     dict[str, float | None],
@@ -401,6 +417,13 @@ async def _score_seeds(
         target_isotopes_df=seeded_df,
         polarity=sample.polarity,
     )
+    listed_ion_ids = {
+        str(ion_by_seed[seed]) for seed in listed_seeds if seed in ion_by_seed
+    }
+    if claimed_peak_ids and listed_ion_ids and not matched_df.empty:
+        matched_df = drop_ions_claimed_elsewhere(
+            matched_df, set(claimed_peak_ids), ion_ids=listed_ion_ids
+        )
     if matched_df.empty:
         return ion_by_seed, {}, {}, pd.DataFrame()
 

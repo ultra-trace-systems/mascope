@@ -917,7 +917,10 @@ _FIT_SCORE_COLS = frozenset(
 
 
 def drop_ions_claimed_elsewhere(
-    match_isotope_df: pd.DataFrame, claimed_peak_ids: set[str]
+    match_isotope_df: pd.DataFrame,
+    claimed_peak_ids: set[str],
+    *,
+    ion_ids: Collection[str] | None = None,
 ) -> pd.DataFrame:
     """Remove target ions whose peaks another pass has already claimed.
 
@@ -936,18 +939,26 @@ def drop_ions_claimed_elsewhere(
 
     :param match_isotope_df: The gated, scored isotope frame.
     :param claimed_peak_ids: Peaks another pass owns.
+    :param ion_ids: The ions the drop applies to, every other ion's rows kept
+        as they are; None applies it to every ion. The seeded scoring drops
+        only the ions a sample's lists hold before its gating, as Stage A
+        drops its own (``seeded_scoring.score_seeds``).
     :return: The frame without those ions.
     """
     if match_isotope_df.empty or not claimed_peak_ids:
         return match_isotope_df
     if not {"target_ion_id", "sample_peak_id"} <= set(match_isotope_df.columns):
         return match_isotope_df
+    scope = None if ion_ids is None else {str(ion_id) for ion_id in ion_ids}
     claimed_ions = {
         ion_id
         for ion_id, group in match_isotope_df.groupby("target_ion_id", sort=False)
-        if str(monoisotopic_row(group).get("sample_peak_id") or "") in claimed_peak_ids
+        if (scope is None or str(ion_id) in scope)
+        and str(monoisotopic_row(group).get("sample_peak_id") or "") in claimed_peak_ids
     }
     keep = ~match_isotope_df["sample_peak_id"].isin(claimed_peak_ids)
+    if scope is not None:
+        keep |= ~match_isotope_df["target_ion_id"].astype(str).isin(scope)
     if claimed_ions:
         keep &= ~match_isotope_df["target_ion_id"].isin(claimed_ions)
     return match_isotope_df[keep]
