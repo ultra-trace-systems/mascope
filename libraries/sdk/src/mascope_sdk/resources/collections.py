@@ -102,7 +102,9 @@ class CollectionsResource(BaseResource):
             ``target_compounds`` (each compound's record),
             ``target_compounds_count``, ``sample_batches`` (each associated
             batch's ``sample_batch_id``, ``sample_batch_name`` and
-            ``dataset_id``) and ``sample_batches_count``.
+            ``dataset_id``), ``sample_batches_count`` and
+            ``optional_anchor_compound_ids`` (the ids of its compounds marked
+            optional calibration anchors, sorted; empty when none is).
         :rtype: dict[str, Any]
         :raises PermissionDeniedError: Without the guest role on the
             collection.
@@ -121,6 +123,7 @@ class CollectionsResource(BaseResource):
         batch_ids: Sequence[str] | None = None,
         workspace_id: str | None = None,
         is_global: bool = False,
+        optional_anchor_ids: Sequence[str] | None = None,
     ) -> dict[str, Any]:
         """Create a target collection.
 
@@ -146,13 +149,21 @@ class CollectionsResource(BaseResource):
         :param is_global: Make it a global collection, in no one workspace.
             ``workspace_id`` is then ignored.
         :type is_global: bool, optional
+        :param optional_anchor_ids: Of *compound_ids*, the compounds to mark
+            optional calibration anchors: anchors a file need not hold, such
+            as a calibration's background. A TOF fit's share of the
+            collection's lines counts their lines only where it kept them. A
+            compound created by *compounds* has no id yet: mark it with
+            :meth:`update`. Not sent when None.
+        :type optional_anchor_ids: Sequence[str], optional
         :return: The new collection, with its ``target_collection_id``.
         :rtype: dict[str, Any]
         :raises PermissionDeniedError: Without the editor role in the
             workspace (a global collection: the global admin role), or on the
             batches.
         :raises ValidationError: If a compound id names no compound in the
-            library; nothing is created.
+            library, or an optional anchor is not in *compound_ids*; nothing
+            is created.
         """
         workspace_id = None if is_global else workspace_id or self._client.workspace_id
         body: dict[str, Any] = {
@@ -169,6 +180,8 @@ class CollectionsResource(BaseResource):
             body["target_compound_ids"] = list(compound_ids)
         if batch_ids is not None:
             body["sample_batch_ids"] = list(batch_ids)
+        if optional_anchor_ids is not None:
+            body["optional_anchor_compound_ids"] = list(optional_anchor_ids)
         role = (
             "the global admin role"
             if workspace_id is None
@@ -194,8 +207,9 @@ class CollectionsResource(BaseResource):
         collection_type: str | None = None,
         compounds: Sequence[dict[str, Any]] | None = None,
         compound_ids: Sequence[str] | None = None,
+        optional_anchor_ids: Sequence[str] | None = None,
     ) -> dict[str, Any]:
-        """Change a collection's name, description, type or compounds.
+        """Change a collection's name, description, type, compounds or marks.
 
         Only the fields given are sent; the others stay as they are. The
         compounds are the exception within what is sent: *compounds* and
@@ -219,13 +233,22 @@ class CollectionsResource(BaseResource):
         :param compound_ids: The existing compounds it is to hold, all of
             them: as with *compounds*, the rest are taken out.
         :type compound_ids: Sequence[str], optional
+        :param optional_anchor_ids: The collection's compounds to mark
+            optional calibration anchors, all of them, as for :meth:`create`.
+            The list replaces the marks, and an empty one clears them; when
+            None, nothing is sent and the marks stay. A compound this call
+            adds is marked only when the list names it. A change of the marks
+            flags the batches calibrated on the collection *recalibrate*; it
+            re-runs nothing.
+        :type optional_anchor_ids: Sequence[str], optional
         :return: The updated collection.
         :rtype: dict[str, Any]
         :raises PermissionDeniedError: Without the editor role in the
             collection's workspace (a global collection: the global admin
             role).
         :raises ValidationError: If a compound id names no compound in the
-            library; the collection is left as it was.
+            library, or an optional anchor is not one of the collection's
+            compounds after the update; the collection is left as it was.
         """
         body: dict[str, Any] = {}
         if name is not None:
@@ -238,6 +261,8 @@ class CollectionsResource(BaseResource):
             body["target_compounds_create"] = list(compounds)
         if compound_ids is not None:
             body["target_compound_ids"] = list(compound_ids)
+        if optional_anchor_ids is not None:
+            body["optional_anchor_compound_ids"] = list(optional_anchor_ids)
         return self._write(
             "PATCH",
             f"target/collections/{collection_id}",

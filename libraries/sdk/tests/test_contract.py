@@ -1805,6 +1805,48 @@ class TestWriteContract:
             "message"
         ]
 
+    def test_collection_optional_anchors(self, scratch):
+        _skip_unless_attr(scratch.client, "collections")
+        collections = scratch.client.collections
+        _skip_unless_param(collections.create, "optional_anchor_ids")
+        added = scratch.client.compounds.add(
+            [
+                {
+                    "target_compound_formula": formula,
+                    "target_compound_name": f"{SCRATCH_PREFIX}{scratch.tag}-{formula}",
+                }
+                for formula in ("C4H6O5", "C5H8O4")
+            ]
+        )
+        first, second = sorted(
+            c["target_compound_id"] for c in added["created_compounds"]
+        )
+
+        created = collections.create(
+            f"anchors {scratch.tag}",
+            collection_type="CALIBRANTS",
+            compound_ids=[first, second],
+            optional_anchor_ids=[first],
+        )
+        collection_id = created["target_collection_id"]
+        try:
+            read = collections.get(collection_id)
+            assert read["optional_anchor_compound_ids"] == [first]
+
+            # The list replaces the marks.
+            collections.update(collection_id, optional_anchor_ids=[second])
+            read = collections.get(collection_id)
+            assert read["optional_anchor_compound_ids"] == [second]
+
+            # Left out, the marks stay.
+            collections.update(collection_id, name=f"anchors renamed {scratch.tag}")
+            read = collections.get(collection_id)
+            assert read["target_collection_name"] == f"anchors renamed {scratch.tag}"
+            assert read["optional_anchor_compound_ids"] == [second]
+        finally:
+            # Its compounds are used by no other collection, so they go with it.
+            collections.delete(collection_id, delete_orphan_compounds=True)
+
     def test_compound_add_update_remove(self, scratch):
         _skip_unless_attr(scratch.client, "compounds")
         compounds = scratch.client.compounds
