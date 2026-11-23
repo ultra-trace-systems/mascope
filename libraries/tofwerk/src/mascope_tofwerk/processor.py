@@ -26,6 +26,7 @@ from mascope_signal.noise import max_peak_snr
 from mascope_tofwerk.tofwerk import (
     NoScansRecordedError,
     open_h5_file,
+    read_mz_calibration,
     recorded_scan_times,
 )
 
@@ -289,28 +290,7 @@ class H5Processor(BaseFileProcessor):
         :return: Mass calibration properties
         :rtype: dict
         """
-        # Get FullSpectra attributes reference
-        attrs = self.file_handle["FullSpectra"].attrs
-        # Number of mass calibration parameters
-        try:
-            num_params = attrs["MassCalibration nbrParameters"][0]
-            # Get mass calibration parameters
-            mass_calib_params = [
-                float(attrs[f"MassCalibration p{i + 1}"][0]) for i in range(num_params)
-            ]
-            mass_calib_mode = int(attrs["MassCalibMode"][0])
-        except IndexError:
-            num_params = attrs["MassCalibration nbrParameters"]
-            # Get mass calibration parameters
-            mass_calib_params = [
-                float(attrs[f"MassCalibration p{i + 1}"]) for i in range(num_params)
-            ]
-            mass_calib_mode = int(attrs["MassCalibMode"])
-
-        return {
-            "mode": mass_calib_mode,
-            "par": mass_calib_params,
-        }
+        return read_mz_calibration(self.file_handle)
 
     @property
     @with_file_context

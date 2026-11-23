@@ -51,6 +51,38 @@ def recorded_scan_times(buf_times) -> np.ndarray:
     return times[: written[-1] + 1]
 
 
+def read_mz_calibration(h5_file) -> dict:
+    """
+    The acquisition software's mass calibration, as a TofDaq file records it.
+
+    The ``FullSpectra`` group's ``MassCalibMode`` and ``MassCalibration p1``,
+    ``p2``, ... attributes: the Tofwerk mode and its parameters, which give
+    the m/z of each sample of the raw ``FullSpectra/MassAxis``, counted from
+    its first (``mascope_tofwerk.calibration.tof_to_mass``). The converter
+    stores them as a file's first calibration record; a fit's record keeps
+    them as its acquisition axis.
+
+    :param h5_file: An open TofDaq file (:func:`open_h5_file`).
+    :return: ``{"mode": int, "par": [float, ...]}``.
+    :raises KeyError: When the file records no mass calibration.
+    """
+    attrs = h5_file["FullSpectra"].attrs
+
+    def scalar(value):
+        # Most writers store each attribute as a one-element array, some as
+        # a bare scalar.
+        return value[0] if np.ndim(value) else value
+
+    n_parameters = int(scalar(attrs["MassCalibration nbrParameters"]))
+    return {
+        "mode": int(scalar(attrs["MassCalibMode"])),
+        "par": [
+            float(scalar(attrs[f"MassCalibration p{i + 1}"]))
+            for i in range(n_parameters)
+        ],
+    }
+
+
 @contextmanager
 def open_h5_file(datafile_path: str):
     """Context manager for safely opening and closing Tofwerk h5-files.
