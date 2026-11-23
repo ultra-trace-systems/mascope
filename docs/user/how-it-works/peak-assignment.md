@@ -661,7 +661,10 @@ the six files of its batch acquired nearest it in time at the same settings, and
 that the defaults. Each of the six is measured afresh, the way the run measures its own
 lines and under the run's own settings, never read from a run of its own. So the pooled
 measurement is the same whichever files of the batch were run first, or at the same
-time. A blank, or a file with no peak list, takes no place among the six. Measuring them
+time. A blank, or a file with no peak list, takes no place among the six. Nor does a
+sample that reads some of the same scans, such as a copy of the file in its batch, though
+another time window of the same file, one that shares no scans with it, counts as one of
+the six. Measuring them
 adds about a minute to a thin file's run, though thin files run at the same time share
 the measurements they have in common. The run records which files it pooled, the lines
 each gave and the time they span. On a TOF the run measures one offset and one

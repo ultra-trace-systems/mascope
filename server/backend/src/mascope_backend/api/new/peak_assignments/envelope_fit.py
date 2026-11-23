@@ -48,16 +48,21 @@ a batch pool alike whatever order they ran in, at once or one after the other
 (decision 32, as the plan owner amended it on MAS-842). Files near it in time
 share its instrument state better than a batch spanning days does, and a file
 that joins a growing batch later in time moves the pool only of the files near
-the batch's end. The record names the files pooled, the lines each gave and the
-time span the pool covers.
+the batch's end. A neighbour is a sample that shares no scans with the file's
+own (:func:`share_scans`): a copy of it in its batch, or a window of its file
+that overlaps its window, gives its own lines again and is no neighbour, while
+a window of its file that shares no scans is one, placed by its own start
+(:func:`measured_at`). The record names the files pooled, the lines each gave,
+whether one is a window of the file itself, and the time span the pool covers.
 """
 
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
@@ -414,22 +419,31 @@ class PooledFile:
     """One neighbour a pool read.
 
     :param sample_item_id: The sample.
-    :param acquired: When its file was acquired (``datetime_utc``); None where
-        the file does not say.
+    :param acquired: When it was measured (:func:`measured_at`: its file's
+        ``datetime_utc`` plus its window's start); None where the file does
+        not say.
     :param lines: Its own lines, as its Stage A first pass read them.
+    :param same_file: Whether it is another window of the reading sample's
+        own file, one that shares no scans with it (:func:`share_scans`).
     """
 
     sample_item_id: str
     acquired: datetime | None
     lines: EnvelopeLines
+    same_file: bool = False
 
     def record(self) -> dict:
-        """What the run records of it."""
-        return {
+        """What the run records of it. A window of the reading sample's own
+        file says so (``same_file``); a file of its own records no such key,
+        so a pool of other files alone records what it did before."""
+        record = {
             "sample_item_id": self.sample_item_id,
             "lines": self.lines.lines,
             "absent": self.lines.absent,
         }
+        if self.same_file:
+            record["same_file"] = True
+        return record
 
 
 @dataclass(frozen=True)
@@ -472,14 +486,93 @@ class EnvelopePool:
         }
 
 
-def _by_distance_in_time(sample, candidates: Sequence) -> list:
-    """The candidates nearest the sample in acquisition time first, ties - and a
-    file that does not say when it was acquired, after every one that does - by
-    sample id, so the order is the data's alone."""
+def measured_at(sample) -> datetime | None:
+    """When a sample's scans start: its file's start (``datetime_utc``) plus
+    its window's (``t0``, in seconds), so the windows of one file order by when
+    they were measured. A sample with no window starts with its file; None
+    where the file does not say when it was acquired."""
     acquired = getattr(sample, "datetime_utc", None)
+    if acquired is None:
+        return None
+    start = getattr(sample, "t0", None)
+    if start is None or not math.isfinite(start):
+        return acquired
+    return acquired + timedelta(seconds=float(start))
+
+
+@dataclass(frozen=True)
+class ScanReach:
+    """Which scans a sample reads, as far as two samples sharing them goes.
+
+    :param sample_file_id: Its file.
+    :param polarity: Its polarity; None reads either.
+    :param stream_id: The stream it reads (``SampleItem.stream_id``); None
+        spans every MS1 scan of its polarity.
+    :param composite_stream_id: The composite that stream is a segment of,
+        where it is one.
+    :param t0: Its window's start [s]; None from the file's first scan.
+    :param t1: Its window's end [s]; None to the file's last scan.
+    """
+
+    sample_file_id: str | None
+    polarity: str | None = None
+    stream_id: str | None = None
+    composite_stream_id: str | None = None
+    t0: float | None = None
+    t1: float | None = None
+
+
+def _streams_meet(one: ScanReach, other: ScanReach) -> bool:
+    """Whether two samples of one file read streams that hold common scans:
+    the same stream, a composite and one of its segments, or a sample that
+    names no stream, which spans its polarity's every MS1 scan."""
+    if one.polarity is not None and other.polarity is not None:
+        if one.polarity != other.polarity:
+            return False
+    if one.stream_id is None or other.stream_id is None:
+        return True
+    return (
+        one.stream_id == other.stream_id
+        or one.composite_stream_id == other.stream_id
+        or other.composite_stream_id == one.stream_id
+    )
+
+
+def share_scans(one: ScanReach, other: ScanReach) -> bool:
+    """Whether two samples read scans in common: of one file, of streams that
+    meet (:func:`_streams_meet`), and with windows that overlap. A missing end
+    is the file's own, so a sample with no window covers its whole file and an
+    exact copy is the case of full overlap. Windows that only touch, one ending
+    where the next starts, as a file split at ingest cuts them, share none.
+
+    Two such samples add no new evidence of the instrument's response to each
+    other, so neither is the other's neighbour in a pool (MAS-987)."""
+    if one.sample_file_id is None or one.sample_file_id != other.sample_file_id:
+        return False
+    if not _streams_meet(one, other):
+        return False
+    if (one.t0, one.t1) == (other.t0, other.t1):
+        return True
+    start = max(
+        -math.inf if one.t0 is None else one.t0,
+        -math.inf if other.t0 is None else other.t0,
+    )
+    end = min(
+        math.inf if one.t1 is None else one.t1,
+        math.inf if other.t1 is None else other.t1,
+    )
+    return start < end
+
+
+def _by_distance_in_time(sample, candidates: Sequence) -> list:
+    """The candidates nearest the sample in time first, each placed by its own
+    start (:func:`measured_at`), ties - and a file that does not say when it
+    was acquired, after every one that does - by sample id, so the order is the
+    data's alone."""
+    acquired = measured_at(sample)
 
     def key(candidate):
-        other = getattr(candidate, "datetime_utc", None)
+        other = measured_at(candidate)
         distance = (
             abs((other - acquired).total_seconds())
             if acquired is not None and other is not None
@@ -491,21 +584,61 @@ def _by_distance_in_time(sample, candidates: Sequence) -> list:
 
 
 async def _batch_candidates(sample) -> list:
-    """Every other sample of the sample's batch, nearest it in acquisition time
-    first (:func:`_by_distance_in_time`)."""
+    """Every other sample of the sample's batch that shares no scans with it,
+    nearest it in time first (:func:`_by_distance_in_time`).
+
+    A sample of its own file whose scans overlap its own (:func:`share_scans`:
+    a copy of it in the batch, a window that overlaps its window) is left out:
+    it gives the file's own lines again. A window of its file that shares no
+    scans with it is other scans of the same instrument state, and is a
+    neighbour of its own (the plan owner's decision on MAS-987)."""
     async with async_session() as session:
-        candidates = (
-            (
-                await session.execute(
-                    select(Sample).where(
-                        Sample.sample_batch_id == sample.sample_batch_id,
-                        Sample.sample_item_id != sample.sample_item_id,
-                    )
+        rows = (
+            await session.execute(
+                select(
+                    Sample,
+                    SampleItem.stream_id,
+                    AcquisitionStream.composite_stream_id,
                 )
+                .join(SampleItem, SampleItem.sample_item_id == Sample.sample_item_id)
+                .outerjoin(
+                    AcquisitionStream,
+                    (AcquisitionStream.sample_file_id == SampleItem.sample_file_id)
+                    & (AcquisitionStream.stream_id == SampleItem.stream_id),
+                )
+                .where(Sample.sample_batch_id == sample.sample_batch_id)
             )
-            .scalars()
-            .all()
+        ).all()
+
+    def reach(row) -> ScanReach:
+        member, stream_id, composite_stream_id = row
+        return ScanReach(
+            sample_file_id=member.sample_file_id,
+            polarity=member.polarity,
+            stream_id=stream_id,
+            composite_stream_id=composite_stream_id,
+            t0=member.t0,
+            t1=member.t1,
         )
+
+    own = next(
+        (
+            reach(row)
+            for row in rows
+            if str(row[0].sample_item_id) == str(sample.sample_item_id)
+        ),
+        # Not in its batch's rows: what it reads is read off the sample, as
+        # spanning every stream of its polarity, so that no sample that could
+        # share its scans is read.
+        ScanReach(
+            sample_file_id=getattr(sample, "sample_file_id", None),
+            polarity=getattr(sample, "polarity", None),
+            t0=getattr(sample, "t0", None),
+            t1=getattr(sample, "t1", None),
+        ),
+    )
+    # The sample itself shares every scan with itself, so it is left out too.
+    candidates = [row[0] for row in rows if not share_scans(own, reach(row))]
     return _by_distance_in_time(sample, candidates)
 
 
@@ -525,8 +658,9 @@ async def read_pool(
 ) -> EnvelopePool:
     """The neighbours a thin file's curve is pooled over, each read fresh.
 
-    The ``nearest`` files of the sample's batch nearest it in acquisition
-    time (``datetime_utc``, ties by sample id) that share its acquisition
+    The ``nearest`` samples of the sample's batch nearest it in time (each
+    by its own start, :func:`measured_at`, ties by sample id) that share no
+    scans with it (:func:`_batch_candidates`), share its acquisition
     settings, have a peak list and that the engine would run, each read by
     ``read_neighbour``: its own Stage A first pass, never a run of its own nor
     the curve it would pool itself, so the pool cannot feed on itself and does
@@ -554,17 +688,20 @@ async def read_pool(
         lines = await read_neighbour(candidate)
         if lines is None:
             continue
+        own_file = getattr(sample, "sample_file_id", None)
         pooled.append(
             PooledFile(
                 sample_item_id=str(candidate.sample_item_id),
-                acquired=getattr(candidate, "datetime_utc", None),
+                acquired=measured_at(candidate),
                 lines=lines,
+                same_file=own_file is not None
+                and getattr(candidate, "sample_file_id", None) == own_file,
             )
         )
     times = [
         moment
         for moment in [
-            getattr(sample, "datetime_utc", None),
+            measured_at(sample),
             *(pooled_file.acquired for pooled_file in pooled),
         ]
         if moment is not None
