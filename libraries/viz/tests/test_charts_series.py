@@ -1039,6 +1039,58 @@ def test_species_series_under_a_reagent_sum(clusters):
     assert not any("partial sum" in note for note in one.notes)
 
 
+#: The short campaign's ions the server gives no compound name: its own
+#: ``""`` for the reagent, a space for a compound.
+UNNAMED = {"ion:ti0000": "", "ion:ti0001": " "}
+
+
+def _stale_text(value):
+    """The store's text before blank names were dropped: kept as given."""
+    return None if value is None or pd.isna(value) else str(value)
+
+
+@pytest.fixture(scope="module", params=["fresh", "stale"])
+def unnamed(request, tmp_path_factory) -> tuple[Campaign, CampaignStore]:
+    """The short campaign with :data:`UNNAMED`'s ions given blank names,
+    synced; ``stale`` as a store synced before blank names were dropped,
+    which still holds them."""
+    campaign = generate(SHORT, seed=2)
+    client = FakeClient(campaign)
+    for ions in client.ions.values():
+        for key, blank in UNNAMED.items():
+            named = ions["target_ion_id"] == key.removeprefix("ion:")
+            ions.loc[named, "target_compound_name"] = blank
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(store_module, "_now", lambda: pd.Timestamp("2026-08-01T00:00Z"))
+        patch.setattr(store_module.time, "sleep", lambda seconds: None)
+        if request.param == "stale":
+            patch.setattr(store_module, "_text", _stale_text)
+        root = tmp_path_factory.mktemp(f"unnamed-{request.param}")
+        store = sync(client, SCOPE, root=root).store
+    return campaign, store
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_a_normaliser_of_unnamed_ions_is_named_by_their_formulas(unnamed, kind):
+    campaign, store = unnamed
+    formulas = campaign.tables["species"].set_index("series_key")["formula"]
+    members = list(UNNAMED)
+    name = " + ".join(formulas[k] for k in members)
+    # The first day, negative alone, and a named species beside them
+    end = campaign.truth.start + pd.Timedelta(days=1)
+
+    fig = registry.get(kind).build(
+        store, species="ion:ti0002", normalise=members, tz="UTC", end=end
+    )
+
+    assert fig.summary["normalise_name"] == name
+    assert f"normalised to {name}" in fig.subtitle
+    assert fig.panels[0].axes.y.label == f"signal / {name}"
+    # An unnamed ion drawn is named by its formula too
+    drawn = registry.get(kind).build(store, species=members[1], tz="UTC", end=end)
+    assert drawn.summary["species"][0]["name"] == formulas[members[1]]
+
+
 @pytest.fixture(scope="module")
 def year_figure(year):
     campaign, store = year
