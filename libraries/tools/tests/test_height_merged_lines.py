@@ -266,6 +266,64 @@ def test_a_line_folded_under_the_floor_is_named_and_adds_nothing():
     assert (height[0].mz, height[0].abundance) == (100.0, pytest.approx(1.0))
 
 
+def test_a_folded_line_brighter_than_the_kept_lines_members_does_not_move_it():
+    # K1 and K2, 0.05 FWHM apart, clear the 1 % floor only together (1.2);
+    # U, 0.6 FWHM below, is under it (0.9) and folds into their line. U is
+    # brighter than either member, but it adds nothing: the line stays on K1
+    # with K1 and K2's height, and holds U.
+    fine = (
+        [50.0, 100.0, 100.06, 100.065],
+        [100.0, 0.9, 0.6, 0.6],
+        ["M0", "U", "K1", "K2"],
+    )
+
+    lines = resolve_lines(*fine, HeightResolution(_resolving(POWER)), 0.01)
+
+    assert [line.label for line in lines] == ["M0", "K1"]
+    assert lines[1].members == (1, 2, 3)
+    assert lines[1].mz == 100.06
+    assert lines[1].abundance == pytest.approx(1.2)
+
+
+def test_a_real_ions_kept_line_stays_on_its_own_member_after_the_fold():
+    # C10H6S2Si2+ at a resolving power of 60,000 at m/z 200, falling with the
+    # root of m/z: the 34S+29Si line at 248.940 clears the 1 % floor with its
+    # 29Si+30Si member, and the 13C+34S line, 0.82 FWHM above and under the
+    # floor, folds into it with a brighter member than its own.
+    resolution = HeightResolution(lambda mz: 60000.0 * np.sqrt(200.0 / mz))
+    mzs, shares, labels = predict_isotopes(
+        "C10H6S2Si2", 1, None, FLOOR * UNRESOLVED_MEMBER_DEPTH
+    )
+
+    lines = resolve_lines(mzs, shares, labels, resolution, FLOOR)
+
+    line = _line(lines, "34S+29Si")
+    assert labels.index("13C+34S") in line.members
+    assert line.mz == mzs[labels.index("34S+29Si")]
+    top = max(kept.abundance for kept in lines)
+    assert all(kept.abundance >= FLOOR * top for kept in lines)
+
+
+def test_the_17o_line_adds_to_the_13c_line_at_the_shipped_span():
+    # Why the span is 0.2 and not 0.1: at m/z 431 and a resolving power of
+    # 83,000 the 17O line sits 0.17 FWHM above the 13C line, and a peak's
+    # height holds it. A span of 0.1 would leave it out.
+    fine = predict_isotopes("C22H38O8", 1, None, 1e-3 * UNRESOLVED_MEMBER_DEPTH)
+    mzs, shares, labels = fine
+    carbon, oxygen = labels.index("13C"), labels.index("17O")
+
+    lines = resolve_lines(*fine, HeightResolution(_resolving(SILOXANE_POWER)), 1e-3)
+
+    line = _line(lines, "13C")
+    assert oxygen in line.members
+    assert line.mz == mzs[carbon]
+    assert line.abundance == pytest.approx(shares[carbon] + shares[oxygen])
+    narrow = resolve_lines(
+        *fine, HeightResolution(_resolving(SILOXANE_POWER), 0.1), 1e-3
+    )
+    assert _line(narrow, "13C").abundance == pytest.approx(shares[carbon])
+
+
 def test_the_floor_is_read_off_the_heights():
     # A's line is 0.14 by area and 0.10 by height: over a 12 % floor by area,
     # under it by height, so only the area keeps it.

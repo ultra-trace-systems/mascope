@@ -630,13 +630,16 @@ def predict_resolved_isotopes(
     the lines a merged peak adds are each far under the floor - the 15N, 2H and
     17O lines of a TOF's 13C peak, fainter still for a small ion - and the
     floor is then applied to the merged lines,
-    so the envelope holds the lines it held before, each with its whole share.
-    Merged lines under the floor less than one FWHM from one another that
-    together clear it are one kept line (:func:`resolve_lines`), and a
-    merged line still under the floor less than one FWHM from a kept line is
-    added to it rather than dropped (:func:`_fold_under_floor`): the three steps
-    of :func:`resolve_lines`, which the target library resolves its lines by
-    too.
+    so the envelope holds the lines it held before. On a file read by areas
+    each holds its members' whole share; on one read by heights
+    (:class:`HeightResolution`) its dominant member's, with the members within
+    the span that adds (:func:`_line_of`). Merged lines under the floor less
+    than one FWHM from one another that together clear it are one kept line
+    (:func:`resolve_lines`), and a merged line still under the floor less than
+    one FWHM from a kept line is taken into it rather than dropped: by areas
+    its share is added (:func:`_fold_under_floor`), by heights it is named on
+    the kept line and adds nothing. These are the three steps of
+    :func:`resolve_lines`, which the target library resolves its lines by too.
 
     :param ion_formula: The ion's formula, no charge sign.
     :param ion_charge: Its charge.
@@ -1007,7 +1010,10 @@ def resolve_lines(
        clear it are one line over it (mascope#3027;
        the target library's lines too since MAS-977, mascope#3163).
     3. A line still under the floor less than one FWHM from a line over it is
-       added to that line (:func:`_fold_under_floor`, mascope#2591).
+       taken into that line (:func:`fold_targets`, mascope#2591). By areas its
+       share is added, as :func:`_fold_under_floor` adds it. By heights it is
+       named on the line and adds nothing: the line is read at its own
+       members, so a folded member brighter than them cannot move it.
 
     The envelope keeps the lines over the floor alone
     (:func:`predict_resolved_isotopes`). The target library, which stores every
@@ -1072,7 +1078,14 @@ def resolve_lines(
     for index, group in enumerate(members):
         if not keep[index] and (targets[index] >= 0 or not keep_under_floor):
             continue
-        centre, total = _line_of(group, mzs, intensities, resolution)
+        if height_sum_span(resolution) is not None:
+            # On a height a folded line is named on the kept line and adds
+            # nothing, so the line is read as it was before the fold. Read
+            # over the folded members too, a folded line's brighter member
+            # would become the dominant one and move the line onto it.
+            centre, total = float(centres[index]), float(totals[index])
+        else:
+            centre, total = _line_of(group, mzs, intensities, resolution)
         lines.append(ResolvedLine(centre, total, labels[names[index]], tuple(group)))
     return lines
 
