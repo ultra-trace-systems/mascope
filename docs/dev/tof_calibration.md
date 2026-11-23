@@ -629,8 +629,11 @@ A fit whose mean post-fit residual exceeds 15 ppm, or whose points all come from
 - `mz_error_tolerance`, `refine_window`.
 
 The fit is sealed (`seal_fit`) and judged against the quality bar (`calibration_quality_issues`):
-for TOF a post-fit residual of at most 10 ppm (`TOF_MAX_POST_FIT_MZ_ERROR_PPM`), at least three
-points from at least two ions, and no calibrant-to-TIC floor. The deployment's
+for TOF a post-fit residual of at most 7 ppm (`TOF_MAX_POST_FIT_MZ_ERROR_PPM`; 10 ppm until MAS-189),
+one point more than the model has parameters, from as many ions (three for mode 0 and four for
+mode 2, `TOF_MIN_VERIFIED_CALIBRATION_POINTS` and `_IONS`; until MAS-189 three points from two
+ions), 40% of the collection's lines (`TOF_MIN_KEPT_LINE_SHARE`), the coverage check of MAS-184,
+and no calibrant-to-TIC floor. The deployment's
 `calibration_quality_gate` (`warn` by default, or `enforce`) decides whether a fit below the bar is
 stored `verified`; the record's `status` is `ok` or `poor`. A pre-fit error above 50 ppm
 (`TOF_ACQUISITION_DRIFT_WARNING_PPM`) is reported as acquisition drift, at most once a day per
@@ -865,6 +868,23 @@ Code, shipped in releases.
 
 - **TOF thresholds in the quality gate**, from the baseline: post-fit residual, minimum points and
   ions, and the coverage check, before any site moves the gate to `enforce` (MAS-189).
+  Set, warn-only as the rest of the bar:
+  - *Post-fit residual*: 7 ppm, from 10. In the baseline the stored fits' mean error per
+    instrument and mode has a median of 0.5–3.8 ppm and an upper quartile of at most 4.5 ppm. The
+    two noisiest modes, TOF H and B1 bromide, have an IQR of 1.6 ppm, which puts the upper fence of
+    their own spread (q75 + 1.5 IQR, Tukey's) at 6.6 and 6.9 ppm.
+  - *Points and ions*: one more than the model has parameters, by the model the record names:
+    three points from three ions for mode 0, four from four for mode 2. A model passes through as
+    many points as it has parameters, and a TOF calibrant's place on the axis is its ion (the two
+    lines of Br− read it at one place). Until now any two ions passed, so a mode-0 fit on Br− and
+    Br3− alone, five lines at two places, was verified. The node never fits on fewer points than
+    the model needs (`TOF_MINIMUM_CALIBRATION_POINTS`), so the points floor guards a record, and
+    the ion floor is the new check. MAS-183's model check kept mode 2 on most of TOF H's files, on
+    five ions.
+  - *Coverage* stays at 1.25 widths (MAS-184), and the *kept-line share* at 40% (MAS-586).
+  - *Hygiene flags* (MAS-185) are not built yet, so none is set here.
+  - The site counts per instrument, each threshold on its own and the bar as a whole against
+    develop's, come from MAS-189's prod job; the table is below once it has run.
 - **A calibration trend per instrument**: calibrant residuals and the raw-axis offset over time,
   so a calibrant that starts to read off, or a chemistry change that moves a neighbour onto it,
   shows (MAS-190). On TOF H, 246 and 248 Th moved by 14 and 35 ppm in one week.
