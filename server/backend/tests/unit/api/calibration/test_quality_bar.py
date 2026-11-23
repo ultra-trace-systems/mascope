@@ -381,10 +381,11 @@ class TestTofPointsAndIons:
         # Node version 1 fitted mode 0 alone and recorded no model
         assert _codes({**GOOD, "n_points": 3, "n_ions": 3}, TOF_FILE) == []
         assert _codes({**GOOD, "n_points": 3, "n_ions": 2}, TOF_FILE) == ["ions"]
-        assert _codes({**GOOD, "n_ions": 2, "model": None}, TOF_FILE) == ["ions"]
-        assert _codes({**GOOD, "n_ions": 2, "model": {"mode": None}}, TOF_FILE) == [
-            "ions"
-        ]
+        # Three points of three ions clear mode 0's bar, not a larger one
+        for model in (None, {"mode": None}, {"equation": "..."}):
+            quality = {**GOOD, "n_points": 3, "n_ions": 3, "model": model}
+            assert _codes(quality, TOF_FILE) == []
+            assert _codes({**quality, "n_ions": 2}, TOF_FILE) == ["ions"]
 
     def test_a_mode_the_bar_does_not_list_is_held_to_the_largest(self):
         assert _codes(_fitted(1, 4, 3), TOF_FILE) == ["ions"]
