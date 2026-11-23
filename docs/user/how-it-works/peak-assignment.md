@@ -2093,7 +2093,9 @@ completed pass leaves every stage current.
   the molecule shown elsewhere, it stands only where the sample shows it. Its evidence
   alone never takes it to *assigned*. The channel is not opened for the rest of that
   sample: its other readings are judged through its own channels alone, as a run of it
-  judges them, and gain no rival through ammonium.
+  judges them. They gain no rival through ammonium, and the ammonium reading is no
+  second channel for them: it corroborates none of the sample's own readings of its
+  molecule.
 - **Records are kept, marked stale.** When a batch peak's reading moves off what a stage's
   record was made for, the record is kept, marked stale, and served by no reader. The stage
   that wrote it reads it again when it runs, and a reading that comes back finds it

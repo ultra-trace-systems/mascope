@@ -801,6 +801,7 @@ def _ctx(path, *, recorded=False):
             minor_channels=frozenset(),
             partner_gated_channels=frozenset(),
             added_channels=frozenset(),
+            given_channels=(),
             context=None,
             nox_skeleton=False,
             profile=SimpleNamespace(name="no ladders"),

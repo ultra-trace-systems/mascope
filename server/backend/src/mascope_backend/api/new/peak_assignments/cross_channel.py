@@ -155,6 +155,7 @@ from __future__ import annotations
 
 import math
 import re
+from typing import NamedTuple
 
 from mascope_backend.api.new.peak_assignments.engine import (
     CORROBORATION_RULE,
@@ -912,6 +913,7 @@ def read_cross_channel(
     *,
     notation_by_id: dict[str, str],
     minor_channels: frozenset[str] = frozenset(),
+    given_channels: frozenset[str] = frozenset(),
 ) -> dict:
     """Record each commit's channels, and the readings nothing settled,
     lowering no tier (:func:`cap_cross_channel`).
@@ -936,18 +938,16 @@ def read_cross_channel(
         (:func:`partner_heights`), and a row read through one is the mode's own
         reading of its ion, which a rival the sample shows has to outweigh by
         the margin; none by default, where every channel is the mode's own.
+    :param given_channels: The secondary channels the sample's spectrum did
+        not open that a batch decision measured on it reads through
+        (``ResolvedProfile.given_channels``). A row through one reads the
+        whole ledger; any other row reads it without them (:func:`_ledgers`).
     :return: A JSON-serializable summary for the run's config, whose counts
         of capped rows :func:`cap_cross_channel` fills in.
     """
     channels_searched = sorted(set(notation_by_id.values()))
     donors = nitrogen_donating_channels(channels_searched)
-    channels = channels_by_neutral(assignments, notation_by_id)
-    partners = partner_heights(assignments, notation_by_id, minor_channels)
-    # Step 4.16's two readings, taken off the ledger before this pass caps a
-    # row: a cap holds a row at candidate, which is still the bar they read at.
-    brightest = brightest_by_channel(assignments, notation_by_id)
-    consistency, consistency_summary = intensity_consistency(brightest)
-    fragment_of, fragments, fragments_summary = in_source_fragments(brightest)
+    whole, own = _ledgers(assignments, notation_by_id, minor_channels, given_channels)
     summary = {
         "channels": channels_searched,
         "reagent_channels": sorted(donors),
@@ -956,7 +956,7 @@ def read_cross_channel(
         # the sample also shows for the stronger partner to settle it.
         "partner_margin": PARTNER_MARGIN,
         "committed_m0": 0,
-        "neutrals": len(channels),
+        "neutrals": len(whole.channels),
         "corroborated": 0,
         # Rows whose ion also reads as another molecule that nothing settled,
         # by what the two readings disagree about.
@@ -997,35 +997,36 @@ def read_cross_channel(
         # Step 4.16: the neutrals whose channel ratios were read against the
         # sample's, by band, and the in-source fragment pairs, by loss.
         # Recorded, not weighed: neither moves a tier or a probability.
-        INTENSITY_CONSISTENCY: consistency_summary,
-        IN_SOURCE_FRAGMENTS: fragments_summary,
+        INTENSITY_CONSISTENCY: whole.consistency_summary,
+        IN_SOURCE_FRAGMENTS: whole.fragments_summary,
     }
 
     for row in assignments:
         if not is_committed(row) or row.get("role") != ROLE_M0:
             continue
         summary["committed_m0"] += 1
-        seen = channels.get(formula_identity(row.get("assigned_formula")), {})
+        own_channel = notation_by_id.get(str(row.get("ionization_mechanism_id")))
+        ledger = whole if own_channel in given_channels else own
+        seen = ledger.channels.get(formula_identity(row.get("assigned_formula")), {})
         corroborated = len(seen) >= CHANNELS_FOR_CORROBORATION
         summary["corroborated"] += corroborated
-        own_channel = notation_by_id.get(str(row.get("ionization_mechanism_id")))
         record: dict = {
             "channels": sorted(seen),
             "corroborated": corroborated,
             "partner_tier": partner_tier(seen, own_channel),
         }
         for key, found in (
-            (INTENSITY_CONSISTENCY, consistency),
-            (IN_SOURCE_FRAGMENT_OF, fragment_of),
-            (IN_SOURCE_FRAGMENTS, fragments),
+            (INTENSITY_CONSISTENCY, ledger.consistency),
+            (IN_SOURCE_FRAGMENT_OF, ledger.fragment_of),
+            (IN_SOURCE_FRAGMENTS, ledger.fragments),
         ):
             if id(row) in found:
                 record[key] = found[id(row)]
         question = same_ion_question(
             row,
-            notation_by_id,
+            ledger.notation_by_id,
             corroborated=corroborated,
-            partners=partners,
+            partners=ledger.partners,
             minor_channels=minor_channels,
         )
         if question is not None:
@@ -1045,6 +1046,69 @@ def read_cross_channel(
                 summary["shown_rival"] += bool(found.get("shown"))
         row.setdefault("provenance", {})["cross_channel"] = record
     return summary
+
+
+class _Ledger(NamedTuple):
+    """What :func:`read_cross_channel` reads off the ledger through one set of
+    channels, before it records any row."""
+
+    notation_by_id: dict[str, str]
+    channels: dict[str, dict[str, str | None]]
+    partners: dict[str, list[tuple[str, float]]]
+    consistency: dict
+    consistency_summary: dict
+    fragment_of: dict
+    fragments: dict
+    fragments_summary: dict
+
+
+def _ledger(
+    assignments: list[dict],
+    notation_by_id: dict[str, str],
+    minor_channels: frozenset[str],
+) -> _Ledger:
+    """The ledger's channels, partners and step 4.16's two readings, read
+    through ``notation_by_id``: a row through any other mechanism is not on it.
+
+    Step 4.16's readings are taken off the ledger before the pass caps a row:
+    a cap holds a row at candidate, which is still the bar they read at.
+    """
+    brightest = brightest_by_channel(assignments, notation_by_id)
+    return _Ledger(
+        notation_by_id,
+        channels_by_neutral(assignments, notation_by_id),
+        partner_heights(assignments, notation_by_id, minor_channels),
+        *intensity_consistency(brightest),
+        *in_source_fragments(brightest),
+    )
+
+
+def _ledgers(
+    assignments: list[dict],
+    notation_by_id: dict[str, str],
+    minor_channels: frozenset[str],
+    given_channels: frozenset[str],
+) -> tuple[_Ledger, _Ledger]:
+    """The whole ledger, and the one a row through the sample's own channels
+    reads: without the rows through a given channel (MAS-1039).
+
+    A batch decision measured on a member through a channel only another
+    sample opened is judged as that sample's run judges it, so it counts the
+    member's own readings of its neutral as its second channels. It is not
+    one of the member's: a run of the member never reads it, so it
+    corroborates, partners and rivals none of the member's own readings.
+
+    :return: ``(whole, own)``, one ledger twice where nothing is given.
+    """
+    whole = _ledger(assignments, notation_by_id, minor_channels)
+    if not given_channels:
+        return whole, whole
+    own_notations = {
+        mechanism_id: notation
+        for mechanism_id, notation in notation_by_id.items()
+        if notation not in given_channels
+    }
+    return whole, _ledger(assignments, own_notations, minor_channels)
 
 
 def cap_cross_channel(assignments: list[dict], summary: dict | None = None) -> dict:

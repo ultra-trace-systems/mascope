@@ -1590,6 +1590,67 @@ async def test_a_channel_its_sample_did_not_open_judges_only_its_own_readings(li
 
 
 @pytest.mark.asyncio
+async def test_a_channel_its_sample_did_not_open_corroborates_none_of_its_own_readings(
+    monkeypatch,
+):
+    # MAS-1039: the member's own reading of a molecule, through the mode's
+    # protonation, reads as a run of its sample reads it, with or without the
+    # same molecule's reading through the ammonium channel its spectrum did
+    # not open: a run of the member never reads that one, so it is no second
+    # channel of the member's reading. The ammonium reading itself still
+    # counts the member's own reading as its partner and is lifted by it. The
+    # tiering pass reads the channel so too.
+    from mascope_backend.api.new.peak_assignments import judging_loop
+
+    tiered_with = []
+    apply_tiering = judging_loop.apply_tiering
+
+    def tiering(*args, **kwargs):
+        tiered_with.append(kwargs.get("given_channels"))
+        return apply_tiering(*args, **kwargs)
+
+    monkeypatch.setattr(judging_loop, "apply_tiering", tiering)
+    judged = {}
+    for readings in (
+        [("bp-2", "C9H14O3", "C9H15O3+", "im-h", ["p3"])],
+        [
+            ("bp-2", "C9H14O3", "C9H15O3+", "im-h", ["p3"]),
+            ("bp-1", "C9H14O3", "C9H18NO3+", "im-nh4", ["p2"]),
+        ],
+    ):
+        measured, _ = await _measure(
+            _sample(polarity="+"),
+            _peaks(
+                [("p0", 100.0, 1.0e6), ("p2", 188.1281, 1.0e5), ("p3", 171.1016, 1.0e5)]
+            ),
+            [_mechanism("[M+H]+", "im-h"), _mechanism("[M+CH4N2O+H]+", "im-urea")],
+            readings,
+            secondary=[_mechanism("[M+NH4]+", "im-nh4")],
+        )
+        row = measured["p3"]
+        assert row["ionization_mechanism_id"] == "im-h"
+        cross_channel = row["provenance"]["cross_channel"]
+        judged[len(readings)] = (row["tier"], _reasons(row), cross_channel)
+        if len(readings) == 2:
+            given = measured["p2"]
+            assert given["ionization_mechanism_id"] == "im-nh4"
+            assert given["provenance"]["minor_channel"]["corroborated_by"] == (
+                "second_channel"
+            )
+            assert given["provenance"]["cross_channel"]["corroborated"] is True
+            assert given["provenance"]["cross_channel"]["channels"] == [
+                "[M+H]+",
+                "[M+NH4]+",
+            ]
+            assert given["tier"] == TIER_ASSIGNED
+    assert judged[2] == judged[1]
+    assert set(tiered_with) == {frozenset(), frozenset({"[M+NH4]+"})}
+    assert judged[1][0] == TIER_CANDIDATE
+    assert judged[1][2]["corroborated"] is False
+    assert judged[1][2]["channels"] == ["[M+H]+"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("listed", [True, False], ids=["listed", "unlisted"])
 async def test_a_list_naming_the_neutral_corroborates_a_measured_reading(listed):
     # Step 3.4 as a run of the sample reads it, and as the batch search reads

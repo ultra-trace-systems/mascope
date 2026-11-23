@@ -3767,6 +3767,22 @@ class TestASecondChannelOnASeparatedPeak:
             "did not separate either"
         )
 
+    def test_a_given_channel_is_no_escape_for_the_samples_own_reading(self):
+        # MAS-1039: a batch decision read through a channel the sample's
+        # spectrum did not open is no partner of the sample's own reading, as
+        # a run of the sample never reads it. The given reading itself still
+        # reads the sample's own reading as its partner.
+        rows = self.rows()
+        run(
+            rows,
+            lines=self.lines(partner_overlapped=False),
+            notation_by_id=self.NOTATION,
+            given_channels=frozenset({"[M+NH4]+"}),
+        )
+        assert tier_of(rows, "pa-1") == "candidate"
+        assert SEPARATED_THROUGH not in rows[0]["provenance"]["cross_channel"]
+        assert rows[1]["provenance"]["cross_channel"][SEPARATED_THROUGH] == []
+
     def test_a_reading_through_its_own_channel_is_no_escape(self):
         again = self.reading("pa-3", 250.0, "p-again", "im-h")
         rows = [self.reading("pa-1", self.M, "p-own", "im-h"), again]

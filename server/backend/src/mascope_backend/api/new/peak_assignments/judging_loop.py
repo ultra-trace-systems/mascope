@@ -365,6 +365,12 @@ class Judging:
         peak it is proposed on (``pipeline.RunContext.floors``), which a
         re-score lowers no such row below (:func:`rescore_rows`): only a cap
         does. Empty for a pass with no batch decision.
+    :ivar given_channels: The secondary channels the sample's spectrum did
+        not open that a batch decision measured on it reads through
+        (``ResolvedProfile.given_channels``). The cross-channel pass and the
+        tiering pass count a row through one as no second channel of the
+        sample's own readings (``cross_channel.read_cross_channel``,
+        MAS-1039). Empty for a run of the sample's own.
     :ivar claims: The lines earlier rounds read as their owners', by row.
     :ivar rounds: The rounds begun.
     :ivar applied: The round's rows as it began: a fresh copy of ``rows`` with
@@ -402,6 +408,7 @@ class Judging:
     instrument_type: str | None = None
     listed_formulas: frozenset[str] = frozenset()
     opened_channels: frozenset[str] = frozenset()
+    given_channels: frozenset[str] = frozenset()
     source_line_cap: SourceLineCap | None = None
     context: ChemistryContext | None = None
     nox_skeleton: bool = False
@@ -544,6 +551,7 @@ class Judging:
             self.judged,
             notation_by_id=self.notation_by_id,
             minor_channels=self.minor_channels,
+            given_channels=self.given_channels,
         )
 
     def cap(self) -> None:
@@ -577,6 +585,7 @@ class Judging:
             instrument_type=self.instrument_type,
             context=self.context,
             nox_skeleton=self.nox_skeleton,
+            given_channels=self.given_channels,
         )
         self.found, self.held = find_envelope_claims(
             self.judged,
