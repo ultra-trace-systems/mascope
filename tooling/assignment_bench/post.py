@@ -313,6 +313,14 @@ def tail(text: str, lines: int = TAIL_LINES, chars: int = TAIL_CHARS) -> str:
 
 # -------------------------------------------------------------- the comment
 
+#: What the comment says of a card's batch arm, around the sets it names.
+BATCH_ARM_LEAD = "After the batch pass: read on"
+BATCH_ARM_TAIL = (
+    "The gate judges the control; the whole card sets the two side by side, "
+    "with the rows that moved."
+)
+
+
 #: Every sentence the comment prints of its own. Their words are the
 #: comment's own vocabulary: a name made of them alone names nothing the
 #: comment would leak (``run.py`` gives them to the scrub).
@@ -355,6 +363,10 @@ TEXTS = (
         "posted.",
         "Posted by bench run --post on the agent box; a re-run edits this comment.",
         "details summary sub",
+        "batch arm",
+        BATCH_ARM_LEAD,
+        BATCH_ARM_TAIL,
+        "has none:",
     )
     + tuple(kind for _, kind in KINDS)
     + (UNKNOWN_KIND,)
@@ -389,6 +401,8 @@ def _head(title: str, summary: dict, pr: PullRequest, full: bool = True) -> list
             line += f" ({reference['version']})"
     if summary.get("decoys"):
         line += "; decoy arms"
+    if summary.get("batch"):
+        line += "; batch arm"
     if summary.get("minutes") is not None:
         line += f"; {summary['minutes']} min"
     if summary.get("finished"):
@@ -478,6 +492,19 @@ def _details(summary: str, markdown: str) -> list[str]:
     ]
 
 
+def batch_arm_lines(card: dict) -> list[str]:
+    """One line under the headline table for a card with the batch arm: the
+    sets it reads, and why each set that asked for it has none."""
+    arm = card.get("batch_arm")
+    if not arm:
+        return []
+    parts = []
+    if arm.get("columns"):
+        parts.append(f"{BATCH_ARM_LEAD} {', '.join(arm['columns'])}")
+    parts += [f"{name} has none: {why}" for name, why in (arm.get("off") or {}).items()]
+    return ["", f"**{'; '.join(parts)}.** {BATCH_ARM_TAIL}"]
+
+
 def card_body(
     summary: dict,
     out: Path,
@@ -511,6 +538,7 @@ def card_body(
     if reused:
         lines += ["", reuse_line(reused)]
     lines += [""] + headline_table(card, cr)
+    lines += batch_arm_lines(card)
 
     diff_file = out / "diff.json"
     if diff_file.exists():

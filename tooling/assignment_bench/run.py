@@ -1,6 +1,6 @@
 """``bench run``: a ref's in-app engine on the bench sets, beside the pinned reference.
 
-    bench.py run <ref> [--sets A,D,...] [--decoys] [--baseline] [--post PR] [--no-wait] [--jobs N] [--budget-min M] [--workers N]
+    bench.py run <ref> [--sets A,D,...] [--decoys] [--batch] [--baseline] [--post PR] [--no-wait] [--jobs N] [--budget-min M] [--workers N]
     bench.py baseline [CARD]
 
 The command the bench exists for (step 6.5 of the assignment quality plan).
@@ -104,6 +104,27 @@ DECOY_ARMS: dict[str, tuple[dict, ...]] = {
 
 #: A run's statuses nothing moves on from.
 TERMINAL = {"completed", "failed", "cancelled"}
+
+#: How the batch arm's pass of the batch stages folds first: every sample,
+#: from the run the arm made for it to fold, whatever the ledger held.
+BATCH_FOLD = "always"
+
+#: Why a set has no batch arm on its card, in the words the card says it:
+#: the pass refused, failed, cancelled, ended with a stage stale, a sample in
+#: no batch, the set's budget ran out, a sample whose runs for the arm did not
+#: complete, or the run stopped waiting for it.
+ARM_OFF = {
+    "no_batch": "a sample of the set is in no batch",
+    "refused": "the pass of its batch was refused",
+    "failed": "the pass of its batch failed",
+    "cancelled": "the pass of its batch was cancelled",
+    "stale": "the pass of its batch ended with a stage stale",
+    "over_budget": "the set's budget ran out",
+    "runs_failed": "a sample's run for the arm did not complete",
+    "stopped": "the run stopped waiting for it",
+    "lost": "the pass of its batch left its listing",
+    "shared": "its batch holds another set's samples",
+}
 
 #: How the engine says a decoy it refused at run time, in the run's error.
 DECOY_REFUSAL = "no decoy:"
@@ -329,9 +350,12 @@ def engine_digest(instance, sha: str, state: dict, tool: Iterable[Path]) -> dict
     return {"digest": hashlib.sha256(text.encode()).hexdigest(), **parts}
 
 
-def passing_problems(sets: dict) -> list[str]:
+def passing_problems(sets: dict, batch: bool = False) -> list[str]:
     """What a run left out, or a decoy outcome, that another run of the same
-    inputs might not have: a card with any is no card to reuse."""
+    inputs might not have: a card with any is no card to reuse. With
+    ``batch``, for a request with the batch arm, a set whose arm is off its
+    card is one too, whatever the reason: a request without the arm reads the
+    control alone, which the arm leaves as it is."""
     out = []
     for name, s in sets.items():
         # A set over its budget leaves every sample out as ``over_budget``.
@@ -346,6 +370,9 @@ def passing_problems(sets: dict) -> list[str]:
             for status in tally
             if status in PASSING_DECOY
         ]
+        arm = s.get("batch")
+        if batch and arm is not None and arm.get("off"):
+            out.append(f"set {name}: no batch arm ({arm['off']})")
     return out
 
 
@@ -445,6 +472,16 @@ class RunApi(Protocol):
     def runs(self, sample: str, include_decoys: bool = False) -> list[dict]:
         """The sample's runs, newest first; :class:`TransientError` as above."""
 
+    def assign_batch(self, batch: str, fold: str) -> Launch:
+        """Launch a pass of the batch stages on a batch; :class:`TransientError`
+        when the server did not answer."""
+
+    def batch_runs(self, batch: str) -> list[dict]:
+        """The batch's runs, newest first; :class:`TransientError` as above."""
+
+    def assignment_status(self, batch: str) -> dict:
+        """Where the batch's assignment stands; :class:`TransientError` as above."""
+
 
 class TokenApi:
     """The two routes a run needs, over HTTP with the bench's SDK token.
@@ -493,6 +530,26 @@ class TokenApi:
         rows = body.get("data", body) if isinstance(body, dict) else body
         return rows or []
 
+    def assign_batch(self, batch: str, fold: str) -> Launch:
+        r = self._send(
+            "POST", f"/api/batch-peaks/batch/{batch}/assign", json={"fold": fold}
+        )
+        return batch_launch_of(r.status_code, _json(r))
+
+    def batch_runs(self, batch: str) -> list[dict]:
+        r = self._send("GET", f"/api/batch-peaks/batch/{batch}/runs")
+        if r.status_code != 200:
+            raise RunError(f"the runs of a batch answered {r.status_code}")
+        rows = _json(r).get("data")
+        return rows if isinstance(rows, list) else []
+
+    def assignment_status(self, batch: str) -> dict:
+        r = self._send("GET", f"/api/batch-peaks/batch/{batch}/assignment-status")
+        if r.status_code != 200:
+            raise RunError(f"the assignment status of a batch answered {r.status_code}")
+        data = _json(r).get("data")
+        return data if isinstance(data, dict) else {}
+
 
 def _json(response) -> dict:
     try:
@@ -517,6 +574,77 @@ def launch_of(status: int, body: dict) -> Launch:
     if status == 409:
         return Launch(busy=True, code=code)
     return Launch(code=code, reason=detail.get("reason") or body.get("error"))
+
+
+def batch_launch_of(status: int, body: dict) -> Launch:
+    """A batch pass's answer as a :class:`Launch`: 202 carries the pass's
+    batch run, 409 another batch run in flight; a 200 with no run (every
+    stage current, nothing to fold) and anything else are refused."""
+    if status == 202 and (body.get("data") or [None])[0]:
+        return Launch(run_id=body["data"][0]["batch_peak_run_id"])
+    detail = body.get("detail")
+    detail = detail if isinstance(detail, dict) else {}
+    if status == 409:
+        return Launch(busy=True, code=detail.get("code") or "http_409")
+    if status == 200:
+        return Launch(code="nothing_to_run", reason=body.get("message"))
+    return Launch(
+        code=detail.get("code") or f"http_{status}",
+        reason=detail.get("reason") or body.get("error") or body.get("message"),
+    )
+
+
+def stage_minutes(summary: dict | None) -> dict[str, dict]:
+    """A pass's stages as ``run.json`` keeps them: per stage that ran, its
+    status and the minutes from its start to its end; none of its outcomes,
+    whose messages can name the batch."""
+    out = {}
+    for entry in (summary or {}).get("stages") or []:
+        if not isinstance(entry, dict) or entry.get("status") == "not_run":
+            continue
+        minutes = None
+        try:
+            start = datetime.datetime.fromisoformat(str(entry["utc_started"]))
+            end = datetime.datetime.fromisoformat(str(entry["utc_ended"]))
+            minutes = round((end - start).total_seconds() / 60, 2)
+        except (KeyError, TypeError, ValueError):
+            pass
+        out[str(entry.get("stage"))] = {
+            "status": entry.get("status"),
+            "minutes": minutes,
+        }
+    return out
+
+
+def fold_counts(summary: dict | None) -> dict[str, int | None]:
+    """What a pass's fold made of the batch's samples: how many it covered,
+    folded, and could not read (a fold that raised, or a sample it skipped:
+    a blank, an unverified calibration, no peaks)."""
+    summary = summary or {}
+    covered = len(summary.get("samples") or [])
+    fold = next(
+        (
+            e
+            for e in summary.get("stages") or []
+            if isinstance(e, dict) and e.get("stage") == "fold"
+        ),
+        {},
+    )
+    data = next(
+        (
+            o.get("data")
+            for o in fold.get("outcomes") or []
+            if isinstance(o, dict) and isinstance(o.get("data"), dict)
+        ),
+        {},
+    )
+    folded, failed = data.get("samples_folded"), data.get("samples_failed")
+    return {
+        "samples": covered,
+        "folded": folded,
+        "failed": failed,
+        "not_read": None if folded is None else max(covered - folded, 0),
+    }
 
 
 def read_env_file(path: Path) -> dict[str, str]:
@@ -677,6 +805,7 @@ def migrate(
     sha: str,
     say: Callable[[str], None],
     restore_point: bool = False,
+    always: bool = False,
 ) -> dict:
     """Move the bench database to the checked-out ref's head, or refuse an
     older ref: one that does not know the database's revision, since a later
@@ -686,10 +815,14 @@ def migrate(
     With ``restore_point`` a migration is preceded by a dump of the database,
     recorded in the bench's home until :func:`restore` puts it back. A run of
     a ref whose head is not on develop asks for one, so that the revision of
-    a branch's own migration never stays on the bench (#3171).
+    a branch's own migration never stays on the bench (#3171). With
+    ``always`` the dump is taken whether or not the database migrates: a run
+    with the batch arm writes batch decisions that a later run's control
+    would read (MAS-1140).
 
     :return: ``{"from": [...], "to": [...], "restore_point": bool}``, the
-        revisions before and after, and whether a dump was taken.
+        revisions before and after, and whether a dump was taken; with
+        ``always``, the dump's seconds as ``dump_s``.
     """
     restore(instance, say)
     current = sorted(instance.db_revisions())
@@ -703,15 +836,24 @@ def migrate(
             f"head (a later build migrated it). Bench a ref that holds it, or rebuild "
             f"the bench (`bench.py init <manifest> --rebuild`)"
         )
-    if current == heads:
+    if current == heads and not always:
         say(f"the database is at the ref's head ({', '.join(heads)})")
         return {"from": current, "to": heads, "restore_point": False}
-    if restore_point:
+    timing = {}
+    if restore_point or always:
         say(
-            f"{ref} is not on develop: dumping the database at "
-            f"{', '.join(current) or 'nothing'}, to put it back after the run"
+            (
+                f"{ref} is not on develop"
+                if restore_point
+                else "the batch arm writes batch decisions"
+            )
+            + f": dumping the database at {', '.join(current) or 'nothing'}, "
+            "to put it back after the run"
         )
+        started = time.monotonic()
         dump = instance.snapshot()
+        if always:
+            timing["dump_s"] = round(time.monotonic() - started, 1)
         instance.home.write_private(
             instance.home.restore_point,
             json.dumps(
@@ -720,6 +862,9 @@ def migrate(
             )
             + "\n",
         )
+    if current == heads:
+        say(f"the database is at the ref's head ({', '.join(heads)})")
+        return {"from": current, "to": heads, "restore_point": True, **timing}
     say(
         f"migrating the database from {', '.join(current) or 'nothing'} "
         f"to the ref's head {', '.join(heads)}"
@@ -731,7 +876,12 @@ def migrate(
             f"the migration left the database at {', '.join(after)}, not at "
             f"the ref's head {', '.join(heads)}"
         )
-    return {"from": current, "to": after, "restore_point": restore_point}
+    return {
+        "from": current,
+        "to": after,
+        "restore_point": restore_point or always,
+        **timing,
+    }
 
 
 def restore(instance, say: Callable[[str], None]) -> bool:
@@ -953,6 +1103,7 @@ class BenchRun:
         baseline: bool = False,
         post: bench_post.Poster | None = None,
         fresh: bool = False,
+        batch: bool = False,
     ) -> int:
         """One run of ``ref``; 0 when the card passes with nothing left out,
         1 when it fails its gate or something was left out, 2 when no card was
@@ -966,18 +1117,25 @@ class BenchRun:
         arms is reused first (:meth:`reuse`), quietly when there is none: the
         caller asked before it took the lock, and a run ahead of it in the
         queue may have made one since.
+
+        With ``batch`` each set also runs the batch arm (:meth:`_batch_arm`),
+        and the database is dumped before the run and put back after it,
+        whatever the ref: a pass writes batch decisions that a later run's
+        control would read.
         """
         if not fresh:
-            code = self.reuse(ref, sets, decoys, baseline, post, quiet=True)
+            code = self.reuse(
+                ref, sets, decoys, baseline, post, quiet=True, batch=batch
+            )
             if code is not None:
                 return code
         if post is None:
-            return self._run_once(ref, sets, decoys, baseline, None, {})
+            return self._run_once(ref, sets, decoys, baseline, None, {}, batch)
         if post.pr is None:
             post.open()
         progress: dict = {}
         try:
-            return self._run_once(ref, sets, decoys, True, post, progress)
+            return self._run_once(ref, sets, decoys, True, post, progress, batch)
         except bench_post.PostError:
             raise
         except (Exception, Stopped, KeyboardInterrupt) as error:
@@ -987,7 +1145,9 @@ class BenchRun:
                 self._post_failure(post, ref, error, progress)
             raise
 
-    def _run_once(self, ref, sets, decoys, baseline, post, progress) -> int:
+    def _run_once(
+        self, ref, sets, decoys, baseline, post, progress, batch=False
+    ) -> int:
         state = self.load_state()
         chosen = choose_sets(state, sets)
         reference = state.get("reference")
@@ -1023,6 +1183,7 @@ class BenchRun:
                 state,
                 post,
                 progress,
+                batch,
             )
 
     def _card_dir(self, ref: str) -> Path:
@@ -1061,6 +1222,7 @@ class BenchRun:
         state,
         post=None,
         progress=None,
+        batch=False,
     ) -> int:
         say = runlog.say
         started = self.clock()
@@ -1074,6 +1236,8 @@ class BenchRun:
             "finished": None,
             "reference": {"pin": reference["pin"], "version": reference.get("version")},
             "decoys": decoys,
+            # Only with the arm: a run without it writes what it always did.
+            **({"batch": True} if batch else {}),
             "migration": None,
             "engine": None,
             "reused": None,
@@ -1085,6 +1249,7 @@ class BenchRun:
         say(
             f"bench run {ref}: set(s) {', '.join(chosen)}"
             + (", decoy arms" if decoys else "")
+            + (", batch arm" if batch else "")
             + f", reference {reference['pin']}; card into {out}"
         )
         for p in plans.values():
@@ -1129,15 +1294,19 @@ class BenchRun:
                 sha,
                 say,
                 restore_point=not self.instance.is_on_develop(sha),
+                always=batch,
             )
             base_url = self.instance.start(peak_assignment=True, workers=self.workers)
             self.connect(base_url)
             creds = read_env_file(self.home.env_file)
             api = self.api_of(creds["MASCOPE_URL"], creds["MASCOPE_ACCESS_TOKEN"])
             self._check_references(api, plans, reference, runlog)
+            shared = self._shared_batches(plans, chosen) if batch else {}
             for name in chosen:
                 if plans[name].samples:
-                    results[name] = self._run_set(api, plans[name], decoys, runlog)
+                    results[name] = self._run_set(
+                        api, plans[name], decoys, runlog, batch, shared.get(name)
+                    )
             self._check_controls(api, plans, results, reference, runlog)
             card = self._card(
                 ref,
@@ -1212,8 +1381,13 @@ class BenchRun:
         # worktree goes. A restore that fails keeps its record, and the
         # next bench command that migrates tries it again.
         try:
+            started = time.monotonic()
             if restore(self.instance, say) and summary["migration"]:
                 summary["migration"]["restored"] = True
+                if "dump_s" in summary["migration"]:
+                    summary["migration"]["restore_s"] = round(
+                        time.monotonic() - started, 1
+                    )
         except Exception as error:  # noqa: BLE001
             if summary["migration"]:
                 summary["migration"]["restored"] = False
@@ -1283,41 +1457,82 @@ class BenchRun:
                     p.leave_out("reference_moved", sample, why)
             self._note_left_out(runlog, p, before)
 
-    def _run_set(self, api: RunApi, p: SetPlan, decoys: bool, runlog: RunLog) -> dict:
-        """The set's control runs, then its decoy arms, within its budget.
+    def _pooled(self, samples: list[str], work) -> list:
+        """``work(sample, stop)`` for every sample, :attr:`jobs` at once, in
+        sample order.
 
-        Samples run side by side; one sample's runs follow each other, since
-        the server holds one run of a sample at a time. When the main thread
-        leaves the pool on an exception, a Ctrl-C or any sample's job that
-        broke, the jobs still running stop at their next poll and launch
-        nothing more, rather than hold the lock and the backend until the
-        budget runs out.
+        When the main thread leaves the pool on an exception, a Ctrl-C or any
+        sample's job that broke, the jobs still running stop at their next
+        poll (``stop``) and launch nothing more, rather than hold the lock and
+        the backend until the budget runs out.
         """
-        arms = DECOY_ARMS.get(p.instrument, ()) if decoys else ()
-        before = p.snapshot()
-        start = self.clock()
-        deadline = start + self.budget_s
-        lock = threading.Lock()
         stop = threading.Event()
-        done = [0]
 
-        def job(sample: str) -> tuple[str, Outcome, dict[str, Outcome]]:
+        def job(sample: str):
             try:
-                return work(sample)
+                return work(sample, stop)
             except BaseException:
                 # Set here, in the thread that broke: its worker takes the
                 # next queued sample at once, before the main thread wakes.
                 stop.set()
                 raise
 
-        def work(sample: str) -> tuple[str, Outcome, dict[str, Outcome]]:
+        with ThreadPoolExecutor(max_workers=max(1, self.jobs)) as pool:
+            futures = []
+            try:
+                futures = [pool.submit(job, sample) for sample in samples]
+                # Wait on every job, not in sample order: a job that broke
+                # behind a sample still running is seen when it breaks.
+                finished, _ = wait(futures, return_when=FIRST_EXCEPTION)
+                for future in futures:
+                    if future in finished and future.exception() is not None:
+                        raise future.exception()
+                return [future.result() for future in futures]
+            except BaseException:
+                # Leaving the block waits for the running jobs, which this
+                # stops, and would start the queued ones, which this cancels.
+                stop.set()
+                for future in futures:
+                    future.cancel()
+                raise
+
+    def _run_set(
+        self,
+        api: RunApi,
+        p: SetPlan,
+        decoys: bool,
+        runlog: RunLog,
+        batch: bool = False,
+        arm_off: str | None = None,
+    ) -> dict:
+        """The set's control runs, then its decoy arms, within its budget; with
+        ``batch``, then its batch arm (:meth:`_batch_arm`), unless ``arm_off``
+        says why the set has none.
+
+        Samples run side by side; one sample's runs follow each other, since
+        the server holds one run of a sample at a time. With ``batch`` each
+        sample runs once more after its control and its arms: the run the pass
+        folds, whose rows the batch stages rewrite, so the control stays as it
+        was made.
+        """
+        arms = DECOY_ARMS.get(p.instrument, ()) if decoys else ()
+        before = p.snapshot()
+        start = self.clock()
+        deadline = start + self.budget_s
+        lock = threading.Lock()
+        done = [0]
+
+        def work(sample: str, stop: threading.Event):
             control = self._one(api, sample, DEFAULT_CONFIG, deadline, stop)
             outcomes: dict[str, Outcome] = {}
+            copy = None
             if control.status == "completed":
                 for arm in arms:
                     outcomes[arm_name(arm)] = self._one(
                         api, sample, {"decoy": arm}, deadline, stop
                     )
+                if batch and arm_off is None:
+                    copy = self._one(api, sample, DEFAULT_CONFIG, deadline, stop)
             with lock:
                 done[0] += 1
                 runlog.note(
@@ -1328,44 +1543,36 @@ class BenchRun:
                         + (f" ({o.code}: {o.detail})" if o.detail else "")
                         for arm, o in outcomes.items()
                     )
+                    + (
+                        f"; for the pass {copy.status} {copy.run_id or ''}"
+                        if copy is not None
+                        else ""
+                    )
                 )
                 if done[0] % 10 == 0 or done[0] == len(p.samples):
                     runlog.say(
                         f"set {p.name}: {done[0]}/{len(p.samples)} sample(s) done, "
                         f"{(self.clock() - start) / 60:.1f} min"
                     )
-            return sample, control, outcomes
+            return sample, control, outcomes, copy
 
         runlog.say(
             f"set {p.name}: running the engine on {len(p.samples)} sample(s)"
             + (f" and {len(arms)} decoy arm(s) each" if arms else "")
+            + (" and once more for the batch pass" if batch and arm_off is None else "")
             + f", {self.jobs} at once, within {self.budget_s / 60:.0f} min"
         )
-        with ThreadPoolExecutor(max_workers=max(1, self.jobs)) as pool:
-            futures = []
-            try:
-                futures = [pool.submit(job, sample) for sample in p.samples]
-                # Wait on every job, not in sample order: a job that broke
-                # behind a sample still running is seen when it breaks.
-                finished, _ = wait(futures, return_when=FIRST_EXCEPTION)
-                for future in futures:
-                    if future in finished and future.exception() is not None:
-                        raise future.exception()
-                rows = [future.result() for future in futures]
-            except BaseException:
-                # Leaving the block waits for the running jobs, which this
-                # stops, and would start the queued ones, which this cancels.
-                stop.set()
-                for future in futures:
-                    future.cancel()
-                raise
+        rows = self._pooled(list(p.samples), work)
 
         controls: dict[str, Outcome] = {}
         decoy_outcomes: dict[str, dict[str, Outcome]] = {}
+        copies: dict[str, Outcome] = {}
         over = False
-        for sample, control, outcomes in rows:
+        for sample, control, outcomes, copy in rows:
             controls[sample] = control
             decoy_outcomes[sample] = outcomes
+            if copy is not None:
+                copies[sample] = copy
             over = over or control.status == "over_budget"
             over = over or any(o.status == "over_budget" for o in outcomes.values())
         for sample, control in controls.items():
@@ -1391,13 +1598,240 @@ class BenchRun:
                 f"not on the card"
             )
         self._note_left_out(runlog, p, before)
-        return {
+        result = {
             "minutes": round((self.clock() - start) / 60, 1),
             "controls": controls,
             "decoys": decoy_outcomes,
             "over_budget": over,
             "arms": [arm_name(a) for a in arms],
         }
+        if batch:
+            arm_start = self.clock()
+            if over or not p.samples:
+                result["batch"] = None
+            elif arm_off is not None:
+                result["batch"] = self._arm_off(p, arm_off, runlog)
+            else:
+                result["batch"] = self._batch_arm(api, p, copies, deadline, runlog)
+            if result["batch"] is not None:
+                result["batch"]["minutes"] = round((self.clock() - arm_start) / 60, 1)
+            result["minutes"] = round((self.clock() - start) / 60, 1)
+        return result
+
+    def _shared_batches(self, plans: dict, chosen: list[str]) -> dict[str, str]:
+        """The sets whose batch holds another chosen set's samples: a pass on
+        it would write decisions that set's control reads when it runs after,
+        so neither gets the arm (``shared``).
+
+        :return: Set -> ``shared``, for each such set.
+        """
+        batches = self.instance.sample_batches()
+        held: dict[str, set[str]] = {}
+        for name in chosen:
+            for sample in plans[name].samples:
+                batch_id = batches.get(sample)
+                if batch_id is not None:
+                    held.setdefault(batch_id, set()).add(name)
+        return {
+            name: "shared"
+            for names in held.values()
+            if len(names) > 1
+            for name in sorted(names)
+        }
+
+    # -------------------------------------------------------------- batch arm
+
+    def _arm_off(self, p: SetPlan, code: str, runlog: RunLog, arm=None) -> dict:
+        """A set's batch arm left off its card, with why (:data:`ARM_OFF`)."""
+        arm = arm or {"passes": [], "folded": {}, "after": {}}
+        runlog.say(f"set {p.name}: no batch arm on the card: {ARM_OFF[code]}")
+        return {**arm, "off": code}
+
+    def _batch_arm(
+        self,
+        api: RunApi,
+        p: SetPlan,
+        copies: dict[str, Outcome],
+        deadline: float,
+        runlog: RunLog,
+    ) -> dict:
+        """One pass of the batch stages on the set's batch, then every
+        sample's engine again, within the set's budget (MAS-1140).
+
+        The pass folds every sample first (:data:`BATCH_FOLD`), from the run
+        made for it after the control (``copies``), and the runs after it
+        read the batch's decisions as declared inputs (MAS-985). A set whose
+        samples sit in several batches gets a pass on each, in turn. A sample
+        whose run for the pass did not complete, a sample in no batch, a pass
+        that is refused, fails, is cancelled or ends with a stage stale, and a
+        sample whose run after the pass does not complete leave the arm off
+        the set's card (:data:`ARM_OFF`); the control stands.
+
+        :return: ``{"passes", "folded", "after", "off"}``: each pass's facts
+            (:meth:`_pass`), the samples' runs for the pass and after it, and
+            the code of why the arm is off, or None.
+        """
+        arm: dict = {"passes": [], "folded": dict(copies), "after": {}}
+        samples = list(p.samples)
+        missing = [s for s in samples if s not in copies]
+        if missing or any(copies[s].status != "completed" for s in samples):
+            over = any(
+                copies[s].status == "over_budget" for s in samples if s in copies
+            )
+            for sample in samples:
+                copy = copies.get(sample)
+                if copy is None or copy.status != "completed":
+                    runlog.note(
+                        f"set {p.name}: {sample}: its run for the pass "
+                        f"{copy.status if copy else 'never ran'}"
+                    )
+            return self._arm_off(
+                p, "over_budget" if over else "runs_failed", runlog, arm
+            )
+        batches = self.instance.sample_batches()
+        groups: dict[str, list[str]] = {}
+        for sample in samples:
+            batch_id = batches.get(sample)
+            if batch_id is None:
+                runlog.note(f"set {p.name}: {sample} is in no batch")
+                return self._arm_off(p, "no_batch", runlog, arm)
+            groups.setdefault(batch_id, []).append(sample)
+        runlog.say(
+            f"set {p.name}: a pass of the batch stages on {len(groups)} batch(es), "
+            f"folding every sample first"
+        )
+        for batch_id in groups:
+            one = self._pass(api, batch_id, deadline, runlog)
+            arm["passes"].append(one)
+            runlog.say(f"set {p.name}: {pass_line(one)}")
+            if one["status"] != "completed":
+                return self._arm_off(p, one["status"], runlog, arm)
+            if not one["current"]:
+                return self._arm_off(p, "stale", runlog, arm)
+
+        runlog.say(
+            f"set {p.name}: running the engine on {len(samples)} sample(s) again"
+        )
+
+        def again(sample: str, stop: threading.Event):
+            outcome = self._one(api, sample, DEFAULT_CONFIG, deadline, stop)
+            runlog.note(
+                f"set {p.name}: {sample}: after the pass {outcome.status} "
+                f"{outcome.run_id or ''}"
+                + (f" ({outcome.code}: {outcome.detail})" if outcome.detail else "")
+            )
+            return sample, outcome
+
+        arm["after"] = dict(self._pooled(samples, again))
+        statuses = [o.status for o in arm["after"].values()]
+        if "over_budget" in statuses:
+            return self._arm_off(p, "over_budget", runlog, arm)
+        if any(status != "completed" for status in statuses):
+            return self._arm_off(p, "runs_failed", runlog, arm)
+        return {**arm, "off": None}
+
+    def _pass(self, api: RunApi, batch: str, deadline: float, runlog: RunLog) -> dict:
+        """Launch one pass of the batch stages on ``batch`` and wait for it,
+        while the set's budget lasts.
+
+        :return: ``{"run_id", "status", "minutes", "stages", "state",
+            "current", "stale_stages", "samples", "folded", "failed",
+            "not_read"}``: ``status`` is the pass's (``completed``,
+            ``failed``, ``cancelled``), or ``refused``, ``lost`` or
+            ``over_budget``; ``current`` whether the batch's assignment
+            status said every stage was current once it ended.
+        """
+        started = self.clock()
+        out: dict = {
+            "run_id": None,
+            "status": None,
+            "minutes": None,
+            "stages": {},
+            "state": None,
+            "current": False,
+            "stale_stages": [],
+            **fold_counts(None),
+        }
+
+        def end(status: str, why: str | None = None) -> dict:
+            out["status"] = status
+            out["minutes"] = round((self.clock() - started) / 60, 1)
+            if why:
+                runlog.note(f"batch {batch}: the pass {status}: {why}")
+            return out
+
+        transient = 0
+        while True:
+            if self.clock() > deadline:
+                return end("over_budget")
+            try:
+                launch = api.assign_batch(batch, BATCH_FOLD)
+            except TransientError as error:
+                transient += 1
+                if transient >= TRANSIENT_TRIES:
+                    return end("failed", f"unreachable: {error}")
+                self.sleep(self.poll_s)
+                continue
+            if launch.run_id:
+                break
+            if launch.busy:
+                self.sleep(self.poll_s)
+                continue
+            return end("refused", f"{launch.code}: {launch.reason}")
+        out["run_id"] = launch.run_id
+        transient = 0
+        while True:
+            try:
+                runs = api.batch_runs(batch)
+            except TransientError as error:
+                transient += 1
+                if transient >= TRANSIENT_TRIES:
+                    return end("failed", f"unreachable: {error}")
+                runs = None
+            except RunError as error:
+                return end("failed", str(error))
+            if runs is not None:
+                transient = 0
+                run = next(
+                    (r for r in runs if r.get("batch_peak_run_id") == launch.run_id),
+                    None,
+                )
+                if run is None:
+                    return end("lost", "the pass left the batch's runs")
+                if run.get("status") != "running":
+                    break
+            if self.clock() > deadline:
+                # It runs on until the backend stops; the database is put
+                # back from the restore point all the same.
+                return end("over_budget")
+            self.sleep(self.poll_s)
+        summary = run.get("summary") if isinstance(run.get("summary"), dict) else {}
+        out["stages"] = stage_minutes(summary)
+        out.update(fold_counts(summary))
+        if run.get("status") != "completed":
+            return end(str(run.get("status")), str(run.get("error")))
+        try:
+            status = self._batch_status(api, batch)
+        except (TransientError, RunError) as error:
+            out["state"] = "unread"
+            runlog.note(f"batch {batch}: its assignment status was not read: {error}")
+            return end("completed")
+        out["state"] = status.get("state")
+        out["stale_stages"] = sorted(map(str, status.get("stale_stages") or []))
+        out["current"] = out["state"] == "current" and not out["stale_stages"]
+        return end("completed")
+
+    def _batch_status(self, api: RunApi, batch: str) -> dict:
+        """A batch's assignment status, asking again while the server does
+        not answer."""
+        for attempt in range(TRANSIENT_TRIES):
+            try:
+                return api.assignment_status(batch)
+            except TransientError:
+                if attempt == TRANSIENT_TRIES - 1:
+                    raise
+                self.sleep(self.poll_s)
+        raise AssertionError("unreachable")
 
     def _one(
         self,
@@ -1480,6 +1914,7 @@ class BenchRun:
         for name, result in results.items():
             p = plans[name]
             before = p.snapshot()
+            arm = result.get("batch") or {}
             for sample in list(p.samples):
                 control = result["controls"][sample]
                 try:
@@ -1489,10 +1924,25 @@ class BenchRun:
                         "failed", sample, f"its runs could not be read: {error}"
                     )
                     continue
+                # The batch arm's runs of the sample follow its control; the
+                # card names the control, which must still be listed.
+                mine = {control.run_id} | {
+                    one.run_id
+                    for group in ("folded", "after")
+                    for one in [(arm.get(group) or {}).get(sample)]
+                    if one is not None and one.run_id
+                }
                 latest = newest(runs, ENGINE)
+                held = any(
+                    r.get("peak_assignment_run_id") == control.run_id
+                    and r.get("engine") == ENGINE
+                    and r.get("status") == "completed"
+                    for r in runs
+                )
                 if (
                     latest is None
-                    or latest.get("peak_assignment_run_id") != control.run_id
+                    or latest.get("peak_assignment_run_id") not in mine
+                    or not held
                 ):
                     p.leave_out(
                         "not_latest",
@@ -1547,6 +1997,9 @@ class BenchRun:
             ids += [o.run_id or "" for o in result["controls"].values()]
             for outcomes in result["decoys"].values():
                 ids += [o.run_id or "" for o in outcomes.values()]
+            arm = result.get("batch") or {}
+            for group in ("folded", "after"):
+                ids += [o.run_id or "" for o in (arm.get(group) or {}).values()]
         clean = lambda xs: sorted({x for x in xs if x and str(x).strip()})  # noqa: E731
         return clean(names), clean(ids), clean(strict)
 
@@ -1619,6 +2072,20 @@ class BenchRun:
             truth = (state["sets"].get(name) or {}).get("truth")
             if truth:
                 manifest["sets"][name]["truth"] = list(truth["formulas"])
+            arm = (results.get(name) or {}).get("batch")
+            if arm is not None:
+                # The arm's runs are newer than the control: the card reads
+                # each by name, the control in the set's own column.
+                spec = manifest["sets"][name]
+                spec["runs"] = {
+                    s: results[name]["controls"][s].run_id for s in p.samples
+                }
+                if arm["off"] is None:
+                    spec["batch_arm"] = {
+                        "runs": {s: arm["after"][s].run_id for s in p.samples}
+                    }
+                else:
+                    spec["batch_arm_off"] = ARM_OFF[arm["off"]]
         sets_file = work / "sets.json"
         sets_file.write_text(json.dumps(manifest, indent=1) + "\n", encoding="utf-8")
         deny_file = work / "deny.txt"
@@ -1747,6 +2214,8 @@ class BenchRun:
                         status = outcomes[arm].status
                         tally[status] = tally.get(status, 0) + 1
                 out["decoys"][arm] = dict(sorted(tally.items()))
+            if "batch" in result:
+                out["batch"] = arm_summary(result["batch"])
         return out
 
     def _promote(self, ref, summary, problems, state, out, say) -> dict | None:
@@ -1821,6 +2290,7 @@ class BenchRun:
             "verdict": card["verdict"],
             "sets": card["sets"],
             "decoys": summary["decoys"],
+            **({"batch": True} if summary.get("batch") else {}),
             "baseline": base["path"] if base else None,
             "digest": (summary.get("engine") or {}).get("digest"),
             "reused": (summary.get("reused") or {}).get("path"),
@@ -1845,6 +2315,7 @@ class BenchRun:
                 + (f", {s['minutes']} min" if s["minutes"] is not None else "")
                 + (f"; decoys {arms}" if arms else "")
                 + ("; over budget" if s["over_budget"] else "")
+                + arm_line(s.get("batch"))
             )
         if card.get("markdown"):
             print(card["markdown"], flush=True)
@@ -1873,13 +2344,14 @@ class BenchRun:
         baseline: bool = False,
         post: bench_post.Poster | None = None,
         quiet: bool = False,
+        batch: bool = False,
     ) -> int | None:
         """``ref``'s card without a run, where its engine inputs are unchanged.
 
         It looks for the newest complete card (:meth:`_source`) of the ref's
         head's engine digest (:func:`engine_digest`) and the same sets, with
-        the decoy arms where they are asked for: a card with them serves a
-        request without them, not the reverse. Finding one, it takes no lock,
+        the decoy arms and the batch arm where they are asked for: a card with
+        them serves a request without them, not the reverse. Finding one, it takes no lock,
         starts no backend, migrates nothing and checks nothing out: of the
         database it reads only the instance's names, for the scrub. It
         writes a card folder for the head whose ``run.json`` names the
@@ -1905,7 +2377,7 @@ class BenchRun:
         if post is not None and post.pr is None:
             post.open()
         try:
-            found = self._reusable(ref, sets, decoys, baseline, post, say)
+            found = self._reusable(ref, sets, decoys, baseline, post, say, batch)
         except Exception as error:
             # Whatever stops the reuse is a run's to meet: it says so, on the
             # PR with --post, or runs once it holds the lock.
@@ -1916,7 +2388,9 @@ class BenchRun:
             return None
         return self._reuse(ref, post, say, **found)
 
-    def _reusable(self, ref, sets, decoys, baseline, post, say) -> dict | None:
+    def _reusable(
+        self, ref, sets, decoys, baseline, post, say, batch=False
+    ) -> dict | None:
         """What :meth:`reuse` writes as ``ref``'s card, or None when it runs.
 
         :raises: Whatever stops it reading the state, the ref, the baseline
@@ -1933,12 +2407,13 @@ class BenchRun:
             )
             return None
         engine = engine_digest(self.instance, sha, state, self.tool)
-        source = self._source(state, engine["digest"], chosen, decoys)
+        source = self._source(state, engine["digest"], chosen, decoys, batch)
         if source is None:
             say(
                 f"engine digest {engine['digest'][:12]}: no complete card of it with "
                 f"set(s) {', '.join(chosen)}"
                 + (" and the decoy arms" if decoys else "")
+                + (" and the batch arm" if batch else "")
                 + "; it runs"
             )
             return None
@@ -1947,11 +2422,18 @@ class BenchRun:
         )
 
     def _source(
-        self, state: dict, digest: str, chosen: list[str], decoys: bool
+        self,
+        state: dict,
+        digest: str,
+        chosen: list[str],
+        decoys: bool,
+        batch: bool = False,
     ) -> dict | None:
         """The newest card a run made of ``digest`` that can stand for a run
-        now: written whole, of the same sets, with the arms if asked for, and
-        nothing left out that another run might read (:func:`passing_problems`).
+        now: written whole, of the same sets, with the decoy arms and the
+        batch arm if asked for, and nothing left out that another run might
+        read (:func:`passing_problems`): with ``batch``, no set whose batch
+        arm is off its card.
 
         :return: Its state record with its ``run.json`` as ``summary``, or None.
         """
@@ -1961,6 +2443,7 @@ class BenchRun:
                 or record.get("reused")
                 or record.get("verdict") not in WRITTEN
                 or (decoys and not record.get("decoys"))
+                or (batch and not record.get("batch"))
             ):
                 continue
             folder = self.home.cards / record["path"]
@@ -1971,7 +2454,7 @@ class BenchRun:
             if (
                 not (folder / "card.json").exists()
                 or sorted(summary.get("sets") or {}) != sorted(chosen)
-                or passing_problems(summary["sets"])
+                or passing_problems(summary["sets"], batch)
             ):
                 continue
             return {**record, "summary": summary}
@@ -2101,6 +2584,7 @@ class BenchRun:
                 "minutes": None,
                 "reference": was.get("reference"),
                 "decoys": bool(was.get("decoys")),
+                **({"batch": True} if was.get("batch") else {}),
                 "migration": None,
                 "engine": engine,
                 "reused": {
@@ -2605,7 +3089,60 @@ def run_problems(sets: dict) -> list[str]:
         )
         if failed:
             problems.append(f"set {name}: {failed} decoy run(s) failed")
+        arm = s.get("batch")
+        if arm is not None and arm.get("off"):
+            problems.append(f"set {name}: no batch arm: {arm.get('why')}")
     return problems
+
+
+def arm_summary(arm: dict | None) -> dict | None:
+    """A set's batch arm as ``run.json`` keeps it: whether it is on the card
+    and why not, each pass's facts (its batch run, its time per stage, whether
+    it ended with every stage current, the samples its fold could not read),
+    the outcomes of the samples' runs for the pass and after it, and the
+    minutes the arm took. None for a set the run did not card at all."""
+    if arm is None:
+        return None
+
+    def tally(group: str) -> dict[str, int]:
+        counted: dict[str, int] = {}
+        for outcome in (arm.get(group) or {}).values():
+            counted[outcome.status] = counted.get(outcome.status, 0) + 1
+        return dict(sorted(counted.items()))
+
+    return {
+        "on_card": arm.get("off") is None,
+        "off": arm.get("off"),
+        "why": ARM_OFF.get(arm.get("off")),
+        "minutes": arm.get("minutes"),
+        "passes": list(arm.get("passes") or []),
+        "runs": {"folded": tally("folded"), "after": tally("after")},
+    }
+
+
+def pass_line(one: dict) -> str:
+    """A pass of the batch stages on the console: how it ended, in how long,
+    and where the batch's stages stood then."""
+    line = f"the pass {one['status']}"
+    if one["minutes"] is not None:
+        line += f" in {one['minutes']} min"
+    if one["status"] != "completed":
+        return line
+    if one["current"]:
+        return line + ", every stage current"
+    line += f", state {one['state']}"
+    if one["stale_stages"]:
+        line += f", stale: {', '.join(one['stale_stages'])}"
+    return line
+
+
+def arm_line(arm: dict | None) -> str:
+    """A set's batch arm on the console, after its sample counts."""
+    if arm is None:
+        return ""
+    if arm.get("on_card"):
+        return f"; batch arm on the card ({arm.get('minutes')} min)"
+    return f"; no batch arm: {arm.get('why')}"
 
 
 def not_whole(card_sets: list[str], bench_sets, problems: list[str]) -> str | None:

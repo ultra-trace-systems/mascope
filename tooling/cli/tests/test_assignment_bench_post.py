@@ -959,7 +959,7 @@ def test_a_card_that_cannot_be_posted_is_a_refusal_on_the_command_line(
         def reuse(self, ref, **kwargs):
             return None
 
-        def run(self, ref, sets, decoys, baseline, post, fresh):
+        def run(self, ref, sets, decoys, baseline, post, fresh, batch):
             post.post("x")
 
     monkeypatch.setattr(brun, "BenchRun", Runner)
@@ -980,11 +980,11 @@ def test_the_command_line_posts_and_diffs_against_the_baseline(tmp_path, monkeyp
         def __init__(self, **kwargs):
             pass
 
-        def reuse(self, ref, sets, decoys, baseline, post):
+        def reuse(self, ref, sets, decoys, baseline, post, batch):
             calls.append(("reuse", ref, baseline, post.number, post.pr.head_sha))
             return None
 
-        def run(self, ref, sets, decoys, baseline, post, fresh):
+        def run(self, ref, sets, decoys, baseline, post, fresh, batch):
             calls.append((ref, baseline, post.number, post.pr.head_sha))
             return 0
 

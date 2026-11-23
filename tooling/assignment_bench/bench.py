@@ -2,7 +2,7 @@
 
     bench.py init <manifest> [--ref REF] [--rebuild] [--checkout DIR] [--keep-running] [--wait]
     bench.py reference --pin vX.Y.Z [--reinstall] [--jobs N] [--set NAME ...] [--wait]
-    bench.py run <ref> [--sets A,D,...] [--decoys] [--baseline] [--post PR] [--fresh] [--no-wait] [--jobs N] [--budget-min M] [--workers N]
+    bench.py run <ref> [--sets A,D,...] [--decoys] [--batch] [--baseline] [--post PR] [--fresh] [--no-wait] [--jobs N] [--budget-min M] [--workers N]
     bench.py baseline [CARD]
     bench.py review [--sets A,D,...] [--top N] | --record SHEET [--recalibrate] [--wait]
     bench.py post <ref> --pr N
@@ -1029,6 +1029,10 @@ class Instance(Protocol):
     def sample_workspaces(self) -> dict[str, str]:
         """Each sample's workspace id, by sample id."""
 
+    def sample_batches(self) -> dict[str, str]:
+        """Each sample's batch id, by sample id: the batch a pass of the batch
+        stages runs on (``run --batch``)."""
+
     def streams(self) -> tuple[list[str], list[str]]: ...
 
     def bundle_seed(self, version: str) -> dict: ...
@@ -1688,6 +1692,13 @@ class DevInstance:
         )
         return {r["sample_item_id"]: r["workspace_id"] for r in rows}
 
+    def sample_batches(self) -> dict[str, str]:
+        rows = self._query(
+            "select sample_item_id, sample_batch_id from sample_item "
+            "where sample_batch_id is not null"
+        )
+        return {r["sample_item_id"]: r["sample_batch_id"] for r in rows}
+
     def streams(self) -> tuple[list[str], list[str]]:
         """The converter's queue: files waiting, and files it quarantined."""
         streams = self.env_dir / "filestreams"
@@ -2317,6 +2328,12 @@ def main(argv: list[str] | None = None) -> int:
         "--decoys", action="store_true", help="run the decoy arms too (step 5.2)"
     )
     p_run.add_argument(
+        "--batch",
+        action="store_true",
+        help="run the batch arm too: a pass of the batch stages on each set's "
+        "batch, then every sample again, carded beside the control",
+    )
+    p_run.add_argument(
         "--baseline",
         action="store_true",
         help="diff the card against develop's rolling baseline; a run of develop's "
@@ -2475,6 +2492,7 @@ def _main(args) -> int:
             ask = {
                 "sets": args.sets,
                 "decoys": args.decoys,
+                "batch": args.batch,
                 "baseline": args.baseline or poster is not None,
                 "post": poster,
             }
