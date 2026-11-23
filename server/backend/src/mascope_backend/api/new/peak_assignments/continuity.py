@@ -15,8 +15,9 @@ the co-variation of the log traces (step 4.2, ``batch_coherence.py``), and
 this is its diagnostic: a smooth drift of the ratio while the two traces
 co-vary says the channel chemistry moved and the assignment stands; a drift
 nothing says is shared, or a ratio that jumps, says two species may share a
-trace. The grade is display-only: no tier, reason or level reads it until the
-null model of step 4.13 has given it a likelihood ratio. The correlation it
+trace. The grade is display-only: no tier, reason or level reads it until a
+null model of its own has given it a likelihood ratio (a step after #3233;
+step 4.21's is the co-variation reading's). The correlation it
 carries for a channel pair is 4.2's reading, read off the anchors' records,
 never recomputed here.
 

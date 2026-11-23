@@ -15,9 +15,11 @@ ten shared spectra or with a flat trace is untestable.
 
 The reading is display-only (decision 35): it moves no tier and no level,
 and anti-correlation demotes nothing - a correct composition can run against
-its own parent channel when the source state moves. It waits for the null
-model of step 4.13 to give it a likelihood ratio before anything reads it as
-evidence.
+its own parent channel when the source state moves. It waits for a null
+model to give it a likelihood ratio that clears a bar on two reagents before
+anything reads it as evidence: step 4.21 measured one
+(``mascope_tools.composition.co_variation_lr``), and its bar cleared on one
+reagent only, so the record carries no ratio.
 
 The anchor carries the reading under ``provenance.co_variation``
 (``batch_peaks.CO_VARIATION_KEY``): its formula and mechanism, the strongest
