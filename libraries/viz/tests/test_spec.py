@@ -478,17 +478,16 @@ def _kind(id: str, tier: int = 1, **fields) -> ChartKind:
 
 
 def test_the_package_registers_its_chart_kinds_on_import():
-    assert {
-        "coverage",
-        "instrument_signal",
-        "scope_summary",
-        "top_species",
-        "species_series",
-        "diurnal",
-        "period_boxes",
-    } <= set(registry.ids())
+    """Each chart module registers its kinds when mascope_viz.charts is
+    imported, so a kind is known once the package is."""
+    ids = set(registry.ids())
+    assert {"coverage", "instrument_signal", "scope_summary", "top_species"} <= ids
+    assert {"species_series", "diurnal", "period_boxes"} <= ids
+    assert {"spectrogram", "period_spectrum", "van_krevelen"} <= ids
     assert [kind.id for kind in registry.all()] == list(registry.ids())
-    assert all(kind.build is not None for kind in registry.all())
+    for kind in registry.all():
+        assert callable(kind.build), kind.id
+        assert registry.get(kind.id) is kind
 
 
 def test_a_kind_is_registered_once_and_found_by_id(kinds):
