@@ -1,7 +1,6 @@
 import re
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query
-from fastapi.responses import Response
 
 from mascope_backend.api.controllers.calibration.calibration_controller import (
     calibration_mz_apply,
@@ -24,7 +23,7 @@ from mascope_backend.api.controllers.sample.items.sample_items_controller import
 from mascope_backend.api.controllers.sample.lib.sample_batches_fetch import (
     fetch_sample_batch,
 )
-from mascope_backend.api.lib.api_features import api_route
+from mascope_backend.api.lib.api_features import ClosingStreamingResponse, api_route
 from mascope_backend.api.lib.exceptions.api_exceptions import (
     ApiException,
     NotFoundException,
@@ -137,20 +136,21 @@ async def export_calibration_trend_route(
     record lists no lines has one row. The files are those of
     ``GET /api/calibration/trend`` for the same query, one by one also where
     the trend bins them, up to the latest 20,000; and so is who may read them.
+    The table is sent as it is read, a few hundred files at a time.
 
     :param query_params: The instrument, the polarity and the window.
     :param user: The current authenticated user.
     :return: The CSV file, named for the instrument and the polarity.
     """
     await check_instrument_workspace_access(query_params.instrument, user, "guest")
-    text = await export_calibration_trend(
+    body = await export_calibration_trend(
         **query_params.model_dump(), scope=await workspace_scope_for_user(user)
     )
     instrument = _UNSAFE_IN_FILENAME.sub("_", query_params.instrument).strip("_.")
     sign = "pos" if query_params.polarity == "+" else "neg"
     filename = f"calibration-trend-{instrument or 'instrument'}-{sign}.csv"
-    return Response(
-        content=text,
+    return ClosingStreamingResponse(
+        body,
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

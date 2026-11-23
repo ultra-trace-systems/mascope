@@ -1,5 +1,5 @@
 import inspect
-from collections.abc import Generator
+from collections.abc import AsyncGenerator, Generator
 from functools import wraps
 from typing import Any, Callable
 
@@ -71,22 +71,24 @@ class ClosingStreamingResponse(StreamingResponse):
     leaves the generator suspended where it last yielded. Nothing else closes
     it. It is unreachable but sits in a reference cycle, so it is not freed
     with the request, and whatever it holds open inside a ``with`` - a raw
-    file's reader - stays open until the cyclic collector next runs. A
-    download of hundreds of megabytes is the request a client is likeliest to
-    cancel.
+    file's reader, a database session - stays open until the cyclic collector
+    next runs. A download of hundreds of megabytes is the request a client is
+    likeliest to cancel.
 
     Closed in a ``finally`` around the whole response rather than in a
     background task, which Starlette skips when the response is cancelled
-    from outside. By then no piece is being read: Starlette reads each in a
-    worker thread and waits for it to return even when it is cancelled.
+    from outside. By then no piece is being read: Starlette reads each piece
+    of a synchronous generator in a worker thread and waits for it to return
+    even when it is cancelled, and a cancelled asynchronous one has stopped
+    where it awaited.
 
     :param content: The body's pieces, as a generator: a synchronous one,
-        whose ``close()`` is what this calls. Another iterator, or an async
-        generator, has no ``close()`` and would fail once the response has
-        gone out.
+        whose ``close()`` is what this calls, or an asynchronous one, whose
+        ``aclose()`` it awaits. Another iterator has neither and would fail
+        once the response has gone out.
     """
 
-    def __init__(self, content: Generator, **kwargs) -> None:
+    def __init__(self, content: Generator | AsyncGenerator, **kwargs) -> None:
         super().__init__(content, **kwargs)
         self._content = content
 
@@ -94,7 +96,10 @@ class ClosingStreamingResponse(StreamingResponse):
         try:
             await super().__call__(scope, receive, send)
         finally:
-            self._content.close()
+            if isinstance(self._content, AsyncGenerator):
+                await self._content.aclose()
+            else:
+                self._content.close()
 
 
 def _json_response(
