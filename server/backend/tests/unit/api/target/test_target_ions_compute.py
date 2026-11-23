@@ -355,6 +355,58 @@ def test_a_tof_m1_line_is_one_line_as_a_target_ion_and_as_a_search_candidate():
     assert share > candidate[1] * 1.02
 
 
+def _fine_lines(ids: list[str]) -> pd.DataFrame:
+    """Three ions' fine lines, the rows interleaved and out of m/z order: the
+    ion ``ids[0]`` at m/z 300, ``ids[1]`` at 100 and ``ids[2]`` at 200, each
+    with a 13C line a 50000 resolving power resolves from its parent."""
+    rows = []
+    for ion, base in zip(ids, (300.0, 100.0, 200.0)):
+        rows.append((ion, base + 1.00336, 0.11, "13C"))
+        rows.append((ion, base, 1.0, "12C"))
+    rows = rows[::2] + rows[1::2]
+    return pd.DataFrame(
+        [
+            {
+                "target_ion_id": ion,
+                "target_isotope_id": f"{ion}-{name}",
+                "target_isotope_formula": f"{ion} {name}",
+                "mz": mz,
+                "relative_abundance": abundance,
+                "ion_label": f"label of {ion}",
+            }
+            for ion, mz, abundance, name in rows
+        ]
+    )
+
+
+def test_a_files_lines_keep_the_order_the_ions_come_in_whatever_their_ids():
+    """A reference ion's id is minted at random per process (#3351): two
+    runs of one sample hand ``lines_at_file`` the same ions under other ids.
+    Its lines come out in the order the ions first appear, each ion's lines
+    together and by m/z, so both runs read the same rows in the same order."""
+    file_lines = FileLines("LOW", lambda mz: 50000.0)
+    runs = [
+        lines_at_file(_fine_lines(ids), file_lines)
+        for ids in (["zz", "aa", "mm"], ["aa", "mm", "zz"], ["mm", "zz", "aa"])
+    ]
+    for lines in runs:
+        # Input order of the ions, not their ids' order.
+        assert lines["mz"].tolist() == pytest.approx(
+            [300.0, 301.00336, 100.0, 101.00336, 200.0, 201.00336]
+        )
+        assert lines["relative_abundance"].tolist() == pytest.approx(
+            [1.0, 0.11, 1.0, 0.11, 1.0, 0.11]
+        )
+        # Each line carries its own ion's columns.
+        assert (lines["ion_label"] == "label of " + lines["target_ion_id"]).all()
+    assert runs[0]["target_ion_id"].tolist() == ["zz", "zz", "aa", "aa", "mm", "mm"]
+    assert runs[1]["target_ion_id"].tolist() == ["aa", "aa", "mm", "mm", "zz", "zz"]
+    # A line's id is its ion's lightest fine line's, numbered by m/z.
+    assert runs[0]["target_isotope_id"].tolist() == [
+        f"{ion}-12C.{k}" for ion in ("zz", "aa", "mm") for k in (0, 1)
+    ]
+
+
 def test_group_target_isotopes_reads_the_floor_off_the_most_abundant_line():
     """The floor is 1 % of the most abundant line as grouped, not of any
     single isotope: a line at 0.9 % of one isotope but over 1 % of nothing
