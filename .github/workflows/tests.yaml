@@ -357,7 +357,11 @@ jobs:
           # The library runtimes resolve their config relative to this path
           # at import time; collection fails without it.
           MASCOPE_PATH: ${{ github.workspace }}
-        run: uv run pytest libraries/ -v
+        # Four workers, one per CPU of the runner: one process ran into the
+        # job's limit (#3481). A fixed count, not `auto`, because each worker
+        # builds the viz suite's session campaigns for itself (about 10 GB
+        # summed over four, of the runner's 16).
+        run: uv run pytest libraries/ -n 4 -v
 
   pentest-selftest:
     name: Pen-test suite selftests
