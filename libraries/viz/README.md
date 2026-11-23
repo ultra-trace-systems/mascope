@@ -567,6 +567,12 @@ Besides what every chart kind does the same way (above), the three:
 - **Draw a run change on the panels it moves**: a `species_series` panel
   whose values the run moves (a formula's, or any divided by a formula)
   has a rule at each.
+- **Say when their species are of both polarities.** A species is read in
+  the polarity its mechanism's charge names (`[M+I]-`), else its ion
+  formula's. Each species in the summary gives its `polarity`, and when
+  the species drawn are of both, a note names each polarity's: a positive
+  and a negative ion are two chemistries' readings, not one scale. The
+  window's samples can be of both while the species drawn are not.
 - **Name the species seldom detected.** Each species' `presence` is in
   the summary, and a note names those detected in under 90 % of the
   samples that could have held a value. The summary also gives a sum's

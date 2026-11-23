@@ -352,6 +352,7 @@ KIND = registry.register(
         ),
         summary=(
             "species",
+            "species[].polarity",
             "species[].median",
             "species[].max",
             "species[].max_time",

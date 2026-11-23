@@ -8,5 +8,5 @@
   normalised values by the TIC, a reagent ion or the sum of a reagent's
   ions. They label the y axis as the signal the server gives and mark a
   change of engine run. `top:N` draws an ion two species read once, and
-  names the other.
+  names the other. A chart whose species are of both polarities says so.
   The `diurnal` and `periods` views now also give `n_samples`.

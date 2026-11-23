@@ -27,6 +27,11 @@ read it (a target ion before a formula on a tie), and names the others in
 :attr:`Resolved.same_ion`, which the summary and a note give. A species
 named outright is drawn as asked.
 
+Each species has the polarity it is read in: the charge its mechanism
+ends in (``[M+I]-``, ``[M+H]+``), else its ion formula's. The store reads a
+species in one polarity only, and a chart whose species are of both says
+so, since a positive and a negative ion are two chemistries' readings.
+
 A recipe's named list of species is such a list of items. The resolved
 list goes into each chart's summary, so that a caption can cite it and a
 rerun can pin it.
@@ -64,17 +69,35 @@ class Species:
         store gives none.
     :ivar mechanism: The mechanism it is read under; None where the store
         names none.
+    :ivar polarity: ``+`` or ``-``, the charge its mechanism ends in, else
+        its ion formula's; None for the TIC or where neither ends in one.
     """
 
     key: str
     name: str
     formula: str | None = None
     mechanism: str | None = None
+    polarity: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """The species as a summary gives it: ``key``, ``name``,
-        ``formula``."""
-        return {"key": self.key, "name": self.name, "formula": self.formula}
+        ``formula`` and ``polarity``."""
+        return {
+            "key": self.key,
+            "name": self.name,
+            "formula": self.formula,
+            "polarity": self.polarity,
+        }
+
+
+def polarity(mechanism: str | None, ion_formula: str | None) -> str | None:
+    """The polarity a species is read in: the charge its mechanism ends
+    in, else its ion formula's (a reagent's mechanism names none); None
+    where neither ends in one."""
+    for text in (mechanism, ion_formula):
+        if text and text.rstrip()[-1:] in ("+", "-"):
+            return text.rstrip()[-1]
+    return None
 
 
 @dataclass(frozen=True)
@@ -398,6 +421,7 @@ def _named(table: pd.DataFrame, keys: list[str]) -> tuple[Species, ...]:
                 row["name"] or row["formula"] or key,
                 row["formula"],
                 row["mechanism"],
+                polarity(row["mechanism"], row["ion_formula"]),
             )
         )
 
@@ -417,10 +441,10 @@ def _named(table: pd.DataFrame, keys: list[str]) -> tuple[Species, ...]:
         name = s.name
         if s.mechanism and len(mechanisms(i)) > 1:
             name = f"{name} {s.mechanism}"
-        out.append(Species(s.key, name, s.formula, s.mechanism))
+        out.append(Species(s.key, name, s.formula, s.mechanism, s.polarity))
     seen = [s.name for s in out]
     return tuple(
-        Species(s.key, f"{s.name} ({s.key})", s.formula, s.mechanism)
+        Species(s.key, f"{s.name} ({s.key})", s.formula, s.mechanism, s.polarity)
         if seen.count(s.name) > 1
         else s
         for s in out
