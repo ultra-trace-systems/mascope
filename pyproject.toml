@@ -62,6 +62,8 @@ dev = [
     # importorskip on it, so without it here the whole async read path skips
     # silently in CI rather than failing.
     "aiosqlite>=0.20,<1",
+    # Spreads CI's "Library tests" job over the runner's CPUs (`-n 4`).
+    "pytest-xdist>=3.8,<4",
 ]
 
 [tool.uv.workspace]
