@@ -411,7 +411,7 @@ def _summary(
         bounds = attrs.get(name)
         if bounds is None:
             return None
-        return [common.iso(bound, zone) for bound in bounds]
+        return [common.at(bound, zone) for bound in bounds]
 
     def entry(row: Any, *columns: str) -> dict[str, Any]:
         out = {
