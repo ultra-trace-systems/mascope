@@ -61,7 +61,9 @@ from mascope_backend.api.new.peak_assignments.engine import (
     ion_identity,
     score_frame_at,
 )
-from mascope_backend.api.new.peak_assignments.monoisotopic import monoisotopic_row
+from mascope_backend.api.new.peak_assignments.monoisotopic import (
+    monoisotopic_positions,
+)
 from mascope_backend.api.new.peak_assignments.row_terms import (
     ROLE_ISO_CHILD,
     ROLE_M0,
@@ -148,7 +150,8 @@ class Reading:
 
 def m0_by_ion(scored_df: pd.DataFrame) -> dict[str, pd.Series]:
     """The monoisotopic row of each ion in a scored frame
-    (``monoisotopic.monoisotopic_row``): the line a reading of the peak's own mass
+    (``monoisotopic.monoisotopic_row``, picked by
+    ``monoisotopic.monoisotopic_positions``): the line a reading of the peak's own mass
     reads the peak as.
 
     :param scored_df: A gated, fit-scored frame.
@@ -156,9 +159,10 @@ def m0_by_ion(scored_df: pd.DataFrame) -> dict[str, pd.Series]:
     """
     if scored_df.empty or "target_ion_id" not in scored_df.columns:
         return {}
+    ion_ids = scored_df["target_ion_id"].tolist()
     return {
-        str(ion_id): monoisotopic_row(group)
-        for ion_id, group in scored_df.groupby("target_ion_id", sort=False)
+        str(ion_ids[position]): scored_df.iloc[position]
+        for position in monoisotopic_positions(scored_df)
     }
 
 
@@ -196,13 +200,16 @@ def _gated_on_a_peak(frame: pd.DataFrame) -> pd.Series:
 
 
 def _main_isotopes(frame: pd.DataFrame) -> set:
-    return {
-        row["target_isotope_id"]
-        for row in (
-            monoisotopic_row(group)
-            for _, group in frame.groupby("target_ion_id", sort=False)
-        )
-    }
+    isotope_ids = frame["target_isotope_id"].tolist()
+    return {isotope_ids[position] for position in monoisotopic_positions(frame)}
+
+
+def _column(frame: pd.DataFrame, name: str) -> list:
+    """A column's values as a row of the frame holds them, None where the
+    frame has no such column (``row.get`` on a row of it)."""
+    if name in frame.columns:
+        return frame[name].tolist()
+    return [None] * len(frame)
 
 
 def _known_lines(frame: pd.DataFrame | None) -> _Lines | None:
@@ -227,20 +234,28 @@ def _known_lines(frame: pd.DataFrame | None) -> _Lines | None:
     matched = matched[~_reference_copies(matched)]
     mains = _main_isotopes(frame)
     readings = []
-    for _, row in matched.iterrows():
-        key = str(row["_formula_key"])
-        ion_formula = row.get("target_ion_formula")
+    for peak, formula, key, ion_formula, mechanism, error, isotope in zip(
+        matched["sample_peak_id"].tolist(),
+        matched["target_compound_formula"].tolist(),
+        matched["_formula_key"].tolist(),
+        _column(matched, "target_ion_formula"),
+        _column(matched, "ionization_mechanism_id"),
+        _column(matched, "match_mz_error"),
+        matched["target_isotope_id"].tolist(),
+        strict=True,
+    ):
+        key = str(key)
         ion_formula = ion_formula if isinstance(ion_formula, str) else None
         readings.append(
             (
-                str(row["sample_peak_id"]),
-                str(row["target_compound_formula"]),
+                str(peak),
+                str(formula),
                 key,
                 ion_formula,
                 ion_identity(ion_formula) or ("", key),
-                _str_or_none(row.get("ionization_mechanism_id")),
-                _float_or_none(row.get("match_mz_error")),
-                row["target_isotope_id"] in mains,
+                _str_or_none(mechanism),
+                _float_or_none(error),
+                isotope in mains,
             )
         )
     return _Lines(frame, matched.index, readings, FRAME_KNOWN)
@@ -255,12 +270,24 @@ def _seeded_lines(seeded: SeededFrame) -> _Lines | None:
         return None
     frame = frame.reset_index(drop=True)
     seed_of_ion = {str(ion): seed for seed, ion in seeded.ion_by_seed.items()}
-    own_lines = {int(row.name) for row in m0_by_ion(frame).values()}
-    gated = _gated_on_a_peak(frame)
+    own_lines = (
+        set(monoisotopic_positions(frame))
+        if "target_ion_id" in frame.columns
+        else set()
+    )
+    gated = _gated_on_a_peak(frame).tolist()
     kept = []
     readings = []
-    for position, row in frame.iterrows():
-        seed = seed_of_ion.get(str(row.get("target_ion_id")))
+    for position, (ion, peak, ion_formula, error) in enumerate(
+        zip(
+            _column(frame, "target_ion_id"),
+            frame["sample_peak_id"].tolist(),
+            _column(frame, "target_ion_formula"),
+            _column(frame, "match_mz_error"),
+            strict=True,
+        )
+    ):
+        seed = seed_of_ion.get(str(ion))
         if seed is None:
             continue
         own_line = position in own_lines
@@ -268,26 +295,24 @@ def _seeded_lines(seeded: SeededFrame) -> _Lines | None:
         if named_for is not None:
             # A reading of a named peak's own mass, placed as the inspector
             # places a shortlist formula (``alternatives_scoring.placements``):
-            # its monoisotopic line paired to the peak.
-            if not own_line or not paired_to(row, str(row.get("sample_peak_id"))):
+            # its monoisotopic line paired to the peak. A line paired to no
+            # peak is on none it was named for.
+            if not own_line or str(peak) not in named_for:
                 continue
-            if str(row["sample_peak_id"]) not in named_for:
-                continue
-        elif not gated.iloc[position]:
+        elif not gated[position]:
             continue
-        ion_formula = row.get("target_ion_formula")
         ion_formula = ion_formula if isinstance(ion_formula, str) else None
         key = formula_identity(seed[0])
         kept.append(position)
         readings.append(
             (
-                str(row["sample_peak_id"]),
+                str(peak),
                 str(seed[0]),
                 key,
                 ion_formula,
                 ion_identity(ion_formula) or ("", key),
                 str(seed[1]),
-                _float_or_none(row.get("match_mz_error")),
+                _float_or_none(error),
                 own_line,
             )
         )

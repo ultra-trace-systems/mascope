@@ -536,3 +536,118 @@ class TestAListRowsGridRivals:
         assert row["provenance"]["candidate_density"] == 3
         detail = density_reason(row)["detail"]
         assert "1 of them from the formula search (C8H8O4)" in detail
+
+
+def _isotope_frame() -> pd.DataFrame:
+    """Ions whose monoisotopic line is not their first row: a bromine cluster
+    listed heaviest first, a labelled ion whose bracketed line is its M0 and
+    whose unlabelled remainder sits below it, an M0 line of no m/z, a merged
+    low-resolution line, and two ions with no bracket-free formula at all,
+    one with a line of no m/z."""
+    rows = [
+        ("br", "[81Br]2C2H3-", 173.9, "C2H3Br2-"),
+        ("br", "C2H3Br2-", 169.9, "C2H3Br2-"),
+        ("br", "[81Br]C2H3Br-", 171.9, "C2H3Br2-"),
+        ("lab", "C9H16O7-", 235.0, "C9H16O7^N-"),
+        ("lab", "[15N][13C]C8H16O7-", 237.0, "C9H16O7^N-"),
+        ("lab", "[15N]C9H16O7-", 236.0, "C9H16O7^N-"),
+        ("nan", "C5H9O2+", float("nan"), "C5H9O2+"),
+        ("nan", "[13C]C4H9O2+", 102.1, "C5H9O2+"),
+        ("lowres", "[13C]C5H11O2+/C6H11O2+", 115.1, "C6H11O2+"),
+        ("lowres", "[18O]C6H11O+", 117.1, "C6H11O2+"),
+        ("heavy", "[13C]C3H7+", 44.1, "C4H7+"),
+        ("heavy", "[13C]2C2H7+", 45.1, "C4H7+"),
+        ("unread", "[13C]C3H5+", float("nan"), "C4H5+"),
+        ("unread", "[13C]2C2H5+", 43.1, "C4H5+"),
+    ]
+    frame = pd.DataFrame(
+        [
+            {
+                "target_ion_id": ion,
+                "target_isotope_formula": isotope,
+                "target_isotope_id": f"{ion}:{isotope}",
+                "mz": mz,
+                "target_ion_formula": ion_formula,
+                "position": position,
+            }
+            for position, (ion, isotope, mz, ion_formula) in enumerate(rows)
+        ]
+    )
+    # Shuffled, and with the duplicated index a gated, scored frame can carry.
+    frame = frame.sample(frac=1.0, random_state=7)
+    frame.index = [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6]
+    return frame
+
+
+class TestTheMonoisotopicLineIsTheEnginesPick:
+    """The set reads each ion's monoisotopic line as the engine does
+    (``monoisotopic.monoisotopic_positions``, the row ``monoisotopic_row``
+    picks from the ion's rows)."""
+
+    def test_m0_by_ion_reads_the_same_rows(self):
+        # The cases the frame states, by name: the lightest bromine line, the
+        # labelled line over the remainder below it, the M0 by its formula
+        # though its m/z is missing and so sorts last, the merged line that
+        # names the M0, and an ion of no M0 line its lightest, a line of no
+        # m/z after every line of one.
+        frame = _isotope_frame()
+
+        rows = rival_set.m0_by_ion(frame)
+
+        assert {ion: row["position"] for ion, row in rows.items()} == {
+            "br": 1,
+            "lab": 5,
+            "nan": 6,
+            "lowres": 8,
+            "heavy": 10,
+            "unread": 13,
+        }
+
+    def test_a_list_rows_own_reading_is_its_ions_own_line(self):
+        # On p1: the row's M0 line, its own 13C line at a better fit, a rival's
+        # M0 line, and the 13C line of an ion whose M0 is on another peak.
+        frame = _stage_a_frame({"C6H12O6": 0.7, "C7H16O5": 0.8, "C5H10O5": 0.5})
+        frame.loc[2, "sample_peak_id"] = "p2"
+        extra = frame.iloc[[0, 2]].copy()
+        extra["target_isotope_id"] = ["iso-0-13c", "iso-2-13c"]
+        extra["target_isotope_formula"] = ["[13C]C5H13O6+", "[13C]C4H11O5+"]
+        extra["mz"] = [182.07, 152.06]
+        extra["sample_peak_id"] = "p1"
+        extra["match_score"] = [0.95, 0.75]
+        frame = pd.concat([frame, extra], ignore_index=True)
+        row = _winner(formula="C6H12O6", fit=0.7, source="database")
+
+        measure_rival_sets([row], RivalFrames(frame, (), base=V1), V1)
+
+        record = row["provenance"][RIVAL_SET]
+        assert record["fit_score"] == 0.7
+        assert {
+            r["formula"]: (r["monoisotopic"], r["mz_error_ppm"])
+            for r in record["rivals"]
+        } == {"C7H16O5": (True, 0.2), "C5H10O5": (False, 0.3)}
+
+
+class TestASearchReadingsLines:
+    """A committed reading's lines count on a peak only where the gate paired
+    them to it, as Stage A's lines do."""
+
+    def test_a_line_the_gate_did_not_pair_to_the_peak_is_no_rival(self):
+        ungated = _line("c", "C6H8O3", "p1", 0.88)
+        ungated["sample_peak_intensity"] = 0.0
+        gated = _line("g", "C7H8O2", "p1", 0.6)
+        gated["match_mz_error"] = -0.4
+        seeded = SeededFrame(
+            pd.DataFrame([_line("w", "C5H10O2", "p1", 0.9), ungated, gated]),
+            {
+                ("C5H10O2", "im-h"): "w",
+                ("C6H8O3", "im-h"): "c",
+                ("C7H8O2", "im-h"): "g",
+            },
+        )
+        row = _winner()
+
+        measure_rival_sets([row], RivalFrames(None, (seeded,), base=V1), V1)
+
+        assert row["provenance"]["candidate_density"] == 1
+        [rival] = row["provenance"][RIVAL_SET]["rivals"]
+        assert (rival["formula"], rival["mz_error_ppm"]) == ("C7H8O2", -0.4)
