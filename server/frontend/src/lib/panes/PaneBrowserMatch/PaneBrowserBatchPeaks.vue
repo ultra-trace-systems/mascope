@@ -321,8 +321,8 @@ const acrossRankOf = (row) => {
   return -(marks.filter((m) => m.holdsBack).length * 100 + marks.length)
 }
 
-// Show > one badge kind at a time: the rows that carry it beside their
-// formula. Offered for the kinds some row shown carries; the blend and the flat
+// Show > one badge kind at a time: the rows that carry it in Across the
+// batch. Offered for the kinds some row shown carries; the blend and the flat
 // series have switches of their own.
 const badgeKinds = computed(() =>
   BADGE_FILTER_KINDS.filter((id) => shown.value.some((bp) => ledgerMarks(bp, [id]).length))
@@ -332,7 +332,7 @@ const BADGE_OPTIONS = computed(() =>
   badgeKinds.value.map((id) => ({
     value: id,
     label: markOf(id).label,
-    tooltip: `Only the batch peaks carrying this badge beside their formula`
+    tooltip: 'Only the batch peaks carrying this badge in Across the batch'
   }))
 )
 const carriesBadge = (row, id) => ledgerMarks(row, [id]).length > 0
@@ -751,14 +751,11 @@ const FIELDS = {
   levelSort: 'memberLevelRank'
 }
 
-// Samples, as n/N: the batch's samples the species is seen in, of all of them.
-const sampleTotal = computed(() => app.data.sample.list?.length || null)
-const samplesLabel = (row) =>
-  row.n_present == null
-    ? ''
-    : sampleTotal.value
-      ? `${row.n_present}/${sampleTotal.value}`
-      : `${row.n_present}`
+// Samples: the count of the batch's samples the species is seen in, alone. A
+// batch peak's partition (its ionization mode and instrument type) holds only
+// some of the batch's samples, and none added since the last fold, so the
+// batch's sample list is no denominator for it, and the read serves none.
+const samplesLabel = (row) => (row.n_present == null ? '' : `${row.n_present}`)
 
 // The tier chip's cap mark: what the batch's own rules hold the tier down on,
 // named as a run's reasons are.
@@ -857,7 +854,7 @@ watch(
         <p>
         What the ledger's rows show, rather than what it is reading.
         <b>Isotopologue lines</b> unfolds each species' isotopologue peaks -
-        folded into the <b>+N</b> marker beside the formula by default -
+        folded under the caret and line count beside the formula by default -
         as indented rows under their main peak (M0). An isotopologue peak
         carries its family's formula, so left in the list it reads as a
         second species. <b>Roles</b> shows the batch peaks the reagent and
@@ -879,7 +876,7 @@ watch(
         A batch peak whose samples split between two formulas - one on
         the bright samples and the other on the dim ones, or each in
         blocks of the batch's samples - may be two compounds sharing one
-        peak. It carries an intersect mark beside its formula, the chart
+        peak. It carries an intersect badge in <b>Across the batch</b>, the chart
         names it by both formulas, and <b>Probable blends</b> keeps only
         those. Its consensus and tier stay as the samples voted.
         </p>
@@ -889,7 +886,7 @@ watch(
         current where the batch has none. A trace that holds a constant
         ratio to them through the batch likely comes from the source or
         the inlet rather than from what was sampled: it carries a level
-        mark beside its formula, which also names the ion where the
+        badge in <b>Across the batch</b>, which also names the ion where the
         source's own list holds it. <b>Flat series</b> keeps only those,
         so background can be filtered out. The flag says where an ion
         comes from, not whether its formula is right, and moves no tier.
@@ -905,7 +902,7 @@ watch(
         </p>
         <p>
         <b>Carrying the badge</b> keeps the batch peaks with one kind of
-        badge beside their formula, one kind at a time; click it again to
+        badge in <b>Across the batch</b>, one kind at a time; click it again to
         drop it. <b>Verdict</b> narrows the table to one batch-level verdict.
         </p>
         <p>

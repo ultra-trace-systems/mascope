@@ -327,11 +327,19 @@ describe.each(Object.keys(SCOPES))('AssignmentLedger, %s scope', (scope) => {
   // A line shows its label, its m/z and its intensity, and nothing it would
   // only repeat of its family's row.
   it('draws a line as a sub-row: no ion, tier, level, verdict or action', () => {
+    // Both rows carry an ion, so the line's empty Ion cell is the line's own.
+    const ion = { [SCOPES[scope].fields.ion]: '[M+H]+' }
     const rows = [
-      { id: 'a', ...row(scope, { formula: 'C2H6', intensity: 500 }), engine_tier: 'assigned' },
+      {
+        id: 'a',
+        ...row(scope, { formula: 'C2H6', intensity: 500 }),
+        ...ion,
+        engine_tier: 'assigned'
+      },
       {
         id: 'l',
         ...row(scope, { formula: 'C2H6', intensity: 20 }),
+        ...ion,
         engine_tier: 'assigned',
         ...SCOPES[scope].line
       }
@@ -351,6 +359,7 @@ describe.each(Object.keys(SCOPES))('AssignmentLedger, %s scope', (scope) => {
     expect(cell(wrapper, f.mz, 'l').text()).not.toBe('')
     expect(cell(wrapper, f.intensity, 'l').find('.intensity').text()).toBe('20')
     expect(cell(wrapper, f.ion, 'l').text()).toBe('')
+    expect(cell(wrapper, f.ion, 'a').text()).toBe('[M+H]+')
     for (const field of ['tierRank', f.level, 'verdictRank']) {
       expect(cell(wrapper, field, 'l').element.children).toHaveLength(0)
       expect(cell(wrapper, field, 'a').element.children.length).toBeGreaterThan(0)
