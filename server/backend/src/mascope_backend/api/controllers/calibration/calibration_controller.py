@@ -1825,6 +1825,19 @@ async def calibration_mz_calibrate_samples(
     }
 
 
+def _every_sample_refitted(error: ApiException) -> bool:
+    """Whether a batch calibration that raised ``error`` re-fitted every sample.
+
+    ``calibration_mz_calibrate_samples`` raises a warning with a ``summary``
+    when some samples failed or fitted below the quality bar; a sample below
+    the bar was re-fitted all the same. Any other error says nothing of the
+    samples, so it counts as not every one.
+    """
+    tech = error.tech_message if isinstance(error.tech_message, dict) else {}
+    summary = tech.get("summary")
+    return isinstance(summary, dict) and summary.get("failed") == 0
+
+
 @api_controller_background_task(
     success_notification_rooms=["sample_batch_id"],
     success_reload=[("match", "affected_sample_batch_ids")],
@@ -1850,7 +1863,8 @@ async def calibration_mz_calibrate_batch(
     - Set the batch status to "processing" to lock it for calibration.
     - m/z calibrate each sample in the batch using the provided calibration parameters.
     - Collect and aggregate the results and affected sample/batch IDs.
-    - Update the status of affected batches to "rematch" after calibration.
+    - Update the status of affected batches to "rematch" after calibration,
+      keeping a pending "recalibrate" the run did not do.
     - Return the calibration results, including notification data for UI updates.
 
     :param sample_batch_id: The ID of the sample batch to be calibrated.
@@ -1920,11 +1934,17 @@ async def calibration_mz_calibrate_batch(
             process_id=gen_id(8),
             parent_id=process_id,
         )
-    except ApiException:
-        # If calibration of some samples fails, set batch status to rematch
+    except ApiException as e:
+        # The batch goes to rematch, unless it waited on a recalibration
+        # that this run did not do for every file: then it still owes it.
+        # A run whose samples were all re-fitted, some of them below the
+        # quality bar, did the recalibration.
+        status = "rematch"
+        if sample_batch.status == "recalibrate" and not _every_sample_refitted(e):
+            status = "recalibrate"
         await update_sample_batch_status(
             sample_batch_ids=[sample_batch_id],
-            status="rematch",
+            status=status,
             independent_transaction=True,
         )
         # Re-raise the exception to propagate the error
@@ -1935,10 +1955,17 @@ async def calibration_mz_calibrate_batch(
     affected_sample_batch_ids = notification_data.get("affected_sample_batch_ids", [])
 
     # --- Update batch statuses ---
+    # Every batch with a sample of a re-fitted file goes to rematch, but the
+    # write never lowers a "recalibrate": another batch waiting on one still
+    # owes it for its other files (the apply put it back at "recalibrate"),
+    # and one written over this batch's "processing" while it ran asked for
+    # a recalibration after this one. This batch's own pending recalibration
+    # is done: its "processing" write covered it.
     await update_sample_batch_status(
         sample_batch_ids=affected_sample_batch_ids,
         status="rematch",
         independent_transaction=True,
+        never_lower=True,
     )
 
     message = (
