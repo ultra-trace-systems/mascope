@@ -268,10 +268,15 @@ Beside its parameters and the counts and mean errors of its quality block, a TOF
 - **Model**: the model kept, by Tofwerk's number: 0 for the square-root model, 2 for the three-parameter one. Its equation is in Tofwerk's names, `i = p1*sqrt(m) + p2` or `i = p1*m^p3 + p2`: `i` is the time-of-flight index, `p1` and `p2` are $p_0$ and $p_1$ above, and `p3` is $p_2$. Beside it, `compared` lists each model's mean held-out error in ppm, and `min_gain_ppm` the 0.5 ppm the three-parameter model has to gain. `compared` is empty (`null`) when the calibrants came from fewer than four ions, and a model whose fits failed has no error in it.
 - **Search**: how the calibrants were found: the window the winning axis was found in, in ppm (`window_ppm`): 250, or 500 where the search had to look further, and how many lines, of how many ions, the winning axis held within the tolerance (`n_lines`, `n_ions`). The record keeps the refinement window it was given as well, which no longer limits a TOF search.
 - **Node version**: the version of the calibration step that made the fit. Version 1 fitted the square-root model alone; version 2 also tries the three-parameter one; version 3 finds the calibrants by the search above, where versions 1 and 2 matched each within the refinement window of where the file's axis put it.
+- **Acquisition axis** (`acquisition_axis`): the axis the acquisition software wrote, as the file converter read it from the TofDaq file: its Tofwerk mode and parameters, and how many samples of the raw axis the stored one starts after (`raw_index_offset`; the converter leaves out the samples below 10 Th). A fit replaces the converter's record, and a refit observes its lines on the axis the fit before set, so without this a refitted file could no longer say how far off it was acquired. Every record a fit or a [transfer](#modes-without-calibrants-a-calibration-transferred-from-neighbouring-files) writes keeps it: from the record it replaces when that has it, from the converter's record on a file's first fit, and otherwise from the TofDaq file, read again (its calibration attributes and the length of its axis, a few milliseconds a file).
+- **Acquisition offsets** (`acquisition_offsets`): where neither gives the axis, a file fitted before records kept it and whose TofDaq file is not in the filestore, the per-line offsets its record knew, each line's exact m/z and its offset in ppm, kept and handed on from refit to refit. A record never ends with less of the acquisition axis than the one it replaces.
+- **Fitted at** (`fitted_at`): when the record was written, in UTC.
 
 The calibration dialog lists the points of the fit it previews, a line the fit left out in muted text, and the badge of a calibrated TOF sample names the span.
 A sample list (`GET /api/samples`) leaves the points out of each sample's record, so a large batch's list stays small; the rest of the record is there. `GET /api/calibration/mz_calibration` answers one sample's whole record, points included.
 A record written before these were kept has the counts and mean errors only, and reads and applies as it always did.
+
+The teal badge's acquisition drift is read from the same offsets: a TOF fit that keeps its acquisition axis is flagged when the kept lines' mean offset on that axis is past 50 ppm, on a refit as on a first fit, and the badge gives that offset with its sign.
 
 ### Orbitrap One-Point Scaling Calibration
 
@@ -409,17 +414,17 @@ One record says how one file was fitted. Read across an instrument's files, the 
 
 To see it, open the **Raw files** tab, select a TOF instrument in the instrument selector, and click **Calibration trend** beside it. The dialog reads one polarity over a window of acquisition times, the last 90 days unless you choose 30 or 365, and draws one panel per measure on one time axis:
 
-- **Axis offset before the fit**: the signed mean error of the calibrant lines the fit kept, before it, in ppm. On a file's first fit this is how far off the acquisition software wrote the axis. A refit reads its peaks on the axis the previous fit set, so its offset is near zero; the record does not keep the acquisition's own axis to read it again.
+- **Acquisition axis offset**: how far off the acquisition software wrote the axis, in ppm: the signed mean, over the calibrant lines the fit kept, of each line's offset on that axis. A line's offset is the acquisition axis's m/z at the time-of-flight index where the fit puts the line's exact m/z, against that exact m/z. The record keeps the acquisition axis through every refit ([What a TOF record says](#what-a-tof-record-says)), so a refitted file reads the same offset as its first fit did, not the near-zero error of the axis the previous fit set. A record from before it kept the axis reads its lines' observed m/z, which is the acquisition axis's reading on a first fit only.
 - **Mean residual after the fit**: the mean size of the kept lines' error under the fit, in ppm, as the quality bar reads it.
 - **Lines kept of the lines matched**: how many calibrant lines the fit kept (filled), and how many it chose from (open). A cross at zero is a file whose calibration failed.
 - **One panel per calibrant line**, by m/z: its residual under the fit in each file that lists it. A filled point is a line the fit kept, an open point one it left out as disagreeing with the others.
 
 A point's colour says which calibrant collection fitted the file, the first three collections each in a colour of their own and any further ones in grey. A dashed line through every panel marks a change of collection, numbered at the top and listed above the chart:
 
-- **edited**: the first file fitted with a new version of a collection: what it offers the fit changed, its compounds or the ions the mode's mechanisms make of them (the record's collection hash, [What a TOF record says](#what-a-tof-record-says));
-- **first used**: the first file fitted with a collection no earlier file was fitted with, while files before it were fitted with another.
+- **edited**: a new version of a collection was first fitted with: what it offers the fit changed, its compounds or the ions the mode's mechanisms make of them (the record's collection hash, [What a TOF record says](#what-a-tof-record-says));
+- **first used**: a collection was first fitted with while files had been fitted with another before.
 
-A version some file acquired before the window was fitted with is not new, and the first collection on record is no change. Files are placed by when they were acquired, not by when they were fitted, which no record says: refitting older files with a new version moves its mark back to the earliest of them.
+A change is placed when the first record fitted with the new version was written (the record's **Fitted at**), so refitting older files with a new version marks the day of the refit, not the day the oldest of them was acquired. A record from before it said when it was fitted is placed at its file's acquisition time instead, which no fit of it precedes. A version some file acquired before the window was fitted with is not new, and the first collection on record is no change.
 
 A file fitted before records listed their lines shows on the mean residual and the counts only, and the dialog says how many such files the window holds. A file still on the acquisition's axis, never fitted, is not shown and not counted.
 
@@ -432,7 +437,7 @@ A busy TOF instrument acquires 130 to 160 files a day, and points that many over
 
 A binned window reads at most 100,000 files, the latest; one that holds more says so. That is 20 months of the busiest instrument.
 
-**Export CSV** downloads the window's files as a table, one row per calibrant line of each file, also where the chart shows bins: its acquisition time, name, status and collection version, the fit's counts and errors, and the line's ion, exact and observed m/z, offset before the fit, residual, signal-to-noise ratio and whether the fit kept it. A file whose record lists no lines has one row. The table lists at most the latest 20,000 files of the window, and the dialog says so when the window holds more.
+**Export CSV** downloads the window's files as a table, one row per calibrant line of each file, also where the chart shows bins: its acquisition time, name, status and collection version, the fit's counts and errors, and the line's ion, exact and observed m/z, offset on the acquisition axis, residual, signal-to-noise ratio and whether the fit kept it. A file whose record lists no lines has one row. The table lists at most the latest 20,000 files of the window, and the dialog says so when the window holds more.
 
 The trend is served by `GET /api/calibration/trend` and the table by `GET /api/calibration/trend/export`, each with the `instrument`, the `polarity` (`+` or `-`) and the window (`datetime_min`, `datetime_max`). The trend says whether it is `binned`, the `bin` width, and `n_files`; it serves either `files` one by one or `bins`, with each calibrant line's values aligned with them. Both are open to a guest of the instrument's acquisition workspace. A collection in a workspace you are not a member of is shown without its name, as is one deleted since: both read **Hidden or deleted collection**.
 

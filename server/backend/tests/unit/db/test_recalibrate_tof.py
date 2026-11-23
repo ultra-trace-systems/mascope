@@ -3201,3 +3201,55 @@ async def test_the_whole_run_is_for_nobody(no_env, action):
 
     assert seen == [True]
     assert notifications._without_audience.get() is False
+
+
+@pytest.mark.parametrize(
+    ("record", "source"),
+    [
+        (
+            {
+                **OK_RECORD,
+                "acquisition_axis": {**CONVERTER, "raw_index_offset": 0},
+            },
+            "record",
+        ),
+        (
+            {
+                **OK_RECORD,
+                "quality": {
+                    "points": [
+                        {"target_mz": 61.9884, "observed_mz": 61.9934, "retained": True}
+                    ]
+                },
+            },
+            "kept offsets",
+        ),
+        (OK_RECORD, "none"),
+    ],
+    ids=["its record has it", "no raw file", "nothing to keep"],
+)
+@pytest.mark.asyncio
+async def test_a_dry_run_says_where_the_record_would_keep_the_axis_from(
+    filestore, tmp_path, record, source
+):
+    """MAS-937: the apply stamps what the record keeps of the acquisition
+    axis, and the dry run says from where, read from the file's whole record
+    as the apply would read it."""
+    write_file(filestore, APPLIED)
+    report = script.Report(action=script.DRY_RUN, instrument="TOF H")
+    with (
+        patch.object(script, "dry_fit", AsyncMock(return_value=_dry())),
+        patch.object(script, "_assignment_runs", AsyncMock(return_value=[])),
+        patch.object(script, "_file_state", AsyncMock(return_value=_row(record))),
+    ):
+        await script._dry_one(
+            _candidate(script.record_summary(record)),
+            _target(),
+            _run_config(tmp_path),
+            report,
+        )
+
+    (entry,) = report.files
+    assert entry["acquisition"] == source
+    assert report.acquisition == {source: 1}
+    assert report.as_dict()["acquisition"] == {source: 1}

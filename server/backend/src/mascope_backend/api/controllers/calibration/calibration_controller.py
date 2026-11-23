@@ -26,6 +26,7 @@ from sqlalchemy import and_, func, select
 
 import mascope_file.io as m_io
 import mascope_file.name as m_name
+from mascope_backend.api.controllers.calibration.lib import acquisition_axis
 from mascope_backend.api.controllers.calibration.lib.calibration_mz_fit import (
     axis_correction_ppm,
     calibration_params_factory,
@@ -232,6 +233,14 @@ def acquisition_drift_limit_ppm(filename: str) -> float:
     if instrument_type == "tof":
         return calibration_config.TOF_ACQUISITION_DRIFT_WARNING_PPM
     return calibration_config.ACQUISITION_DRIFT_WARNING_PPM
+
+
+def _is_tof(filename: str) -> bool:
+    """Whether a sample file is a TOF's, by its instrument type."""
+    try:
+        return m_name.get_instrument_type(filename) == "tof"
+    except ValueError:
+        return False
 
 
 def acquisition_drift_ppm(fit: dict | None, limit_ppm: float) -> float | None:
@@ -455,6 +464,18 @@ def carry_acquisition_drift(
       mistake is recovered: reset the calibration and let it be observed
       again.
 
+    **A TOF fit that knows its acquisition axis** (``acquisition_axis`` or
+    ``acquisition_offsets`` on the record, :mod:`.lib.acquisition_axis`)
+    is decided on neither of those: its marker is read from the raw-axis
+    offset of the lines it kept (``acquisition_axis.axis_offset_ppm``), the
+    value the calibration trend serves. That offset is the acquisition axis
+    read at the fit's index of each line, whichever axis the fit ran on, so
+    it is an observation of the instrument on a refit as on a first fit, and
+    the record keeps what it is read from through every refit: nothing is
+    carried, and no threshold decides what is remembered. It is raised when
+    the offset is past the class threshold and dropped when it is not; an
+    operator's recalibration that drops a marker records the clear as above.
+
     :param fit: Fit dict about to be persisted (mutated in place).
     :param previous: The record being replaced, if any.
     :param filename: Sample filename, selects the class drift threshold.
@@ -471,9 +492,21 @@ def carry_acquisition_drift(
         "drift_cleared_by",
     ):
         fit.pop(key, None)
+    limit = acquisition_drift_limit_ppm(filename)
+    raw = (
+        acquisition_axis.axis_offset_ppm(fit)
+        if acquisition_axis.knows_raw_axis(fit)
+        else None
+    )
+    if raw is not None:
+        if abs(raw) > limit:
+            fit.update({"acquisition_drift": True, "acquisition_drift_ppm": raw})
+            return False
+        if manual:
+            return _clear_carried_marker(fit, previous, cleared_by)
+        return False
     if manual and previous_fit_moved_the_axis(previous):
         return _clear_carried_marker(fit, previous, cleared_by)
-    limit = acquisition_drift_limit_ppm(filename)
     drift = acquisition_drift_ppm(fit, limit)
     if drift is not None:
         fit.update({"acquisition_drift": True, "acquisition_drift_ppm": drift})
@@ -1055,6 +1088,9 @@ async def calibration_mz_apply(
     - Prepare progress user notification
     - Apply m/z calibration
     - Judge the fit against the quality bar (see :func:`stamp_quality_verdict`)
+    - Stamp when it was fitted (``fitted_at``) and, for a TOF file, what it
+      keeps of the acquisition axis (:func:`.lib.acquisition_axis.resolve`,
+      read before the apply)
     - Update sample file database record with new calibration
     - Notify completion for each affected batch and remove existing matches
     - Set non-ACQUISITION batches to "rematch", keeping a pending
@@ -1142,6 +1178,19 @@ async def calibration_mz_apply(
 
     # Before the apply, which trims the parameters the seal covers.
     sealed = fit_seal_valid(fit, filename)
+    # Before the apply too: a file still on its acquisition axis gives the
+    # index that axis starts at only until the apply rewrites it.
+    acquisition = (
+        await asyncio.to_thread(
+            acquisition_axis.resolve,
+            filename,
+            sample_file.mz_calibration,
+            fit,
+            not previous_fit_moved_the_axis(sample_file.mz_calibration),
+        )
+        if _is_tof(filename)
+        else None
+    )
 
     # --- Apply m/z calibration to file ---
     calibration_handler = get_calibration_handler(
@@ -1175,6 +1224,7 @@ async def calibration_mz_apply(
             f"m/z calibration of '{filename}' applied below the quality bar, "
             f"{consequence}: " + " ".join(issue["message"] for issue in issues)
         )
+    acquisition_axis.stamp(fit, acquisition)
     if carry_acquisition_drift(
         fit,
         sample_file.mz_calibration,

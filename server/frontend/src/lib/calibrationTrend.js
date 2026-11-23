@@ -280,7 +280,7 @@ export function trendPanels(trend) {
   return [
     {
       key: 'offset',
-      title: 'Axis offset before the fit (signed mean of the lines kept)',
+      title: 'Acquisition axis offset (signed mean of the lines kept)',
       unit: 'ppm',
       format: ':.2f',
       ...series('axis_offset_ppm'),

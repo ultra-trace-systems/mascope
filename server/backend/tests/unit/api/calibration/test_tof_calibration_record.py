@@ -13,17 +13,22 @@ the residuals the record lists are held against the audit's. A record written
 before the keys existed is judged and applied as it was.
 """
 
+import copy
 import json
+import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import h5py
 import numpy as np
 import pandas as pd
 import pytest
 import tof_audit_support as support
+import xarray as xr
 
 import mascope_file.name as m_name
 from mascope_backend.api.controllers.calibration import calibration_controller
+from mascope_backend.api.controllers.calibration.lib import acquisition_axis
 from mascope_backend.api.controllers.calibration.lib import (
     tof_calibration_audit as audit,
 )
@@ -39,6 +44,7 @@ from mascope_backend.api.controllers.sample.lib.fetch_affected_sample_data impor
 from mascope_backend.api.models.calibration.calibration_pydantic_model import (
     MzCalibrationParams,
 )
+from mascope_tofwerk.calibration import tof_to_mass
 
 
 NODE = "mascope_backend.api.controllers.calibration.lib.calibration_mz_fit"
@@ -703,9 +709,11 @@ async def test_an_axis_off_past_the_refine_window_fits_the_lines_not_their_neigh
     assert fit["quality_issues"] == []
     stored = await _apply(filename, json.loads(json.dumps(fit)))
     assert stored["verified"] is True
-    # And it is reported as drift of the acquisition axis
+    # And it is reported as drift of the acquisition axis, signed: the
+    # record's offset on that axis (MAS-937), where the pre-fit error above
+    # is a mean size
     assert stored["acquisition_drift"] is True
-    assert stored["acquisition_drift_ppm"] == pytest.approx(176.0, abs=0.5)
+    assert stored["acquisition_drift_ppm"] == pytest.approx(-176.0, abs=0.5)
 
 
 @pytest.mark.parametrize("off", [300.0, -300.0])
@@ -755,3 +763,192 @@ async def test_the_same_collection_on_a_right_axis_verifies_on_every_line(filest
     assert fit["quality_issues"] == []
     stored = await _apply(filename, json.loads(json.dumps(fit)))
     assert stored["verified"] is True
+
+
+# --- The acquisition axis through a first fit and its refits (MAS-937) ---
+
+#: Samples of the stored axis the files below carry: few, so the apply that
+#: rewrites them is quick. The peaks are placed by index, not on it.
+N_STORED = 64
+
+
+def _acquired_file(filestore, ppm: float) -> str:
+    """A file the node has not fitted: its acquisition axis reads every line
+    ``ppm`` high, its record is the converter's, and its stored axis is that
+    axis from the raw axis's first sample."""
+    acquisition = support.axis_off(ppm)
+    filename = support.write_file(
+        filestore,
+        support.calibrant_peaks(),
+        record={**acquisition, "status": "unfitted"},
+        stored=acquisition,
+    )
+    path = os.path.join(filestore, *support._relative_path(filename))
+    mz = np.asarray(tof_to_mass(np.arange(float(N_STORED)), 0, acquisition["par"]))
+    times = np.arange(support.N_SCANS, dtype=np.float64)
+    xr.Dataset(
+        {"signal": (("mz", "time"), np.ones((N_STORED, support.N_SCANS)))},
+        coords={"mz": mz, "time": times},
+    ).to_zarr(os.path.join(path, "signal.zarr"), mode="w", consolidated=True)
+    xr.Dataset({"sum_signal": ("mz", np.ones(N_STORED))}, coords={"mz": mz}).to_zarr(
+        os.path.join(path, "sum_signal.zarr"), mode="w", consolidated=True
+    )
+    return filename
+
+
+def _write_tofdaq(filename: str, ppm: float) -> str:
+    """The file's TofDaq file, as far as the acquisition axis goes: the raw
+    axis, as long as the stored one, and the converter's coefficients."""
+    acquisition = support.axis_off(ppm)
+    path = m_name.parse_path_from_item_filename(filename)
+    raw = np.asarray(tof_to_mass(np.arange(float(N_STORED)), 0, acquisition["par"]))
+    with h5py.File(os.path.join(path, "data.h5"), "w") as h5_file:
+        group = h5_file.create_group("FullSpectra")
+        group.create_dataset("MassAxis", data=raw.astype(np.float32))
+        group.attrs["MassCalibMode"] = np.array([0])
+        group.attrs["MassCalibration nbrParameters"] = np.array([2])
+        for i, value in enumerate(acquisition["par"]):
+            group.attrs[f"MassCalibration p{i + 1}"] = np.array([value])
+    return os.path.join(path, "data.h5")
+
+
+async def _apply_on_disk(sample_file, fit: dict, manual: bool = False) -> dict:
+    """Apply a sealed ``fit`` to the file on disk, with the node's own
+    handler, over the record ``sample_file`` holds.
+
+    :return: The record written, a copy.
+    """
+    ctrl = calibration_controller
+    with (
+        patch.object(ctrl, "derive_token_secret", lambda _: "key"),
+        patch.object(ctrl, "calibration_quality_gate", lambda: "enforce"),
+        patch.object(ctrl, "fetch_sample_file", AsyncMock(return_value=sample_file)),
+        patch.object(
+            ctrl,
+            "fetch_affected_sample_data",
+            AsyncMock(return_value=AffectedSampleData([], [], [], [])),
+        ),
+        patch.object(ctrl, "update_sample_batch_status", AsyncMock()),
+        patch.object(ctrl, "send_progress_user_notification", AsyncMock()),
+        patch.object(ctrl, "update_sample_file", AsyncMock()),
+        patch.object(ctrl, "SampleFileUpdate", MagicMock()),
+    ):
+        ctrl.seal_fit(fit, sample_file.filename)
+        await ctrl.calibration_mz_apply.__wrapped__(
+            fit=fit, filename=sample_file.filename, manual=manual, user_id=7
+        )
+    return copy.deepcopy(sample_file.mz_calibration)
+
+
+def _sample_file(filename: str, record: dict) -> SimpleNamespace:
+    return SimpleNamespace(
+        sample_file_id="sf-1",
+        filename=filename,
+        instrument="TOF-1",
+        mz_calibration=copy.deepcopy(record),
+        range=None,
+        to_dict=dict,
+    )
+
+
+async def _fit_and_apply(sample_file, before_apply=None) -> dict:
+    """Fit the file with the node and apply the fit. ``before_apply`` writes
+    a file the apply alone reads, and gives its path to remove after."""
+    fit, _ = await _fit_answer(sample_file.filename, support.isotopes())
+    written = before_apply() if before_apply else None
+    try:
+        return await _apply_on_disk(sample_file, json.loads(json.dumps(fit)))
+    finally:
+        if written:
+            # The node's fit reads a TofDaq file's spectra, which this one
+            # does not hold.
+            os.remove(written)
+
+
+def _kept_offsets(record: dict) -> list[float]:
+    """The kept lines' offsets on the acquisition axis, by the record."""
+    points = record["quality"]["points"]
+    offsets = acquisition_axis.line_offsets(record)
+    return [o for p, o in zip(points, offsets) if p["retained"]]
+
+
+@pytest.mark.parametrize("ppm", [80.0, 30.0], ids=["past the drift limit", "within"])
+@pytest.mark.asyncio
+async def test_a_first_fit_and_two_refits_read_the_same_raw_axis_offsets(
+    filestore, ppm
+):
+    """The first fit reads its lines ``ppm`` high on the acquisition axis;
+    each refit observes them on the axis the fit before set, near zero, and
+    reads the same offsets on the acquisition axis it kept. Below the drift
+    limit too: the record keeps the axis, not a flag."""
+    filename = _acquired_file(filestore, ppm)
+    sample_file = _sample_file(
+        filename, {**support.axis_off(ppm), "status": "unfitted"}
+    )
+
+    records = [await _fit_and_apply(sample_file) for _ in range(3)]
+
+    observed = [acquisition_axis.observed_offsets(r) for r in records]
+    assert [e["offset_ppm"] for e in observed[0]] == pytest.approx([ppm] * 5, abs=0.1)
+    for refit in observed[1:]:
+        assert [e["offset_ppm"] for e in refit] == pytest.approx([0.0] * 5, abs=0.1)
+    first = _kept_offsets(records[0])
+    assert first == pytest.approx([ppm] * len(first), abs=0.1)
+    for refit in records[1:]:
+        assert _kept_offsets(refit) == pytest.approx(first, abs=1e-6)
+    for record in records:
+        assert record["acquisition_axis"] == {
+            "mode": 0,
+            "par": support.axis_off(ppm)["par"],
+            "raw_index_offset": 0,
+        }
+        assert acquisition_axis.fitted_at(record) is not None
+        assert "acquisition_offsets" not in record
+    # The drift marker reads the same value on every record
+    flagged = ppm > 50.0
+    assert [r.get("acquisition_drift", False) for r in records] == [flagged] * 3
+    if flagged:
+        assert [r["acquisition_drift_ppm"] for r in records] == pytest.approx(
+            [acquisition_axis.axis_offset_ppm(r) for r in records]
+        )
+    # Nor did a refit move the axis the fits put the peaks on
+    assert records[2]["par"] == pytest.approx(records[1]["par"], rel=1e-9)
+
+
+@pytest.mark.parametrize("h5", [True, False], ids=["raw file", "kept offsets"])
+@pytest.mark.asyncio
+async def test_a_refit_of_a_record_from_before_the_axis_keeps_what_it_knew(
+    filestore, h5
+):
+    """A file fitted once before records kept the axis: its record is a fit
+    whose lines were observed on the acquisition axis, and the converter's
+    record is gone. The refit reads the axis from the TofDaq file where there
+    is one, and keeps the first fit's per-line offsets where there is not; a
+    second refit loses neither."""
+    filename = _acquired_file(filestore, 80.0)
+    sample_file = _sample_file(
+        filename, {**support.axis_off(80.0), "status": "unfitted"}
+    )
+    old = await _fit_and_apply(sample_file)
+    for key in ("acquisition_axis", "fitted_at"):
+        old.pop(key)
+    sample_file.mz_calibration = copy.deepcopy(old)
+    first = _kept_offsets(old)
+    assert first == pytest.approx([80.0] * len(first), abs=0.1)
+
+    tofdaq = (lambda: _write_tofdaq(filename, 80.0)) if h5 else None
+    refits = [
+        await _fit_and_apply(sample_file, before_apply=tofdaq),
+        # The second has what the first kept, from the record it replaces
+        await _fit_and_apply(sample_file),
+    ]
+
+    for refit in refits:
+        assert ("acquisition_axis" in refit) is h5
+        assert ("acquisition_offsets" in refit) is not h5
+        assert _kept_offsets(refit) == pytest.approx(first, abs=1e-3 if h5 else 1e-9)
+        assert refit["acquisition_drift_ppm"] == pytest.approx(
+            sum(first) / len(first), abs=1e-3
+        )
+    if not h5:
+        assert refits[1]["acquisition_offsets"] == refits[0]["acquisition_offsets"]

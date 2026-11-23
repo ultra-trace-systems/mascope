@@ -26,6 +26,7 @@ from sqlalchemy import delete
 import mascope_file.io as m_io
 import mascope_file.name as m_name
 from mascope_backend.api.controllers.calibration import calibration_controller
+from mascope_backend.api.controllers.calibration.lib import acquisition_axis
 from mascope_backend.api.controllers.calibration.lib import (
     tof_calibration_transfer as transfer,
 )
@@ -266,6 +267,14 @@ async def test_a_transfer_lands_the_ambient_lines_where_the_neighbours_read_them
     assert [source["gap_s"] for source in sources] == [-360.0, 240.0]
     assert stored["transfer"]["gap_s"] == 240.0
     assert stored["transfer"]["raw_index_offset"] == _cut(_ACQUIRED["ambient"])
+    # The record keeps the converter's axis, and where the stored axis starts
+    # on it, as a fit's does (MAS-937); and when it was written
+    assert stored["acquisition_axis"] == {
+        "mode": 0,
+        "par": _ACQUIRED["ambient"],
+        "raw_index_offset": _cut(_ACQUIRED["ambient"]),
+    }
+    assert acquisition_axis.fitted_at(stored) is not None
 
     peaks = m_io.load_coord(ambient["filename"], "peak_timeseries", "mz")
     error_ppm = (peaks - np.array(list(_LINES.values()))) / peaks * 1e6
@@ -342,7 +351,11 @@ async def test_a_transfer_is_made_again_over_an_earlier_one(
     again = await calibration_controller.calibration_mz_transfer(files["ambient"]["id"])
 
     assert first.applied and again.applied
+    # The same record, written anew; the acquisition axis it kept goes on
+    first.record.pop("fitted_at")
+    again.record.pop("fitted_at")
     assert again.record == first.record
+    assert again.record["acquisition_axis"]["par"] == _ACQUIRED["ambient"]
 
 
 @pytest.mark.asyncio

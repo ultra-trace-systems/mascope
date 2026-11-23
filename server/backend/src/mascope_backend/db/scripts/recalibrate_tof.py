@@ -15,8 +15,10 @@ a refit from the stored peaks followed by an apply, with no re-detection.
   handler (``tof_calibration_audit``) and the tolerances ingest would widen
   through, and reports what a run would do to each: apply an ``ok`` or a
   ``poor`` fit, keep an ``ok`` record a ``poor`` fit would replace, or fail;
-  and how far it would move the m/z axis in each mass band. It writes
-  nothing, the ledger included.
+  how far it would move the m/z axis in each mass band; and where the record
+  it would write would keep the file's acquisition axis from (the apply
+  stamps it, ``acquisition_axis.resolve``; the runner needs no option for
+  it). It writes nothing, the ledger included.
 - ``run`` calibrates each file as ingest does (``calibrate_with_retry``: the
   same fit, the same widening tolerance, the same verdict under the server's
   ``calibration_quality_gate``, the same failure marker), with one
@@ -136,6 +138,10 @@ import mascope_file.io as m_io
 import mascope_file.name as m_name
 from mascope_backend.api.controllers.calibration.calibration_controller import (
     APPLIED_STATUSES,
+    previous_fit_moved_the_axis,
+)
+from mascope_backend.api.controllers.calibration.lib import (
+    acquisition_axis,
 )
 from mascope_backend.api.controllers.calibration.lib import (
     tof_calibration_audit as audit,
@@ -2054,6 +2060,10 @@ class Report:
     assignment_runs: int = 0
     #: How the applies an earlier run left open were closed
     reconciled: Counter = field(default_factory=Counter)
+    #: A dry run's files a run would apply a fit to, by where the fit's
+    #: record would keep the acquisition axis from (``acquisition_axis.
+    #: resolve``)
+    acquisition: Counter = field(default_factory=Counter)
     settle: dict | None = None
     batches: list = field(default_factory=list)
 
@@ -2068,6 +2078,7 @@ class Report:
             },
             "assignment_runs": self.assignment_runs,
             "reconciled": dict(self.reconciled),
+            "acquisition": dict(self.acquisition),
             "settle": self.settle,
             "batches": self.batches,
             "files": self.files,
@@ -2293,6 +2304,22 @@ async def _run_one(candidate, target, ledger, batch, config) -> Outcome:
         return Outcome("error")
 
 
+async def _acquisition_source(candidate: Candidate, result: DryFit) -> str:
+    """Where the record a run would write keeps the acquisition axis from:
+    what the apply would stamp (``acquisition_axis.resolve``), read now."""
+    state = await _file_state(candidate.sample_file_id)
+    record = state.mz_calibration if state is not None else None
+    fit = {**result.fit, "quality": result.quality}
+    resolved = await asyncio.to_thread(
+        acquisition_axis.resolve,
+        candidate.filename,
+        record,
+        fit,
+        not previous_fit_moved_the_axis(record),
+    )
+    return resolved.source
+
+
 async def _dry_one(candidate, target, config, report) -> Outcome:
     entry = {
         "sample_file_id": candidate.sample_file_id,
@@ -2335,6 +2362,8 @@ async def _dry_one(candidate, target, config, report) -> Outcome:
     for band in entry["bands"]:
         report.bands[band["band"]].append(band["median"])
     entry["outcome"] = f"would apply {new_status}"
+    entry["acquisition"] = await _acquisition_source(candidate, result)
+    report.acquisition[entry["acquisition"]] += 1
     entry["assignment_runs"] = len(await _assignment_runs(candidate.sample_file_id))
     report.assignment_runs += entry["assignment_runs"]
     report.files.append(entry)
@@ -2395,6 +2424,8 @@ def log_report(report: Report) -> None:
             f"  peak-assignment runs on the files, left as they are: "
             f"{report.assignment_runs}"
         )
+    for source, count in sorted(report.acquisition.items()):
+        log(f"  would keep the acquisition axis from {source}: {count}")
     if report.bands:
         log("  Axis change per band, ppm: median of the files' medians [IQR], files")
         for band, values in report.bands.items():

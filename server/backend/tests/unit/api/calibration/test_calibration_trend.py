@@ -16,6 +16,8 @@ import csv
 import io
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from mascope_backend.api.controllers.calibration.calibration_trend import (
     EXPORT_COLUMNS,
     TREND_HOURLY_MAX_DAYS,
@@ -48,7 +50,9 @@ def _point(ion, target, offset_ppm, residual, retained=True, snr=100.0):
     }
 
 
-def _record(points=None, collection=("set", _SHA_V1), **quality):
+def _record(
+    points=None, collection=("set", _SHA_V1), acquisition_offsets=None, **quality
+):
     """A TOF fit's record as the node stores it, points and collection named."""
     block = {
         "n_points": sum(1 for p in points or [] if p["retained"]),
@@ -63,13 +67,42 @@ def _record(points=None, collection=("set", _SHA_V1), **quality):
         block["collection"] = {"id": collection[0], "isotopes_sha256": collection[1]}
     block["model"] = {"mode": 0, "equation": "i = p1*sqrt(m) + p2"}
     block["node_version"] = 2
-    return {
+    record = {
         "mode": 0,
         "par": [2800.0, -0.5],
         "status": "ok",
         "verified": True,
         "quality": block,
     }
+    if acquisition_offsets is not None:
+        record["acquisition_offsets"] = acquisition_offsets
+    return record
+
+
+#: The acquisition axis of :func:`_record`'s fit read 80 ppm high: a mode-0
+#: m/z goes with ``1 / p1 ** 2``.
+_ACQUISITION = {
+    "mode": 0,
+    "par": [2800.0 / (1 + 80e-6) ** 0.5, -0.5],
+    "raw_index_offset": 0,
+}
+
+
+def _refit(record, fitted_at=None):
+    """``record`` as a refit wrote it: its lines observed on the axis the
+    first fit set, near 0 ppm, and the acquisition axis kept."""
+    points = [
+        {**point, "observed_mz": point["target_mz"] * (1 + 0.2e-6)}
+        for point in record["quality"].get("points") or []
+    ]
+    refit = {
+        **record,
+        "quality": {**record["quality"], "points": points},
+        "acquisition_axis": dict(_ACQUISITION),
+    }
+    if fitted_at is not None:
+        refit["fitted_at"] = fitted_at.isoformat()
+    return refit
 
 
 def _rows(*records):
@@ -91,6 +124,38 @@ class TestFileSummary:
         summary = file_summary(_record(points))
 
         assert abs(summary["axis_offset_ppm"] - (-75.0)) < 1e-6
+
+    def test_a_refit_reads_the_acquisition_axis_it_kept_not_the_axis_it_ran_on(
+        self,
+    ):
+        """MAS-937: the first fit and the refit report the same offsets."""
+        first = _record(
+            [_point("NO3-", 61.9884, 80.0, 0.5), _point("Br-", 78.9189, 80.0, -0.5)]
+        )
+
+        summaries = [file_summary(first), file_summary(_refit(first))]
+
+        assert [s["axis_offset_ppm"] for s in summaries] == [
+            pytest.approx(80.0, abs=1e-6),
+            pytest.approx(80.0, abs=1e-6),
+        ]
+
+    def test_a_refit_that_kept_offsets_reads_them(self):
+        refit = _record(
+            [_point("NO3-", 61.9884, 0.2, 0.5)],
+            acquisition_offsets=[
+                {"ion": "NO3-", "target_mz": 61.9884, "offset_ppm": 77.0}
+            ],
+        )
+
+        assert file_summary(refit)["axis_offset_ppm"] == 77.0
+
+    def test_reads_when_the_record_was_fitted(self):
+        record = _record(None)
+        assert file_summary(record)["fitted_utc"] is None
+
+        record["fitted_at"] = "2026-11-20T09:15:00+02:00"
+        assert file_summary(record)["fitted_utc"] == "2026-11-20T07:15:00+00:00"
 
     def test_counts_kept_and_chosen_from_lines(self):
         points = [
@@ -238,6 +303,27 @@ class TestBuildTrend:
         assert line["residual_ppm"] == [0.5, 0.5, 9.0]
         assert line["retained"] == [True, True, False]
 
+    def test_each_line_serves_its_offset_on_the_acquisition_axis(self):
+        """A first fit, a refit and another: the line reads 80 ppm high on
+        all three, and the left-out line has its offset too."""
+        first = _record(
+            [
+                _point("NO3-", 61.9884, 80.0, 0.5),
+                _point("Br-", 78.9189, 95.0, 9.0, retained=False),
+            ]
+        )
+        trend = build_trend(_rows(first, _refit(first), _refit(first)))
+
+        nitrate, bromide = trend["calibrants"]
+        assert nitrate["offset_ppm"] == [pytest.approx(80.0, abs=1e-6)] * 3
+        # The refits read it at the fit's index of its exact m/z, where its
+        # peak is not: its residual is the fit's, 9 ppm.
+        assert bromide["offset_ppm"][0] == pytest.approx(95.0)
+        assert bromide["offset_ppm"][1:] == [pytest.approx(80.0, abs=1e-6)] * 2
+        assert [f["axis_offset_ppm"] for f in trend["files"]] == [
+            pytest.approx(80.0, abs=1e-6)
+        ] * 3
+
     def test_files_carry_their_summary_and_time(self):
         trend = build_trend(_rows(_record([_point("NO3-", 61.9884, -80, 0.5)])))
 
@@ -271,9 +357,7 @@ class TestBuildTrend:
 
 def _changes(records, seen=(), last=None, recorded=False):
     trend = build_trend(_rows(*records))
-    return collection_changes(
-        trend["files"], trend["collections"], set(seen), last or {}, recorded
-    )
+    return collection_changes(trend["collections"], set(seen), last or {}, recorded)
 
 
 class TestCollectionChanges:
@@ -368,6 +452,51 @@ class TestCollectionChanges:
 
         assert [c["sample_file_id"] for c in changes] == ["file1"]
 
+    def test_versions_are_ordered_by_when_they_were_fitted(self):
+        """MAS-937. V1 was fitted on the 20th onto the later file, V2 on the
+        22nd onto the earlier one, refitting it: V2 is the edit, made on the
+        22nd, though its file comes first on the trend."""
+        v1 = _record([_point("NO3-", 61.9884, 80, 0.5)], collection=("set", _SHA_V1))
+        v2 = _record([_point("NO3-", 61.9884, 80, 0.5)], collection=("set", _SHA_V2))
+        fitted_v1 = datetime(2026, 11, 20, 12, 0, tzinfo=timezone.utc)
+        fitted_v2 = datetime(2026, 11, 22, 12, 0, tzinfo=timezone.utc)
+        trend = build_trend(
+            _rows(_refit(v2, fitted_at=fitted_v2), _refit(v1, fitted_at=fitted_v1))
+        )
+
+        changes = collection_changes(trend["collections"], set(), {}, False)
+
+        assert [
+            (
+                c["kind"],
+                c["sample_file_id"],
+                c["datetime_utc"],
+                c["isotopes_sha256"],
+                c["previous_isotopes_sha256"],
+            )
+            for c in changes
+        ] == [("edited", "file0", fitted_v2.isoformat(), _SHA_V2, _SHA_V1)]
+
+    def test_a_version_is_placed_at_its_first_record_by_fit_time(self):
+        """V2's records were written in the other order from their files'."""
+        v1 = _record(collection=("set", _SHA_V1))
+        v2 = _record([_point("NO3-", 61.9884, 80, 0.5)], collection=("set", _SHA_V2))
+        trend = build_trend(
+            _rows(
+                v1,
+                _refit(v2, fitted_at=_T0 + timedelta(days=3)),
+                _refit(v2, fitted_at=_T0 + timedelta(days=2)),
+            )
+        )
+
+        (change,) = collection_changes(trend["collections"], set(), {}, False)
+
+        assert (change["sample_file_id"], change["datetime_utc"]) == (
+            "file2",
+            (_T0 + timedelta(days=2)).isoformat(),
+        )
+        assert trend["collections"][1]["first_fitted_utc"] == change["datetime_utc"]
+
     def test_files_naming_no_collection_are_passed_over(self):
         changes = _changes(
             [
@@ -407,23 +536,23 @@ class TestBinUnit:
         assert bin_unit(_T0, _T0 + month + timedelta(seconds=1)) == "day"
 
 
-def _version(sha, first, last, n_files, collection_id="set"):
-    """A version as the database counts it: times in UTC, without an offset."""
+def _version(
+    sha, first, last, n_files, first_file, fitted=None, fitted_file=None, **more
+):
+    """A version as the database counts it: times in UTC, without an offset.
+
+    ``fitted`` and ``fitted_file``: the first record fitted with it, its
+    first file where None.
+    """
     return {
-        "collection_id": collection_id,
+        "collection_id": more.get("collection_id", "set"),
         "isotopes_sha256": sha,
         "first_utc": first,
         "last_utc": last,
         "n_files": n_files,
-    }
-
-
-def _run(at, sample_file_id, sha, collection_id="set"):
-    return {
-        "at_utc": at,
-        "sample_file_id": sample_file_id,
-        "collection_id": collection_id,
-        "isotopes_sha256": sha,
+        "first_file_id": first_file,
+        "first_fitted_utc": fitted or first,
+        "first_fitted_file_id": fitted_file or first_file,
     }
 
 
@@ -442,13 +571,16 @@ def _bin(bucket, collection_id, n_files, **more):
     }
 
 
-def _line(bucket, collection_id, ion, target, residuals, n_listed, n_kept):
+def _line(
+    bucket, collection_id, ion, target, residuals, n_listed, n_kept, offsets=None
+):
     return {
         "bucket": bucket,
         "collection_id": collection_id,
         "ion": ion,
         "target_mz": target,
         "residual_ppm": residuals,
+        "offset_ppm": offsets,
         "n_listed": n_listed,
         "n_kept": n_kept,
     }
@@ -475,18 +607,25 @@ class TestBinnedTrend:
         ],
         # As the database orders them: by m/z, then by bin.
         "lines": [
-            _line("2026-10-15T00:00:00", "set", "NO3-", 61.9884, [0.1, 0.2, 0.3], 5, 5),
+            _line(
+                "2026-10-15T00:00:00",
+                "set",
+                "NO3-",
+                61.9884,
+                [0.1, 0.2, 0.3],
+                5,
+                5,
+                offsets=[-81.0, -80.0, -79.0],
+            ),
             _line("2026-10-16T00:00:00", "set", "NO3-", 61.9884, [0.2, 0.3, 0.4], 4, 3),
             _line("2026-10-16T00:00:00", "set", None, 125.9873, None, 4, 0),
         ],
         # In no order of their own.
         "versions": [
-            _version(_SHA_V2, "2026-10-16T09:30:00", "2026-10-16T20:00:00", 3),
-            _version(_SHA_V1, "2026-10-15T01:00:00", "2026-10-16T08:00:00.250000", 6),
-        ],
-        "runs": [
-            _run("2026-10-15T01:00:00", "f1", _SHA_V1),
-            _run("2026-10-16T09:30:00", "f7", _SHA_V2),
+            _version(_SHA_V2, "2026-10-16T09:30:00", "2026-10-16T20:00:00", 3, "f7"),
+            _version(
+                _SHA_V1, "2026-10-15T01:00:00", "2026-10-16T08:00:00.250000", 6, "f1"
+            ),
         ],
     }
 
@@ -513,6 +652,7 @@ class TestBinnedTrend:
 
         assert (nitrate["ion"], nitrate["target_mz"]) == ("NO3-", 61.9884)
         assert nitrate["residual_ppm"] == [[0.1, 0.2, 0.3], [0.2, 0.3, 0.4], None]
+        assert nitrate["offset_ppm"] == [[-81.0, -80.0, -79.0], None, None]
         assert nitrate["n_listed"] == [5, 4, 0]
         assert nitrate["n_kept"] == [5, 3, 0]
         assert (other["ion"], other["target_mz"]) == (None, 125.9873)
@@ -537,6 +677,8 @@ class TestBinnedTrend:
                 "first_utc": "2026-10-15T01:00:00+00:00",
                 "last_utc": "2026-10-16T08:00:00.250000+00:00",
                 "n_files": 6,
+                "first_fitted_utc": "2026-10-15T01:00:00+00:00",
+                "first_fitted_file_id": "f1",
             },
             {
                 "id": "set",
@@ -544,58 +686,88 @@ class TestBinnedTrend:
                 "first_utc": "2026-10-16T09:30:00+00:00",
                 "last_utc": "2026-10-16T20:00:00+00:00",
                 "n_files": 3,
+                "first_fitted_utc": "2026-10-16T09:30:00+00:00",
+                "first_fitted_file_id": "f7",
             },
         ]
 
-    def test_places_the_changes_on_the_first_file_of_a_run(self):
-        """The runs stand in for the files: the edit is on the file that
-        began the second version's run, as it would be on the files."""
-        trend = binned_trend(self.RAW)
-
-        assert trend["runs"] == [
-            {
-                "datetime_utc": "2026-10-15T01:00:00+00:00",
-                "sample_file_id": "f1",
-                "collection": 0,
-            },
-            {
-                "datetime_utc": "2026-10-16T09:30:00+00:00",
-                "sample_file_id": "f7",
-                "collection": 1,
-            },
-        ]
-        changes = collection_changes(
-            trend["runs"], trend["collections"], set(), {}, False
-        )
-        assert [(c["kind"], c["sample_file_id"]) for c in changes] == [("edited", "f7")]
-
-    def test_a_collection_back_in_use_is_no_new_change(self):
-        """V1, then V2, then V1 again: three runs, and V1's second run is no
-        change, as it would not be on the files."""
+    def test_versions_first_on_one_time_are_told_apart_by_their_first_file(self):
         raw = {
             **self.RAW,
-            "runs": [
-                _run("2026-10-15T01:00:00", "f1", _SHA_V1),
-                _run("2026-10-16T09:30:00", "f7", _SHA_V2),
-                _run("2026-10-16T12:00:00", "f8", _SHA_V1),
+            "versions": [
+                _version(
+                    _SHA_V2, "2026-10-15T01:00:00", "2026-10-15T01:00:00", 1, "f2"
+                ),
+                _version(
+                    _SHA_V1, "2026-10-15T01:00:00", "2026-10-15T01:00:00", 1, "f1"
+                ),
+            ],
+        }
+
+        collections = binned_trend(raw)["collections"]
+
+        assert [c["isotopes_sha256"] for c in collections] == [_SHA_V1, _SHA_V2]
+
+    def test_places_the_changes_where_the_versions_were_first_fitted(self):
+        """The edit is on the first record fitted with the new version, as
+        it would be on the files."""
+        trend = binned_trend(self.RAW)
+
+        changes = collection_changes(trend["collections"], set(), {}, False)
+
+        assert [
+            (c["kind"], c["sample_file_id"], c["datetime_utc"]) for c in changes
+        ] == [("edited", "f7", "2026-10-16T09:30:00+00:00")]
+
+    def test_a_version_fitted_later_on_older_files_is_placed_when_it_was_fitted(
+        self,
+    ):
+        """V2 was fitted a week after V1, onto files acquired before V1's:
+        the change is V2's, when it was fitted, though V2's files come first
+        on the trend."""
+        raw = {
+            **self.RAW,
+            "versions": [
+                _version(
+                    _SHA_V2,
+                    "2026-10-15T00:30:00",
+                    "2026-10-15T00:50:00",
+                    2,
+                    "f0",
+                    fitted="2026-10-23T10:00:00",
+                    fitted_file="f0b",
+                ),
+                _version(
+                    _SHA_V1,
+                    "2026-10-15T01:00:00",
+                    "2026-10-16T08:00:00",
+                    6,
+                    "f1",
+                    fitted="2026-10-16T09:00:00",
+                ),
             ],
         }
         trend = binned_trend(raw)
 
-        assert [run["collection"] for run in trend["runs"]] == [0, 1, 0]
-        changes = collection_changes(
-            trend["runs"], trend["collections"], set(), {}, False
-        )
+        assert [c["isotopes_sha256"] for c in trend["collections"]] == [
+            _SHA_V2,
+            _SHA_V1,
+        ]
+        changes = collection_changes(trend["collections"], set(), {}, False)
         assert [
-            (c["sample_file_id"], c["previous_isotopes_sha256"]) for c in changes
-        ] == [("f7", _SHA_V1)]
+            (
+                c["sample_file_id"],
+                c["datetime_utc"],
+                c["isotopes_sha256"],
+                c["previous_isotopes_sha256"],
+            )
+            for c in changes
+        ] == [("f0b", "2026-10-23T10:00:00+00:00", _SHA_V2, _SHA_V1)]
 
     def test_an_empty_window_has_no_bins(self):
-        trend = binned_trend(
-            {"bins": None, "lines": None, "versions": None, "runs": None}
-        )
+        trend = binned_trend({"bins": None, "lines": None, "versions": None})
 
-        assert trend == {"bins": [], "calibrants": [], "collections": [], "runs": []}
+        assert trend == {"bins": [], "calibrants": [], "collections": []}
 
 
 class TestExportRows:
@@ -622,12 +794,25 @@ class TestExportRows:
         ]
         first = table[0]
         assert first["collection_name"] == "Nitrate set"
+        assert first["axis_offset_ppm"] != ""
         assert first["collection_isotopes_sha256"] == _SHA_V1
         assert abs(float(first["offset_ppm"]) - (-80.0)) < 1e-6
         assert first["residual_ppm"] == "0.5"
         assert first["retained"] == "True"
         assert table[1]["retained"] == "False"
         assert table[2]["target_mz"] == ""
+
+    def test_a_refits_lines_are_exported_with_their_acquisition_offsets(self):
+        rows = _rows(_refit(_record([_point("NO3-", 61.9884, 80, 0.5)])))
+        trend = build_trend(rows)
+
+        (row,) = _csv(trend, rows)
+
+        assert float(row["offset_ppm"]) == pytest.approx(80.0, abs=1e-6)
+        assert float(row["axis_offset_ppm"]) == pytest.approx(80.0, abs=1e-6)
+        # What the line was observed at is the refit's own reading.
+        observed = (float(row["observed_mz"]) / 61.9884 - 1) * 1e6
+        assert observed == pytest.approx(0.2, abs=1e-3)
 
     def test_a_name_a_spreadsheet_would_run_is_written_as_text(self):
         rows = _rows(_record([_point("NO3-", 61.9884, -80, 0.5)]))
