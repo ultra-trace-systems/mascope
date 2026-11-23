@@ -1732,6 +1732,7 @@ def _judging_for(ctx: RunContext) -> judging_loop.Judging:
         instrument_type=ctx.instrument_type,
         listed_formulas=ctx.listed_formulas,
         opened_channels=resolved_profile.added_channels,
+        given_channels=frozenset(resolved_profile.given_channels),
         source_line_cap=ctx.source_line_cap,
         context=resolved_profile.context,
         nox_skeleton=resolved_profile.nox_skeleton,

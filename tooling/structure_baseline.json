@@ -89,7 +89,7 @@
         "service.py:_assign_sample": 132,
         "service.py:keep_run": 103,
         "stage_a_pass.py:_stage_a_first_pass": 137,
-        "tiering.py:apply_tiering": 298,
+        "tiering.py:apply_tiering": 300,
         "tiering.py:find_envelope_claims": 144,
         "untargeted_rows.py:untargeted_matches_to_peak_assignments": 405,
         "verification.py:create_verification": 140,

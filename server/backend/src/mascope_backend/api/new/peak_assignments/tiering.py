@@ -2378,6 +2378,7 @@ def separated_partners(
     m0_rows: Sequence[dict],
     separations: dict[str, dict],
     notation_by_id: dict[str, str],
+    given_channels: frozenset[str] = frozenset(),
 ) -> dict[str, tuple[list[str], list[str]]]:
     """The other channels committing each row's neutral, by their separation.
 
@@ -2389,6 +2390,10 @@ def separated_partners(
     :param m0_rows: The run's committed monoisotopic rows.
     :param separations: What :func:`peak_separations` read.
     :param notation_by_id: The run's mechanisms, by the id the rows carry.
+    :param given_channels: The channels a batch decision reads through that
+        the sample's spectrum did not open (``ResolvedProfile.given_channels``):
+        no partner of a row through the sample's own channels, as the
+        cross-channel pass counts none (MAS-1039).
     :return: Row id -> the channels committing its neutral on a separated
         peak, and those committing it only on peaks the instrument did not
         separate, each sorted; a row with no partner whose peak was read
@@ -2410,6 +2415,8 @@ def separated_partners(
         ):
             record = separations.get(partner_id)
             if channel == own or record is None:
+                continue
+            if channel in given_channels and own not in given_channels:
                 continue
             by_channel[channel] = by_channel.get(channel, False) or record["separated"]
         if by_channel:
@@ -2442,6 +2449,7 @@ def apply_tiering(
     instrument_type: str | None = None,
     context: ChemistryContext | None = None,
     nox_skeleton: bool = False,
+    given_channels: frozenset[str] = frozenset(),
 ) -> dict:
     """Give every committed row its reasons, and cap the rows that earned it.
 
@@ -2477,6 +2485,7 @@ def apply_tiering(
     :param nox_skeleton: Whether the run reads the carbon skeleton of an
         organonitrate (:func:`nox_skeleton_reason`), which the implausibility
         signatures then read too.
+    :param given_channels: As :func:`separated_partners` takes them.
     :return: What the run should record about this pass: its rule version, what
         each rule capped, and the thresholds it capped on - a tier is only
         comparable across runs together with the rules that produced it.
@@ -2500,7 +2509,7 @@ def apply_tiering(
         abundance_floor=abundance_floor,
         resolution=resolution,
     )
-    partners = separated_partners(m0, separations, notation_by_id)
+    partners = separated_partners(m0, separations, notation_by_id, given_channels)
     lifted = 0
 
     on_a_neighbours_line = envelope_neighbours(
