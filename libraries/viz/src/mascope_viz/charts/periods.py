@@ -192,7 +192,7 @@ def _figure(
             store, attrs, resolved, entries, period=period, boxes=BOXES
         ),
         data=data,
-        notes=common.notes(attrs, entries),
+        notes=common.notes(attrs, entries, resolved),
         columns=columns,
         context=common.context(attrs),
     )
@@ -239,6 +239,7 @@ KIND = registry.register(
             "normalise_name",
             "normalise_members",
             "normalise_complete",
+            "same_ion",
             "tz",
             "start",
             "end",

@@ -18,7 +18,7 @@ import warnings
 import numpy as np
 import pandas as pd
 import pytest
-from fixtures.campaign import POSITIVE, Campaign, generate
+from fixtures.campaign import HALIDE_NEGATIVE, POSITIVE, Campaign, generate
 from fixtures.drawn import label_clashes
 from fixtures.server import SCOPE, FakeClient
 
@@ -26,6 +26,7 @@ from mascope_viz import render
 from mascope_viz.charts import Figure, common, registry
 from mascope_viz.charts import diurnal as diurnal_module
 from mascope_viz.charts import series as series_chart
+from mascope_viz.charts import species as species_module
 from mascope_viz.charts.diurnal import diurnal, hours
 from mascope_viz.charts.periods import THIN, period_boxes
 from mascope_viz.charts.series import species_series
@@ -380,6 +381,159 @@ def test_top_n_ranks_over_the_charts_zone_and_window(month, monkeypatch):
     assert {name: kwargs[name] for name in read} == read
     with pytest.raises(InvalidChart, match="no species has a value"):
         resolve(store, "top:2", start="2026-06-21 06:00", end="2026-06-21 12:00")
+
+
+#: Four days of the halide chemistry, its target ions matched throughout.
+SHORT = dataclasses.replace(
+    HALIDE_NEGATIVE,
+    days=4,
+    gap_day=2,
+    run_change_day=1,
+    n_species=8,
+    n_targets=3,
+    episodes=(),
+)
+
+#: A target ion of another neutral that reads the ion of one of the short
+#: campaign's, as C10H19NO2 [M+H]+ reads C10H16O2 [M+NH4]+'s C10H20NO2+.
+TWIN = "ion:ti9000"
+
+
+def _brightest_target(campaign: Campaign) -> str:
+    """The target ion of the highest median, the reagent's aside."""
+    ions = campaign.tables["ion_series"]
+    species = campaign.tables["species"].set_index("series_key")
+    medians = ions.groupby("series_key", observed=True)["intensity"].median()
+    compounds = [k for k in medians.index if species.at[k, "mechanism"] != "reagent"]
+    return str(medians[compounds].idxmax())
+
+
+@pytest.fixture(scope="module")
+def twins(tmp_path_factory) -> tuple[str, CampaignStore]:
+    """The short campaign with :data:`TWIN` beside its brightest target ion:
+    another name and neutral, the same ion formula, the same values."""
+    campaign = generate(SHORT, seed=2)
+    twinned = _brightest_target(campaign)
+    client = FakeClient(campaign)
+    for batch, ions in client.ions.items():
+        rows = ions[ions["target_ion_id"] == twinned.removeprefix("ion:")]
+        twin = rows.assign(
+            target_ion_id=TWIN.removeprefix("ion:"),
+            target_compound_name="twin compound",
+            target_compound_formula="C99H9",
+        )
+        client.ions[batch] = pd.concat([ions, twin], ignore_index=True)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(store_module, "_now", lambda: pd.Timestamp("2026-08-01T00:00Z"))
+        patch.setattr(store_module.time, "sleep", lambda seconds: None)
+        store = sync(client, SCOPE, root=tmp_path_factory.mktemp("twins")).store
+    return twinned, store
+
+
+def test_top_n_draws_an_ion_two_species_read_once(twins):
+    twinned, store = twins
+    species = _species(store).set_index("series_key")
+    ion = species.at[twinned, "ion_formula"]
+    assert species.at[TWIN, "ion_formula"] == ion
+    # The candidates: a formula a target ion holds is that ion
+    held = species_module._identities(species_module._table(store))
+    keys = sorted(set(species.index) - set(held))
+    ranked = list(views.top(store, len(keys), "median", keys=keys)["key"])
+    assert {twinned, TWIN} <= set(ranked)
+    n = ranked.index(max(twinned, TWIN)) + 2
+
+    found = resolve(store, f"top:{n}")
+
+    # The place the second reading would take goes to the next species
+    assert found.keys == [k for k in ranked if k != TWIN][:n]
+    assert len(found.keys) == n
+    # Of two that read one ion alike, the first by key stays
+    assert twinned in found.keys and TWIN not in found.keys
+    (same,) = found.same_ion
+    assert same.to_dict() == {
+        "key": twinned,
+        "ion_formula": ion,
+        "left_out": [{"key": TWIN, "name": "twin compound [M+I]-", "formula": "C99H9"}],
+    }
+
+
+def test_a_chart_names_the_species_top_n_left_out(twins):
+    twinned, store = twins
+    n = len(_species(store))
+
+    fig = species_series(store, f"top:{n}", cadence="1h")
+
+    (same,) = fig.summary["same_ion"]
+    assert same["key"] == twinned
+    assert [s["key"] for s in same["left_out"]] == [TWIN]
+    (note,) = [note for note in fig.notes if note.startswith("top:N draws one")]
+    ion = _species(store).set_index("series_key").at[twinned, "ion_formula"]
+    name = _entry(fig, twinned)["name"]
+    assert f"{name} reads {ion}, as twin compound [M+I]- does." in note
+    for build in (diurnal, period_boxes):
+        assert build(store, f"top:{n}").summary["same_ion"] == [same]
+
+
+def test_a_species_named_outright_is_drawn_beside_the_one_top_n_kept(twins):
+    twinned, store = twins
+    n = len(_species(store))
+
+    named = resolve(store, [twinned, TWIN])
+    beside = resolve(store, [f"top:{n}", "twin compound"])
+    ranked = resolve(store, f"top:{n}")
+
+    assert named.keys == [twinned, TWIN]
+    assert named.same_ion == ()
+    # Drawn as asked, so not left out
+    assert beside.keys == [*ranked.keys, TWIN]
+    assert beside.same_ion == ()
+    fig = species_series(store, [twinned, TWIN], cadence="1h")
+    assert fig.summary["same_ion"] == []
+    assert not [note for note in fig.notes if note.startswith("top:N draws one")]
+
+
+def test_top_n_keeps_a_target_ion_over_a_formula_of_one_ion_and_value(monkeypatch):
+    """A tie of a formula and a target ion that read one ion goes to the
+    ion, the collection's identity; species without an ion formula each
+    count, and a species alone on its ion leaves nothing out."""
+    table = pd.DataFrame(
+        {
+            "series_key": ["formula:A|m", "ion:b", "ion:c", "ion:d", "ion:e"],
+            "name": ["a", "b", "c", None, None],
+            "formula": ["A", "B", "C", None, "E"],
+            "ion_formula": ["X-", "X-", "Y-", None, None],
+            "mechanism": ["m", "m", None, None, None],
+        },
+        dtype=object,
+    )
+    ranked = pd.DataFrame(
+        {
+            "key": ["formula:A|m", "ion:b", "ion:d", "ion:e", "ion:c"],
+            "value": [5.0, 5.0, 4.0, 3.0, 2.0],
+        }
+    )
+    asked = []
+
+    def top(store, n, by, **kwargs):
+        asked.append(n)
+        return ranked.copy()
+
+    monkeypatch.setattr(views, "top", top)
+
+    kept, shared = species_module._top(
+        None, 4, table, {}, normalise="none", tz=None, start=None, end=None
+    )
+
+    assert asked == [5]
+    assert kept == ["ion:b", "ion:d", "ion:e", "ion:c"]
+    assert shared == {"ion:b": ["formula:A|m"]}
+    named = species_module._same_ion(table, kept, shared)
+    assert named[0].left_out == ({"key": "formula:A|m", "name": "a m", "formula": "A"},)
+    # Without a name by its formula, without either by its key
+    unnamed = species_module._same_ion(
+        table, ["formula:A|m"], {"formula:A|m": ["ion:e", "ion:d"]}
+    )
+    assert [s["name"] for s in unnamed[0].left_out] == ["E", "ion:d"]
 
 
 # --- species_series ---------------------------------------------------------------
@@ -1474,6 +1628,9 @@ def test_each_chart_carries_the_view_context_and_presence(month, kind):
     per_species = {f.split("[].")[1] for f in fields if "[]." in f}
     present = set().union(*(set(e) for e in fig.summary["species"]))
     assert per_species - {"groups"} <= present
+    # And every field it gives is promised, a species' key and names aside
+    assert set(fig.summary) <= {f.split("[]")[0] for f in fields}
+    assert present - {"key", "name", "formula"} <= per_species
 
 
 @pytest.mark.parametrize("kind", KINDS)
