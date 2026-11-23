@@ -897,20 +897,36 @@ def _refit(collection_id, sha, **keys):
 
 @pytest_asyncio.fixture
 async def axes(async_session_factory):
-    """A TOF instrument's files an hour apart, each a way a record says how
-    its acquisition axis read the lines: a first fit from before the keys,
-    read 80 ppm low; refits that kept the axis, in mode 0 and, counted from
-    500 samples into the raw axis, in mode 2; one that kept the first fit's
-    offsets; three whose axis gives no m/z (a zero p1, a fractional power of
-    a negative number, a mode with no closed form) and one whose fit time is
-    not one; a new version of the collection, refitted onto the first file
-    acquired and, a week earlier, onto the last; and a fit that chose from no
-    lines."""
+    """A TOF instrument's files an hour apart, each a way a record says how its
+    acquisition axis read the lines: a first fit from before the keys, read
+    80 ppm low; refits that kept the axis, in mode 0 and, counted from 500
+    samples into the raw axis, in mode 2; a mode-1 fit's that kept a mode-1
+    axis, and one that kept its axis as mode 5; one that kept the first
+    fit's offsets; three whose axis gives no m/z (a zero p1, a fractional
+    power of a negative number, a mode with no closed form) and one whose
+    fit time is not one; a new version of the collection, refitted onto the
+    first file acquired and, a week earlier, onto the last; and a fit that
+    chose from no lines."""
     name = f"trend-axes-{gen_id(6).lower()}"
     cid = gen_id(16)
     axis0 = {"mode": 0, "par": [_LOW, -0.5], "raw_index_offset": 0}
     mode2_fit = {"mode": 2, "par": [2800.0, -500.5, 0.5]}
     axis2 = {"mode": 2, "par": [_LOW, -0.5, 0.5], "raw_index_offset": 500}
+    # i = p1 / sqrt(m) + p2, and the axis's m/z (p1 / (i - p2)) ** 2
+    mode1_fit = {"mode": 1, "par": [2800.0, -50.0]}
+    axis1 = {
+        "mode": 1,
+        "par": [2800.0 * (1 - 80e-6) ** 0.5, -50.0],
+        "raw_index_offset": 0,
+    }
+    # The mode-0 axis ((i + 500.5) / _LOW) ** 2 of a fit counting from -500.5,
+    # written out as p1 * i ** 2 + p2 * i + p3
+    mode5_fit = {"mode": 0, "par": [2800.0, -500.5]}
+    axis5 = {
+        "mode": 5,
+        "par": [1 / _LOW**2, 1001.0 / _LOW**2, 500.5**2 / _LOW**2],
+        "raw_index_offset": 0,
+    }
     kept = [
         {"ion": "NO3-", "target_mz": 61.9884, "offset_ppm": -79.0},
         {"ion": "Br3-", "target_mz": "236.7536", "offset_ppm": 1.0},
@@ -923,6 +939,8 @@ async def axes(async_session_factory):
         "first": _record(cid, _V1),
         "axis": _refit(cid, _V1, acquisition_axis=axis0),
         "mode2": {**_refit(cid, _V1, acquisition_axis=axis2), **mode2_fit},
+        "mode1": {**_refit(cid, _V1, acquisition_axis=axis1), **mode1_fit},
+        "mode5": {**_refit(cid, _V1, acquisition_axis=axis5), **mode5_fit},
         "kept": _refit(cid, _V1, acquisition_offsets=kept),
         "zero": _refit(
             cid,
@@ -987,8 +1005,8 @@ def _medians(quartiles):
 
 
 #: What each file of :func:`axes` reads, its kept line and its other line.
-_AXES_NITRATE = [-80.0, -80.0, -80.0, -80.0, -79.0, None, None, None, -80.0, None]
-_AXES_BROMIDE = [-80.0, -80.0, -80.0, -80.0, -60.0, None, None, None, -80.0, None]
+_AXES_NITRATE = [*[-80.0] * 6, -79.0, None, None, None, -80.0, None]
+_AXES_BROMIDE = [*[-80.0] * 6, -60.0, None, None, None, -80.0, None]
 
 
 @pytest.mark.asyncio
@@ -1002,7 +1020,7 @@ async def test_a_refit_reads_the_acquisition_axis_its_record_kept(owner_client, 
     assert _rounded([f["axis_offset_ppm"] for f in data["files"]]) == _AXES_NITRATE
     assert [f["fitted_utc"] for f in data["files"]] == [
         "2026-11-17T08:00:00+00:00",
-        *[None] * 7,
+        *[None] * 9,
         "2026-11-10T08:00:00+00:00",
         None,
     ]
