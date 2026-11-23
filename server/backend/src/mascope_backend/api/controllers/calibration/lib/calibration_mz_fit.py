@@ -54,7 +54,7 @@ import json
 import math
 from abc import abstractmethod
 from itertools import combinations
-from typing import Callable
+from typing import Callable, Iterable
 
 import numpy as np
 import pandas as pd
@@ -211,6 +211,9 @@ class BaseCalibrationHandler:
         #: What a TOF fit was made on, for its record's quality block
         #: (``TofCalibrationHandler._fitted_on``); None for any other.
         self.fitted_on: dict | None = None
+        #: The calibration collection's compounds a file need not hold
+        #: (:meth:`_resolve_calibration_isotopes`).
+        self.optional_anchor_ids: frozenset[str] = frozenset()
         #: The calibrant cap in effect and what it left out, for the record's
         #: quality block (:meth:`_leave_out_bright_calibrants`); None until a
         #: fit got as far as its calibrants.
@@ -327,6 +330,13 @@ class BaseCalibrationHandler:
         target_compound_ids = [
             item["target_compound_id"] for item in target_compounds_result["data"]
         ]
+        # The anchors a file need not hold, by compound
+        # (TargetCompoundInTargetCollection.optional_anchor)
+        self.optional_anchor_ids = frozenset(
+            item["target_compound_id"]
+            for item in target_compounds_result["data"]
+            if item.get("optional_anchor")
+        )
         if not target_compound_ids:
             self._nothing_to_calibrate_against(EMPTY_CALIBRATION_COLLECTION_WARNING)
             return None
@@ -1322,10 +1332,12 @@ class TofCalibrationHandler(BaseCalibrationHandler):
         return TOF_MINIMUM_CALIBRATION_POINTS[self._selection_mode]
 
     async def _resolve_calibration_isotopes(self) -> pd.DataFrame | None:
-        """The collection's isotopes, each with the formula of its ion.
+        """The collection's isotopes, each with the formula of its ion and
+        whether its compound is an anchor a file need not hold.
 
-        A TOF fit's record names the ion of every point it lists
-        (:meth:`_fitted_on`).
+        A TOF fit's record names the ion of every point it lists, and its
+        kept-line share counts an optional anchor's lines only where the fit
+        kept them (:meth:`_fitted_on`).
         """
         isotopes = await super()._resolve_calibration_isotopes()
         if isotopes is None:
@@ -1337,7 +1349,17 @@ class TofCalibrationHandler(BaseCalibrationHandler):
         formulas = {
             ion["target_ion_id"]: ion["target_ion_formula"] for ion in ions["data"]
         }
-        return isotopes.assign(target_ion_formula=isotopes.target_ion_id.map(formulas))
+        optional = {
+            ion["target_ion_id"]: ion.get("target_compound_id")
+            in self.optional_anchor_ids
+            for ion in ions["data"]
+        }
+        return isotopes.assign(
+            target_ion_formula=isotopes.target_ion_id.map(formulas),
+            optional_anchor=isotopes.target_ion_id.map(optional)
+            .fillna(False)
+            .astype(bool),
+        )
 
     def _fit_matches(
         self, matches_df: pd.DataFrame, mode: int | None = None
@@ -1593,7 +1615,15 @@ class TofCalibrationHandler(BaseCalibrationHandler):
         - ``n_lines``: how many distinct lines the collection offered above
           the abundance floor, matched or not, which the quality bar holds
           the lines kept against (``TOF_MIN_KEPT_LINE_SHARE``). A line
-          offered by two ions, or one ion through two mechanisms, is one.
+          offered by two ions, or one ion through two mechanisms, is one. A
+          line only optional anchors offer
+          (``TargetCompoundInTargetCollection.optional_anchor``) counts only
+          where the fit kept it: such an anchor is a site's background, and
+          a file that does not hold it is held to the rest of the collection
+          (decision MAS-1139). One a non-optional compound also offers counts
+          as theirs.
+        - ``n_optional_lines``: the optional anchors' lines left out of
+          ``n_lines`` because the fit did not keep them.
         - ``collection``: the calibration collection, and a hash of the
           isotopes it offered (:func:`calibration_isotopes_sha256`), which
           tells one version of it from another.
@@ -1638,20 +1668,17 @@ class TofCalibrationHandler(BaseCalibrationHandler):
             )
         ]
         mode = self.fit_result["mode"]
+        n_lines, n_optional_lines = lines_held_to(
+            isotopes, retained["mz"], self.params.isotope_abundance_min
+        )
         return {
             "points": points,
             "span": [
                 _finite_or_none(retained["mz"].min()),
                 _finite_or_none(retained["mz"].max()),
             ],
-            "n_lines": int(
-                isotopes.loc[
-                    isotopes.relative_abundance >= self.params.isotope_abundance_min,
-                    "mz",
-                ]
-                .round(6)
-                .nunique()
-            ),
+            "n_lines": n_lines,
+            "n_optional_lines": n_optional_lines,
             "collection": {
                 "id": self.params.calibration_collection_id,
                 "isotopes_sha256": calibration_isotopes_sha256(isotopes),
@@ -2466,6 +2493,42 @@ def _axis_starts_after_its_offset(fit: dict) -> bool:
     return p1 > 0 and p3 > 0 and p2 < 0
 
 
+def lines_held_to(
+    isotopes: pd.DataFrame, kept_mz: Iterable[float], abundance_min: float
+) -> tuple[int, int]:
+    """The lines a TOF fit's kept-line share holds it to, and the optional
+    anchors' lines it leaves out (``n_lines`` and ``n_optional_lines`` of
+    ``TofCalibrationHandler._fitted_on``).
+
+    A line is an exact m/z to 6 decimals, above the abundance floor. A line
+    a compound of the collection offers that is not an optional anchor
+    always counts; a line only optional anchors offer counts where the fit
+    kept it.
+
+    :param isotopes: The isotopes the collection offered the fit, with
+        ``mz``, ``relative_abundance`` and, where the collection marks any,
+        ``optional_anchor``.
+    :param kept_mz: The exact m/z of the lines the fit kept.
+    :param abundance_min: The abundance floor.
+    :return: The two counts.
+    """
+    offered = isotopes.loc[isotopes.relative_abundance >= abundance_min]
+    lines = offered["mz"].round(6)
+    optional = (
+        offered["optional_anchor"].astype(bool)
+        if "optional_anchor" in offered
+        else pd.Series(False, index=offered.index)
+    )
+    required = set(lines[~optional])
+    optional_only = set(lines[optional]) - required
+    # Rounded as the offered lines are, so a kept line is the same number
+    kept = set(pd.Series(list(kept_mz), dtype=float).round(6))
+    return (
+        len(required) + len(optional_only & kept),
+        len(optional_only - kept),
+    )
+
+
 def calibration_isotopes_sha256(isotopes: pd.DataFrame) -> str:
     """
     A hash of the isotopes a calibration collection offers a fit.
@@ -2861,14 +2924,22 @@ def _quality_block_issues(
         and n_lines
         and n_points / n_lines < min_line_share
     ):
+        n_optional_lines = quality.get("n_optional_lines") or 0
+        besides = (
+            f", not counting {n_optional_lines} line"
+            f"{'' if n_optional_lines == 1 else 's'} of optional anchors the "
+            "file does not hold"
+            if n_optional_lines
+            else ""
+        )
         issues.append(
             {
                 "code": "lines",
                 "message": (
                     f"Fitted on {n_points} of the {n_lines} lines of the "
-                    f"calibration collection (at least {min_line_share:.0%} "
-                    "needed): a fit on so few of them may be on peaks "
-                    "beside the calibrants."
+                    f"calibration collection{besides} (at least "
+                    f"{min_line_share:.0%} needed): a fit on so few of them "
+                    "may be on peaks beside the calibrants."
                 ),
             }
         )

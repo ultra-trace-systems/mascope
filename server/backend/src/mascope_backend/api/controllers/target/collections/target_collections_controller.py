@@ -332,6 +332,11 @@ async def get_target_collection(target_collection_id: str) -> dict:
             for sb in target_collection.sample_batch
         ]
 
+        target_collection_dict["optional_anchor_compound_ids"] = sorted(
+            tc.target_compound_id
+            for tc in target_collection.target_compound
+            if tc.optional_anchor
+        )
         target_collection_dict["target_compounds_count"] = len(target_compounds)
         target_collection_dict["sample_batches_count"] = len(sample_batches)
         target_collection_dict["target_compounds"] = target_compounds
@@ -421,11 +426,15 @@ async def create_target_collection(
         session.add(new_collection)
 
         # Step 5: Associate compounds with the collection
+        optional_anchor_ids = set(
+            target_collection_create.optional_anchor_compound_ids or ()
+        )
         for target_compound_id in all_target_compound_ids:
             session.add(
                 TargetCompoundInTargetCollection(
                     target_compound_id=target_compound_id,
                     target_collection_id=new_collection.target_collection_id,
+                    optional_anchor=target_compound_id in optional_anchor_ids,
                 )
             )
 
@@ -501,7 +510,9 @@ async def update_target_collection(
     sample batches or target compounds. Changes that affect matching set
     affected batches to "rematch" status; a change of the compounds of a
     collection some ionization mode calibrates on sets the batches of that
-    mode's files to "recalibrate" (:func:`calibrated_batch_ids`).
+    mode's files to "recalibrate" (:func:`calibrated_batch_ids`), as does a
+    change of its optional anchors (``optional_anchor_compound_ids``), which
+    only a calibration reads.
 
     Steps:
     1. Fetch existing target collection with associations
@@ -593,6 +604,53 @@ async def update_target_collection(
         target_collection_db, target_collection_update, updated_compound_ids
     )
 
+    # Step 5b: The optional anchors, which are the collection's compounds
+    # after the update. Left out of the request, the marks stay as they are.
+    optional_anchors_db = {
+        link.target_compound_id
+        for link in target_collection_db.target_compound
+        if link.optional_anchor
+    }
+    optional_anchors_update = target_collection_update.optional_anchor_compound_ids
+    if optional_anchors_update is None:
+        optional_anchors = optional_anchors_db
+    else:
+        optional_anchors = set(optional_anchors_update)
+        held_after = (
+            updated_compound_ids
+            if updated_compound_ids is not None
+            else {
+                link.target_compound_id for link in target_collection_db.target_compound
+            }
+        )
+        outside = sorted(optional_anchors - held_after)
+        if outside:
+            raise ApiException(
+                user_message=(
+                    "optional_anchor_compound_ids names compounds the "
+                    "collection does not hold after the update: "
+                    + ", ".join(outside[:_MISSING_IDS_SHOWN])
+                    + (
+                        f" and {len(outside) - _MISSING_IDS_SHOWN} more"
+                        if len(outside) > _MISSING_IDS_SHOWN
+                        else ""
+                    )
+                ),
+                tech_message={"optional_anchors_not_held": outside},
+                status_code=422,
+            )
+    # Whether the marks of the compounds that stay change. One the update
+    # removes goes with its link, and one it adds is marked as it is linked,
+    # a compound change of its own.
+    kept_compound_ids = (
+        updated_compound_ids
+        if updated_compound_ids is not None
+        else {link.target_compound_id for link in target_collection_db.target_compound}
+    )
+    optional_anchors_changed = (optional_anchors_db & kept_compound_ids) != (
+        optional_anchors & kept_compound_ids
+    )
+
     # Collect all affected sample batches based on change type
     affected_sample_batch_ids = set()
 
@@ -633,6 +691,7 @@ async def update_target_collection(
                 "target_compound_ids",
                 "sample_batch_ids",
                 "target_compounds_create",
+                "optional_anchor_compound_ids",
             },
             exclude_unset=True,
         )
@@ -682,8 +741,15 @@ async def update_target_collection(
                     TargetCompoundInTargetCollection(
                         target_compound_id=target_compound_id,
                         target_collection_id=target_collection_id,
+                        optional_anchor=target_compound_id in optional_anchors,
                     )
                 )
+
+        # Mark the optional anchors among the compounds that stay
+        if optional_anchors_changed:
+            for link in target_collection_db.target_compound:
+                if link.target_compound_id in kept_compound_ids:
+                    link.optional_anchor = link.target_compound_id in optional_anchors
         await session.commit()
         await session.refresh(target_collection_db)
 
@@ -706,9 +772,11 @@ async def update_target_collection(
     # itself ends in a rematch. The stronger "recalibrate", as the mode edit
     # sets when a mode is pointed at another collection. A collection that
     # only matches keeps the rematch.
+    # The optional anchors are a calibration's input alone: a change of them
+    # moves the bar a fit is held to, and no match
     recalibrate_ids = (
         await calibrated_batch_ids(target_collection_id)
-        if changes["compounds"]
+        if changes["compounds"] or optional_anchors_changed
         else set()
     )
 
@@ -737,7 +805,14 @@ async def update_target_collection(
 
     if independent_transaction:
         # emit target.collection reload if anything changed
-        if any([changes["compounds"], changes["batches"], changes["basic_fields"]]):
+        if any(
+            [
+                changes["compounds"],
+                changes["batches"],
+                changes["basic_fields"],
+                optional_anchors_changed,
+            ]
+        ):
             reload_events.append(emit_record_reload(record_type="target_collection"))
 
         # Reload match_collection for affected batches

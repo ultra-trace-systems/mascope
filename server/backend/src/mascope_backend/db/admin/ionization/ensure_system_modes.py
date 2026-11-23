@@ -812,6 +812,7 @@ def _stored_digest(collection: TargetCollection) -> str:
             (
                 link.target_compound.target_compound_name,
                 link.target_compound.target_compound_formula,
+                link.optional_anchor,
             )
             for link in collection.target_compound
         ),
@@ -850,14 +851,38 @@ async def _create_collection(collection: SeededCollection) -> None:
                 workspace_id=None,
             )
         )
-        for compound_id in dict.fromkeys(compounds["target_compound_ids"]):
+        for compound_id, optional_anchor in _links(collection, compounds).items():
             session.add(
                 TargetCompoundInTargetCollection(
                     target_compound_id=compound_id,
                     target_collection_id=collection.collection_id,
+                    optional_anchor=optional_anchor,
                 )
             )
         await session.commit()
+
+
+def _links(collection: SeededCollection, compounds: dict) -> dict[str, bool]:
+    """Each library compound the seed's collection holds, and whether it is an
+    optional anchor there.
+
+    :param collection: The seed's collection.
+    :param compounds: What ``create_target_compound`` answered for its
+        compounds (:func:`_compounds_to_create`), one id per compound, in
+        their order; a compound the library held already is its id.
+    :return: The ids, once each, in the seed's order. A compound the seed
+        names twice is optional only where every naming is.
+    """
+    ids = compounds["target_compound_ids"]
+    if len(ids) != len(collection.compounds):
+        raise RuntimeError(
+            f"The library answered {len(ids)} compounds for the "
+            f"{len(collection.compounds)} of {collection.collection_id}."
+        )
+    links: dict[str, bool] = {}
+    for compound_id, compound in zip(ids, collection.compounds):
+        links[compound_id] = links.get(compound_id, True) and compound.optional_anchor
+    return links
 
 
 async def _bring_up_to_date(collection: SeededCollection) -> None:
@@ -874,13 +899,17 @@ async def _bring_up_to_date(collection: SeededCollection) -> None:
         target_compounds=_compounds_to_create(collection),
         independent_transaction=True,
     )
+    links = _links(collection, compounds)
     await update_target_collection(
         target_collection_id=collection.collection_id,
         target_collection_update=TargetCollectionUpdate(
             target_collection_name=collection.name,
             target_collection_description=collection.description,
             target_collection_type=collection.collection_type,
-            target_compound_ids=list(dict.fromkeys(compounds["target_compound_ids"])),
+            target_compound_ids=list(links),
+            optional_anchor_compound_ids=[
+                compound_id for compound_id, optional in links.items() if optional
+            ],
         ),
         independent_transaction=True,
     )

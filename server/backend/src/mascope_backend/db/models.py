@@ -1806,6 +1806,16 @@ class TargetCompoundInTargetCollection(Base):
         ForeignKey("target_collection.target_collection_id", ondelete="CASCADE"),
         primary_key=True,
     )
+    # An anchor a file need not hold: a compound of a calibration collection
+    # that a site's background carries on some instruments and not on others
+    # (the shipped Uronium, positive calibrants' siloxanes and caprolactam).
+    # A TOF fit's kept-line share counts its lines only where the fit kept
+    # them (``TofCalibrationHandler._fitted_on``), so a file without them is
+    # held to the rest of the collection. Read by calibration alone; matching
+    # reads every compound alike.
+    optional_anchor: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )
 
     # Relationships
     target_collection = relationship(

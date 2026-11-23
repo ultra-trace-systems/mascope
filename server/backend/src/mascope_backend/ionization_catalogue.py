@@ -398,10 +398,14 @@ class SeededCompound:
     :param name: The library's label of the ion it is there for (``"[Br2]-"``),
         which is how the collection says what each compound stands for.
     :param formula: The neutral (``"Br"`` for ``[Br2]-`` under ``[M+Br]-``).
+    :param optional_anchor: Whether it is an anchor a file need not hold, a
+        compound of a background tier
+        (``TargetCompoundInTargetCollection.optional_anchor``).
     """
 
     name: str
     formula: str
+    optional_anchor: bool = False
 
 
 @dataclass(frozen=True)
@@ -437,7 +441,8 @@ class SeededCollection:
             collection_type=self.collection_type,
             workspace_id=None,
             compounds=(
-                (compound.name, compound.formula) for compound in self.compounds
+                (compound.name, compound.formula, compound.optional_anchor)
+                for compound in self.compounds
             ),
         )
 
@@ -448,7 +453,7 @@ def collection_digest(
     description: str | None,
     collection_type: str | None,
     workspace_id: str | None,
-    compounds: Iterable[tuple[str | None, str]],
+    compounds: Iterable[tuple[str | None, str, bool]],
 ) -> str:
     """A collection's content, as a short hash: how the seed tells its own
     collection, as it wrote it, from one the deployment has edited.
@@ -459,13 +464,17 @@ def collection_digest(
     place reads as an edit of every collection holding it. The compounds are
     compared as the library identifies one when a compound is created - by
     name and formula, case and runs of spaces aside - so a seed that reuses a
-    compound the library already held does not read as an edit.
+    compound the library already held does not read as an edit. A compound
+    marked an optional anchor carries the mark too, which a compound without
+    it does not, so the digest of a collection with no mark is the one it
+    had before there were marks.
 
     :param name: The collection's name.
     :param description: Its description.
     :param collection_type: Its type.
     :param workspace_id: The workspace it is scoped to, None when global.
-    :param compounds: ``(name, formula)`` of each compound it holds.
+    :param compounds: ``(name, formula, optional_anchor)`` of each compound
+        it holds.
     :return: Sixteen hex digits of the content's SHA-256.
     :rtype: str
     """
@@ -478,7 +487,10 @@ def collection_digest(
         "description": description,
         "type": collection_type,
         "workspace_id": workspace_id,
-        "compounds": sorted([fold(name), fold(formula)] for name, formula in compounds),
+        "compounds": sorted(
+            [fold(name), fold(formula)] + (["optional anchor"] if optional else [])
+            for name, formula, optional in compounds
+        ),
     }
     encoded = json.dumps(content, sort_keys=True).encode()
     return hashlib.sha256(encoded).hexdigest()[:16]
@@ -599,7 +611,8 @@ def _background_compounds(
     """The compounds of a background tier's reference lists, in list order.
 
     Each is its list's species as it names it, the neutral, which every
-    mechanism of the mode turns into an ion.
+    mechanism of the mode turns into an ion, and an optional anchor: a file
+    that does not hold it is held to the reagent's series (decision MAS-1139).
 
     :param list_ids: The shipped reference lists, by id.
     :param polarity: The mode's polarity, ``"+"`` or ``"-"``.
@@ -623,7 +636,9 @@ def _background_compounds(
                 f"its compounds would calibrate a mode of polarity {polarity}."
             )
         compounds.extend(
-            SeededCompound(name=species.name, formula=species.formula)
+            SeededCompound(
+                name=species.name, formula=species.formula, optional_anchor=True
+            )
             for species in peak_list.species
         )
     return tuple(compounds)
