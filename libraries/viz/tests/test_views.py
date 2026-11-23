@@ -2079,7 +2079,7 @@ def test_a_formulas_tier_is_its_most_values_a_tie_the_less_confident(
     peaks = tables["peak_series"].copy()
     keys = peaks["series_key"].astype(str)
     detected = peaks["intensity"].notna()
-    tied, most = sorted(set(keys[detected & (peaks["tier"] == "assigned")]))[:2]
+    tied, most, none = sorted(set(keys[detected & (peaks["tier"] == "assigned")]))[:3]
     tier = peaks["tier"].astype(object)
     for key, share in ((tied, 2), (most, 3)):
         rows = np.flatnonzero((keys == key) & detected)
@@ -2087,6 +2087,8 @@ def test_a_formulas_tier_is_its_most_values_a_tie_the_less_confident(
         tier.iloc[rows[: len(rows) // share]] = "candidate"
         tier.iloc[rows[len(rows) // share :]] = "assigned"
         assert len(rows) % 2 == 0
+    # A key whose values carry no tier at all has none
+    tier[keys == none] = None
     peaks["tier"] = pd.Categorical(tier, categories=["assigned", "candidate"])
     tables["peak_series"] = peaks
     store = _sync(dataclasses.replace(short_campaign, tables=tables), tmp_path)
@@ -2095,6 +2097,7 @@ def test_a_formulas_tier_is_its_most_values_a_tie_the_less_confident(
 
     assert frame.loc[tied, "tier"] == "candidate"
     assert frame.loc[most, "tier"] == "assigned"
+    assert pd.isna(frame.loc[none, "tier"])
 
 
 def _grid_rows(campaign: Campaign, values: pd.DataFrame, width: float) -> pd.Series:
