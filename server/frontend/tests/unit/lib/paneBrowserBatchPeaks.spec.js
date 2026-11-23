@@ -6,6 +6,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { MAX_SELECTED_BATCH_PEAKS } from '@/stores/data/modules/batchPeak/ledger'
 import { TIERING_PROVISIONAL } from '@/lib/tiers'
 import { LEVELS } from '@/lib/levels'
+import { SORT_FIELDS } from '@/lib/ledger/useLedgerView.js'
 
 // The tier strip and the tier column's sort: both read the confidence order out
 // of @/lib/tiers, and both used to be wrong in the same direction (alphabetical,
@@ -2658,6 +2659,39 @@ describe('PaneBrowserBatchPeaks filtering under the pane-owned table', () => {
   // The search box takes the Formula column's filter menu's place.
   const search = (query) => wrapper.find('[data-testid="ledger-search"]').setValue(query)
 
+  // The store keeps a stored sort only on a column it lists for the scope, so
+  // every sortable column, the optional ones shown, must be on that list.
+  it("lists every sortable column among the store's sort fields", async () => {
+    wrapper = await mountPane({
+      peaks: [
+        peak('bp-all', 'assigned', 0.9, {
+          engine_tier: 'assigned',
+          member_level: LEVELS[0],
+          engine_level: LEVELS[0],
+          co_variation: { verdict: 'co_varying', r: 0.8, n_spectra: 20 },
+          batch_checks: { halogen_lock: { element: 'Br', verdict: 'locked' } },
+          continuity: { pairs: [] }
+        })
+      ]
+    })
+
+    const sorted = wrapper
+      .findAllComponents(ColumnStub)
+      .filter((column) => column.props('sortable'))
+      .map((column) => column.props('sortField') ?? column.props('field'))
+    for (const field of [
+      'engineTierRank',
+      'memberLevelRank',
+      'engineLevelRank',
+      'coVariationRank',
+      'checksRank',
+      'continuityRank'
+    ]) {
+      expect(sorted).toContain(field)
+    }
+    expect(SORT_FIELDS.batch).toEqual(expect.arrayContaining(sorted))
+  })
+
   it('has no filter menu on the Formula column any more', async () => {
     wrapper = await mountPane({ peaks })
 
@@ -2691,6 +2725,30 @@ describe('PaneBrowserBatchPeaks filtering under the pane-owned table', () => {
     await search('cyclopenta')
 
     expect(ids()).toEqual(['bp-listed'])
+  })
+
+  // A target alone, with no list's name: the target names the row.
+  it("narrows the rows on a target's name", async () => {
+    wrapper = await mountPane({
+      peaks: [
+        ...peaks,
+        peak('bp-target', 'assigned', 0.6, {
+          consensus_formula: 'C6H12O6',
+          reference_listing: {
+            name: null,
+            source: null,
+            inchikey: null,
+            tags: [],
+            total: 0,
+            target: { label: 'target', name: 'glucose', inchikey: null, listed: false }
+          }
+        })
+      ]
+    })
+
+    await search('gluc')
+
+    expect(ids()).toEqual(['bp-target'])
   })
 
   // The batch's rows come from many runs, so an m/z matches within 5 ppm, the

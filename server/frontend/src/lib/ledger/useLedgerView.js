@@ -12,8 +12,8 @@ import { ENGINE_UNSTATED, ROLE_BUCKETS, TIERS } from '@/lib/tiers'
  * survives a reload too (docs/dev/assignment_ledger_and_card.md, section 3.4).
  *
  * Every stored value is read back through its key's check: a value the code no
- * longer knows - a tier chip, a badge kind, a grouping it has dropped, or a
- * value of the wrong type - falls back to that key's default, and the keys
+ * longer knows - a sort column, a tier chip, a badge kind, a grouping it has
+ * dropped, or a value of the wrong type - falls back to that key's default, and the keys
  * beside it keep theirs.
  *
  * A null sort field is a cleared sort (removableSort's third click on a
@@ -62,6 +62,41 @@ export const GROUP_BY_OPTIONS = Object.freeze({
   batch: Object.freeze(['none'])
 })
 
+/**
+ * The columns each scope's ledger sorts on, by the field the table sorts by
+ * (a column's `sortField` where it has one). The two panes' specs check that
+ * every sortable column is listed here, so a column added or dropped there
+ * cannot leave a stored sort the check below misreads.
+ */
+export const SORT_FIELDS = Object.freeze({
+  sample: Object.freeze([
+    'sample_peak_mz',
+    'sample_peak_intensity',
+    'assigned_formula',
+    'listing',
+    'mech',
+    'tierRank',
+    'engineTierRank',
+    'levelRank',
+    'verdictRank'
+  ]),
+  batch: Object.freeze([
+    'mz',
+    'max_intensity',
+    'consensus_formula',
+    'listingName',
+    'tierRank',
+    'engineTierRank',
+    'memberLevelRank',
+    'engineLevelRank',
+    'coVariationRank',
+    'checksRank',
+    'n_present',
+    'continuityRank',
+    'verdictRank'
+  ])
+})
+
 const BUCKETS = new Set([...TIERS, ENGINE_UNSTATED, ...ROLE_BUCKETS])
 
 const isBoolean = (value) => typeof value === 'boolean'
@@ -74,8 +109,8 @@ const isTierList = (value) =>
 
 // Each key's default and its check, per scope. A key a scope does not list is
 // not a choice of that scope.
+const sortFieldOf = (scope) => (value) => value === null || SORT_FIELDS[scope].includes(value)
 const COMMON = {
-  field: { check: (value) => value === null || isString(value) },
   order: { default: 1, check: oneOf([1, -1]) },
   search: { default: '', check: isString },
   tiers: { default: () => [], check: isTierList },
@@ -87,13 +122,13 @@ const COMMON = {
 const SCHEMA = Object.freeze({
   sample: {
     ...COMMON,
-    field: { ...COMMON.field, default: 'tierRank' },
+    field: { default: 'tierRank', check: sortFieldOf('sample') },
     queue: { default: false, check: isBoolean },
     groupBy: { default: 'none', check: oneOf(GROUP_BY_OPTIONS.sample) }
   },
   batch: {
     ...COMMON,
-    field: { ...COMMON.field, default: 'n_present' },
+    field: { default: 'n_present', check: sortFieldOf('batch') },
     order: { ...COMMON.order, default: -1 },
     stripped: { default: false, check: isBoolean },
     blends: { default: false, check: isBoolean },
