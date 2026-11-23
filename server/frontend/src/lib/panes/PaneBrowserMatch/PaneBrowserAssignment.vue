@@ -241,14 +241,19 @@ const submitting = ref(false)
 // docs/dev/batch_assignment_one_action.md 3.4), so a sample is assigned as its
 // batch is unless the dialog is changed. A change is this one run's: it goes
 // in the run's request, which the run records, and never back to the batch.
-// Seeded again on every open, so last time's override is not carried.
+// What the batch saved of a field the form does not show (its tier bands, its
+// stage B confidence, ...) goes in the request as saved. Seeded again on every
+// open, so last time's override is not carried.
 const assignParams = usePeakAssignParams()
 const runModel = reactive(Object.fromEntries(PARAM_KEYS.map((key) => [key, null])))
+let runSaved = null
 const configForm = ref(null)
+// Why Assign did nothing yet, said in the dialog that stays open for it.
+const formError = ref(null)
 
 function seedRun() {
-  const saved = app.data.batch.focused?.assignment_settings ?? null
-  Object.assign(runModel, batchSettingsModel(saved, assignParams.defaults))
+  runSaved = app.data.batch.focused?.assignment_settings ?? null
+  Object.assign(runModel, batchSettingsModel(runSaved, assignParams.defaults))
 }
 
 // Why the last launch produced no run. The endpoint decides synchronously, so a
@@ -265,12 +270,12 @@ watch(
   () => (launchError.value = null)
 )
 
-// The configuration carries between opens - it is the user's, held in the
-// store and persisted - so only the stale refusal is cleared here. Also scope
-// help mode to the dialog's cards while it is open.
+// Every open starts on the batch's settings and with no stale refusal. Also
+// scope help mode to the dialog's cards while it is open.
 watch(configVisible, (open) => {
   if (open) {
     launchError.value = null
+    formError.value = null
     seedRun()
     // Seeded again once the defaults land, if the dialog opened before.
     if (!assignParams.loaded) {
@@ -284,11 +289,15 @@ async function launch() {
   const sampleItemId = app.data.sample.focusedId
   if (!sampleItemId) return
   // A range still being typed is committed first; one that does not parse
-  // keeps the dialog open on the field that says so.
-  if (configForm.value && !configForm.value.commit()) return
+  // keeps the dialog open, saying why.
+  if (configForm.value && !configForm.value.commit()) {
+    formError.value = 'The formula range does not parse. Fix it or clear it to assign.'
+    return
+  }
+  formError.value = null
   submitting.value = true
   try {
-    await runs.value.assign(sampleItemId, runConfig(runModel))
+    await runs.value.assign(sampleItemId, runConfig(runModel, {}, runSaved))
     launchError.value = null
   } catch (error) {
     // A refusal is an answer, not a crash: the request was understood and
@@ -862,6 +871,9 @@ const HEADERS = {
           :model="runModel"
           :sample-item-id="app.data.sample.focusedId"
         />
+        <Message v-if="formError" severity="error" size="small" data-testid="assign-form-error">
+          {{ formError }}
+        </Message>
         <template #footer>
           <Button label="Cancel" text severity="secondary" @click="configVisible = false" />
           <Button label="Assign" icon="pi ph ph-magic-wand" :loading="submitting" @click="launch" />

@@ -92,6 +92,7 @@ function makeApp() {
         }
       },
       sample: { focusedId: 'si-1', focused: null },
+      batch: { focused: null },
       // A getter over a ref so the pane's computeds re-evaluate when a test
       // moves the focus after mounting.
       peak: {
