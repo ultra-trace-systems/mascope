@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch, onUnmounted } from 'vue'
+import { computed, ref, watch, onUnmounted } from 'vue'
 import Panel from 'primevue/panel'
 import Button from 'primevue/button'
 import ProgressSpinner from 'primevue/progressspinner'
@@ -89,6 +89,33 @@ watch(
   { immediate: true }
 )
 
+// Whether the slot has been shown since the panel mounted or since the last
+// error took its place. Until it has, the spinner stands where the content
+// will be (the first load). After that a reload keeps the slot mounted and
+// draws the spinner over it: unmounting it would drop the focused row (focus
+// falls to <body>, so a key press reaches no table) and the scroll position.
+const contentShown = ref(false)
+watch(
+  () => [props.loading, props.error],
+  ([loading, error]) => {
+    if (error) contentShown.value = false
+    else if (!loading) contentShown.value = true
+  },
+  { immediate: true }
+)
+
+const overlay = computed(() => showSpinner.value && contentShown.value)
+
+// The panel's body says it is busy while the spinner shows, merged into the
+// caller's pass-through options (the help cards put theirs on the root).
+const panelPt = computed(() => ({
+  ...props.pt,
+  content: {
+    ...props.pt?.content,
+    'aria-busy': showSpinner.value ? 'true' : undefined
+  }
+}))
+
 // Cleanup timeout on unmount
 onUnmounted(() => {
   if (loadingTimeout) {
@@ -106,7 +133,7 @@ onUnmounted(() => {
         contextMenu?.onClick(event)
       }
     "
-    :pt="pt"
+    :pt="panelPt"
   >
     <template #header>
       <!-- Breadcrumb navigation (when provided) -->
@@ -137,7 +164,7 @@ onUnmounted(() => {
     <template #icons>
       <slot name="menu"></slot>
     </template>
-    <div v-if="showSpinner" class="spinner">
+    <div v-if="showSpinner && !overlay" class="spinner">
       <div>
         <ProgressSpinner strokeWidth="5px" />
         <span>loading...</span>
@@ -146,6 +173,12 @@ onUnmounted(() => {
     <BaseLoadError v-else-if="error" :error="error" :onRetry="onRetry" />
     <template v-else>
       <slot></slot>
+      <div v-if="overlay" class="spinner overlay">
+        <div>
+          <ProgressSpinner strokeWidth="5px" />
+          <span>loading...</span>
+        </div>
+      </div>
     </template>
   </Panel>
 </template>
@@ -160,6 +193,18 @@ onUnmounted(() => {
   font-weight: bold;
   margin: 0.6rem;
   height: 25.15px;
+}
+
+/* Drawn over the content during a reload: it covers the whole body, so a
+   click lands on it and not on a row, while the content stays mounted under
+   it. Opaque, so a reload reads as the first load does and an empty list's
+   text never shows through. Above the tables' row expansions (z-index 100 in
+   style.css). */
+.spinner.overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 101;
+  background: var(--p-panel-background, var(--p-content-background));
 }
 
 .status-button {

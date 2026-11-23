@@ -11,10 +11,10 @@ import { test, expect } from './fixtures'
  *
  * Opening a location by URL fills the ion table twice: first for the batch,
  * then, once the URL's sample is focused, for that sample. While the second
- * list loads the table gives way to a "loading..." spinner, which takes a
- * focused row with it, so an Enter pressed then reaches nothing (#3457). The
- * row is acted on only once it shows the sample's own match score, which the
- * batch's list does not show for it.
+ * list loads, a "loading..." spinner is drawn over the table, which stays
+ * mounted, so a focused row keeps its focus and an Enter still reaches it
+ * (#3457; the last test). The other tests act on the row only once it shows
+ * the sample's own match score, which the batch's list does not show for it.
  */
 
 // A match score as the ion table's score tag shows it (BaseMatchTag.vue).
@@ -80,12 +80,9 @@ async function searchMatchedIon(api) {
 let matched
 const findMatchedIon = (api) => (matched ??= searchMatchedIon(api))
 
-/**
- * Open the ion table of the found sample and collection, and return its best
- * row once the table lists the sample's ions, not the batch's.
- */
-async function openIonTable(page, found) {
-  const query = new URLSearchParams({
+/** The shared link to the found sample's ion table. */
+const locationOf = (found) =>
+  `/?${new URLSearchParams({
     w: found.workspace.workspace_id,
     d: found.dataset.dataset_id,
     b: found.batch.sample_batch_id,
@@ -93,12 +90,20 @@ async function openIonTable(page, found) {
     c: found.collection.target_collection_id,
     tab: 'sample',
     v: '1'
-  })
-  await page.goto(`/?${query}`)
+  })}`
+
+/**
+ * Open the ion table of the found sample and collection, and return its best
+ * row once the table lists the sample's ions, not the batch's.
+ */
+async function openIonTable(page, found) {
+  await page.goto(locationOf(found))
   const row = page.locator('tr', { has: page.locator(`#target-ion-${found.ion.target_ion_id}`) })
   await expect(row.getByText(found.score, { exact: true })).toBeVisible({ timeout: 30_000 })
   return row
 }
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 // The tab's name starts with its icon's glyph.
 const matchTab = (page) => page.getByRole('tab', { name: /Match$/ })
@@ -141,5 +146,43 @@ test.describe('opening a match', () => {
 
     await expect(row).toHaveAttribute('aria-selected', 'true')
     await expect(matchTab(page)).toHaveAttribute('aria-disabled', 'true')
+  })
+
+  // #3457: the sample's ion list reloads the table under a focused row. The
+  // two delays hold the batch's list on screen first, then hold the sample's
+  // long enough for the spinner to show. The panel keeps the table mounted
+  // under it, so the row keeps focus and the Enter reaches it. Read as the
+  // Match tab losing aria-disabled, not as aria-selected, which a shared
+  // link's tab restore can still move (MAS-1155).
+  test('Enter on a focused ion row during a reload opens its match', async ({ page, api }) => {
+    const found = await findMatchedIon(api)
+
+    await page.route(/\/api\/samples\?/, async (route) => {
+      await sleep(2_000)
+      await route.continue()
+    })
+    let sampleScopeSent
+    const sampleScope = new Promise((resolve) => (sampleScopeSent = resolve))
+    await page.route('**/api/match/records/ion', async (route) => {
+      if (route.request().postDataJSON()?.sample_item_ids) {
+        sampleScopeSent()
+        await sleep(3_000)
+      }
+      await route.continue()
+    })
+
+    await page.goto(locationOf(found))
+    await sampleScope
+
+    // The ion panel, not the sample table's: the innermost panel with ion rows.
+    // Held as the element, so the spinner is looked for in the same panel even
+    // if the rows were to leave it.
+    const ionPanel = page.locator('.browser:has([id^="target-ion-"]):not(:has(.browser))')
+    await ionPanel.locator('tr[data-p-index="0"]').focus()
+    const panel = await ionPanel.elementHandle()
+    await panel.waitForSelector('.spinner', { state: 'attached' })
+    await page.keyboard.press('Enter')
+
+    await expect(matchTab(page)).not.toHaveAttribute('aria-disabled', 'true')
   })
 })
