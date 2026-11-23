@@ -266,6 +266,7 @@ def test_a_species_without_a_name_is_named_by_its_formula_or_key():
         "key": "tic",
         "name": "TIC",
         "formula": None,
+        "polarity": None,
     }
 
 
@@ -534,6 +535,99 @@ def test_top_n_keeps_a_target_ion_over_a_formula_of_one_ion_and_value(monkeypatc
         table, ["formula:A|m"], {"formula:A|m": ["ion:e", "ion:d"]}
     )
     assert [s["name"] for s in unnamed[0].left_out] == ["E", "ion:d"]
+
+
+@pytest.fixture(scope="module")
+def charges(tmp_path_factory) -> tuple[str, str, CampaignStore]:
+    """The short campaign with one of its target ions read as a positive
+    ion, its mechanism and ion formula ending in ``+``, beside a negative
+    one: the keys of the positive and the negative ion, and the store."""
+    campaign = generate(SHORT, seed=2)
+    species = campaign.tables["species"]
+    targets = sorted(
+        species.loc[
+            species["series_key"].str.startswith("ion:")
+            & (species["mechanism"] != "reagent"),
+            "series_key",
+        ]
+    )
+    positive, negative = targets[:2]
+    client = FakeClient(campaign)
+    for ions in client.ions.values():
+        flipped = ions["target_ion_id"] == positive.removeprefix("ion:")
+        ions.loc[flipped, "ionization_mechanism"] = "[M+H]+"
+        ions.loc[flipped, "ion_formula"] = (
+            ions.loc[flipped, "ion_formula"].str.rstrip("-") + "+"
+        )
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(store_module, "_now", lambda: pd.Timestamp("2026-08-01T00:00Z"))
+        patch.setattr(store_module.time, "sleep", lambda seconds: None)
+        store = sync(client, SCOPE, root=tmp_path_factory.mktemp("charges")).store
+    return positive, negative, store
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_a_chart_of_species_of_both_polarities_says_so(charges, kind):
+    positive, negative, store = charges
+    build = registry.get(kind).build
+    both = "The species drawn are read in both polarities"
+
+    fig = build(store, species=[negative, positive])
+    alone = build(store, species=[negative, "tic"])
+
+    assert [e["polarity"] for e in fig.summary["species"]] == ["-", "+"]
+    (note,) = [note for note in fig.notes if note.startswith(both)]
+    names = {e["key"]: e["name"] for e in fig.summary["species"]}
+    assert f"({names[positive]} positive; {names[negative]} negative)" in note
+    # The TIC is read in no one polarity
+    assert [e["polarity"] for e in alone.summary["species"]] == ["-", None]
+    assert not [note for note in alone.notes if note.startswith(both)]
+
+
+def test_top_n_over_both_polarities_says_so(charges):
+    positive, negative, store = charges
+    n = len(_species(store))
+
+    fig = species_series(store, f"top:{n}", cadence="1h")
+
+    polarities = {e["key"]: e["polarity"] for e in fig.summary["species"]}
+    assert polarities[positive] == "+"
+    assert set(polarities.values()) == {"+", "-"}
+    assert [n for n in fig.notes if "read in both polarities" in n]
+
+
+@pytest.mark.parametrize(
+    "mechanism, ion_formula, want",
+    [
+        ("[M+H]+", "C2H5O+", "+"),
+        ("[M+I]-", None, "-"),
+        # A reagent's mechanism names no charge; its ion formula does
+        ("reagent", "I- ", "-"),
+        (None, "C10H20NO2+", "+"),
+        ("x", "C2H4", None),
+        (None, None, None),
+        # The mechanism first
+        ("[M+H]+", "X-", "+"),
+    ],
+)
+def test_a_species_polarity_is_the_charge_its_mechanism_ends_in(
+    mechanism, ion_formula, want
+):
+    assert species_module.polarity(mechanism, ion_formula) == want
+
+
+def test_species_of_one_name_keep_their_polarities():
+    store = _Species(
+        [
+            {"series_key": "ion:a", "name": "x", "ion_formula": "A+"},
+            {"series_key": "ion:b", "name": "x", "ion_formula": "B-"},
+        ]
+    )
+
+    found = resolve(store, ["ion:a", "ion:b"])
+
+    assert [s.name for s in found.species] == ["x (ion:a)", "x (ion:b)"]
+    assert [s.polarity for s in found.species] == ["+", "-"]
 
 
 # --- species_series ---------------------------------------------------------------

@@ -419,6 +419,7 @@ KIND = registry.register(
         ),
         summary=(
             "species",
+            "species[].polarity",
             "species[].hour_max",
             "species[].hour_min",
             "species[].amplitude",

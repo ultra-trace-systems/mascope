@@ -438,6 +438,26 @@ def summary(
     }
 
 
+def polarity_note(entries: Sequence[Mapping[str, Any]]) -> str | None:
+    """The line a figure prints when its species are read in both
+    polarities, naming each polarity's; None for one polarity."""
+    by_polarity: dict[str, list[str]] = {}
+    for entry in entries:
+        if entry.get("polarity") in POLARITY_NAMES:
+            by_polarity.setdefault(entry["polarity"], []).append(entry["name"])
+    if len(by_polarity) < 2:
+        return None
+    read = "; ".join(
+        f"{', '.join(by_polarity[sign])} {POLARITY_NAMES[sign]}" for sign in ("+", "-")
+    )
+    return (
+        f"The species drawn are read in both polarities ({read}): a positive "
+        "and a negative ion are two chemistries' readings, not one scale. "
+        "Scope the store to one polarity, or name the species of one, to "
+        "compare them."
+    )
+
+
 def same_ion_note(resolved: Resolved) -> str | None:
     """The line a figure prints when ``top:N`` left out species that read
     an ion it draws; None when it left none out."""
@@ -466,6 +486,7 @@ def notes(
     lines = [
         *run_notes(attrs, attrs["tz"]),
         *normalise_notes(attrs),
+        polarity_note(entries),
         same_ion_note(resolved) if resolved is not None else None,
         seldom_note(entries),
     ]
