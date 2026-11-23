@@ -33,6 +33,18 @@ MAS-1071) is read at a stand-in its refit stage refits on what it committed,
 so nothing is kept for it: it is measured whole every time, as before, and the
 pass says so (``batch_stages.judge_again``).
 
+The pass keeps three more things of each sample, which every judging of it
+read again before (MAS-1172), all three read only through
+:func:`kept_resolution`, :func:`kept_lists` and :func:`envelopes_of`:
+
+- the file's resolving power, read once per pass while the sample's peaks are
+  the ones it was read with;
+- what the sample's lists hold (``engine.listed_formula_identities``,
+  ``engine.listed_ions``), read once per resolving power, mechanisms,
+  envelope floor, known window and purity;
+- each ion's predicted envelope at that resolving power
+  (``envelope_memo``), predicted once for the whole pass.
+
 The store lives as long as the pass; nothing is written.
 """
 
@@ -46,6 +58,8 @@ from typing import Any, Optional
 import numpy as np
 import pandas as pd
 
+from mascope_backend.api.new.peak_assignments import sample_inputs
+from mascope_backend.api.new.peak_assignments.envelope_memo import EnvelopeMemo
 from mascope_backend.api.new.peak_assignments.seeded_scoring import scored_maps
 from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS, label_purity
 
@@ -72,12 +86,27 @@ class _Sample:
 
 
 @dataclass
+class _Reads:
+    """What a pass read of one sample's inputs: its resolving power, read
+    with the peaks ``peaks`` keys (:func:`_peaks_key`), and its lists by what
+    they were read at."""
+
+    peaks: Any
+    resolution: Any
+    lists: dict[tuple, tuple[frozenset, dict]] = field(default_factory=dict)
+
+
+@dataclass
 class KeptMeasurement:
     """The readings a pass measured, by sample, and what each judging of a
-    sample scored and kept (``counts``, by sample, the last judging's)."""
+    sample scored and kept (``counts``, by sample, the last judging's); and
+    what it read of each sample (``reads``) and predicted of its ions'
+    envelopes (``envelopes``)."""
 
     samples: dict[str, _Sample] = field(default_factory=dict)
     counts: dict[str, Counter] = field(default_factory=dict)
+    reads: dict[str, _Reads] = field(default_factory=dict)
+    envelopes: dict[str, EnvelopeMemo] = field(default_factory=dict)
 
     def forget(self, sample_item_id: str, *, unrecorded: bool = False) -> None:
         """Keep nothing of a sample: one measured whole, as a sample whose run
@@ -87,27 +116,98 @@ class KeptMeasurement:
             self.counts[sample_item_id] = Counter(samples_unrecorded=1)
 
 
+def _peaks_key(peaks_df: Optional[pd.DataFrame]) -> Any:
+    """The sample's peaks, as the fingerprint reads them."""
+    if peaks_df is None or peaks_df.empty:
+        return 0
+    columns = [c for c in _PEAK_COLUMNS if c in peaks_df.columns]
+    return (
+        len(peaks_df),
+        int(pd.util.hash_pandas_object(peaks_df[columns], index=False).sum()),
+    )
+
+
+def _purity() -> tuple:
+    """The purity labelled ions are read at, set by the stage list."""
+    return tuple(label_purity(symbol) for symbol in sorted(CUSTOM_ELEMENTS))
+
+
 def fingerprint(
     peaks_df: Optional[pd.DataFrame], match_params: Any, model: Any
 ) -> tuple:
     """What every reading of a sample is measured at: its peaks, its match
     parameters, the model it is scored at and the purity its labelled ions
     are read at (``custom_elements.labelled_purity``, set by the stage list)."""
-    if peaks_df is None or peaks_df.empty:
-        peaks = 0
-    else:
-        columns = [c for c in _PEAK_COLUMNS if c in peaks_df.columns]
-        peaks = (
-            len(peaks_df),
-            int(pd.util.hash_pandas_object(peaks_df[columns], index=False).sum()),
-        )
     dump = getattr(match_params, "model_dump_json", None)
     return (
-        peaks,
+        _peaks_key(peaks_df),
         dump() if dump is not None else repr(match_params),
         repr(model),
-        tuple(label_purity(symbol) for symbol in sorted(CUSTOM_ELEMENTS)),
+        _purity(),
     )
+
+
+def envelopes_of(ctx: Any) -> Optional[EnvelopeMemo]:
+    """The memo a stage list pass predicts its envelopes in
+    (``envelope_memo.open_memo``): the sample's for the whole of the batch's
+    pass (:attr:`KeptMeasurement.envelopes`), or None, which opens one for this
+    pass alone."""
+    kept: Optional[KeptMeasurement] = ctx.kept
+    if kept is None:
+        return None
+    return kept.envelopes.setdefault(str(ctx.sample.sample_item_id), EnvelopeMemo())
+
+
+async def kept_resolution(ctx: Any) -> Any:
+    """The file's resolving power (``sample_inputs._resolution_of``), read
+    once for the whole of the batch's pass while the sample's peaks are the
+    ones it was read with: the same function every judging of the pass, so the
+    envelopes predicted at it serve each (:func:`envelopes_of`). Peaks read
+    again drop what was read with the old ones.
+
+    :param ctx: The stage list's pass, its sample's peaks read.
+    """
+    kept: Optional[KeptMeasurement] = ctx.kept
+    if kept is None:
+        return await sample_inputs._resolution_of(ctx.sample)
+    sample_item_id = str(ctx.sample.sample_item_id)
+    peaks = _peaks_key(ctx.peaks_df)
+    reads = kept.reads.get(sample_item_id)
+    if reads is None or reads.peaks != peaks:
+        resolution = await sample_inputs._resolution_of(ctx.sample)
+        reads = _Reads(peaks=peaks, resolution=resolution)
+        kept.reads[sample_item_id] = reads
+        if sample_item_id in kept.envelopes:
+            kept.envelopes[sample_item_id].clear()
+    return reads.resolution
+
+
+async def kept_lists(
+    ctx: Any, reader: Callable[[], Awaitable[tuple[frozenset, dict]]]
+) -> tuple[frozenset, dict]:
+    """What the sample's lists hold, the neutrals they name and their ions
+    (``pipeline._propose_given``), read once for the whole of the batch's pass
+    at the same inputs: the resolving power the lists' lines are resolved at,
+    the mode's mechanisms and the ones the lists are read through, the
+    envelope floor, the known window and the purity.
+
+    :param ctx: The stage list's pass, its chemistry resolved.
+    :param reader: Reads the lists at the pass's inputs.
+    """
+    kept: Optional[KeptMeasurement] = ctx.kept
+    reads = None if kept is None else kept.reads.get(str(ctx.sample.sample_item_id))
+    if reads is None or reads.resolution is not ctx.resolution:
+        return await reader()
+    key = (
+        ctx.match_params.isotope_abundance_threshold,
+        tuple(ctx.mechanism_ids),
+        tuple(m.ionization_mechanism_id for m in ctx.judged_mechanisms),
+        ctx.resolved_profile.context.known_window,
+        _purity(),
+    )
+    if key not in reads.lists:
+        reads.lists[key] = await reader()
+    return reads.lists[key]
 
 
 def _key(seed: Seed, listed: bool, claimed: frozenset[str]) -> tuple:
@@ -226,4 +326,11 @@ def _assemble(
     return ion_by_seed, fit_by_ion, errors, frame
 
 
-__all__ = ["KeptMeasurement", "fingerprint", "score_kept"]
+__all__ = [
+    "KeptMeasurement",
+    "envelopes_of",
+    "fingerprint",
+    "kept_lists",
+    "kept_resolution",
+    "score_kept",
+]

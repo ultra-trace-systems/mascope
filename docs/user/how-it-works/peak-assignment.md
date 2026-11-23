@@ -2182,6 +2182,11 @@ completed pass leaves every stage current.
   reading is fitted on its own at the sample's recorded measurement model. A sample
   whose run recorded no measurement model, one from before that record, is fitted
   whole every time, and the stage's result line says how many such samples it judged.
+  The pass also keeps what it read of the sample. That is the file's resolving power,
+  what the sample's lists hold, and each ion's predicted isotope envelope. A later
+  judging reads none of them again. It reads the lists again only where it judges a
+  reading through a channel the earlier judgings did not, and it reads everything
+  again if the sample's peaks changed.
 - **Records are kept, marked stale.** When a batch peak's reading moves off what a stage's
   record was made for, the record is kept, marked stale, and served by no reader. The stage
   that wrote it reads it again when it runs, and a reading that comes back finds it

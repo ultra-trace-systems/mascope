@@ -117,6 +117,7 @@ from mascope_backend.api.new.peak_assignments.envelope_fit import (
     envelope_lines,
     fit_run_envelope_tolerance,
 )
+from mascope_backend.api.new.peak_assignments.envelope_memo import open_memo
 from mascope_backend.api.new.peak_assignments.halogen_twins import record_twins
 from mascope_backend.api.new.peak_assignments.identification_level import (
     IDENTIFICATION_LEVEL,
@@ -711,7 +712,7 @@ async def resolve(ctx: RunContext) -> None:
     # The file's resolving power, read once: what one peak of the file holds
     # for every pass that predicts an isotope line - the reagent pre-pass, the
     # envelope match, the mass gate and the tiering pass.
-    ctx.resolution = await sample_inputs._resolution_of(sample)
+    ctx.resolution = await kept_measurement.kept_resolution(ctx)
 
 
 async def _mechanisms_of(sample, *, strict: bool) -> tuple[list[str], list]:
@@ -1239,16 +1240,23 @@ async def _propose_given(ctx: RunContext) -> None:
     await _recorded_measurement(ctx)
     if ctx.path.rules is Rules.RUN:
         _open_given_channels(ctx)
-        known = await sample_inputs._fetch_known_isotopes(
-            ctx.sample,
-            ctx.match_params.isotope_abundance_threshold,
-            ctx.mechanism_ids,
-            ctx.judged_mechanisms,
-            known_window=ctx.resolved_profile.context.known_window,
-            resolution=ctx.resolution,
+        ctx.listed_formulas, ctx.listed_ions = await kept_measurement.kept_lists(
+            ctx, lambda: _read_lists(ctx)
         )
-        ctx.listed_formulas = listed_formula_identities(known)
-        ctx.listed_ions = listed_ions(known)
+
+
+async def _read_lists(ctx: RunContext) -> tuple[frozenset[str], dict]:
+    """The neutrals the sample's lists name and the ions they hold, read as
+    a run reads its known set (:func:`_propose_given`)."""
+    known = await sample_inputs._fetch_known_isotopes(
+        ctx.sample,
+        ctx.match_params.isotope_abundance_threshold,
+        ctx.mechanism_ids,
+        ctx.judged_mechanisms,
+        known_window=ctx.resolved_profile.context.known_window,
+        resolution=ctx.resolution,
+    )
+    return listed_formula_identities(known), listed_ions(known)
 
 
 def _open_given_channels(ctx: RunContext) -> None:
@@ -2131,7 +2139,8 @@ async def run_stages(ctx: RunContext) -> RunContext:
     :return: The same context, :attr:`RunContext.ran` naming every stage run.
     """
     stages = ctx.path.stages()
-    with labelled_purity(await sample_label_purity(ctx.sample.sample_item_id)):
+    purity = await sample_label_purity(ctx.sample.sample_item_id)
+    with labelled_purity(purity), open_memo(kept_measurement.envelopes_of(ctx)):
         index = 0
         while index < len(stages):
             stage = stages[index]
