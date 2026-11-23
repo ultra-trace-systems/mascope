@@ -143,10 +143,14 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
+      # Ready only while the backend reaches Postgres and Redis: GET /ready
+      # answers 200 then, and 503 otherwise. A 404 is a backend image older
+      # than that route, such as a release these files deploy before the
+      # route ships in one. It answers HTTP, all the earlier probe asked of it.
       test:
         [
           "CMD-SHELL",
-          'python -c "import socket; s=socket.socket(); s.settimeout(2); s.connect((''localhost'', 8090)); s.close()" || exit 1',
+          'python -c "import sys, http.client; c = http.client.HTTPConnection(''localhost'', 8090, timeout=4); c.request(''GET'', ''/ready''); sys.exit(c.getresponse().status not in (200, 404))" || exit 1',
         ]
       interval: 10s
       timeout: 5s

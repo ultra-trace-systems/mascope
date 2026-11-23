@@ -84,6 +84,22 @@ push keeps its monitor up and reports the warning on a second, optional one
 (`FILLING_TOKEN`), while the fleet playbooks let a rollout carry on
 past it. `--json` emits the same data for scripting.
 
+**Stack** reads each container's own healthcheck. The backend is `healthy`
+only while it reaches both Postgres and Redis: its healthcheck asks the
+backend's readiness route, `GET /ready` on port 8090 inside the container,
+every 10 s, and that route answers 200 only while a query to the database
+and a `PING` to Redis both answer within 2 s. A backend that still runs but
+has lost either one fails the probe. After five failures in a row, about
+50 s, it is `unhealthy` and the doctor exits `1`. It turns `healthy` again by
+itself once both answer. Nothing is restarted either way: Docker does not
+act on a container's health, so the file converter and the frontend keep
+running throughout. The backend's log names what it could not reach. Each
+backend worker logs it once each time that changes: `Backend not ready -
+database: ...` or `redis: ...`, then `Backend ready again`
+(`mascope prod logs backend`). The route answers `ready` or `not ready` and
+nothing else. nginx does not pass it on, so `https://<server>/ready` gets
+nginx's own 404 page, never the backend's answer.
+
 **Disk** has one row per filesystem, naming every monitored path on it - the
 state (`.runtime`), the filestore (which may be a volume of its own) and
 docker's image store - with its fill rate over the last 7 and 30 days and, at
@@ -514,7 +530,9 @@ Each run:
   settles the record as well, so `prod doctor` stops reporting it as pending;
   rolling back to an older release keeps it.
 - **Failed earlier** (an apply of this release did not come up healthy: its
-  migration failed, or the backend never turned healthy) ->
+  migration failed, or the backend never turned healthy, which it does only
+  once it reaches Postgres and Redis, see [Health at a
+  glance](#health-at-a-glance)) ->
   held: not applied again, and the run exits 2 every time until you act, so
   the timer does not undo your rollback. `mascope prod update --confirm`
   retries it once at the next window; `--snooze <days>` keeps it held but
@@ -2128,7 +2146,11 @@ The first start on a large library is the slow one: about 6.5 s per missing
 mechanism against a 1,466-compound library, 85 s for thirteen. The backend's
 compose healthcheck allows a start 300 s for this (`start_period`); a
 healthcheck of your own in front of the backend has to allow the same, or it
-marks a slow first start unhealthy. A shipped mechanism cannot be deleted: the
+marks a slow first start unhealthy. It should also ask the same route as the
+compose healthcheck, `GET /ready` on the backend's port 8090, and count only
+a 200 as up: that route answers once the backend listens, and only while it
+reaches Postgres and Redis ([Health at a glance](#health-at-a-glance)). Ask it
+from inside the stack's network; nginx does not pass it on. A shipped mechanism cannot be deleted: the
 settings show a lock, and the delete route refuses it as it refuses a shipped
 mode.
 
@@ -3610,7 +3632,10 @@ and names the rows that fall in one.
 **Backend unhealthy after an update.** The updater stops and leaves the stack in
 place (no automatic rollback). That covers a failed migration too, which stops
 `docker compose up` before the backend starts. Investigate with
-`mascope prod logs backend` (and `mascope prod logs db_init` for a migration). To
+`mascope prod logs backend` (and `mascope prod logs db_init` for a migration):
+a backend that runs but cannot reach Postgres or Redis says which in a
+`Backend not ready - ...` line, and `mascope prod doctor` shows whether
+`postgres` and `redis` themselves are up. To
 roll back manually: if a migration ran, first restore the pre-migration dump
 (`mascope prod db backup list`, then `mascope prod db restore <dump> --yes`),
 then redeploy the previous release with
