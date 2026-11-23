@@ -23,6 +23,7 @@ uv run python tooling/assignment_bench/bench.py run origin/develop --baseline
 uv run python tooling/assignment_bench/bench.py run <your branch> --baseline
 uv run python tooling/assignment_bench/bench.py run <your branch> --post <pr>
 uv run python tooling/assignment_bench/bench.py run <your branch> --post <pr> --fresh
+uv run python tooling/assignment_bench/bench.py run <your branch> --batch --sets Db
 uv run python tooling/assignment_bench/bench.py post <your branch> --pr <pr>
 uv run python tooling/assignment_bench/bench.py review
 uv run python tooling/assignment_bench/bench.py review --record <sheet> --recalibrate
@@ -77,7 +78,10 @@ uv run python tooling/assignment_bench/bench.py status
   card; **`baseline`** shows develop's rolling baseline card. Their section
   below has the detail. A head whose engine inputs a complete card was
   already made of gets that card in seconds, with no run; **`run <ref>
-  --fresh`** runs regardless ("A card without a run", below). **`run <ref> --post <pr>`** also posts the card on
+  --fresh`** runs regardless ("A card without a run", below). **`run <ref>
+  --batch`** adds the batch arm: each set's batch assigned by a pass of the
+  batch stages, and the samples carded again as the batch left them, beside
+  the control ("The batch arm", below). **`run <ref> --post <pr>`** also posts the card on
   a pull request; "Asking for a card on a PR" below. **`post <ref> --pr
   <pr>`** posts a card a run already made, running nothing; the same
   section.
@@ -192,7 +196,8 @@ box in the caller's own session, one run at a time. In order:
    (step 5.2): 9 ppm either way and the swapped adducts on an Orbitrap set,
    0.35 Da and the swapped adducts on a TOF set. An arm the server refuses,
    a shift inside the sample's window for one, is counted as refused, not as
-   a failure. It waits for every run.
+   a failure. It waits for every run. With `--batch` the set's batch arm
+   follows ("The batch arm", below).
 6. **The time budget.** Each set has `--budget-min` minutes (default 120)
    for its runs. A set that runs out is left off the card whole, so a diff
    never compares half a set. The runs it left behind are released when the
@@ -203,8 +208,9 @@ box in the caller's own session, one run at a time. In order:
    one poll (10 s), or within a request's 2-minute timeout should the
    server hang.
 7. **The checks.** A sample is read only where its newest completed in-app
-   run is the one this run made and its newest reference run is still the
-   pin's. A sample whose run failed or that the server would not assign is
+   run is the one this run made (with `--batch`, one of the runs the batch
+   arm made after it, with the control still listed) and its newest
+   reference run is still the pin's. A sample whose run failed or that the server would not assign is
    left out and counted.
 8. **The card.** `compare_runs.py --card --gate`, with `--decoy` when the
    arms ran, reads the sets and writes one card per set and one pooled
@@ -343,7 +349,7 @@ engine inputs takes seconds and holds nothing up ("A card without a run").
 |---|---|---|
 | `card.md`, `card.json`, `card_<set>.md`, `card_<set>.json` | the card (`tooling/assignment_compare/README.md`, "What the card writes") | yes, scrubbed |
 | `diff.md`, `diff.json` | with `--baseline`: the readings that moved since develop's baseline, and which card that was | yes, scrubbed |
-| `run.json` | the run: the ref and its commit, develop's head, the migration, the engine digest and its parts (`engine`), the pin, per set the samples read and left out by reason, the minutes it took and each decoy arm's outcomes, the verdict, the baseline, whether it became the baseline, and for a reused card the card it reuses (`reused`) | yes, scrubbed |
+| `run.json` | the run: the ref and its commit, develop's head, the migration, the engine digest and its parts (`engine`), the pin, per set the samples read and left out by reason, the minutes it took and each decoy arm's outcomes, the verdict, the baseline, whether it became the baseline, and for a reused card the card it reuses (`reused`). With `--batch`: `batch`, the dump's and the restore's seconds under `migration`, and per set its arm (`sets.<set>.batch`, "The batch arm") | yes, scrubbed |
 | `run.log` | every step, and each sample by id with what became of its runs and why | no: it names samples |
 | `work/` | the comparison's input: the sets with their sample ids, the deny list | no |
 
@@ -375,6 +381,77 @@ its dump, or delete `restore.json` once the ref's migration is on develop.
 Only the database goes back: anything the ref's runs
 wrote to the filestore stays there, with no row pointing at it.
 
+## The batch arm (`--batch`)
+
+A run judges the in-app engine one sample at a time, so nothing a batch
+decides reaches its card: the isotope-line owners (the strips and the
+stamps), the known species and the water ladder, the series, and what the
+batch's untargeted search adds. `bench run <ref> --batch` reads them. For
+each set, after its control runs and their decoy arms (step 5 above):
+
+1. **A run for the pass.** Each sample's engine runs once more. The pass
+   folds these runs, not the controls: the strip and the known species
+   rewrite the stored rows of the runs the pass folded, and the control
+   must stay as a run without the arm makes it.
+2. **The pass.** One pass of the batch stages on the set's batch
+   (`POST /api/batch-peaks/batch/{id}/assign`, `fold: always`), every
+   sample folded first. The run waits for it, then reads the batch's
+   assignment status: the pass must end `completed` with every stage
+   current. A set whose samples sit in several batches gets a pass on each,
+   in turn.
+3. **The runs after it.** Each sample's engine runs again, and reads the
+   batch's decisions as declared inputs (MAS-985).
+4. **The card** reads the control and the runs after the pass by name,
+   side by side: every reading of the set in both, and the rows that moved
+   between them, counted by the batch decision each row cites
+   (`tooling/assignment_compare/README.md`, "The batch arm"). The gate line
+   judges the control, as without the arm, until the plan owner says
+   otherwise. A diff against develop's baseline reads the control too.
+
+**What the arm does not cover**, which the card says under its table: the
+decoy arms stay on the control (a decoy of a run that read batch decisions
+is another question); and the readings that live on the batch peak alone
+(co-variation, the batch checks, blends, the ratio grade) are on no
+sample's row, so on no card (MAS-909 is the issue for the holds among
+them).
+
+**An arm left off a set.** The control stands, and the card names the set
+with why it has no arm. The run exits 1, as for anything left out. It is
+left off when:
+
+- a sample's run for the pass, or after it, did not complete;
+- a sample is in no batch, or the set's batch holds another chosen set's
+  samples: a pass there would write decisions that set's control reads;
+- the pass is refused, fails, is cancelled, leaves the batch's runs, or
+  ends with a stage stale;
+- the set's budget runs out: the arm's time counts toward the set's
+  `--budget-min`. The pass then runs on until the backend stops, and the
+  database is put back all the same. A set that ran out on its control is
+  left off the card whole, as without the arm, and runs no pass.
+
+**The database starts clean of batch decisions.** A pass writes decisions
+that a later run's control would read. So a run with `--batch` takes its
+restore point before anything runs, whatever the ref, and puts the
+database back in its cleanup ("After a branch with a migration of its
+own", below). A control run never reads a batch decision an earlier run
+left. `run.json` keeps the dump's and the restore's seconds
+(`migration.dump_s`, `migration.restore_s`).
+
+**What `run.json` keeps of it**, per set under `sets.<set>.batch`:
+`on_card`, and where it is not, `off` and `why`; `minutes`, the arm's time
+after the control; `runs`, the outcomes of the samples' runs for the pass
+(`folded`) and after it (`after`); and `passes`, one per batch: its batch
+run (`run_id`), its `status` and `minutes`, its `stages` with each stage's
+status and minutes, the batch's `state` and `stale_stages` when it ended
+and whether that was `current`, and what its fold made of the batch's
+samples: how many it covered (`samples`), `folded`, `failed` and could not
+read (`not_read`: a fold that raised, or a blank, an unverified calibration
+or a sample without peaks).
+
+**A card with the arm serves a request without it**, as one with the decoy
+arms does, and never the reverse. A card whose arm is off on a set serves no
+request with the arm, whatever the reason ("A card without a run").
+
 ## A card without a run
 
 Most heads a card is asked for measure nothing new: a rebase onto a develop
@@ -403,9 +480,11 @@ The digest hashes everything a card can depend on, in three parts:
   new pin or a republished sample are each a new digest.
 
 A card stands for the head when it is the newest card a run made of the same
-digest, of the same sets, with the decoy arms where the request asks for
-them, written whole, and with nothing left out that another run might read. A
-card with the decoy arms serves a request without them, not the reverse. A
+digest, of the same sets, with the decoy arms and the batch arm where the
+request asks for them, written whole, and with nothing left out that another
+run might read. A card with either arm serves a request without it, not the
+reverse; for a request with the batch arm, a card whose arm is off on a set
+does not count. A
 sample left out because `init` left it with a problem, it has no reference at
 the pin, or the server called it ineligible counts the same on every run. One
 that failed, was not the newest run, met a moved reference or ran over its

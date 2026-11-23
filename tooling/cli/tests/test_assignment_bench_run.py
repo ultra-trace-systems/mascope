@@ -41,6 +41,9 @@ DEVELOP = "d" * 40
 BRANCH = "b" * 40
 PIN_VERSION = "1.0.0+assign0.4"
 
+#: Each sample's batch on the fake server, as the fake instance has it.
+BATCH_OF = {"S1": "B1", "S2": "B1", "S3": "B2", "S4": "B1"}
+
 #: The last calls of a run of the branch, whose migration is put back.
 BRANCH_CLEANUP = ["stop", ("restore", "bench_0.dump"), "remove_worktree"]
 
@@ -80,6 +83,8 @@ class FakeInstance:
         }
         self.trees_listed = []
         self.workspaces = {"S1": "W1", "S2": "W1", "S3": "W2", "S4": "W1"}
+        #: Each sample's batch: a set is one batch, as on the demo bench.
+        self.batches = {"S1": "B1", "S2": "B1", "S3": "B2", "S4": "B1"}
         self.names = {
             "names": ["Acquisitions Instrument9", "2025-08-11 Bromide acquisition"],
             "ids": ["W1", "W2", "DS1", "B1"],
@@ -164,6 +169,9 @@ class FakeInstance:
     def sample_workspaces(self):
         return dict(self.workspaces)
 
+    def sample_batches(self):
+        return dict(self.batches)
+
     def private_names(self):
         return self.names
 
@@ -199,6 +207,84 @@ class FakeServer:
         self.ends = {}
         #: Called after every listing, to change what the server holds.
         self.after = None
+        #: Per (sample, n), how its n-th in-app run ends instead.
+        self.nth_end = {}
+        #: The passes of the batch stages asked for: the batch, how it folds,
+        #: and how many assign requests came before it.
+        self.passes = []
+        #: Per batch, its runs, newest first.
+        self.batch_listing = {}
+        #: How a pass ends, and the stages its summary records.
+        self.pass_end = ("completed", None)
+        self.pass_stages = [
+            {
+                "stage": "fold",
+                "status": "done",
+                "utc_started": "2026-11-23T10:00:00+00:00",
+                "utc_ended": "2026-11-23T10:01:30+00:00",
+                "outcomes": [
+                    {
+                        "status": "success",
+                        "message": "Rebuilt the batch ledger from 2 sample(s).",
+                        "data": {"samples_folded": 2, "samples_failed": 0},
+                    }
+                ],
+            },
+            {
+                "stage": "isotope_lines",
+                "status": "done",
+                "utc_started": "2026-11-23T10:01:30+00:00",
+                "utc_ended": "2026-11-23T10:04:30+00:00",
+                "outcomes": [],
+            },
+            {"stage": "blends", "status": "not_run", "utc_started": None},
+        ]
+        #: Per batch, the code and reason a pass is refused with.
+        self.pass_refuse = {}
+        #: The batch's assignment status once a pass has ended.
+        self.status = {"state": "current", "stale_stages": []}
+
+    def assign_batch(self, batch, fold):
+        with self.lock:
+            self.passes.append((batch, fold, len(self.assigned)))
+            if batch in self.pass_refuse:
+                code, reason = self.pass_refuse[batch]
+                return brun.Launch(code=code, reason=reason)
+            self.n += 1
+            # A batch run's id is a random one of its own, as the server's.
+            run_id = f"BP{self.n}x{len(self.passes)}"
+            self.batch_listing.setdefault(batch, []).insert(
+                0,
+                {
+                    "batch_peak_run_id": run_id,
+                    "action": "assign",
+                    "status": "running",
+                    "summary": None,
+                    "error": None,
+                    "_polls": 0,
+                },
+            )
+            return brun.Launch(run_id=run_id)
+
+    def batch_runs(self, batch):
+        with self.lock:
+            out = []
+            for run in self.batch_listing.get(batch, []):
+                if run["status"] == "running":
+                    run["_polls"] += 1
+                    if run["_polls"] >= self.polls and self.pass_end is not None:
+                        run["status"], run["error"] = self.pass_end
+                        run["summary"] = {
+                            "samples": [
+                                s for s, b in sorted(BATCH_OF.items()) if b == batch
+                            ][:2],
+                            "stages": self.pass_stages,
+                        }
+                out.append({k: v for k, v in run.items() if not k.startswith("_")})
+            return out
+
+    def assignment_status(self, batch):
+        return dict(self.status)
 
     def assign(self, sample, config):
         arm = brun.arm_name(config["decoy"]) if config else None
@@ -228,6 +314,14 @@ class FakeServer:
                 else None
             )
             end = self.ends.get((sample, arm), ("completed", None))
+            if arm is None:
+                # The sample's n-th in-app run may end otherwise than the rest.
+                n = 1 + sum(
+                    1
+                    for r in self.listing[sample]
+                    if r["engine"] == "mascope" and not r["decoy"]
+                )
+                end = self.nth_end.get((sample, n), end)
             self.listing[sample].insert(
                 0,
                 {
@@ -1759,20 +1853,22 @@ def test_no_wait_refuses_while_another_command_runs(tmp_path, capsys):
 
 
 def test_the_command_line_runs_a_run(tmp_path, monkeypatch):
-    calls = []
+    calls, batches = [], []
 
     class Runner:
         def __init__(self, **kwargs):
             calls.append(kwargs)
 
-        def reuse(self, ref, sets, decoys, baseline, post):
+        def reuse(self, ref, sets, decoys, baseline, post, batch):
             # Asked before the lock is taken.
             calls.append(("reuse", ref, sets, decoys, baseline, held()))
+            batches.append(("reuse", batch))
             assert post is None
             return None
 
-        def run(self, ref, sets, decoys, baseline, post, fresh):
+        def run(self, ref, sets, decoys, baseline, post, fresh, batch):
             calls.append((ref, sets, decoys, baseline, fresh))
+            batches.append(("run", batch))
             assert post is None
             return 0
 
@@ -1811,6 +1907,12 @@ def test_the_command_line_runs_a_run(tmp_path, monkeypatch):
     # --fresh asks for no card to reuse, and the run is told so.
     assert bench.main(["--home", home, "run", "topic", "--fresh"]) == 0
     assert calls[7] == ("topic", None, False, False, True)
+
+    # --batch asks for a card with the batch arm, of the reuse and the run.
+    assert set(batches) == {("reuse", False), ("run", False)}
+    batches.clear()
+    assert bench.main(["--home", home, "run", "topic", "--batch"]) == 0
+    assert batches == [("reuse", True), ("run", True)]
 
     assert bench.main(["--home", home, "baseline"]) == 0
     assert bench.main(["--home", home, "baseline", "develop/x"]) == 0

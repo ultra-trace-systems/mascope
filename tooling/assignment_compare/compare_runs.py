@@ -1268,6 +1268,10 @@ CARD_WORDS = frozenset(
     + [
         "after the batch pass rows that moved by decision they cite peaks role "
         "reading runs that read a of control roles no arm",
+        # Why a set has no arm, in the bench's words (``run.ARM_OFF``).
+        "sample is in its was refused failed cancelled ended with stage stale "
+        "budget ran out did not complete stopped waiting for it left listing "
+        "holds another s samples",
     ]
     + [
         "gate card against sets set pooled metric value target a reading of",

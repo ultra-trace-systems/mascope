@@ -3,8 +3,8 @@
 # The assignment bench: both engines on demand, on the agent box
 
 - **Status:** building
-- **As of:** 2026-11-20
-- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, milestone 6: MAS-64, MAS-835 to MAS-841, MAS-849, MAS-955, MAS-1055, MAS-1057)
+- **As of:** 2026-11-23
+- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, milestone 6: MAS-64, MAS-835 to MAS-841, MAS-849, MAS-955, MAS-1055, MAS-1057, MAS-1140)
 - **What:** One command on the agent box that runs a branch's in-app assignment engine beside peaky at a pinned release on fixed sample sets, prints the plan's metrics as a card, and posts it on the PR; a worker runs it in its own session.
 
 ## 1. Why
@@ -273,6 +273,35 @@ merge base is newer than the rolling baseline, the card is now diffed and
 judged against the newest card of develop behind the PR's head, and names
 its commit, where it gave no diff before.
 
+The batch arm (MAS-1140). The bench judged the in-app engine one sample at
+a time, so nothing a batch decides reached a card: the isotope-line owners
+(strips and stamps), the known species and the water ladder, the series,
+and what the batch's untargeted search adds. Develop's card of 2026-11-22
+read G4 at 22.7 % on Db and 0 on Du and the nitrate sets, and G6 at 1,607,
+1,781 and 217 main peaks on reference isotopologues: both are what the
+batch stages decide. `bench run --batch` reads them. After a set's control
+runs (and its decoy arms), each sample runs once more; one pass of the
+batch stages runs on the set's batch with every sample folded first, from
+those runs; then every sample runs again, and those runs read the batch's
+decisions as declared inputs (MAS-985). The extra run before the pass is
+there because two stages, the strip and the known species, rewrite the
+stored rows of the runs the pass folded: folded from the control, the
+control would no longer be what a run without the arm reads. The card reads
+the control and the runs after the pass by name, side by side: every
+reading in both, and the rows that moved, counted by the batch decision
+each cites. The gate judges the control until the plan owner says
+otherwise; the decoy arms stay on the control; readings that live on the
+batch peak alone (co-variation, the batch checks, blends, the ratio grade)
+are on no sample's row and so on no card (MAS-909). A pass that is refused,
+fails, is cancelled or ends with a stage stale, a set over its budget, a
+sample in no batch or a batch two sets share leaves the arm off that set's
+card, named with why, and the control stands. A pass writes decisions a
+later run's control would read, so a run with the arm dumps the database
+before it starts and puts it back after, whatever the ref; `run.json` keeps
+both times, and each pass's run, its minutes per stage, whether it ended
+current and what its fold could not read. A card with the arm serves a
+request without it, not the reverse. The nightly baseline runs without it.
+
 A branch with a migration of its own moves the bench database to its
 revision, and develop is then refused until that migration is on develop;
 one that never lands leaves the bench where only `init --rebuild` brings it
@@ -334,6 +363,7 @@ replaced by the refusal. The nightly baseline is the user units
 | 6.6 fix | MAS-1055 | the lock as a queue, a clean end on a signal or a lost starter, a stale backend stopped, a failure as a line under the card, `bench.py post` (built: `tooling/assignment_bench/stopping.py`, `bench.py`, `run.py`, `post.py`) |
 | 6.6 reuse | MAS-1057 | a head whose engine inputs a complete card was made of gets that card without a run: the engine digest, `--fresh`, the reuse line on the PR (built: `tooling/assignment_bench/run.py`, `bench.py`, `post.py`) |
 | 6.9 | MAS-955 | the authors' lists on the card: both engines read against a research set's published peak list (built: `tooling/assignment_compare/metrics.py`, `truth` in the manifest) |
+| 6.10 | MAS-1140 | `bench run --batch`: each set's batch assigned, the samples carded as the batch left them beside the control (built: `tooling/assignment_bench/run.py`, `tooling/assignment_compare/compare_runs.py`) |
 
 6.4 started on 2026-11-11 against the testbed's existing runs; 6.2 starts
 on the demo manifest, 6.3 waits for 6.2, 6.5 for all three, 6.6 for 6.5,
@@ -459,6 +489,11 @@ to run the commands against any instance and how to ask for a card.
 - Whether the certified cylinder sets are in the corpus store (decision
   24's ground truth); if not, they are the first sets taken from the
   testbed copy under 6.8.
+
+- The plan owner's, from MAS-1140: whether the gate judges the batch arm
+  rather than the control from the stage 4 gate on (MAS-1104), and whether
+  the nightly baseline runs `--batch` (its cost is in the bench's README,
+  "What it costs").
 
 ## Related documents
 
