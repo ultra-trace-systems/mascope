@@ -16,6 +16,7 @@ Python SDK for the Mascope mass spectrometry data analysis platform. Designed fo
 - [High-Level Loaders](#high-level-loaders)
 - [Peak Assignments](#peak-assignments)
 - [Changing Data](#changing-data)
+- [Reading a CSV export](#reading-a-csv-export)
 - [Caching](#caching)
 - [API Reference](#api-reference)
 - [Examples](#examples)
@@ -1081,6 +1082,31 @@ except PermissionDeniedError as e:
 
 The role each write needs is listed in the
 [SDK & API guide](https://github.com/ultra-trace-systems/mascope/blob/master/docs/user/sdk/index.md#what-a-token-may-change).
+
+## Reading a CSV export
+
+The app's CSV exports (peak data, the batch ledger, the calibration trend)
+write a text cell that a spreadsheet would run as a formula, one that begins
+with `=`, `+`, `-`, `@`, a tab or a carriage return, behind one apostrophe.
+`read_export_csv` reads such a file back with the apostrophe taken off, so
+every name reads as it was typed:
+
+```python
+from mascope_sdk import read_export_csv, unescape_frame
+
+ledger = read_export_csv("20261123T101500_batch_ledger_Spring.csv")  # ";" by default
+trend = read_export_csv("calibration-trend-instrument-pos.csv", sep=",")
+
+# A frame read some other way
+frame = unescape_frame(pd.read_csv("peaks.csv", sep=";"))
+```
+
+A text that really begins with an apostrophe followed by one of those six
+characters comes back without it; it is the one case that does not
+round-trip. `escape_frame` and `escape_cell` write the same prefix, for a
+CSV of your own that others open in a spreadsheet. The convention is
+described in
+[Tables and columns](https://github.com/ultra-trace-systems/mascope/blob/master/docs/user/concepts/tables.md#text-in-a-csv-export).
 
 ## Caching
 

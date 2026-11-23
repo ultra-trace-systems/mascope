@@ -245,6 +245,40 @@ matched. Such a stage reports how many peaks it left out; computing the
 missing series (`compute_timeseries` in the toolkit,
 `compute_peak_timeseries` in the SDK) and reading again makes it whole.
 
+## Text in a CSV export
+
+A spreadsheet program reads a cell that begins with `=`, `+`, `-` or `@` as
+a formula, and a tab or a carriage return there can start one too. This is
+known as CSV injection
+([OWASP](https://owasp.org/www-community/attacks/CSV_Injection)). Sample
+names, batch names, collection names and an imported engine's claim are
+typed by people. So every CSV export (the peak data, the batch ledger, the
+calibration trend) writes a text cell that begins with one of those six
+characters behind one apostrophe: a claim typed as `=1+1` is written
+`'=1+1`, and a spreadsheet shows it as the text `=1+1` rather than the
+number 2. Numbers are never touched, so a negative offset stays `-1.5`.
+
+Reading such a file back means taking that apostrophe off again. In Python
+the SDK does it for you:
+
+```python
+from mascope_sdk import read_export_csv
+
+ledger = read_export_csv("20261123T101500_batch_ledger_Spring.csv")  # ";"-separated
+trend = read_export_csv("calibration-trend-instrument-pos.csv", sep=",")
+```
+
+`unescape_frame` does the same for a frame read some other way. Outside the
+SDK, strip one leading `'` from a text cell when the character after it is
+`=`, `+`, `-`, `@`, a tab or a carriage return, and leave every other cell
+as it is. A text that really begins with an apostrophe followed by one of
+those six is the one case that does not survive the round trip: it comes
+back without its apostrophe.
+
+The batch data spreadsheet (`.xlsx`) needs no prefix. Its cells are typed,
+so a name that begins with `=` is stored as text and opens as the text it
+is.
+
 ## For agents
 
 The AI toolkit puts these meanings where the model reads them. Every Frame

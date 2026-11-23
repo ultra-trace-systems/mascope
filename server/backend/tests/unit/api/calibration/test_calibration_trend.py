@@ -27,6 +27,7 @@ from mascope_backend.api.controllers.calibration.calibration_trend import (
     file_summary,
     trend_rows,
 )
+from mascope_sdk import read_export_csv
 
 
 _T0 = datetime(2026, 10, 15, 8, 0, tzinfo=timezone.utc)
@@ -640,3 +641,21 @@ class TestExportRows:
         assert table[0]["filename"] == "'-cmd.h5"
         # Numbers stay numbers, the negative ones included.
         assert float(table[0]["offset_ppm"]) < 0
+
+    def test_the_sdks_reader_gives_a_name_back_as_it_was_typed(self, tmp_path):
+        rows = _rows(_record([_point("NO3-", 61.9884, -80, 0.5)]))
+        trend = build_trend(rows)
+        trend["collections"][0]["name"] = "=HYPERLINK(1)"
+        trend["files"][0]["filename"] = "-cmd.h5"
+        path = tmp_path / "trend.csv"
+        buffer = io.StringIO()
+        writer = csv.writer(buffer, lineterminator="\n")
+        writer.writerow(EXPORT_COLUMNS)
+        writer.writerows(trend_rows(trend, rows))
+        path.write_text(buffer.getvalue())
+
+        back = read_export_csv(path, sep=",")
+
+        assert back["collection_name"].tolist() == ["=HYPERLINK(1)"]
+        assert back["filename"].tolist() == ["-cmd.h5"]
+        assert back["offset_ppm"].iloc[0] < 0

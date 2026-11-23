@@ -33,6 +33,7 @@ from mascope_backend.api.controllers.match.targets.batch.match_targets_batch_con
 )
 from mascope_backend.api.controllers.sample.batches.export.util import (
     auto_adjust_column_width,
+    type_formulas_as_text,
 )
 from mascope_backend.api.lib.api_features import api_controller_background_task
 from mascope_backend.api.new.instruments.registry import model_in_props
@@ -343,6 +344,10 @@ def write_batch_workbook(target: str | IO[bytes], sheets: BatchSheets) -> None:
     A sheet of matches is left out when the batch has none. Blocking; run it
     in a thread.
 
+    Every cell is a value, and a text that begins with ``=`` is stored as
+    text (:func:`type_formulas_as_text`), so a spreadsheet program never runs
+    a typed name as a formula.
+
     :param target: The file's path, or a binary stream to write it to.
     :param sheets: The sheets, from :func:`build_batch_sheets`.
     """
@@ -364,8 +369,9 @@ def write_batch_workbook(target: str | IO[bytes], sheets: BatchSheets) -> None:
             writer, sheet_name="Provenance", index=False, header=False
         )
 
-        # Auto-adjust column widths for all sheets
         for worksheet in writer.sheets.values():
+            # Every cell is a value: a name that begins with = is text.
+            type_formulas_as_text(worksheet)
             auto_adjust_column_width(worksheet)
 
 

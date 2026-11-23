@@ -47,6 +47,7 @@ from mascope_backend.api.new.workspaces.dependencies import (
     where_collection_visible,
 )
 from mascope_backend.db import SampleFile, TargetCollection, async_session
+from mascope_sdk.csv_cells import escape_cell
 
 
 #: The window a trend reads when it is given no start: this many days before
@@ -977,21 +978,16 @@ async def get_calibration_trend(
     }
 
 
-#: What a spreadsheet takes a text cell beginning with for a formula.
-FORMULA_STARTS = ("=", "+", "-", "@", "\t", "\r")
-
-
 def _cell(value) -> str | float | int | bool:
     """
     A value as the export writes it: empty for None, and a text that a
     spreadsheet would run as a formula - a file or collection name is typed
-    by someone - behind an apostrophe, which shows it as the text it is.
+    by someone - behind an apostrophe, which shows it as the text it is
+    (:func:`mascope_sdk.csv_cells.escape_cell`).
     """
     if value is None:
         return ""
-    if isinstance(value, str) and value.startswith(FORMULA_STARTS):
-        return "'" + value
-    return value
+    return escape_cell(value)
 
 
 def trend_rows(trend: dict, rows: list[tuple]) -> list[list]:

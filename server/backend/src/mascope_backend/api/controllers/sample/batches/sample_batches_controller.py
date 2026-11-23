@@ -106,6 +106,7 @@ from mascope_backend.socket.records import (
     emit_record_updated,
 )
 from mascope_file import io as m_io
+from mascope_sdk.csv_cells import escape_frame
 from mascope_signal import compute as m_compute
 from mascope_tools.alignment.calibration import Spectra
 
@@ -1318,7 +1319,9 @@ async def sample_batch_export_peaks(
     runtime.logger.info(f"Writing peak data to file {peakfile_name}")
     # Save peak data to dataframe and then to csv file
     batch_peak_df = pd.DataFrame(peak_data)
-    batch_peak_df.to_csv(
+    # A sample or batch name a spreadsheet would run as a formula goes out
+    # behind an apostrophe.
+    escape_frame(batch_peak_df).to_csv(
         user_temp_path(user_id, peakfile_name),
         index=False,
         sep=";",

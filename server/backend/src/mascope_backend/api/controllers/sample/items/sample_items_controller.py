@@ -79,6 +79,7 @@ from mascope_backend.socket.records.service import (
     emit_record_updated,
 )
 from mascope_file.name import get_instrument_type
+from mascope_sdk.csv_cells import escape_frame
 from mascope_thermo.scan_events import MisreadScanEventsError
 from mascope_thermo.thermo import NoScansFoundError
 
@@ -1216,7 +1217,9 @@ async def sample_item_export_peaks(
         dt_str, "peak_data", sample.sample_item_name, extension="csv"
     )
     runtime.logger.info(f"Writing peak data to file {peakfile_filename}")
-    sample_peak_df.to_csv(
+    # A sample or batch name a spreadsheet would run as a formula goes out
+    # behind an apostrophe.
+    escape_frame(sample_peak_df).to_csv(
         user_temp_path(user_id, peakfile_filename), index=False, sep=";"
     )
     message = f"Peak data for sample item '{sample.sample_item_name}' was exported to file '{peakfile_filename}'."

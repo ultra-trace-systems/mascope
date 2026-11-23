@@ -65,6 +65,7 @@ from mascope_backend.db import (
     async_session,
 )
 from mascope_backend.runtime import runtime
+from mascope_sdk.csv_cells import escape_frame
 
 
 #: The most rows one members page may carry; the SDK asks for exactly this.
@@ -381,7 +382,9 @@ async def write_batch_ledger_csv(sample_batch_id: str, user_id: int) -> tuple[st
         stamp, "batch_ledger", sample_batch.sample_batch_name, extension="csv"
     )
     runtime.logger.info(f"Writing the batch ledger ({len(ledger)} rows) to file {name}")
-    ledger.to_csv(user_temp_path(user_id, name), index=False, sep=";")
+    # Names and claims are typed by people: a text cell a spreadsheet would
+    # run as a formula goes out behind an apostrophe.
+    escape_frame(ledger).to_csv(user_temp_path(user_id, name), index=False, sep=";")
     return name, len(ledger)
 
 
