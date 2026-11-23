@@ -338,6 +338,28 @@ def test_tighten_raises_no_reading(tmp_path):
     assert len(_messages(tmp_path)) == 5
 
 
+def test_tighten_keeps_a_grown_function_at_its_baseline(tmp_path):
+    _tree(tmp_path, **{"b.py": _function("grows", 110)})
+    _take_baseline(tmp_path)
+    assert _baseline_data(tmp_path)["packages"][PACKAGE]["functions"] == {
+        "a.py:long": 120,
+        "b.py:grows": 110,
+    }
+    # One function shorter, so tighten writes; the other grown past its reading.
+    _tree(
+        tmp_path,
+        **{
+            "a.py": "from . import b\n\n" + _function("long", 115),
+            "b.py": _function("grows", 118),
+        },
+    )
+    structure.main(["tighten"], root=tmp_path, packages=PACKAGES)
+    assert _baseline_data(tmp_path)["packages"][PACKAGE]["functions"] == {
+        "a.py:long": 115,
+        "b.py:grows": 110,
+    }
+
+
 def test_tighten_refuses_a_baseline_of_other_limits(root, capsys):
     path = root / structure.BASELINE
     data = json.loads(path.read_text())
