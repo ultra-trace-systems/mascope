@@ -538,6 +538,32 @@ def test_top_n_leaves_out_what_reads_a_formula_normalisers_ion(twins):
     assert all(e["median"] != pytest.approx(1.0) for e in fig.summary["species"])
 
 
+def test_top_n_says_when_its_presence_floor_leaves_nothing_to_rank(twins, monkeypatch):
+    """Over the whole window the formula normaliser has values on its first
+    day alone, so every species is detected in a third of the samples that
+    could hold it: they have values, but none reaches the floor."""
+    twinned, store = twins
+    held = species_module._identities(species_module._table(store))
+    (formula,) = [key for key, ions in held.items() if ions == [twinned]]
+    keys = sorted(set(_species(store)["series_key"]) - set(held) - {twinned, TWIN})
+    every = views.top(
+        store, len(keys), "median", keys=keys, normalise=formula, min_present=0
+    )
+    assert len(every) > 3
+    assert every["presence"].max() < species_module.PRESENT
+
+    with pytest.raises(InvalidChart) as caught:
+        resolve(store, "top:3", normalise=formula)
+
+    assert str(caught.value) == (
+        "top:3: no species is detected in at least 50% of the samples that "
+        "could hold it in the window, and top:N ranks only those"
+    )
+    # Detected in the floor's share itself is enough
+    monkeypatch.setattr(species_module, "PRESENT", float(every["presence"].max()))
+    assert resolve(store, "top:3", normalise=formula).keys == list(every["key"][:3])
+
+
 def test_a_species_named_outright_is_drawn_beside_the_one_top_n_kept(twins):
     twinned, store = twins
     n = len(_species(store))
@@ -574,6 +600,7 @@ def test_top_n_keeps_a_target_ion_over_a_formula_of_one_ion_and_value(monkeypatc
         {
             "key": ["formula:A|m", "ion:b", "ion:d", "ion:e", "ion:c"],
             "value": [5.0, 5.0, 4.0, 3.0, 2.0],
+            "presence": [1.0, 1.0, 1.0, 0.5, 1.0],
         }
     )
     asked = []

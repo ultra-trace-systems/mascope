@@ -56,6 +56,10 @@ _TOP = re.compile(r"^top:(\d+)$")
 #: How many near names an unknown species' error offers.
 _NEAR = 8
 
+#: The share of the samples that could hold a species it must be detected
+#: in for ``top:N`` to rank it: :func:`mascope_viz.data.views.top`'s floor.
+PRESENT = 0.5
+
 
 @dataclass(frozen=True)
 class Species:
@@ -265,6 +269,9 @@ def _top(
 
     :return: The keys, best first, and for each that reads an ion other
         candidates read too, those others' keys.
+    :raises InvalidChart: No species is left to rank, none has a value in
+        the window, or none is detected there in at least :data:`PRESENT`
+        of the samples that could hold it.
     """
     ion_of = dict(zip(table["series_key"], table["ion_formula"]))
     members = set(views._members(views._check_normalise(normalise)))
@@ -281,17 +288,27 @@ def _top(
             "that read the normaliser's ions"
         )
     # Every candidate ranked, since a place a second reading of an ion
-    # would take goes to the next ion
+    # would take goes to the next ion; the floor applied here, so that a
+    # refusal can say which of the two left nothing
     ranked = views.top(
         store,
         len(candidates),
         "median",
         keys=candidates,
         normalise=normalise,
+        min_present=0,
         tz=tz,
         start=start,
         end=end,
     )
+    if ranked.empty:
+        raise InvalidChart(f"top:{n}: no species has a value in the window to rank")
+    ranked = ranked[ranked["presence"] >= PRESENT]
+    if ranked.empty:
+        raise InvalidChart(
+            f"top:{n}: no species is detected in at least {PRESENT:.0%} of the "
+            "samples that could hold it in the window, and top:N ranks only those"
+        )
     ranked = ranked.assign(
         formula_first=~ranked["key"].astype(str).str.startswith("ion:")
     ).sort_values(["value", "formula_first", "key"], ascending=[False, True, True])
@@ -338,7 +355,7 @@ def resolve(
     :param end: and its end, which ``top:N`` ranks over.
     :raises UnknownSpecies: An item matches no species of the store.
     :raises InvalidChart: The parameter is no list of species, or
-        ``top:N`` finds none with a value in the window.
+        ``top:N`` finds none to rank (:func:`_top`).
     """
     items = _items(species)
     table = _table(store)
@@ -362,10 +379,6 @@ def resolve(
                 start=start,
                 end=end,
             )
-            if not found:
-                raise InvalidChart(
-                    f"{item!r}: no species has a value in the window to rank"
-                )
             for key, others in also.items():
                 shared.setdefault(key, [])
                 shared[key] += [k for k in others if k not in shared[key]]

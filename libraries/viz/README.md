@@ -544,7 +544,8 @@ such as a recipe's named list, of these, tried in this order:
   one or to a part of one: the normaliser's own keys, a target ion that
   holds a formula it names, and any species of the same ion formula as
   one of them. It ranks those present in at least half the samples that
-  could hold them, as `views.top` does by default.
+  could hold them, as `views.top` does by default, and when none is, it
+  says so.
 
 A formula held both by a target ion and by the engine under the same
 mechanism is the target ion's `ion:` key: that identity survives a change
