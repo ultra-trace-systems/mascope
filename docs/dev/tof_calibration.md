@@ -719,6 +719,28 @@ Configuration on the sites, applied on the plan owner's word and measured before
   files) and two earlier files are still on the old set (MAS-176). That is its propylamine (+)
   mode. Since 2026-11-10 TOF H runs nitrate (−) on the mode and collection it shares with TOF M
   (section 2); a set of its own, and the mode that would carry it, is MAS-948's proposal.
+  - *The nitrate screen* (MAS-948, 2026-11-23). MAS-179's read-only screen, with MAS-951's
+    search carried onto the site's v1.16.1 and mode 0 only: 4 files a day from 11-10 to 11-17
+    (32) and every file of 11-17 (85). TOF H acquired nothing from 11-18 to 11-22.
+  - *The stored fits fail the brief's gate.* They leave a reagent line more than 5 ppm off in
+    28 of 32 sampled files and in all 85 of the day. Of the fits stored `ok`, 12 of 16 and 29 of
+    29 do.
+  - *The search's refit on the shared collection fits every file*, on 5 lines median, but still
+    leaves a line more than 5 ppm off in 18 of 32 and 64 of 85. The worst line reads 5.6 and
+    8.5 ppm off at the median. The fits are of two kinds. One keeps 46–125 Th (NO2−, NO3−,
+    TFA−, HNO3·NO3−) and reads TFA·NO3− and (HNO3)2·NO3− 45–70 ppm low. The other keeps
+    109–188 Th and reads NO2− and NO3− 100–190 ppm low. The first won 23 of the 32 sampled
+    files, the second 70 of the day's 85, with HNO2·NO3− at +9 and TFA− at −6 ppm inside it.
+  - *No smaller set does better.* Less HNO2 and (HNO3)2 (`trim`): 22 of 32 and 78 of 85 off.
+    Less HNO2: 21 and 69. Less TFA: 28 and 83. Less (HNO3)2: 22 and 79. HNO2 is the neutral of
+    both NO2− and HNO2·NO3−, so dropping it loses the lowest anchor too.
+  - *No ion above 188 Th passes the rules*: 0 of 24 candidates, 21 CHO members and
+    HSO4−·(H2SO4)1–3, which are in at most 22% of the files.
+  - *The shape is the model's.* Mode 0 cannot hold 46–188 Th on this axis, under any subset of
+    these lines, as on B1 bromide (section 2). Whether mode 2 (MAS-183) holds it is the open
+    reading. A set of TOF H's own can be a copy of the nitrate mode scoped to TOF H with the same
+    `_NO3` token: on the site's release already, an instrument's own mode overrides an unscoped
+    one of the same token. The choice is MAS-948's Decision.
 - **TOF M**: both sets kept as they are (MAS-179, done). A read-only screen with the audit's code,
   on 253 files over the 60 days to 2026-10-28, found no ion above either top calibrant that passes
   the rules. Each axis stays extrapolated above its top calibrant: 241 Th in the bromide/nitrate
