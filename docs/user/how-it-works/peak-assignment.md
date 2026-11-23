@@ -1215,8 +1215,8 @@ the spectrum's family of related formulas rather than fragmentation, nitric acid
 dense spectrum many rows carry it. The tier is left as it was.
 
 The ledger lists each reading of a neutral as a row of its own, at its own m/z, so a
-compound seen through two channels is two rows far apart in the table. **Group by
-formula**, in the view menu behind the cog at the end of the tier-chip row, makes it one:
+compound seen through two channels is two rows far apart in the table. **Group
+by**, **Compound**, in the ledger's **Show** menu, makes it one:
 the neutral's strongest reading heads the row (the higher tier, then the better fit), and
 the arrow and count beside its ionization open the other readings under it, each with its
 own m/z, tier and verdict, and with its own isotopologues when those are unfolded. The
@@ -1278,10 +1278,10 @@ measurements the reasons read.
   beside it; hovering it gives the first name whole, its list, the tags and how many more
   names the run matched, so a row's list reading is there without opening the inspector. A row matched
   to a target shows the target's mark there, or *target* and its name written out, and
-  *unlisted* where no list carries its key. **Listed
-  as, in full**, in the view menu, writes the name and the list out in the column, in
-  this ledger and in the *Batch peaks* ledger both, and keeps the setting across a
-  reload. A lead is not shown there - it is looked up when a row is inspected.
+  *unlisted* where no list carries its key. **Write
+  listed names in full**, in the ledger's **...** menu, writes the name and the list
+  out in the column, in this ledger and in the *Batch peaks* ledger both, and keeps the
+  setting across a reload. A lead is not shown there - it is looked up when a row is inspected.
 - ***mass z*** sits beside the m/z error. It is the row's distance from the centre of
   the run's measurement model at its m/z, counted in the model's widths: the centre and
   width the row's fit score was read at too. Hovering it gives the run's centre and
@@ -1435,21 +1435,67 @@ same mark and the same words.
   readings and **Samples**, and the **Verdict** last. Formulas are set in the monospaced
   face. A cell with nothing to say is blank, with no dash and no *unassigned*: the tier
   chip says what the row is.
-- **Isotopologue lines**, which the view menu's **Isotopologues** unfolds, are named by
+- **Isotopologue lines**, which **Show › Isotopologue lines** unfolds, are named by
   their substitution, such as *[13C]*, *[34S]* or *[81Br]*, wherever it is known. In a
   sample's ledger the run's own isotope match names it. In the batch's, the batch's stamp,
   its strip, or the compound's own record of its predicted lines names it. *M+1* or *M+2*
   names a line only where nothing names its substitution.
-- **The tier chips** above the table filter it, several at once in both ledgers: each
-  chip turned on adds its tier or role, and with none on, every row shows. The **Tier**
-  column has no filter of its own.
+- **The filter bar and the tier bar** above the table narrow it: see *The filter bar*,
+  below. The **Tier** column has no filter of its own, and the **Formula** column none
+  either: the search box finds a formula.
 - **The Verdict column** sorts in both: confirmed first, then rejected and unsure, and the
   rows nobody has judged last. A sample's row sorts on the verdict it shows, its own or the
   batch-level one reaching it.
 - **A ledger whose rows fail to load** says so where the table would be, with *Retry*, and
-  the tier chips, the view menu and the bar above stay usable. The header line shows no
+  the filter bar, the tier chips and the bar above stay usable. The header line shows no
   count and the chips no numbers until the rows load, since the ones on screen would be an
   earlier load's. An empty ledger says what fills it.
+
+### The filter bar
+
+The filter bar sits above the table, the same in both ledgers. Every choice in it is kept
+for that ledger: it holds when a sample is opened and closed again, which swaps the two
+ledgers, and after a reload. A sample's ledger and the batch's keep their own.
+
+```mermaid
+flowchart LR
+  S[Search box] --> T[Tier bar and chips]
+  T --> R[Rows]
+  W[Show menu] --> R
+  M["... menu"] -.-> X[Export and listed names]
+```
+
+- **The search box** finds a formula, a name a list or a target gives the row, or an
+  m/z. Text matches anywhere in the formula or the name, in either case. A number is an
+  m/z, and also finds a compound by one of its isotope lines:
+  - in a sample's ledger, within the run's own mass gate: three of the widths the run
+    fitted to its mass errors, about the centre it fitted. Hovering the box says the
+    window. A run that states no width, such as an import that disclosed none, searches
+    within 5 ppm.
+  - in the batch's ledger, within 5 ppm. Its rows come from many runs, so no one run's
+    window applies; 5 ppm is the window an imported batch result is matched to batch
+    peaks at.
+- **The tier bar** draws each tier's share of the rows as a thin bar in the tiers' colours,
+  over the tier chips with their counts. The chips filter, several at once in both
+  ledgers: each chip turned on adds its tier, and with none on, every row shows. A tier
+  with no rows has no chip. The role chips, **reagent** and **artifact**, sit apart after
+  the tiers and are not in the bar: they are no confidence. A sample's ledger keeps its
+  **to verify** chip at the right (*The verification queue*, below).
+- **Show** holds what the rows show:
+  - *Rows*: **Isotopologue lines** unfolds each compound's lines under it, **Roles**
+    shows or hides the reagent's and the artifacts' peaks and their chips, and in the
+    batch, **Stripped rows** keeps the compounds that took rows as their isotope lines.
+  - *The batch's flags*: **Probable blends**, **Flat series**, and **Carrying the
+    badge**, which keeps the batch peaks with one kind of badge beside their formula,
+    one kind at a time. Click the kind again to drop it.
+  - *Engine readings*, after an import that carried the engine's tiers: **Engine tier**,
+    and in the batch **Engine disagrees**.
+  - **Verdict** narrows the table to one verdict, in both ledgers.
+  - **Group by**: *None* or *Compound* in a sample's ledger. *Compound* makes a neutral
+    read through several channels one row, headed by its strongest reading. Grouping
+    the batch's rows comes with the batch's groups.
+- **...** holds **Export ledger (CSV)** in the batch's ledger, and **Write listed names
+  in full**, one switch for both ledgers.
 
 ## The peak inspector
 
@@ -1982,7 +2028,7 @@ The arrow beside the button opens its menu:
 - **Re-assign from scratch** folds every sample again before the pass. It is slower; use
   it for an imported ledger, an old one, or a ledger you suspect is wrong.
 - **Run history** opens the batch's runs (*Batch runs*, below).
-- **Export ledger** downloads the whole ledger as CSV, as the ledger's view menu does
+- **Export ledger** downloads the whole ledger as CSV, as the ledger's **...** menu does
   (*Reading the ledger*, below).
 - **Advanced › Run from a stage** lists the stages under their phases. Each starts the
   pass at that stage and runs it to the end. It shows only with **Show assignment
@@ -2575,7 +2621,7 @@ folds under the compound as any isotopologue does, named by its line in place of
 offset and outlined (**[13C]** rather than *M+1*); its tooltip says what the samples' runs had read it as. The
 compound carries the three-bars badge of its isotope lines, which also lists the rows it
 took. **Stripped rows**, in the
-view menu behind the cog, keeps only those compounds.
+ledger's **Show** menu, keeps only those compounds.
 
 The ledger route and `batch_peaks.list` carry the stripped row's record as
 `merged_isotopologue_of` (its compound, the line, the share read and what the row was)
@@ -2953,7 +2999,7 @@ and the next pass grades it again. Clicking the cell lists the pairs behind the 
 the most alarming first, up to four - each with its grade, the samples both peaks are
 in, the median ratio, its spread and its drift, and for two channels what *Read
 co-variation* said of them. An isotope line has a grade of its own, on its pair with
-the main peak, shown on its own row while the view options unfold the isotopologues.
+the main peak, shown on its own row while **Show** unfolds the isotopologue lines.
 The column sorts unstable first, and batch peaks without a grade last. No tier, verdict or
 filter reads it.
 
@@ -3090,7 +3136,7 @@ Its tooltip names the two formulas with their ions and how many samples read eac
 says which holds the bright samples, or the early ones where the order switches once.
 Where it switches more often, the tooltip says the two come in blocks.
 
-**Probable blends**, in the ledger's view menu, keeps only those batch peaks. An
+**Probable blends**, in the ledger's **Show** menu, keeps only those batch peaks. An
 isotopologue line has a vote of its own and can be a blend when its compound's main line
 is not; the filter then keeps the compound with its lines. The chart names such a trace
 by both formulas, the consensus first, and its hover says the axis.
@@ -3110,8 +3156,8 @@ carries its `level_step`.
 
 ### Reading the ledger
 
-The whole ledger leaves the app as a CSV from the view menu behind the cog: *Export
-ledger (CSV)* writes one row per member peak - every sample's reading of every batch
+The whole ledger leaves the app as a CSV from the **...** menu at the end of the
+ledger's filter bar: *Export ledger (CSV)* writes one row per member peak - every sample's reading of every batch
 peak, with the batch peak's consensus beside it - and the browser downloads the file
 when it is ready. The same rows are one call away in the SDK
 (`mascope.load_batch_ledger(...)`, or `mascope.batch_peaks.members(batch_id)` per
@@ -3167,8 +3213,8 @@ Formula column's filter, and then select.
 
 One row per species, not per peak: a compound's isotopologue peaks are
 folded under its main peak and counted in the **+N** marker beside the formula, the
-same way the per-sample assignment ledger folds them. The *Isotopologues* toggle,
-behind the cog at the end of the tier-chip row, unfolds them as indented rows
+same way the per-sample assignment ledger folds them. **Isotopologue lines**, in the
+**Show** menu at the end of the filter bar, unfolds them as indented rows
 underneath. The link is derived rather than given — a
 batch peak is an m/z anchor and carries no compound of its own — so a peak is folded
 only when its per-sample assignments agree, across most of the samples that assigned
@@ -3191,7 +3237,7 @@ formula, where a sample's run matched it from a list: the ledger keeps the listi
 identity a member brought matched from a list, through whichever channel, and shows the
 consensus formula's. It is folded to the name cut short and the list's tags, the whole
 name and its list on hover,
-as in a sample's ledger, and **Listed as, in full** in the view menu writes it out. A batch ledger folded before this column existed shows it once its
+as in a sample's ledger, and **Write listed names in full** in the **...** menu writes it out. A batch ledger folded before this column existed shows it once its
 samples are folded again (*Re-assign from scratch*). The column also names the target
 compound a member was matched to, off the consensus as a sample's ledger does: *target*
 and its name, shown once with the list's where both name the same structure. A batch
@@ -3278,7 +3324,7 @@ selector. The run's summary counts the verdicts shown (`engine_verdicts`) and th
 held back because the consensus names another identity (`engine_verdicts_withheld`).
 
 After such an import the *Batch peaks* ledger has an **Engine tier** column beside
-**Tier**, and its view-options menu offers two switches. **Engine disagrees** keeps
+**Tier**, and its **Show** menu offers two switches under *Engine readings*. **Engine disagrees** keeps
 the batch peaks whose engine tier differs from the consensus tier. **Engine tier**
 makes the tier chips count and filter by the engine's tier, with a **not stated** chip
 for the formulas it gave no tier; the **Tier** column, its own filter and the sort

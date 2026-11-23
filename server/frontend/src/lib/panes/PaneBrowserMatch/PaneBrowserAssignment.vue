@@ -36,13 +36,15 @@ import { queueReason, queueRows, queueTooltip } from '@/lib/verificationQueue'
 import { scrollVirtualRowIntoView } from '@/lib/virtualScroll'
 import {
   AssignmentLedger,
+  LedgerMenuChoice,
   LedgerVerdictPopover,
   LedgerViewToggle,
   ledgerTierChips,
+  runSearchWindow,
   sampleLineLabel,
   useLedgerFilters,
-  useLedgerListing,
   useLedgerSort,
+  useLedgerView,
   useRowPopover,
   verdictRank
 } from '@/lib/ledger'
@@ -62,6 +64,16 @@ import { useBatchChartSelection } from './stores/batchChartSelection.js'
 const app = useApp()
 const launcher = useAssignmentLauncher()
 
+// Every choice of the filter bar and its Show menu, held outside the pane and
+// persisted (lib/ledger/useLedgerView.js), so it survives the switch to the
+// batch ledger and back, and a reload.
+const view = useLedgerView('sample')
+const viewChoice = (key) =>
+  computed({
+    get: () => view[key],
+    set: (value) => (view[key] = value)
+  })
+
 const runs = computed(() => app.data.peakAssignment.run)
 const assignments = computed(() => app.data.peakAssignment.peak)
 const queue = computed(() => app.data.peakAssignment.queue)
@@ -80,7 +92,7 @@ const hasEngineTiers = computed(() => assignments.value.list.some((row) => row.e
 // be read in its engine's words. Off by default, offered only where the run
 // carries engine tiers, and a reading aid alone: the tier column, the sort and
 // everything rolled up across the batch stay on this server's tier.
-const engineView = ref(false)
+const engineView = viewChoice('engineView')
 const readsEngineTiers = computed(() => engineView.value && hasEngineTiers.value)
 
 // The strip's counts in the engine's words: the store's histogram's population
@@ -100,7 +112,7 @@ const tierChips = computed(() =>
     readsEngineTiers.value
       ? engineTierHistogram(assignments.value.list)
       : assignments.value.tierCounts,
-    { engineView: readsEngineTiers.value }
+    { engineView: readsEngineTiers.value, roles: view.roles, active: activeTiers.value }
   )
 )
 
@@ -162,7 +174,7 @@ const conflictFor = (row) => {
 // shows a badge.
 const effectiveVerdictFor = (row) => verdictFor(row) ?? overlayFor(row)
 
-// The verdict filter's choices (single-select).
+// The verdict filter's choices (single-select), in the Show menu.
 const VERDICT_FILTERS = [
   { value: 'all', label: 'All verdicts' },
   { value: 'confirmed', label: 'Confirmed' },
@@ -201,7 +213,7 @@ const verdictCell = (row) => {
 // Guardrail 5 of the loop: the judgment is of the data, not of a number. The
 // ledger shows no probability anywhere, and in the queue the tier chip's hover
 // drops the evidence as well, the calibrated number's input.
-const queueMode = ref(false)
+const queueMode = viewChoice('queue')
 const queueCount = computed(() => queue.value?.count ?? 0)
 
 // --- Launch a run -----------------------------------------------------------
@@ -327,18 +339,45 @@ const bucketOf = (row) =>
     ? engineBucketOf(row.engine_tier, row.tier, row.role)
     : bucketFor(row.tier, row.role)
 
-const { activeTiers, toggleTier, filters, verdictFilter, passes } = useLedgerFilters({
+// What the search box reads off a row: the formula it shows, the names a list
+// and a target give it, and its m/z and its isotope lines', so a line's m/z
+// finds the family it folds into. An m/z matches within the run's own mass
+// gate (lib/ledger/search.js).
+const searchTexts = (row) => {
+  const listing = ledgerListing(row.reference_listing)
+  const target = targetOf(row.reference_listing, listing)
+  return [formulaOf(row), listing ? listingName(listing) : null, target ? targetName(target) : null]
+}
+const searchMzs = (row) => [
+  row.sample_peak_mz,
+  ...assignments.value.childrenOf(row.peak_assignment_id).map((line) => line.sample_peak_mz)
+]
+const searchWindow = computed(() => runSearchWindow(runs.value.focused))
+
+const { activeTiers, toggleTier, filters, verdictFilter, searchQuery, passes } = useLedgerFilters({
   bucketOf,
+  state: view,
   menus: { level: FilterMatchMode.EQUALS },
   menuShown: { level: hasLevels },
   view: readsEngineTiers,
-  verdictOf: effectiveVerdictFor
+  verdictOf: effectiveVerdictFor,
+  search: { texts: searchTexts, mzs: searchMzs },
+  tolerancePpm: searchWindow
+})
+const searchTooltip = computed(() => {
+  const { ppm, centrePpm } = searchWindow.value
+  return (
+    'A formula, a listed name, or an m/z: an m/z matches within ' +
+    `${ppm.toFixed(1)} ppm` +
+    (centrePpm ? ` of the run's fitted centre (${centrePpm.toFixed(1)} ppm)` : '') +
+    (runs.value.focused?.sigma_ppm ? ", the run's own mass gate" : '')
+  )
 })
 
 // Fold isotopologues by default: one row per assigned formula (M0)
 // plus unassigned/reagent peaks, which keeps this a flat, fixed-height list
 // compatible with virtual scrolling.
-const showIsotopologues = ref(false)
+const showIsotopologues = viewChoice('isotopologues')
 
 // --- One row per neutral --------------------------------------------------------
 
@@ -352,7 +391,21 @@ const showIsotopologues = ref(false)
 //
 // Grouped on what the rows show, so the filters apply first. Only an analyte's
 // formula groups; a source ion or a peak nothing explained names no neutral.
-const groupByFormula = ref(false)
+// Show > Group by: none, or compound. The batch's groups (by series) are the
+// batch scope's.
+const groupByFormula = computed({
+  get: () => view.groupBy === 'compound',
+  set: (on) => (view.groupBy = on ? 'compound' : 'none')
+})
+const GROUP_BY = [
+  { value: 'none', label: 'None' },
+  {
+    value: 'compound',
+    label: 'Compound',
+    tooltip:
+      'One row per neutral formula: its other ionization channels fold under its strongest reading'
+  }
+]
 // The groups the reader opened, by neutral. Kept while grouping stays on, so a
 // re-sort or a filter does not close them.
 const openGroups = reactive(new Set())
@@ -603,9 +656,6 @@ const {
 // goes into it (or out of it) from here, without leaving the sample.
 const chart = useBatchChartSelection()
 
-// "Listed as" folded or in full, one switch for both scopes.
-const listingColumn = useLedgerListing()
-
 // --- Keep the focused row in view --------------------------------------------
 // A peak focused elsewhere - the batch chart, the batch ledger's jump, the
 // inspector's isotopologue table - selects its row here, and with a virtual
@@ -683,10 +733,11 @@ const HEADERS = {
         confirmed structure (1).
         </p>
         <p>
-        Click a row to focus the peak in the spectrum and inspector. Use the
-        tier chips to filter by confidence, the view-options button for
-        isotopologue rows and the verdict filter, and <b>Assign sample</b> in the
-        bar above to launch a new run.
+        Click a row to focus the peak in the spectrum and inspector. Search
+        for a formula, a listed name or an m/z, use the tier chips to filter
+        by confidence and <b>Show</b> for isotopologue lines, roles, the
+        verdict filter and grouping, and <b>Assign sample</b> in the bar above
+        to launch a new run.
         </p>
         <p>
         The <b>to verify</b> chip shows the assignments worth a verdict next:
@@ -708,28 +759,30 @@ const HEADERS = {
     :fields="FIELDS"
     :headers="HEADERS"
     intensityLabel="Intensity"
+    v-model:search="searchQuery"
+    :searchTooltip="searchTooltip"
     :chips="tierChips"
     :activeTiers="activeTiers"
     :engineView="readsEngineTiers"
     engineViewTooltip="The chips count and filter by the producing engine's own tier. The tier column and the sort stay on this server's."
-    viewMenuTooltip="View options: isotopologue rows, grouping by formula, the listing column, verdict filter"
+    viewMenuTooltip="Show: isotopologue lines, roles, engine readings, the verdict filter, Group by"
     :viewMenuPt="
       app.ui.help.top(
         `
-        <h1>View Options</h1>
+        <h1>Show</h1>
         <p>
-        How this ledger reads, rather than what it is reading. <b>Isotopologues</b>
-        unfolds each compound's isotopologue peaks - folded into the <b>+N</b>
-        marker by default - as indented rows under their main peak (M0), each
-        named by its substitution.
-        <b>Group by formula</b> makes a neutral read through several
+        What the ledger's rows show, rather than what it is reading.
+        <b>Isotopologue lines</b> unfolds each compound's isotopologue peaks -
+        folded into the <b>+N</b> marker by default - as indented rows under
+        their main peak (M0), each named by its substitution. <b>Roles</b>
+        shows the reagent's and the artifacts' peaks; off, the ledger lists
+        the sample's compounds and the peaks nothing explained.
+        </p>
+        <p>
+        <b>Verdict</b> narrows the table to one verification verdict.
+        <b>Group by</b> compound makes a neutral read through several
         ionization channels one row, headed by its strongest reading; the
         arrow beside its ionization shows the others under it.
-        <b>Listed as, in full</b> writes out what a reference list calls
-        each formula with its list; folded, the default, the column is the
-        name cut short with the list's tags beside it, and the whole name
-        and its list are in its tooltip.
-        <b>Verdict</b> narrows the table to one verification verdict.
         </p>
         <p>
         On a run imported from another engine that states tiers of its
@@ -738,7 +791,10 @@ const HEADERS = {
         gave none. The tier column and the sort stay on Mascope's tier.
         </p>
         <p>
-        Each keeps its setting while the menu is closed.
+        Every choice here, the search and the tier chips are kept for this
+        ledger: they hold when you switch to the batch and back, and after a
+        reload. <b>Write listed names in full</b> is under the <b>...</b>
+        menu beside this one.
         </p>`,
         { doc: app.ui.help.docUrl('how-it-works/peak-assignment/') }
       )
@@ -855,52 +911,45 @@ const HEADERS = {
     </template>
 
     <template #view-menu>
-      <LedgerViewToggle
-        v-model="showIsotopologues"
-        id="unfold-iso"
-        label="Isotopologues"
-        tooltip="Show isotopologue peaks as indented rows under their compound"
-        autofocus
-      />
-      <LedgerViewToggle
-        v-model="groupByFormula"
-        id="group-formula"
-        label="Group by formula"
-        tooltip="One row per neutral formula: its other ionization channels fold under its strongest reading"
-      />
-      <LedgerViewToggle
-        v-model="listingColumn.full"
-        id="listing-full"
-        label="Listed as, in full"
-        tooltip="Write out what a reference list calls each formula in full, with its list, rather than the name cut short"
-      />
-      <LedgerViewToggle
-        v-if="hasEngineTiers"
-        v-model="engineView"
-        id="engine-tier-view"
-        label="Engine tier"
-        tooltip="Count and filter the tier chips by the producing engine's own tier, not this server's"
-      />
-      <!-- Chips rather than a dropdown: a Select here would be a second overlay
-           inside a focus-trapping one, and PrimeVue's Select swallows Escape,
-           so a keyboard user who tabbed into the filter could neither close
-           the menu nor tab out. Plain buttons keep Escape working. -->
-      <div class="verdict-filter" role="group" aria-label="Filter by verification verdict">
-        <span class="view-menu-label">Verdict</span>
-        <div class="verdict-chips">
-          <button
-            v-for="option in VERDICT_FILTERS"
-            :key="option.value"
-            type="button"
-            class="verdict-chip"
-            :class="{ active: verdictFilter === option.value }"
-            :aria-pressed="verdictFilter === option.value"
-            @click="verdictFilter = option.value"
-          >
-            {{ option.label }}
-          </button>
-        </div>
+      <div class="menu-section">
+        <span class="menu-heading">Rows</span>
+        <LedgerViewToggle
+          v-model="showIsotopologues"
+          id="unfold-iso"
+          label="Isotopologue lines"
+          tooltip="Show isotopologue peaks as indented rows under their compound"
+          autofocus
+        />
+        <LedgerViewToggle
+          v-model="view.roles"
+          id="show-roles"
+          label="Roles"
+          tooltip="Show the reagent's and the artifacts' peaks, which are not the sample's compounds"
+        />
       </div>
+      <div v-if="hasEngineTiers" class="menu-section">
+        <span class="menu-heading">Engine readings</span>
+        <LedgerViewToggle
+          v-model="engineView"
+          id="engine-tier-view"
+          label="Engine tier"
+          tooltip="Count and filter the tier chips by the producing engine's own tier, not this server's"
+        />
+      </div>
+      <LedgerMenuChoice
+        v-model="verdictFilter"
+        class="verdict-filter"
+        label="Verdict"
+        ariaLabel="Filter by verification verdict"
+        :options="VERDICT_FILTERS"
+      />
+      <LedgerMenuChoice
+        v-model="view.groupBy"
+        class="group-by"
+        label="Group by"
+        ariaLabel="Group the rows by"
+        :options="GROUP_BY"
+      />
     </template>
 
     <template #above-table>
@@ -1097,41 +1146,6 @@ const HEADERS = {
 .queue-reason.stale {
   color: var(--state-warning);
   opacity: 1;
-}
-
-.verdict-filter {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-}
-.view-menu-label {
-  font-size: 0.8rem;
-  opacity: 0.75;
-}
-.verdict-chips {
-  display: flex;
-  flex-flow: row wrap;
-  gap: 0.3rem;
-}
-/* Deliberately the tier chip's shape: the two strips filter the same table, so
-   a reader who has learned one has learned the other. */
-.verdict-chip {
-  font-size: 0.72rem;
-  padding: 0.15rem 0.5rem;
-  border-radius: 100px;
-  border: 1px solid var(--p-content-border-color, #e3e6ec);
-  background: transparent;
-  color: inherit;
-  font-family: inherit;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.verdict-chip:hover,
-.verdict-chip.active {
-  border-color: var(--p-primary-color, #6366f1);
-}
-.verdict-chip.active {
-  background: color-mix(in srgb, var(--p-primary-color, #6366f1) 12%, transparent);
 }
 
 .mech {

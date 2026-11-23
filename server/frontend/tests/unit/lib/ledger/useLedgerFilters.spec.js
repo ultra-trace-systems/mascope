@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { nextTick, ref } from 'vue'
+import { nextTick, reactive, ref } from 'vue'
 import { FilterMatchMode, FilterOperator } from '@primevue/core/api'
 
 import { ledgerTierChips, useLedgerFilters } from '@/lib/ledger/useLedgerFilters.js'
@@ -12,23 +12,50 @@ const ROWS = [
 ]
 const shown = (passes, options) => ROWS.filter((row) => passes(row, options)).map((row) => row.id)
 
+const ALL = {
+  assigned: 2,
+  candidate: 1,
+  below_assignability: 1,
+  unassigned: 3,
+  reagent: 1,
+  artifact: 1
+}
+
 describe('ledgerTierChips', () => {
   it('lists the tiers in confidence order, then the roles, with their counts', () => {
-    const chips = ledgerTierChips({ assigned: 2, reagent: 1 })
+    const chips = ledgerTierChips(ALL)
     expect(chips.map((chip) => [chip.key, chip.label, chip.count, chip.role])).toEqual([
       ['assigned', 'assigned', 2, false],
-      ['candidate', 'candidate', 0, false],
-      ['below_assignability', 'below', 0, false],
-      ['unassigned', 'unassigned', 0, false],
+      ['candidate', 'candidate', 1, false],
+      ['below_assignability', 'below', 1, false],
+      ['unassigned', 'unassigned', 3, false],
       ['reagent', 'reagent', 1, true],
-      ['artifact', 'artifact', 0, true]
+      ['artifact', 'artifact', 1, true]
+    ])
+  })
+
+  it('hides a chip with nothing in it, unless it is on', () => {
+    const counts = { assigned: 2, reagent: 1 }
+    expect(ledgerTierChips(counts).map((chip) => chip.key)).toEqual(['assigned', 'reagent'])
+    // An active chip stays, so the filter it holds can be seen and turned off.
+    const active = new Set(['candidate'])
+    expect(ledgerTierChips(counts, { active }).map((chip) => [chip.key, chip.count])).toEqual([
+      ['assigned', 2],
+      ['candidate', 0],
+      ['reagent', 1]
     ])
   })
 
   it("adds the engine view's not-stated chip after the tiers", () => {
-    const keys = ledgerTierChips({}, { engineView: true }).map((chip) => chip.key)
+    const chips = ledgerTierChips({ ...ALL, engine_unstated: 4 }, { engineView: true })
+    const keys = chips.map((chip) => chip.key)
     expect(keys.indexOf('engine_unstated')).toBe(4)
-    expect(ledgerTierChips({}, { engineView: true })[4].label).toBe('not stated')
+    expect(chips[4].label).toBe('not stated')
+    expect(ledgerTierChips({ engine_unstated: 4 }).map((chip) => chip.key)).toEqual([])
+  })
+
+  it('leaves the roles out while their rows are hidden', () => {
+    expect(ledgerTierChips(ALL, { roles: false }).some((chip) => chip.role)).toBe(false)
   })
 })
 
@@ -43,17 +70,93 @@ describe('useLedgerFilters', () => {
     toggleTier('assigned')
     expect(shown(passes)).toEqual([4])
     toggleTier('reagent')
-    expect(activeTiers.size).toBe(0)
+    expect(activeTiers.value.size).toBe(0)
     expect(shown(passes)).toEqual([1, 2, 3, 4])
   })
 
-  it('drops the chips when the view they name buckets of changes', async () => {
-    const view = ref(false)
-    const { toggleTier, activeTiers } = useLedgerFilters({ bucketOf: (row) => row.bucket, view })
+  it('drops the chips when the user switches the view they name buckets of', async () => {
+    const state = reactive({
+      tiers: [],
+      search: '',
+      roles: true,
+      verdict: 'all',
+      engineView: false
+    })
+    const { toggleTier, activeTiers } = useLedgerFilters({
+      bucketOf: (row) => row.bucket,
+      state,
+      view: () => state.engineView
+    })
     toggleTier('candidate')
-    view.value = true
+    state.engineView = true
     await nextTick()
-    expect(activeTiers.size).toBe(0)
+    expect(activeTiers.value.size).toBe(0)
+    expect(state.tiers).toEqual([])
+  })
+
+  // A run that loads with or without engine tiers changes what the strip
+  // offers, not what the reader chose: the chips must survive it.
+  it('keeps the chips when only the data the view reads changes', async () => {
+    const state = reactive({ tiers: [], search: '', roles: true, verdict: 'all', engineView: true })
+    const hasEngineTiers = ref(false)
+    const { toggleTier, activeTiers } = useLedgerFilters({
+      bucketOf: (row) => row.bucket,
+      state,
+      view: () => state.engineView && hasEngineTiers.value
+    })
+    toggleTier('candidate')
+    hasEngineTiers.value = true
+    await nextTick()
+    expect([...activeTiers.value]).toEqual(['candidate'])
+  })
+
+  // "not stated" held while the strip has no such chip would empty the table
+  // for a reason nothing on screen shows.
+  it('filters nothing by a held chip the strip does not offer now', () => {
+    const view = ref(false)
+    const state = reactive({
+      tiers: ['engine_unstated'],
+      search: '',
+      roles: true,
+      verdict: 'all',
+      engineView: true
+    })
+    const { passes, activeTiers } = useLedgerFilters({ bucketOf: (row) => row.bucket, state, view })
+    expect(activeTiers.value.size).toBe(0)
+    expect(shown(passes)).toEqual([1, 2, 3, 4])
+    view.value = true
+    expect(shown(passes)).toEqual([])
+  })
+
+  it('hides the role rows while roles are off, and their chips with them', () => {
+    const state = reactive({
+      tiers: ['reagent'],
+      search: '',
+      roles: true,
+      verdict: 'all',
+      engineView: false
+    })
+    const { passes } = useLedgerFilters({ bucketOf: (row) => row.bucket, state })
+    expect(shown(passes)).toEqual([4])
+    state.roles = false
+    expect(shown(passes)).toEqual([1, 2, 3])
+  })
+
+  it('searches what the scope reads off a row, within its m/z window', () => {
+    const MZ = { 1: 78.0464, 2: 92.0621, 3: 150.1, 4: 61.988 }
+    const { searchQuery, passes } = useLedgerFilters({
+      bucketOf: (row) => row.bucket,
+      search: { texts: (row) => [row.formula], mzs: (row) => [MZ[row.id]] },
+      tolerancePpm: 5
+    })
+    searchQuery.value = 'c7'
+    expect(shown(passes)).toEqual([2])
+    searchQuery.value = '78.0466'
+    expect(shown(passes)).toEqual([1])
+    searchQuery.value = '78.0470'
+    expect(shown(passes)).toEqual([])
+    searchQuery.value = ''
+    expect(shown(passes)).toEqual([1, 2, 3, 4])
   })
 
   it("applies a column menu through PrimeVue's match modes, read through the scope's reader", () => {

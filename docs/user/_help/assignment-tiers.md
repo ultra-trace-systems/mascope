@@ -41,8 +41,8 @@ A run imported from another engine can also carry that engine's own tier, in an
 **engine tier** column beside Mascope's. Where the two differ, the peak is worth
 a look: the other engine weighs things Mascope's tier does not. A dash there is
 usual: an engine tiers only the peaks it committed a formula to. Only Mascope's
-tier is used when peaks are rolled up across a batch. The ledger's view options
-then offer **Engine tier**, which makes the tier chips count and filter by the
+tier is used when peaks are rolled up across a batch. The ledger's **Show** menu
+then offers **Engine tier**, which makes the tier chips count and filter by the
 other engine's tier, with **not stated** for the formulas it gave none; a batch
 import that carried the engine's tiers adds the same switch, and **Engine
 disagrees**, to the *Batch peaks* ledger.
@@ -58,6 +58,14 @@ charge, where an assignment names its formula, and its isotope lines fold under
 it as a compound's isotopologues do. A tier count counts a compound once, with its
 isotopologues folded in; a role count counts peaks, so a reagent ion's isotope
 lines count with it.
+
+**The tier bar.** Above a ledger, a thin bar draws each tier's share of the
+rows, in the tiers' colours, over the tier chips and their counts. A chip
+filters: turn on several to see either, none to see every row. A tier with no
+rows has no chip. The **reagent** and **artifact** chips sit apart after the
+tiers and are not in the bar, since a role is no confidence; **Show › Roles**
+hides those rows and their chips. The chips you turn on are kept for each
+ledger, through a switch between the sample and the batch and a reload.
 
 **The marks beside a formula.** Each of the batch's readings of a peak is a
 small square badge. The **Batch peaks** ledger draws them beside the formula,

@@ -57,11 +57,16 @@ async function openLedger(page, target, { sample = false } = {}) {
   await modeSwitch.getByText('Assignments').click()
 }
 
-/** The ledger's column headers, as the table shows them. */
-const headers = async (page) =>
-  (await page.locator('.ledger .p-datatable thead th').allInnerTexts()).map(
-    (text) => text.trim().split('\n')[0]
-  )
+/**
+ * The ledger's column headers, as the table shows them. The header line's
+ * count can show while the rows still load, the table not yet drawn, so wait
+ * for it first.
+ */
+async function headers(page) {
+  const cells = page.locator('.ledger .p-datatable thead th')
+  await cells.first().waitFor({ timeout: 30_000 })
+  return (await cells.allInnerTexts()).map((text) => text.trim().split('\n')[0])
+}
 
 test.describe('the assignment ledger', () => {
   test.use({ viewport: { width: 1600, height: 900 } })
@@ -105,5 +110,51 @@ test.describe('the assignment ledger', () => {
     await expect(
       page.getByRole('button', { name: /Record a verdict|Verification verdict/ }).first()
     ).toBeVisible()
+  })
+  // The filter bar's choices are the scope's and outlive the pane: opening a
+  // sample swaps the batch ledger out, and coming back finds the search and
+  // the chips where they were left, while the sample's ledger keeps its own.
+  test('keeps a filter set in the batch scope after visiting a sample and coming back', async ({
+    page,
+    api
+  }) => {
+    const target = await findAssignedSample(api)
+    test.skip(!target, 'No demo sample has a completed assignment run')
+
+    await openLedger(page, target)
+    const count = page.getByTestId('ledger-count')
+    await expect(count).toHaveText(/^[\d,]+ batch peaks?$/, { timeout: 30_000 })
+    const search = page.getByTestId('ledger-search')
+    const chip = (name) => page.locator('.tier-stat').filter({ hasText: new RegExp(` ${name}$`) })
+    const firstChip = page.locator('.tier-stat').first()
+    const chipName = (await firstChip.innerText()).replace(/^[\d,]+\s+/, '')
+
+    await firstChip.click()
+    await search.fill('C')
+    await expect(chip(chipName)).toHaveAttribute('aria-pressed', 'true')
+    const rows = page.locator('.ledger .p-datatable tbody tr')
+    await expect(rows.first()).toBeVisible()
+
+    // Visit a sample from the ledger itself: its brightest one, in focus.
+    await page
+      .getByRole('button', { name: 'Open the brightest sample with this peak in focus' })
+      .first()
+      .click()
+    await expect(count).toHaveText(/^[\d,]+ peaks?$/, { timeout: 30_000 })
+    // The sample's ledger keeps its own choices.
+    await expect(search).toHaveValue('')
+
+    // And back to the batch, as a reader goes: removing the sample's filter
+    // chip.
+    await page.locator('.p-chip:has(.pi-tag) .p-chip-remove-icon').click()
+    await expect(count).toHaveText(/^[\d,]+ batch peaks?$/, { timeout: 30_000 })
+    await expect(search).toHaveValue('C')
+    await expect(chip(chipName)).toHaveAttribute('aria-pressed', 'true')
+
+    // And after a reload.
+    await page.reload()
+    await expect(count).toHaveText(/^[\d,]+ batch peaks?$/, { timeout: 30_000 })
+    await expect(search).toHaveValue('C')
+    await expect(chip(chipName)).toHaveAttribute('aria-pressed', 'true')
   })
 })

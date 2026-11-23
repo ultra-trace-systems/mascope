@@ -70,7 +70,23 @@ const STUBS = {
   Button: { template: '<button class="cog" />' },
   Popover: { template: '<div class="popover"><slot /></div>' },
   ProgressSpinner: { template: '<div class="spinner" />' },
-  Select: true
+  Select: true,
+  IconField: { template: '<span class="icon-field"><slot /></span>' },
+  InputIcon: { template: '<span class="input-icon"><slot /></span>' },
+  InputText: {
+    props: ['modelValue'],
+    emits: ['update:modelValue'],
+    template:
+      '<input class="search-input" :value="modelValue" ' +
+      '@input="$emit(\'update:modelValue\', $event.target.value)" />'
+  },
+  ToggleSwitch: {
+    props: ['modelValue', 'inputId'],
+    emits: ['update:modelValue'],
+    template:
+      '<button class="toggle" :id="inputId" ' +
+      '@click="$emit(\'update:modelValue\', !modelValue)">{{ modelValue }}</button>'
+  }
 }
 
 const { default: AssignmentLedger } = await import('@/lib/ledger/AssignmentLedger.vue')
@@ -152,7 +168,7 @@ function mountLedger(scope, { props = {}, slots = {} } = {}) {
       rows,
       rowHeight: 35,
       fields: config.fields,
-      chips: ledgerTierChips({ assigned: 1, candidate: 1 }),
+      chips: ledgerTierChips({ assigned: 1, candidate: 3, reagent: 2 }),
       activeTiers: reactive(new Set()),
       verdictCell: (row) => ({
         record: row.verdict ?? null,
@@ -231,23 +247,72 @@ describe.each(Object.keys(SCOPES))('AssignmentLedger, %s scope', (scope) => {
     expect(wrapper.find('[data-testid="ledger-count"]').text()).toBe('2 rows')
   })
 
-  it('draws a chip per tier and per role, and says which are on', async () => {
+  it('draws a chip per bucket with rows, the roles apart, and says which are on', async () => {
     const active = reactive(new Set(['assigned', 'candidate']))
     const wrapper = mountLedger(scope, { props: { activeTiers: active } })
     const chips = wrapper.findAll('.tier-stat')
-    expect(chips.map((chip) => chip.text())).toEqual([
-      '1 assigned',
-      '1 candidate',
-      '0 below',
-      '0 unassigned',
-      '0 reagent',
-      '0 artifact'
+    expect(chips.map((chip) => chip.text())).toEqual(['1 assigned', '3 candidate', '2 reagent'])
+    // The roles sit in a group of their own after the tiers.
+    expect(wrapper.findAll('[data-testid="role-chips"] .tier-stat').map((c) => c.text())).toEqual([
+      '2 reagent'
     ])
     expect(chips[0].classes()).toContain('active')
     expect(chips[1].classes()).toContain('active')
     expect(chips[2].classes()).toContain('dim')
-    await chips[3].trigger('click')
-    expect(wrapper.emitted('toggle-tier')).toEqual([['unassigned']])
+    await chips[2].trigger('click')
+    expect(wrapper.emitted('toggle-tier')).toEqual([['reagent']])
+  })
+
+  // The bar draws the tiers' shares, in their order; the roles are no
+  // confidence and stay out of it.
+  it('draws the tier bar over the chips, the tiers only, by share', () => {
+    const wrapper = mountLedger(scope)
+    const segments = wrapper.findAll('[data-testid="tier-bar"] .tier-segment')
+    expect(segments.map((segment) => segment.classes()[1])).toEqual(['assigned', 'candidate'])
+    expect(segments.map((segment) => segment.attributes('data-share'))).toEqual([
+      '0.2500',
+      '0.7500'
+    ])
+    expect(wrapper.find('[data-testid="tier-bar"]').attributes('aria-label')).toBe(
+      'Tiers: 25 % assigned, 75 % candidate'
+    )
+    // Above the chips.
+    const strip = wrapper.find('.tier-strip').element
+    expect(strip.firstElementChild.dataset.testid).toBe('tier-bar')
+  })
+
+  it('draws no bar while nothing is tiered', () => {
+    const wrapper = mountLedger(scope, { props: { chips: ledgerTierChips({ reagent: 2 }) } })
+    expect(wrapper.find('[data-testid="tier-bar"]').exists()).toBe(false)
+  })
+
+  it('hands the search box its query and reports what is typed', async () => {
+    const wrapper = mountLedger(scope, { props: { search: 'C6H' } })
+    const input = wrapper.find('[data-testid="ledger-search"]')
+    expect(input.element.value).toBe('C6H')
+    await input.setValue('181.07')
+    expect(wrapper.emitted('update:search')).toEqual([['181.07']])
+  })
+
+  // Show takes the cog's place; the overflow holds the scope's actions and the
+  // listing switch both scopes share.
+  it("puts Show and the overflow at the bar's end, the listing switch in the overflow", async () => {
+    const wrapper = mountLedger(scope, {
+      slots: {
+        'view-menu': () => h('div', { class: 'show-item' }),
+        overflow: () => h('button', { class: 'export-item' })
+      }
+    })
+    const popovers = wrapper.findAll('.filter-bar .popover')
+    expect(popovers).toHaveLength(2)
+    expect(popovers[0].find('.show-item').exists()).toBe(true)
+    expect(popovers[1].find('.export-item').exists()).toBe(true)
+    const listing = popovers[1].find(`#${scope}-listing-full`)
+    expect(listing.exists()).toBe(true)
+    await listing.trigger('click')
+    expect(JSON.parse(localStorage.getItem('mascope.browser.match.ledgerView')).listingFull).toBe(
+      true
+    )
   })
 
   it('opens the verdict form from the verdict cell', async () => {
@@ -273,7 +338,8 @@ describe.each(Object.keys(SCOPES))('AssignmentLedger, %s scope', (scope) => {
     })
     expect(wrapper.find('.load-error').text()).toBe('Could not load.')
     expect(wrapper.find('.table').exists()).toBe(false)
-    expect(wrapper.findAll('.tier-stat')).toHaveLength(6)
+    expect(wrapper.findAll('.tier-stat')).toHaveLength(3)
+    expect(wrapper.find('[data-testid="ledger-search"]').exists()).toBe(true)
     expect(wrapper.find('.cog').exists()).toBe(true)
   })
 
@@ -285,11 +351,10 @@ describe.each(Object.keys(SCOPES))('AssignmentLedger, %s scope', (scope) => {
     expect(wrapper.findAll('.tier-stat').map((chip) => chip.text())).toEqual([
       'assigned',
       'candidate',
-      'below',
-      'unassigned',
-      'reagent',
-      'artifact'
+      'reagent'
     ])
+    // Nor the bar, whose shares are those counts.
+    expect(wrapper.find('[data-testid="tier-bar"]').exists()).toBe(false)
     await wrapper.setProps({ error: null })
     expect(wrapper.find('[data-testid="ledger-count"]').text()).toBe('2 rows')
     expect(wrapper.findAll('.tier-stat')[0].text()).toBe('1 assigned')
@@ -305,6 +370,7 @@ describe.each(Object.keys(SCOPES))('AssignmentLedger, %s scope', (scope) => {
     ).toBe(false)
     const wrapper = mountLedger(scope, { props: { strip: false, error: new Error('boom') } })
     expect(wrapper.find('.tier-strip').exists()).toBe(true)
+    expect(wrapper.find('.filter-bar').exists()).toBe(true)
     expect(wrapper.find('.cog').exists()).toBe(true)
   })
 
