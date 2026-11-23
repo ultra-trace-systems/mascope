@@ -2839,7 +2839,8 @@ would keep the file's acquisition axis from (`acquisition`, and a count per
 source in the summary): `record`, `converter` or `raw file` keep the axis
 itself, `kept offsets` the per-line offsets of the record it replaces, where
 the file's TofDaq file is not in the filestore, and `none` nothing (a record
-with no lines to keep). A refit replaces the record, so this is what of the
+with no lines to keep, or one that was itself a refit's and carried its
+acquisition drift, which the new record carries on). A refit replaces the record, so this is what of the
 file's acquisition-axis history survives the run (*What a TOF record says* in
 the [calibration page](user/how-it-works/calibration.md#what-a-tof-record-says)).
 That is what the customer note before a run quotes, with what analysis

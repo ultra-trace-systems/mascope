@@ -384,6 +384,66 @@ def test_kept_offsets_are_handed_on_as_they_are(filestore):
     assert kept.keys == {"acquisition_offsets": kept_before}
 
 
+def _refit_from_before_the_keys(**keys):
+    """A record written before the keys by a refit: its lines read near zero
+    on the axis the first fit set."""
+    record = _record([_point(mz, 0.1) for mz in LINES], **keys)
+    record["quality"]["pre_fit_mz_error_ppm"] = 0.1
+    return record
+
+
+@pytest.mark.parametrize(
+    "keys",
+    [
+        {"acquisition_drift": True, "acquisition_drift_ppm": 120.0},
+        {"drift_cleared_at": "2026-01-02T03:04:05+00:00", "drift_cleared_by": 7},
+    ],
+    ids=["carried marker", "cleared marker"],
+)
+def test_a_record_that_says_it_was_a_refit_hands_on_no_offsets(filestore, keys):
+    """Its lines were read on a moved axis, not the acquisition's: they are
+    not kept as acquisition offsets, and the fit keeps neither key."""
+    filename = write_tof(filestore, h5=False)
+    previous = _refit_from_before_the_keys(**keys)
+
+    assert axis.says_it_was_a_refit(previous)
+    kept = axis.resolve(filename, previous, FIRST_FIT, on_acquisition_axis=False)
+
+    assert kept == axis.Acquisition("none", {})
+
+
+@pytest.mark.parametrize(
+    "marker, pre_fit, refit",
+    [
+        (120.0, 120.0, False),
+        (-120.0, -120.0, False),
+        (120.0, 0.1, True),
+        (120.0, None, True),
+        (None, 120.0, False),
+    ],
+    ids=[
+        "raised by its own lines",
+        "raised low",
+        "carried",
+        "carried, no pre-fit error",
+        "before the magnitude",
+    ],
+)
+def test_a_marker_says_a_refit_only_when_it_is_not_the_records_own(
+    marker, pre_fit, refit
+):
+    record = _record([_point(LINES[0], 0.1)], acquisition_drift=True)
+    if marker is not None:
+        record["acquisition_drift_ppm"] = marker
+    if pre_fit is not None:
+        record["quality"]["pre_fit_mz_error_ppm"] = pre_fit
+
+    assert axis.says_it_was_a_refit(record) is refit
+    # Without the marker there is nothing to tell a refit by
+    record.pop("acquisition_drift")
+    assert axis.says_it_was_a_refit(record) is False
+
+
 def test_a_first_fit_with_no_axis_to_read_keeps_its_own_lines(filestore):
     """No coefficients on the record and no ``.h5``: the fit's own lines
     were observed on the acquisition axis."""
