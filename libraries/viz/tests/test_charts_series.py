@@ -501,7 +501,10 @@ def test_a_chart_names_the_species_top_n_left_out(twins):
     name = _entry(fig, twinned)["name"]
     assert f"{name} reads {ion}, as twin compound [M+I]- does." in note
     for build in (diurnal, period_boxes):
-        assert build(store, f"top:{n}").summary["same_ion"] == [same]
+        built = build(store, f"top:{n}")
+        assert built.summary["same_ion"] == [same]
+        (also,) = [note for note in built.notes if note.startswith("top:N draws one")]
+        assert also == note
 
 
 def _first_hours(store: CampaignStore, hours: int) -> dict:
