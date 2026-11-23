@@ -9,7 +9,7 @@ Each item names a species as the store does, tried in this order:
   formula or its ion formula;
 - or ``top:N``: the N species with the highest median over the chart's own
   window, under its own normalisation (:func:`mascope_viz.data.views.top`),
-  one per ion formula.
+  one per ion formula, and none that reads one of the normaliser's ions.
 
 A formula held both as a target ion and as an assigned formula under the
 same mechanism resolves to the target ion's ``ion:`` key: the collection's
@@ -258,22 +258,27 @@ def _top(
 ) -> tuple[list[str], dict[str, list[str]]]:
     """The *n* species of the highest median, each once: a formula a target
     ion holds counts as that ion, the species that read one ion formula
-    count once, and the normaliser's own keys, which it divides to one, are
-    left out.
+    count once, and those that read the normaliser's own ions, which it
+    divides to one or to a part of one, are left out: its members, the
+    target ions that hold a member formula, and every species of a
+    member's ion formula.
 
     :return: The keys, best first, and for each that reads an ion other
         candidates read too, those others' keys.
     """
+    ion_of = dict(zip(table["series_key"], table["ion_formula"]))
     members = set(views._members(views._check_normalise(normalise)))
+    own = members | {ion for m in members for ion in identities.get(m, [])}
+    own_ions = {ion_of[k] for k in own if ion_of.get(k)}
     candidates = [
         key
         for key in table["series_key"]
-        if key not in identities and key not in members
+        if key not in identities and key not in own and ion_of.get(key) not in own_ions
     ]
     if not candidates:
         raise InvalidChart(
-            "top:N has no species to rank: the store holds none besides the "
-            "normaliser's"
+            "top:N has no species to rank: the store holds none besides those "
+            "that read the normaliser's ions"
         )
     # Every candidate ranked, since a place a second reading of an ion
     # would take goes to the next ion
@@ -290,7 +295,6 @@ def _top(
     ranked = ranked.assign(
         formula_first=~ranked["key"].astype(str).str.startswith("ion:")
     ).sort_values(["value", "formula_first", "key"], ascending=[False, True, True])
-    ion_of = dict(zip(table["series_key"], table["ion_formula"]))
     reading: dict[str, list[str]] = {}
     for key in candidates:
         if ion_of.get(key):
