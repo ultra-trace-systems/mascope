@@ -6,8 +6,9 @@ crosses the line.
 
 What it is for is that the shape cannot get worse one pull request at a time
 without the pull request saying so: each reading that got worse fails the
-check and names the file, and a reading that got better fails it too, as a
-stale baseline, so the ratchet tightens with each improvement. What it must not
+check and names the file. A reading that got better passes, so feature pull
+requests do not all edit the baseline; `tighten` lowers it on develop, and
+never raises a reading. What it must not
 do is import the code it measures: it reads source with `ast` alone.
 
 Each test writes a small package into a temporary directory, takes its
@@ -89,6 +90,13 @@ def _messages(root: Path) -> list[str]:
     return [problem.message for problem in structure.check(root, PACKAGES)]
 
 
+def _better(root: Path) -> list[str]:
+    """What got better, which must pass the check."""
+    problems, better = structure.readings(root, PACKAGES)
+    assert problems == []
+    return better.get(PACKAGE, [])
+
+
 @pytest.fixture
 def root(tmp_path):
     _tree(tmp_path)
@@ -155,13 +163,11 @@ def test_a_cycle_that_takes_in_another_module_fails(tmp_path):
     assert "an import cycle of 3 modules takes in c.py (a.py, b.py, c.py)" in message
 
 
-def test_a_cycle_that_shrinks_makes_the_baseline_stale(tmp_path):
+def test_a_cycle_that_shrinks_passes_with_slack(tmp_path):
     _tree(tmp_path, **{"b.py": "from . import a\nfrom . import c\n"})
     _take_baseline(tmp_path)
     _tree(tmp_path, **{"b.py": "from . import a\n"})
-    (message,) = _messages(tmp_path)
-    assert message.startswith("the baseline is stale, run `structure.py baseline`")
-    assert "an import cycle shrank or is gone" in message
+    assert _better(tmp_path) == ["an import cycle shrank or is gone"]
 
 
 def test_a_new_function_level_import_fails(root):
@@ -179,13 +185,11 @@ def test_a_function_level_import_from_outside_the_package_is_not_counted(root):
     assert _messages(root) == []
 
 
-def test_fewer_function_level_imports_make_the_baseline_stale(tmp_path):
+def test_fewer_function_level_imports_pass_with_slack(tmp_path):
     _tree(tmp_path, **{"c.py": "def late():\n    from . import b\n"})
     _take_baseline(tmp_path)
     _tree(tmp_path)
-    (message,) = _messages(tmp_path)
-    assert "the baseline is stale" in message
-    assert "imports inside a function 1 -> 0" in message
+    assert _better(tmp_path) == ["imports inside a function 1 -> 0"]
 
 
 def test_a_function_that_grows_past_the_line_fails(root):
@@ -216,17 +220,14 @@ def test_methods_and_nested_functions_go_by_their_qualified_name(root):
     assert "K.m is 101 lines" in message
 
 
-def test_a_long_function_that_shrinks_makes_the_baseline_stale(root):
+def test_a_long_function_that_shrinks_passes_with_slack(root):
     _tree(root, **{"a.py": "from . import b\n\n" + _function("long", 119)})
-    (message,) = _messages(root)
-    assert "the baseline is stale" in message
-    assert "a.py:long 120 -> 119 lines" in message
+    assert _better(root) == ["a.py:long 120 -> 119 lines"]
 
 
-def test_a_long_function_that_is_gone_makes_the_baseline_stale(root):
+def test_a_long_function_that_is_gone_passes_with_slack(root):
     _tree(root, **{"a.py": "from . import b\n"})
-    (message,) = _messages(root)
-    assert "a.py:long is gone" in message
+    assert _better(root) == ["a.py:long is gone"]
 
 
 def test_a_long_module_may_grow_by_two_percent(root):
@@ -247,22 +248,103 @@ def test_a_new_module_over_the_line_fails(root):
     assert "1501 lines, over the 1500-line line" in problem.message
 
 
-def test_a_module_that_shrinks_makes_the_baseline_stale(root, capsys):
+def test_a_module_that_shrinks_passes_and_says_so(root, capsys):
     _tree(root, **{"big.py": "x = 0\n" * 1599})
-    assert structure.main(["check"], root=root, packages=PACKAGES) == 1
-    out = "".join(capsys.readouterr())  # stderr here, stdout in Actions
-    assert "the baseline is stale, run `structure.py baseline`" in out
-    assert "big.py 1600 -> 1599 lines" in out
-    _take_baseline(root)
-    assert _messages(root) == []
+    assert structure.main(["check"], root=root, packages=PACKAGES) == 0
+    out = capsys.readouterr().out
+    assert (
+        f"structure: {PACKAGE}: 1 reading better than the baseline "
+        "(big.py 1600 -> 1599 lines); `structure.py tighten` locks them in"
+    ) in out
+    assert "structure: ok" in out
 
 
-def test_worse_readings_are_reported_before_any_stale_one(root):
-    # One reading better and one worse: the worse one is what the PR must
-    # answer, and a stale baseline would hide it.
+def test_a_better_reading_does_not_excuse_a_worse_one(root, capsys):
     _tree(root, **{"big.py": "x = 0\n" * 1599, "b.py": _function("grew", 101)})
     (message,) = _messages(root)
     assert "grew is 101 lines" in message
+    assert structure.main(["check"], root=root, packages=PACKAGES) == 1
+    assert "1 reading better" in capsys.readouterr().out
+
+
+def _baseline_data(root: Path) -> dict:
+    return json.loads((root / structure.BASELINE).read_text())
+
+
+def test_tighten_on_a_tight_baseline_changes_nothing(root, capsys):
+    before = (root / structure.BASELINE).read_bytes()
+    assert structure.main(["tighten"], root=root, packages=PACKAGES) == 0
+    assert "nothing to tighten" in capsys.readouterr().out
+    assert (root / structure.BASELINE).read_bytes() == before
+
+
+def test_tighten_lowers_each_better_reading(tmp_path, capsys):
+    _tree(
+        tmp_path,
+        **{
+            "b.py": "from . import a\n",
+            "c.py": "def late():\n    from . import b\n",
+            "d.py": _function("other", 130),
+        },
+    )
+    _take_baseline(tmp_path)
+    _tree(
+        tmp_path,
+        **{
+            "a.py": "from . import b\n\n" + _function("long", 110),
+            "big.py": "x = 0\n" * 1550,
+            "d.py": "",
+        },
+    )
+    assert structure.main(["tighten"], root=tmp_path, packages=PACKAGES) == 0
+    assert "tightened" in capsys.readouterr().out
+    held = _baseline_data(tmp_path)["packages"][PACKAGE]
+    assert held == {
+        "cycles": [],
+        "function_imports": 0,
+        "modules": {"big.py": 1550},
+        "functions": {"a.py:long": 110},
+    }
+    assert _better(tmp_path) == []
+
+
+def test_tighten_drops_a_module_under_the_line(root):
+    _tree(root, **{"big.py": "x = 0\n" * 1400})
+    structure.main(["tighten"], root=root, packages=PACKAGES)
+    assert _baseline_data(root)["packages"][PACKAGE]["modules"] == {}
+
+
+def test_tighten_raises_no_reading(tmp_path):
+    _tree(tmp_path, **{"b.py": "from . import a\n"})
+    _take_baseline(tmp_path)
+    before = _baseline_data(tmp_path)["packages"][PACKAGE]
+    # Every reading worse, plus one better to make tighten write.
+    _tree(
+        tmp_path,
+        **{
+            "a.py": "from . import b\n\n" + _function("long", 119),
+            "b.py": "from . import a\nfrom . import c\n" + _function("new", 101),
+            "c.py": "def late():\n    from . import b\n",
+            "big.py": "x = 0\n" * 1700,
+            "huge.py": "x = 0\n" * 1600,
+        },
+    )
+    structure.main(["tighten"], root=tmp_path, packages=PACKAGES)
+    after = _baseline_data(tmp_path)["packages"][PACKAGE]
+    assert after["cycles"] == before["cycles"]
+    assert after["function_imports"] == before["function_imports"]
+    assert after["modules"] == before["modules"]
+    assert after["functions"] == {"a.py:long": 119}
+    assert len(_messages(tmp_path)) == 5
+
+
+def test_tighten_refuses_a_baseline_of_other_limits(root, capsys):
+    path = root / structure.BASELINE
+    data = json.loads(path.read_text())
+    data["limits"]["function_lines"] = 200
+    path.write_text(json.dumps(data))
+    assert structure.main(["tighten"], root=root, packages=PACKAGES) == 1
+    assert "run `structure.py baseline`" in capsys.readouterr().err
 
 
 def test_relative_imports_resolve_through_subpackages(tmp_path):
@@ -339,10 +421,9 @@ def test_the_repository_is_measured_in_under_five_seconds():
     assert sorted(data["packages"]) == sorted(structure.PACKAGES)
 
 
-def test_a_module_that_drops_under_the_line_makes_the_baseline_stale(root):
+def test_a_module_that_drops_under_the_line_passes_with_slack(root):
     _tree(root, **{"big.py": "x = 0\n" * 1400})
-    (message,) = _messages(root)
-    assert "big.py 1600 -> 1400 lines" in message
+    assert _better(root) == ["big.py 1600 -> 1400 lines"]
 
 
 def test_a_module_of_exactly_the_line_passes(root):

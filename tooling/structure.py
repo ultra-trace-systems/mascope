@@ -28,10 +28,12 @@
 # no new cycle and no cycle that takes in another module, no more imports
 # inside a function, no module over the line growing by more than
 # MODULE_GROWTH and none crossing it, no function over the line growing and
-# none crossing it. It is a ratchet: a reading that got better fails too,
-# as a stale baseline, until `baseline` writes it down. A pull request that
-# has to make a reading worse runs `baseline` and commits the file, and its
-# body says why under a `## Structure` heading.
+# none crossing it. A reading that got better passes, and `check` says how
+# many readings have slack. The ratchet tightens on develop, not in pull
+# requests: `tighten` lowers the baseline to the readings and never raises
+# it, so feature pull requests do not all edit the same file. A pull request
+# that has to make a reading worse runs `baseline` and commits the file, and
+# its body says why under a `## Structure` heading.
 #
 # Commands - stdlib only, as tooling/changelog.py, whose Problem and report
 # this shares:
@@ -40,11 +42,14 @@
 #   check     Compare the readings with the baseline. CI runs it on every
 #             pull request, in the "Lint and format" job.
 #   baseline  Write the baseline from the tree as it is.
+#   tighten   Lower each reading of the baseline that the tree beats; raise
+#             none. "nothing to tighten" when it is already tight.
 #
 # Usage:
 #   uv run python tooling/structure.py measure [PATH ...]
 #   uv run python tooling/structure.py check
 #   uv run python tooling/structure.py baseline
+#   uv run python tooling/structure.py tighten
 from __future__ import annotations
 
 import argparse
@@ -408,7 +413,15 @@ def _load_baseline(root: Path) -> dict:
 
 
 def check(root: Path, packages: tuple[str, ...] = PACKAGES) -> list[Problem]:
-    """What got worse than the baseline, or a stale baseline, as problems."""
+    """What got worse than the baseline, or a baseline of other limits or
+    packages, as problems. A reading that got better is no problem."""
+    return readings(root, packages)[0]
+
+
+def readings(
+    root: Path, packages: tuple[str, ...] = PACKAGES
+) -> tuple[list[Problem], dict[str, list[str]]]:
+    """The problems `check` reports, and per package what got better."""
     data = _load_baseline(root)
     recorded = data["packages"]
     problems: list[Problem] = []
@@ -420,7 +433,7 @@ def check(root: Path, packages: tuple[str, ...] = PACKAGES) -> list[Problem]:
                 f"it was written with other limits than the check's; {STALE}",
             )
         )
-        return problems
+        return problems, {}
     if sorted(recorded) != sorted(packages):
         problems.append(
             Problem(
@@ -430,16 +443,59 @@ def check(root: Path, packages: tuple[str, ...] = PACKAGES) -> list[Problem]:
                 f"the check measures {', '.join(packages)}; {STALE}",
             )
         )
-        return problems
-    better: list[str] = []
+        return problems, {}
+    better: dict[str, list[str]] = {}
     for package in packages:
         reading = measure(root / package)
         worse, improved = _package_problems(package, reading, recorded[package])
         problems += worse
-        better += [f"{package}: {line}" for line in improved]
-    if not problems and better:
-        problems.append(Problem(BASELINE, None, f"{STALE} ({'; '.join(better)})"))
-    return problems
+        if improved:
+            better[package] = improved
+    return problems, better
+
+
+def tightened(root: Path, packages: tuple[str, ...] = PACKAGES) -> dict:
+    """The baseline with each reading the tree beats lowered to it.
+
+    No reading goes up: one that got worse keeps its baseline value, a module
+    or function that is new over the line is not added, and a cycle set that
+    grew anywhere is kept as it was.
+    """
+    data = _load_baseline(root)
+    problems, _ = readings(root, packages)
+    if any(problem.path == BASELINE for problem in problems):
+        raise StructureError(
+            f"{BASELINE} does not match the check's limits or packages; "
+            "run `structure.py baseline`"
+        )
+    out = json.loads(json.dumps(data))
+    for package in packages:
+        base = data["packages"][package]
+        now = held(measure(root / package))
+        base_cycles = [set(cycle) for cycle in base.get("cycles", [])]
+        if all(any(set(c) <= old for old in base_cycles) for c in now["cycles"]):
+            cycles = now["cycles"]
+        else:
+            cycles = base.get("cycles", [])
+        modules = {
+            module: min(old, now["modules"][module])
+            for module, old in base.get("modules", {}).items()
+            if module in now["modules"]
+        }
+        functions = {
+            key: min(old, now["functions"][key])
+            for key, old in base.get("functions", {}).items()
+            if key in now["functions"]
+        }
+        out["packages"][package] = {
+            "cycles": cycles,
+            "function_imports": min(
+                base.get("function_imports", 0), now["function_imports"]
+            ),
+            "modules": modules,
+            "functions": functions,
+        }
+    return out
 
 
 def baseline(root: Path, packages: tuple[str, ...] = PACKAGES) -> dict:
@@ -507,6 +563,9 @@ def main(
     )
     commands.add_parser("check", help="what CI checks")
     commands.add_parser("baseline", help=f"write {BASELINE} from the tree")
+    commands.add_parser(
+        "tighten", help=f"lower {BASELINE} to the readings the tree beats"
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -514,7 +573,13 @@ def main(
             for path in args.paths or packages:
                 print("\n".join(summary(path, measure(root / path))))
         elif args.command == "check":
-            problems = check(root, packages)
+            problems, better = readings(root, packages)
+            for package, lines in better.items():
+                print(
+                    f"structure: {package}: "
+                    f"{_plural(len(lines), 'reading')} better than the baseline "
+                    f"({'; '.join(lines)}); `structure.py tighten` locks them in"
+                )
             report(problems)
             if problems:
                 print(
@@ -528,6 +593,14 @@ def main(
                 root / BASELINE, json.dumps(baseline(root, packages), indent=2) + "\n"
             )
             print(f"structure: wrote {BASELINE}")
+        elif args.command == "tighten":
+            path = root / BASELINE
+            new = json.dumps(tightened(root, packages), indent=2) + "\n"
+            if json.loads(new) == json.loads(path.read_text(encoding="utf-8")):
+                print("structure: nothing to tighten")
+            else:
+                _write(path, new)
+                print(f"structure: tightened {BASELINE}")
     except StructureError as error:
         print(f"structure: {error}", file=sys.stderr)
         return 1
