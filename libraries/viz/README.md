@@ -92,6 +92,9 @@ The next sync fetches again the batches the stopped one fetched since it
 last wrote `store.json`, which it does every two seconds or so; a batch
 whose tables it had rewritten is fetched again as `unsaved`, whatever its
 stamp says, so no rollup is left older than the tables it is made from.
+A batch the scope no longer holds is removed by its tables when the stop
+lost its stamp, and a batch whose `samples` file cannot be read is fetched
+again.
 
 A sync that fetches a batch lists the ionization modes once, to record each
 sample's mode name beside its ID. A server that refuses the token on that

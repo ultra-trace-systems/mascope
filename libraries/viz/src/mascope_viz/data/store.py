@@ -1102,6 +1102,30 @@ def _why_fetch(
     return None
 
 
+def _written_about(path: Path) -> dict[str, Any] | None:
+    """What a batch table's file says of itself (:func:`_write`'s *about*);
+    None when it is missing or cannot be read, as a file cut short or
+    damaged on disk."""
+    try:
+        metadata = pq.read_schema(path).metadata or {}
+        about = json.loads(metadata.get(METADATA_KEY, b"{}"))
+    except (OSError, ValueError, pa.ArrowException):
+        return None
+    return about if isinstance(about, dict) else None
+
+
+def _written_days(path: Path) -> list[str]:
+    """The UTC days the samples of a batch's ``samples`` file at *path*
+    were acquired on; none when it is missing or cannot be read."""
+    try:
+        times = _read([path], BATCH_TABLES[0])["t_mid_utc"].dropna()
+    except (OSError, ValueError, pa.ArrowException):
+        return []
+    if times.empty:
+        return []
+    return _days(_iso(times.min()), _iso(times.max()))
+
+
 def _unsaved_days(
     store: CampaignStore, batch_id: str, stamp: dict[str, Any]
 ) -> list[str] | None:
@@ -1114,20 +1138,17 @@ def _unsaved_days(
     ``samples`` first and records in it the ``synced_utc`` its stamp is
     about to get, so that file alone tells. One written before that was
     recorded says nothing and is taken as the stamp's: the sync that wrote
-    it wrote ``store.json`` after each batch.
+    it wrote ``store.json`` after each batch. One that cannot be read is
+    taken as missing, so that the fetch it brings on writes it again.
     """
     path = store.path / BATCH_TABLES[0] / _file_name(batch_id)
-    try:
-        metadata = pq.read_schema(path).metadata or {}
-    except FileNotFoundError:
+    about = _written_about(path)
+    if about is None:
         return []
-    written = json.loads(metadata.get(METADATA_KEY, b"{}")).get("synced_utc")
+    written = about.get("synced_utc")
     if written is None or written == stamp.get("synced_utc"):
         return None
-    times = _read([path], BATCH_TABLES[0])["t_mid_utc"].dropna()
-    if times.empty:
-        return []
-    return _days(_iso(times.min()), _iso(times.max()))
+    return _written_days(path)
 
 
 def _days(first: str | None, last: str | None) -> list[str]:
@@ -1255,12 +1276,17 @@ class SyncReport:
         it ended: its newest run or that run's status changed), ``ledger
         edited`` (its live ledger was written since under the same run: a
         curation, a sample folded again), ``today`` (it
-        holds a sample from the last day), ``failed before``.
+        holds a sample from the last day), ``failed before``, ``unsaved``
+        (nothing else, but its tables on disk are not the ones its stamp
+        records: a sync was stopped after it wrote them and before it wrote
+        ``store.json``, or its ``samples`` file is missing or cannot be
+        read).
     :ivar unchanged: The batches left as they were.
     :ivar failed: The batches whose fetch or runs listing failed, by ID,
         with the error; they are skipped, and tried again by the next sync.
     :ivar removed: The batches the scope no longer holds, whose tables were
-        deleted.
+        deleted: those with a stamp, and those a stopped sync left tables
+        of and no stamp.
     :ivar seconds: How long the sync took.
     """
 
@@ -1435,7 +1461,11 @@ def sync(
     one: the next sync fetches those batches again, rolls those days again,
     and, for a batch whose tables were rewritten and whose stamp was not
     (its ``samples`` file records which stamp it belongs to), fetches it and
-    rolls the days its tables held even if its stamp gives no reason to.
+    rolls the days its tables held even if its stamp gives no reason to; a
+    batch the scope no longer holds is removed by its stamp or, when the
+    stop lost that, by its tables, and the days either held are rolled
+    again. A ``samples`` file that cannot be read is taken as missing: the
+    batch is fetched again.
 
     :param client: An SDK client; its workspace is the scope's.
     :param scope: What to sync.
@@ -1555,12 +1585,29 @@ def _sync_batches(
     }
 
     in_scope = set(resolved.batches["sample_batch_id"])
-    removed = tuple(sorted(b for b in stamps if b not in in_scope))
-    for batch_id in removed:
-        stamp = stamps.pop(batch_id)
+    kept = {_file_name(b) for b in in_scope | set(stamps)}
+    # A batch the scope no longer holds goes by its stamp, and also by its
+    # tables alone: a sync stopped before it wrote store.json can have left a
+    # batch's tables, and rollups made from them, with no stamp, or with
+    # one older than they are
+    gone = {b: _file_name(b) for b in stamps if b not in in_scope}
+    for path in sorted((store.path / BATCH_TABLES[0]).glob("*.parquet")):
+        if path.name not in kept:
+            about = _written_about(path) or {}
+            gone[str(about.get("sample_batch_id") or path.stem)] = path.name
+    removed = tuple(sorted(gone))
+    for batch_id, name in gone.items():
+        stamp = stamps.pop(batch_id, {})
         pending.update(_days(stamp.get("first_t_mid_utc"), stamp.get("last_t_mid_utc")))
-        for table in BATCH_TABLES:
-            (store.path / table / _file_name(batch_id)).unlink(missing_ok=True)
+        pending.update(_written_days(store.path / BATCH_TABLES[0] / name))
+    if gone:
+        # The days to roll again are on disk before the tables that tell them
+        # go, samples last: a sync stopped in between finds what is left by
+        # its samples file next time
+        save(at_once=True)
+    for name in gone.values():
+        for table in reversed(BATCH_TABLES):
+            (store.path / table / name).unlink(missing_ok=True)
     save()
 
     mechanisms: dict[str, str] | None = None
