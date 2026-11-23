@@ -478,30 +478,30 @@ describe('DialogTargetCollectionOp manual compound input', () => {
   })
 })
 
+// The changes table's rows, rendered: the table stub hands each row to the
+// body slot of every column, so the status column's markup is on screen.
+const RowTable = {
+  name: 'DataTable',
+  props: ['value', 'dataKey', 'selection'],
+  provide() {
+    return { table: this }
+  },
+  template: '<div><slot /></div>'
+}
+const RowColumn = {
+  name: 'Column',
+  props: ['field', 'header'],
+  inject: ['table'],
+  template:
+    '<div><div v-for="(row, i) in table.value ?? []" :key="i" class="cell"><slot name="body" :data="row" /></div></div>'
+}
+
 describe('DialogTargetCollectionOp spreadsheet paste', () => {
   afterEach(() => {
     compoundList.splice(0)
     confirmRequire.mockReset()
     collectionApi.create.mockReset()
   })
-
-  // The changes table's rows, rendered: the table stub hands each row to the
-  // body slot of every column, so the status column's markup is on screen.
-  const RowTable = {
-    name: 'DataTable',
-    props: ['value', 'dataKey', 'selection'],
-    provide() {
-      return { table: this }
-    },
-    template: '<div><slot /></div>'
-  }
-  const RowColumn = {
-    name: 'Column',
-    props: ['field', 'header'],
-    inject: ['table'],
-    template:
-      '<div><div v-for="(row, i) in table.value ?? []" :key="i" class="cell"><slot name="body" :data="row" /></div></div>'
-  }
 
   async function open(action = 'create') {
     const wrapper = mount(DialogTargetCollectionOp, {
@@ -928,5 +928,250 @@ describe('DialogTargetCollectionOp InChIKey', () => {
     expect(table.props('value').map(({ target_compound_id }) => target_compound_id)).toEqual([
       'tc1'
     ])
+  })
+})
+
+describe('DialogTargetCollectionOp optional anchors', () => {
+  const D3 = {
+    target_compound_id: 'tc-d3',
+    target_compound_formula: 'C6H18O3Si3',
+    target_compound_name: 'D3'
+  }
+  const D4 = {
+    target_compound_id: 'tc-d4',
+    target_compound_formula: 'C8H24O4Si4',
+    target_compound_name: 'D4'
+  }
+  const UREA = {
+    target_compound_id: 'tc-urea',
+    target_compound_formula: 'CH4N2O',
+    target_compound_name: 'Urea'
+  }
+
+  afterEach(() => {
+    compoundList.splice(0)
+    opened.collection = null
+    confirmRequire.mockReset()
+    collectionApi.create.mockReset()
+    collectionApi.update.mockReset()
+  })
+
+  // A tooltip directive that leaves its text on the element, so a test reads it.
+  const tooltip = {
+    mounted: (el, { value }) => (el.dataset.tip = value ?? ''),
+    updated: (el, { value }) => (el.dataset.tip = value ?? '')
+  }
+
+  async function open(action, collection = null) {
+    opened.collection = collection
+    const wrapper = mount(DialogTargetCollectionOp, {
+      props: { action: null },
+      global: {
+        plugins: [PrimeVue],
+        stubs: { ...stubs, DataTable: RowTable, Column: RowColumn },
+        directives: { tooltip }
+      }
+    })
+    await wrapper.setProps({ action })
+    await flushPromises()
+    return wrapper
+  }
+
+  const calibration = (overrides = {}) => ({
+    target_collection_id: 'c1',
+    target_collection_name: 'Calibrants',
+    target_collection_description: '',
+    target_collection_type: 'CALIBRANTS',
+    workspace_id: 'w1',
+    target_compounds: [UREA, D3, D4],
+    optional_anchor_compound_ids: ['tc-d3'],
+    ...overrides
+  })
+
+  const setType = async (wrapper, type) => {
+    wrapper
+      .findAllComponents({ name: 'SelectButton' })
+      .find((c) => c.props('options')?.includes('CALIBRANTS'))
+      .vm.$emit('update:modelValue', type)
+    await nextTick()
+  }
+
+  // The mark's checkbox of each row of the changes table, by compound name.
+  const marks = (wrapper) =>
+    Object.fromEntries(
+      wrapper
+        .findAllComponents({ name: 'Checkbox' })
+        .filter((box) => /^Optional anchor: /.test(box.attributes('arialabel') ?? ''))
+        .map((box) => [box.attributes('arialabel').replace('Optional anchor: ', ''), box])
+    )
+  const mark = async (wrapper, name, value) => {
+    marks(wrapper)[name].vm.$emit('update:modelValue', value)
+    await nextTick()
+  }
+
+  const paste = async (wrapper, text) => {
+    wrapper
+      .findComponent({ name: 'BaseClipboardContext' })
+      .vm.$emit('validated', { data: parseCompoundPaste(text) })
+    await nextTick()
+  }
+
+  async function saveUpdated(wrapper, { confirmed = true } = {}) {
+    saveButton(wrapper).vm.$emit('click')
+    await nextTick()
+    if (confirmed) {
+      const [[{ accept, message }]] = confirmRequire.mock.calls
+      accept()
+      const [[sent]] = collectionApi.update.mock.calls
+      return { sent, message }
+    }
+    const [[sent]] = collectionApi.update.mock.calls
+    return { sent }
+  }
+
+  it('shows the mark only for a calibration collection', async () => {
+    const wrapper = await open('update', calibration())
+    expect(Object.keys(marks(wrapper)).sort()).toEqual(['D3', 'D4', 'Urea'])
+    expect(wrapper.find('.optional-anchor-hint').text()).toContain('only where the fit kept them')
+
+    await setType(wrapper, 'TARGETS')
+    expect(marks(wrapper)).toEqual({})
+    expect(wrapper.find('.optional-anchor-hint').exists()).toBe(false)
+  })
+
+  it('loads the marks of the collection an edit opens on', async () => {
+    const wrapper = await open('update', calibration({ optional_anchor_compound_ids: ['tc-d4'] }))
+    const boxes = marks(wrapper)
+    expect(boxes.D4.props('modelValue')).toBe(true)
+    expect(boxes.D3.props('modelValue')).toBe(false)
+    expect(boxes.Urea.props('modelValue')).toBe(false)
+  })
+
+  it('sends the marks on create, of the stored compounds the collection holds', async () => {
+    compoundList.push(UREA, D3, D4)
+    const wrapper = await open('create')
+    await setType(wrapper, 'CALIBRANTS')
+    await paste(wrapper, 'Urea\tCH4N2O\nD3\tC6H18O3Si3\nD4\tC8H24O4Si4')
+    await mark(wrapper, 'D3', true)
+    await mark(wrapper, 'D4', true)
+
+    const sent = await saveCreated(wrapper)
+    expect(sent.target_compound_ids).toEqual(['tc-urea', 'tc-d3', 'tc-d4'])
+    expect(sent.optional_anchor_compound_ids).toEqual(['tc-d3', 'tc-d4'])
+  })
+
+  it('sends an empty list for a calibration collection created with no mark', async () => {
+    compoundList.push(UREA)
+    const wrapper = await open('create')
+    await setType(wrapper, 'CALIBRANTS')
+    await paste(wrapper, 'Urea\tCH4N2O')
+
+    const sent = await saveCreated(wrapper)
+    expect(sent.optional_anchor_compound_ids).toEqual([])
+  })
+
+  it('sends no marks for a collection of another type', async () => {
+    compoundList.push(UREA, D3)
+    const wrapper = await open('create')
+    await setType(wrapper, 'CALIBRANTS')
+    await paste(wrapper, 'Urea\tCH4N2O\nD3\tC6H18O3Si3')
+    await mark(wrapper, 'D3', true)
+    // a mark set while the collection was a calibration one is not sent
+    await setType(wrapper, 'TARGETS')
+
+    const sent = await saveCreated(wrapper)
+    expect(sent).not.toHaveProperty('optional_anchor_compound_ids')
+  })
+
+  it('sends no marks when another type of collection is edited', async () => {
+    const wrapper = await open(
+      'update',
+      calibration({ target_collection_type: 'TARGETS', optional_anchor_compound_ids: [] })
+    )
+    wrapper
+      .findAllComponents({ name: 'InputText' })
+      .find((input) => input.attributes('id') === 'target-collection-name')
+      .vm.$emit('update:modelValue', 'Renamed')
+    await nextTick()
+
+    const { sent } = await saveUpdated(wrapper, { confirmed: false })
+    expect(confirmRequire).not.toHaveBeenCalled()
+    expect(sent).not.toHaveProperty('optional_anchor_compound_ids')
+  })
+
+  it('leaves a mark it cannot set off a compound created in the same save, and says why', async () => {
+    const wrapper = await open('create')
+    await setType(wrapper, 'CALIBRANTS')
+    await paste(wrapper, 'Hexamethyl\tC6H18O3Si3')
+
+    const box = marks(wrapper).Hexamethyl
+    expect(box.attributes('disabled')).toBe('true')
+    expect(box.element.closest('.optional-anchor').dataset.tip).toMatch(/save the collection/)
+  })
+
+  it('asks before a change of marks alone, and says the batches are flagged recalibrate', async () => {
+    const wrapper = await open('update', calibration())
+    expect(saveButton(wrapper).attributes('disabled')).toBe('true')
+
+    await mark(wrapper, 'D3', false)
+    await mark(wrapper, 'D4', true)
+    expect(saveButton(wrapper).attributes('disabled')).toBe('false')
+
+    const { sent, message } = await saveUpdated(wrapper)
+    expect(message).toMatch(/flagged recalibrate; nothing is re-run now/)
+    expect(sent.target_compound_ids).toEqual(['tc-urea', 'tc-d3', 'tc-d4'])
+    expect(sent.optional_anchor_compound_ids).toEqual(['tc-d4'])
+  })
+
+  it('has nothing to save when a mark changed and the type went back to one that sends none', async () => {
+    const wrapper = await open('update', calibration({ target_collection_type: 'TARGETS' }))
+    await setType(wrapper, 'CALIBRANTS')
+    await mark(wrapper, 'D3', false)
+    await setType(wrapper, 'TARGETS')
+
+    expect(saveButton(wrapper).attributes('disabled')).toBe('true')
+  })
+
+  it('saves unasked, the marks as they were, when only the name changes', async () => {
+    const wrapper = await open('update', calibration())
+    wrapper
+      .findAllComponents({ name: 'InputText' })
+      .find((input) => input.attributes('id') === 'target-collection-name')
+      .vm.$emit('update:modelValue', 'Renamed')
+    await nextTick()
+
+    const { sent } = await saveUpdated(wrapper, { confirmed: false })
+    expect(confirmRequire).not.toHaveBeenCalled()
+    expect(sent.optional_anchor_compound_ids).toEqual(['tc-d3'])
+  })
+
+  it('forgets the marks of the last collection when the dialog opens again', async () => {
+    compoundList.push(D3)
+    const wrapper = await open('update', calibration())
+    await wrapper.setProps({ action: null })
+    opened.collection = null
+    await wrapper.setProps({ action: 'create' })
+    await flushPromises()
+    await setType(wrapper, 'CALIBRANTS')
+    await paste(wrapper, 'D3\tC6H18O3Si3')
+
+    expect(marks(wrapper).D3.props('modelValue')).toBe(false)
+    const sent = await saveCreated(wrapper)
+    expect(sent.optional_anchor_compound_ids).toEqual([])
+  })
+
+  it('leaves a removed compound out of the marks it sends', async () => {
+    const wrapper = await open('update', calibration())
+    const removeD3 = wrapper
+      .findAllComponents({ name: 'Button' })
+      .filter((button) => button.attributes('icon') === 'pi pi-times')
+    // the changes rows are Urea, D3, D4, in the order the collection read lists them
+    removeD3[1].vm.$emit('click')
+    await nextTick()
+    expect(marks(wrapper).D3.attributes('disabled')).toBe('true')
+
+    const { sent } = await saveUpdated(wrapper)
+    expect(sent.target_compound_ids).toEqual(['tc-urea', 'tc-d4'])
+    expect(sent.optional_anchor_compound_ids).toEqual([])
   })
 })

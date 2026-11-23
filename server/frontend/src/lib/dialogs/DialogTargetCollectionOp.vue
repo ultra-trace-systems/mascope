@@ -124,6 +124,36 @@ const isomerTip = (other) =>
   'which has the same formula.'
 const deleteOrphans = ref(true)
 
+// The optional anchors of a CALIBRANTS collection, by compound id: anchors a
+// file need not hold, such as a calibration's background. A TOF fit's share of
+// the collection's lines counts their lines only where the fit kept them.
+// `initial` is the marks the collection was read with.
+const anchors = reactive({ marked: new Set(), initial: new Set() })
+const isCalibration = computed(() => info.type === 'CALIBRANTS')
+const anchorHint =
+  "An optional anchor's lines count toward a TOF fit's share of the collection's lines " +
+  'only where the fit kept them.'
+const createdAnchorTip =
+  'A compound created in this save has no id yet: save the collection, then mark it here.'
+// The ids of the compounds the collection holds after the save.
+const heldIds = computed(() => new Set(compounds.selected.map((c) => c.target_compound_id)))
+// The marks a save sends: the held compounds checked, a removed one left out.
+const anchorIds = computed(() => [...heldIds.value].filter((id) => anchors.marked.has(id)).sort())
+// Whether the marks a save sends differ from those the collection was read
+// with. A compound added or removed changes them only with the compounds.
+const anchorsChanged = computed(
+  () => [...anchors.initial].sort().join('\n') !== anchorIds.value.join('\n')
+)
+function setAnchor(row, marked) {
+  const next = new Set(anchors.marked)
+  if (marked) {
+    next.add(row.target_compound_id)
+  } else {
+    next.delete(row.target_compound_id)
+  }
+  anchors.marked = next
+}
+
 const key = reactive({
   targets: 0
 })
@@ -414,6 +444,11 @@ function execute() {
   ]
   const sample_batch_ids = batches.selected.map(({ sample_batch_id }) => sample_batch_id)
   const target_compounds_create = compounds.created
+  // Only a calibration collection sends its marks, the whole list: every
+  // other type's request stays as it was.
+  const optionalAnchors = isCalibration.value
+    ? { optional_anchor_compound_ids: anchorIds.value }
+    : {}
 
   switch (action.value) {
     case 'create': {
@@ -462,7 +497,8 @@ function execute() {
             ...common,
             target_compound_ids,
             sample_batch_ids,
-            target_compounds_create
+            target_compounds_create,
+            ...optionalAnchors
           })
           action.value = null
         },
@@ -478,7 +514,8 @@ function execute() {
           ...common,
           target_collection_id,
           target_compound_ids,
-          target_compounds_create
+          target_compounds_create,
+          ...optionalAnchors
         })
         action.value = null
       }
@@ -489,12 +526,13 @@ function execute() {
           'target_compound_id'
         )
         const compoundsCreated = compounds.created.length > 0
-        if (compoundsChanged || compoundsCreated) {
+        if (compoundsChanged || compoundsCreated || anchorsChanged.value) {
           confirm.require({
             icon: 'pi pi-exclamation-triangle',
             header: 'Edit calibration collection',
             message:
               'Editing a calibration collection affects how associated samples are calibrated. ' +
+              'Its calibrated batches are flagged recalibrate; nothing is re-run now. ' +
               'Are you sure you want to proceed?',
             accept: doUpdate,
             acceptProps: {
@@ -566,7 +604,8 @@ const invalidated = computed(() => {
           (original.value.workspace_id ?? null)
       const compoundsChanged = !equals(compounds.initial, compounds.selected, 'target_compound_id')
       const compoundsCreated = compounds.created.length > 0 // Check if new compounds were added
-      return !(infoChanged || compoundsChanged || compoundsCreated)
+      const marksChanged = isCalibration.value && anchorsChanged.value
+      return !(infoChanged || compoundsChanged || compoundsCreated || marksChanged)
     }
     case 'update_batches':
       return equals(batches.initial, batches.selected, 'sample_batch_id')
@@ -762,6 +801,8 @@ async function init(mode) {
   resetAddInput()
   batches.loaded = []
   batches.selected = []
+  anchors.marked = new Set()
+  anchors.initial = new Set()
 
   // Load collection data for update actions
   if (mode.startsWith('update')) {
@@ -771,6 +812,8 @@ async function init(mode) {
     info.type = original.value?.target_collection_type
     info.workspace_id = original.value?.workspace_id ?? GLOBAL_SENTINEL
     compounds.selected = original.value?.target_compounds ?? []
+    anchors.initial = new Set(original.value?.optional_anchor_compound_ids ?? [])
+    anchors.marked = new Set(anchors.initial)
   }
 
   switch (mode) {
@@ -1161,6 +1204,9 @@ watch(
                       panel to the right.
                     </span>
                   </div>
+                  <p v-if="isCalibration" class="optional-anchor-hint">
+                    <b>Optional anchor</b>: {{ anchorHint }}
+                  </p>
                   <BaseClipboardContext
                     hideInitMessage
                     @validated="({ data }) => loadSpreadsheet({ rows: data })"
@@ -1295,6 +1341,27 @@ watch(
                           >
                             {{ data[field] }}
                           </div>
+                        </template>
+                      </Column>
+                      <Column
+                        v-if="isCalibration"
+                        header="Optional anchor"
+                        key="optional_anchor"
+                        columnKey="optional_anchor"
+                      >
+                        <template #body="{ data }">
+                          <span
+                            class="optional-anchor"
+                            v-tooltip.top="data.status == '1 create' ? createdAnchorTip : null"
+                          >
+                            <Checkbox
+                              binary
+                              :modelValue="anchors.marked.has(data.target_compound_id)"
+                              @update:modelValue="(marked) => setAnchor(data, marked)"
+                              :disabled="data.status == '1 create' || data.status == '4 remove'"
+                              :ariaLabel="`Optional anchor: ${data.target_compound_name || data.target_compound_formula}`"
+                            />
+                          </span>
                         </template>
                       </Column>
                       <Column headerStyle="width: 3rem">
@@ -1738,6 +1805,14 @@ watch(
 }
 .compound-fields :deep(input) {
   width: 100%;
+}
+
+/* The one line under the changes heading that says what the mark does. */
+.optional-anchor-hint {
+  margin: -0.5rem 0 0.5rem;
+  max-width: 500px;
+  font-size: smaller;
+  opacity: 0.7;
 }
 
 :deep(.p-panel-header) {

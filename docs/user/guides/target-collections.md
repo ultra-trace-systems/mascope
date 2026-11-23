@@ -73,6 +73,28 @@ again.
 Each row in the collection list gets a status badge — *Create*, *Add*, *Keep*,
 or *Remove* — so you always see what saving will change.
 
+#### Mark optional calibration anchors
+
+A **CALIBRANTS** collection's list has an **Optional anchor** checkbox on each
+row. Tick it for a compound a file need not hold, such as a site's background
+that one instrument's spectra carry and another's do not. A TOF fit must keep a
+share of the collection's lines; an optional anchor's lines count toward that
+share only where the fit kept them. A file that lacks the background is then
+held to the rest of the collection
+([Calibration → Verification](../how-it-works/calibration.md#verification)).
+
+- The checkbox is there only for **CALIBRANTS** collections. A collection of
+  another type keeps the marks it has, but the dialog neither shows nor sends
+  them.
+- A compound the save creates has no id yet, so its checkbox is greyed out.
+  Save the collection, open it with *Edit target collection*, and tick it then.
+- A removed compound loses its mark. Saving a change of the marks alone asks
+  first: the batches calibrated on the collection are flagged for
+  recalibration, and nothing is re-run from the dialog.
+- To build your own calibration collection from a shipped one, tick the same
+  compounds the shipped one marks, or its TOF files may fail the share again
+  when they lack the background.
+
 #### Find a compound's structure
 
 Rather than paste an identifier, pick the structure from the reference lists
@@ -233,6 +255,7 @@ See [SDK & API](../sdk/index.md) for installation and the full reference.
 - **Scores did not change after editing a collection.** Matching has not run
   yet — check the batch's status icon and refresh its matches.
 - **Editing a calibrants collection warns about calibration.** Changing
-  calibrants affects how samples are calibrated; affected batches are flagged
-  for re-calibration, which is an administrative operation. See
+  calibrants, or which of them are optional anchors, affects how samples are
+  calibrated; affected batches are flagged for re-calibration, which is an
+  administrative operation. See
   [Concepts → Calibration](../concepts/index.md#calibration).

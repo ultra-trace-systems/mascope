@@ -361,6 +361,40 @@ REQUESTS = [
         None,
     ),
     (
+        # The marks go as the route names them, the whole list.
+        lambda r: r["collections"].create(
+            "c1",
+            collection_type="CALIBRANTS",
+            compound_ids=("t-1", "t-2"),
+            optional_anchor_ids=("t-2",),
+        ),
+        "POST",
+        "target/collections",
+        {
+            "target_collection_name": "c1",
+            "workspace_id": "ws-1",
+            "target_collection_type": "CALIBRANTS",
+            "target_compound_ids": ["t-1", "t-2"],
+            "optional_anchor_compound_ids": ["t-2"],
+        },
+        None,
+    ),
+    (
+        lambda r: r["collections"].update("c-1", optional_anchor_ids=("t-1",)),
+        "PATCH",
+        "target/collections/c-1",
+        {"optional_anchor_compound_ids": ["t-1"]},
+        None,
+    ),
+    (
+        # An empty list is sent: it clears the marks, where None keeps them.
+        lambda r: r["collections"].update("c-1", optional_anchor_ids=()),
+        "PATCH",
+        "target/collections/c-1",
+        {"optional_anchor_compound_ids": []},
+        None,
+    ),
+    (
         lambda r: r["collections"].update("c-1", name="c2"),
         "PATCH",
         "target/collections/c-1",
@@ -881,6 +915,9 @@ RETRIED = [
     ("PATCH", "workspaces/ws-1/datasets/ds-1", {"chemistry_context": None}),
     ("PATCH", "sample/items/s-1", {"sample_item": {"sample_item_name": "n"}}),
     ("PATCH", "target/collections/c-1", {"target_collection_name": "c2"}),
+    # The whole list of marks: a second send sets the same ones.
+    ("PATCH", "target/collections/c-1", {"optional_anchor_compound_ids": ["t-1"]}),
+    ("PATCH", "target/collections/c-1", {"optional_anchor_compound_ids": []}),
     ("PATCH", "target/collections/c-1", {"sample_batch_ids": ["b-1", "b-2"]}),
     ("PATCH", "target/collections/c-1", {"sample_batch_ids": []}),
     # Save nothing.

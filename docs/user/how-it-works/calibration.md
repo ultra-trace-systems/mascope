@@ -373,7 +373,7 @@ A compound of a calibration collection can be marked an *optional anchor*: one a
 Its lines count toward the share only where the fit kept them, so a file that does not hold them is held to the rest of the collection.
 A file whose only lines are a uronium source's urea series is held to that series, as it was before the background was added.
 A line that an optional anchor and another compound both offer counts as the other compound's.
-The mark is set through the collection API, `optional_anchor_compound_ids` when a collection is created (`POST /api/target/collections`) or edited (`PATCH /api/target/collections/{id}`); the shipped Uronium calibrants carry it on their background compounds.
+The mark is the **Optional anchor** checkbox of each compound in the collection editor, shown for a **CALIBRANTS** collection ([the guide](../guides/target-collections.md#mark-optional-calibration-anchors)), the SDK's `optional_anchor_ids` on `collections.create` and `collections.update`, or the collection API's `optional_anchor_compound_ids` when a collection is created (`POST /api/target/collections`) or edited (`PATCH /api/target/collections/{id}`); the shipped Uronium calibrants carry it on their background compounds.
 Changing it flags the batches calibrated on the collection *recalibrate*, as a change of its compounds does.
 
 A TOF fit holds between the lines it kept; past them its axis is extrapolated.

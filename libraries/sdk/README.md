@@ -1289,13 +1289,13 @@ The saves take `target_ion_id` and `match_params` as the runs do. The batch save
 | Method | Description | Returns |
 | ------ | ----------- | ------- |
 | `list(batch_id=, workspace_id=, all_workspaces=)` | List the workspace's collections and the global ones, or those of one batch | `pd.DataFrame│None` |
-| `get(collection_id)` | One collection, with its compounds and batches | `dict` |
-| `create(name, description=, collection_type=, compounds=, compound_ids=, batch_ids=, workspace_id=, is_global=)` | Create a target collection | `dict` |
-| `update(collection_id, name=, description=, collection_type=, compounds=, compound_ids=)` | Change it or its compounds | `dict` |
+| `get(collection_id)` | One collection, with its compounds, batches and `optional_anchor_compound_ids` | `dict` |
+| `create(name, description=, collection_type=, compounds=, compound_ids=, batch_ids=, workspace_id=, is_global=, optional_anchor_ids=)` | Create a target collection | `dict` |
+| `update(collection_id, name=, description=, collection_type=, compounds=, compound_ids=, optional_anchor_ids=)` | Change it, its compounds or its optional anchors | `dict` |
 | `associate(collection_id, batch_ids)` | Set the batches it is associated with | `dict` |
 | `delete(collection_id, delete_orphan_compounds=)` | Delete it | `dict` |
 
-A collection belongs to the client's workspace unless `workspace_id` names another, or to every workspace with `is_global=True`. `associate` needs only the guest role on the collection, and the editor role on each batch it adds or removes.
+A collection belongs to the client's workspace unless `workspace_id` names another, or to every workspace with `is_global=True`. `optional_anchor_ids` marks a calibration collection's optional anchors, compounds a file need not hold such as a site's background: a TOF fit's share of the collection's lines counts their lines only where the fit kept them. On `create` the ids must be among `compound_ids`; a compound `compounds=` creates is marked afterwards with `update`. On `update` the list replaces the marks and an empty one clears them; left out, the marks stay. A change of the marks flags the batches calibrated on the collection *recalibrate*. `get` returns them as `optional_anchor_compound_ids`. `associate` needs only the guest role on the collection, and the editor role on each batch it adds or removes.
 
 #### `mascope.compounds`
 
