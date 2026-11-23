@@ -2251,6 +2251,8 @@ def test_the_gap_day_is_a_gap_in_the_spectrogram_not_zeros(month):
     assert (grid.cells["value"] > 0).all()
 
 
+# The grid is chemistry-blind: one campaign holds it
+@pytest.mark.parametrize("campaign", ["halide_negative"], indirect=True)
 def test_spectrogram_rows_widen_past_the_cap_and_say_so(month):
     _, store = month
     rows = len(views.spectrogram(store).rows)
@@ -2269,6 +2271,8 @@ def test_spectrogram_rows_widen_past_the_cap_and_say_so(month):
     assert len(narrow.rows) > rows and not narrow.widened
 
 
+# The grid is chemistry-blind: one campaign holds it
+@pytest.mark.parametrize("campaign", ["halide_negative"], indirect=True)
 def test_spectrogram_rows_hold_at_most_the_cap(month):
     """A cap a width's grid meets exactly takes that width: "at most",
     not "under"."""
