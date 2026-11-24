@@ -225,20 +225,39 @@ async def _rewrite(async_session_factory, mechanism_id):
         await session.commit()
 
 
+def _sequence(known):
+    """The (formula, mechanism, m/z) sequence of a known set's rows from the
+    fixture's own reference list."""
+    ours = known[known["target_compound_formula"].isin(_FORMULAS)]
+    return list(
+        zip(
+            ours["target_compound_formula"],
+            ours["ionization_mechanism"],
+            ours["mz"].round(6),
+        )
+    )
+
+
+async def _known_isotopes(sample, mechanism_ids, mechanisms):
+    """The sample's known set for this mechanism list, through whatever the
+    reference cache holds."""
+    return await sample_inputs._fetch_known_isotopes(
+        sample,
+        0.01,
+        mechanism_ids,
+        mechanisms,
+        known_window=None,
+        resolution=None,
+    )
+
+
 async def _known_set(sample):
     """The (formula, mechanism, m/z) sequence of the sample's known set, as a
     fresh process builds it, its own reference list's rows alone."""
     mechanism_ids, mechanisms = await fetch_sample_mechanisms(sample)
     sample_inputs._reference_isotope_cache.clear()
     try:
-        known = await sample_inputs._fetch_known_isotopes(
-            sample,
-            0.01,
-            mechanism_ids,
-            mechanisms,
-            known_window=None,
-            resolution=None,
-        )
+        known = await _known_isotopes(sample, mechanism_ids, mechanisms)
     finally:
         sample_inputs._reference_isotope_cache.clear()
     ours = known[known["target_compound_formula"].isin(_FORMULAS)]
@@ -303,3 +322,30 @@ async def test_a_rewritten_mechanism_leaves_the_known_set_in_its_order(
     await _rewrite(async_session_factory, world.mechanism_ids["c"])
 
     assert await _known_set(world.sample) == before
+
+
+async def test_the_reference_cache_serves_a_list_only_in_its_own_order(world):
+    """A searched list with a secondary channel appended, or a decoy's list,
+    is not in id order. A frame the cache keeps from such a list must not be
+    served to a list of the same mechanisms in another order: the sample's
+    known set would then depend on which run filled the cache first."""
+    mechanism_ids, in_id_order = await fetch_sample_mechanisms(world.sample)
+    by_key = {m.ionization_mechanism_id[-1]: m for m in in_id_order}
+    appended = [by_key["a"], by_key["c"], by_key["b"]]
+
+    sample_inputs._reference_isotope_cache.clear()
+    try:
+        fresh = _sequence(
+            await _known_isotopes(world.sample, mechanism_ids, in_id_order)
+        )
+        sample_inputs._reference_isotope_cache.clear()
+        # Another run fills the cache from the same mechanisms in another
+        # order, then this list is read with the cache kept.
+        await _known_isotopes(world.sample, mechanism_ids, appended)
+        served = _sequence(
+            await _known_isotopes(world.sample, mechanism_ids, in_id_order)
+        )
+    finally:
+        sample_inputs._reference_isotope_cache.clear()
+
+    assert served == fresh
