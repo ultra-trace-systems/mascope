@@ -13,10 +13,16 @@ from pydantic import (
     model_validator,
 )
 
-from mascope_backend.api.models.target.compounds.target_compound_pydantic_model import (
-    validate_inchikey,
+from mascope_backend.api.new.peak_assignments.claim_schemas import (
+    ClaimFields,
+    as_utc,
+    refuse_bad_claim,
 )
-from mascope_backend.api.new.peak_assignments.claims import claim_problem
+from mascope_backend.api.new.peak_assignments.claims import (
+    REVIEW_LEVEL,
+    statement,
+    window_problem,
+)
 from mascope_backend.api.new.peak_assignments.config import (
     DEFAULT_PROFILE,
     MAX_IMPORT_ROWS_PER_REQUEST,
@@ -1037,36 +1043,7 @@ class CompositionVisualizeBody(BaseModel):
     isotope_ratio_tolerance: float = 0.5
 
 
-def _optional_text(value):
-    """A name stripped; a blank one is no name."""
-    if isinstance(value, str):
-        value = value.strip()
-        return value or None
-    return value
-
-
-#: The request field naming the structure a confirmation claims
-#: (``docs/dev/identification_claims.md`` section 5). The level is not sent:
-#: the server fixes it from the evidence level and whether a structure is named
-#: (``claims.claim_level``).
-_CLAIMED_INCHIKEY_DESCRIPTION = (
-    "The InChIKey of the structure the confirmation names: an identification "
-    "claim. Only a confirmation names one, and a reference_standard, msms or "
-    "orthogonal confirmation must, since those are statements about a structure."
-)
-_CLAIMED_NAME_DESCRIPTION = "The name of the structure named, with claimed_inchikey."
-
-
-def _refuse_bad_claim(body) -> None:
-    """Refuse a body whose claim breaks a rule of ``claims.claim_problem``."""
-    problem = claim_problem(
-        body.verdict, body.evidence_level, body.claimed_inchikey, body.claimed_name
-    )
-    if problem:
-        raise ValueError(problem)
-
-
-class VerifyAssignmentBody(BaseModel):
+class VerifyAssignmentBody(ClaimFields):
     """Request body to record a verification verdict on an assignment (V1 capture)."""
 
     peak_assignment_id: str = Field(description="The assignment being verified.")
@@ -1082,13 +1059,6 @@ class VerifyAssignmentBody(BaseModel):
         ),
     )
     note: str | None = Field(None, description="Optional free-text note.")
-    claimed_inchikey: str | None = Field(
-        None, description=_CLAIMED_INCHIKEY_DESCRIPTION
-    )
-    claimed_name: str | None = Field(None, description=_CLAIMED_NAME_DESCRIPTION)
-
-    _validate_claimed_inchikey = field_validator("claimed_inchikey")(validate_inchikey)
-    _strip_claimed_name = field_validator("claimed_name", mode="before")(_optional_text)
 
     @model_validator(mode="after")
     def _confirmed_needs_evidence(self) -> "VerifyAssignmentBody":
@@ -1096,7 +1066,7 @@ class VerifyAssignmentBody(BaseModel):
         # guardrail wants to avoid, so require an evidence level to confirm.
         if self.verdict == "confirmed" and self.evidence_level is None:
             raise ValueError("evidence_level is required when verdict is 'confirmed'")
-        _refuse_bad_claim(self)
+        refuse_bad_claim(self)
         return self
 
 
@@ -1130,6 +1100,10 @@ class AssignmentVerificationRecord(BaseModel):
     #: version is in ``context``); null where it states none, and a reader
     #: takes the engine's.
     level: int | None = None
+    #: The scale's letter beside ``level`` (``2b``); null at level 1 and on a
+    #: verdict recorded under version 1 of the mapping. ``context.claim`` has
+    #: the evidence line and the lift.
+    level_letter: str | None = None
 
 
 class AssignmentVerificationsResponse(BaseModel):
@@ -1263,13 +1237,22 @@ class ScopeVerificationRecord(BaseModel):
     batch_peak_id: str | None = None
     #: On a borrowed verdict: the batch peak's consensus has left the claim judged.
     stale: bool | None = None
-    #: The structure a confirmation named; null on a verdict that names none.
+    #: The structure a confirmation named; null on a verdict that names none,
+    #: and where a batch-level claim's window leaves this sample out.
     claimed_inchikey: str | None = None
     claimed_name: str | None = None
-    #: The level the verdict states, fixed when it was recorded (the mapping's
-    #: version is in ``context``); null where it states none, and a reader
-    #: takes the engine's.
+    #: The level the verdict states for this sample, fixed when it was
+    #: recorded (the mapping's version is in ``context``); null where it states
+    #: none, and where a batch-level claim's window leaves this sample out, so
+    #: a reader takes the engine's.
     level: int | None = None
+    level_letter: str | None = None
+    #: On a borrowed level-1 claim: the first and last acquisition time it covers.
+    window_start_utc: Timestamp | None = None
+    window_end_utc: Timestamp | None = None
+    #: On a borrowed verdict: its claim's window leaves this sample out, so
+    #: neither its structure nor its level reaches the sample's row.
+    outside_window: bool | None = None
 
 
 class ScopeVerificationsResponse(BaseModel):
@@ -1281,7 +1264,7 @@ class ScopeVerificationsResponse(BaseModel):
     data: list[ScopeVerificationRecord]
 
 
-class VerifyBatchPeakBody(BaseModel):
+class VerifyBatchPeakBody(ClaimFields):
     """Request body to record a batch-level verdict on a batch peak's species claim."""
 
     batch_peak_id: str = Field(description="The batch peak (anchor) being judged.")
@@ -1306,13 +1289,21 @@ class VerifyBatchPeakBody(BaseModel):
         ),
     )
 
-    claimed_inchikey: str | None = Field(
-        None, description=_CLAIMED_INCHIKEY_DESCRIPTION
+    window_start_utc: datetime | None = Field(
+        None,
+        description=(
+            "A level-1 claim's scope on a batch peak: the first acquisition time "
+            "its standard covers, required with window_end_utc on a level-1 "
+            "claim and refused on any other. A member acquired outside the "
+            "window names no structure and reads the engine's level. A time "
+            "without a zone is UTC."
+        ),
     )
-    claimed_name: str | None = Field(None, description=_CLAIMED_NAME_DESCRIPTION)
+    window_end_utc: datetime | None = Field(
+        None, description="The last acquisition time a level-1 claim covers."
+    )
 
-    _validate_claimed_inchikey = field_validator("claimed_inchikey")(validate_inchikey)
-    _strip_claimed_name = field_validator("claimed_name", mode="before")(_optional_text)
+    _window_utc = field_validator("window_start_utc", "window_end_utc")(as_utc)
 
     @model_validator(mode="after")
     def _guards(self) -> "VerifyBatchPeakBody":
@@ -1322,7 +1313,19 @@ class VerifyBatchPeakBody(BaseModel):
             raise ValueError(
                 "expected_formula is required when verdict is 'confirmed' or 'rejected'"
             )
-        _refuse_bad_claim(self)
+        refuse_bad_claim(self)
+        problem = window_problem(
+            statement(
+                self.verdict,
+                self.evidence_level,
+                self.evidence_detail,
+                self.independent_line,
+            ),
+            self.window_start_utc,
+            self.window_end_utc,
+        )
+        if problem:
+            raise ValueError(problem)
         return self
 
 
@@ -1366,12 +1369,23 @@ class BatchPeakVerificationRecord(BaseModel):
     #: On anchor-context rows: the focused sample's peak the verdict reaches.
     sample_peak_id: str | None = None
     #: The structure a confirmation named; null on a verdict that names none.
+    #: On an anchor-context row, null too where the claim's window leaves the
+    #: focused sample out (``outside_window``).
     claimed_inchikey: str | None = None
     claimed_name: str | None = None
     #: The level the verdict states, fixed when it was recorded (the mapping's
     #: version is in ``context``); null where it states none, and a reader
-    #: takes the engine's.
+    #: takes the engine's. On an anchor-context row, null too where the
+    #: claim's window leaves the focused sample out (``outside_window``).
     level: int | None = None
+    #: The scale's letter beside ``level``; null at level 1 and under version 1.
+    level_letter: str | None = None
+    #: A level-1 claim's scope: the first and last acquisition time it covers.
+    window_start_utc: datetime | None = None
+    window_end_utc: datetime | None = None
+    #: On anchor-context rows: the claim's window leaves the focused sample out,
+    #: so neither its structure nor its level reaches the sample's row.
+    outside_window: bool | None = None
 
 
 class BatchPeakVerificationsResponse(BaseModel):
@@ -1519,7 +1533,9 @@ class BatchImportRow(BaseModel):
             "Optional: the identification level THIS ENGINE stated for the "
             "identity, in the scale both engines share: Schymanski's numbers "
             "with a letter for the kind of evidence (`5a`, `5b`, `4a`, `4b`, "
-            "`3a` to `3d`, `2a`, `2b`, `1`); anything else is refused. Stored "
+            "`3a` to `3d`, `2a`, `2b`); anything else is refused, `1` "
+            "included: level 1 is a confirmed structure, a person's claim in "
+            "review, which no engine states. Stored "
             "on the batch peak the row lands on beside `engine_tier` and "
             "`engine_claim`, so the reference's level reads beside the levels "
             "Mascope's runs stated rather than translated. Read by no roll-up "
@@ -1542,6 +1558,18 @@ class BatchImportRow(BaseModel):
             "shown as the engine wrote it."
         ),
     )
+
+    @field_validator("engine_level")
+    @classmethod
+    def _no_engine_states_one(cls, value):
+        # Level 1 is a confirmed structure, which a person assigns in review
+        # (an identification claim, claims.py) and no engine states.
+        if value == REVIEW_LEVEL:
+            raise ValueError(
+                f"engine_level '{value}' is refused: level 1 is a confirmed "
+                "structure, assigned in review by a person, never by an engine"
+            )
+        return value
 
 
 class ImportBatchRunBody(BaseModel):

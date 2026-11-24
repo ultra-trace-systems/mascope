@@ -650,17 +650,77 @@ class TestVerify:
         assert server.requests == []
 
     @pytest.mark.parametrize(
-        "evidence_level", ["reference_standard", "msms", "orthogonal"]
+        ("evidence_level", "detail"),
+        [
+            ("reference_standard", None),
+            ("msms", "library"),
+            ("msms", "fragments"),
+            ("orthogonal", "separation"),
+            ("orthogonal", "context_list"),
+        ],
     )
     def test_a_structure_confirmation_naming_no_structure_is_not_sent(
-        self, resource, server, evidence_level
+        self, resource, server, evidence_level, detail
     ):
         with pytest.raises(ValueError, match="claimed_inchikey"):
             resource.verify(
-                SAMPLE_ID, "pa-1", "confirmed", evidence_level=evidence_level
+                SAMPLE_ID,
+                "pa-1",
+                "confirmed",
+                evidence_level=evidence_level,
+                evidence_detail=detail,
             )
 
         assert server.requests == []
+
+    @pytest.mark.parametrize("evidence_level", ["msms", "orthogonal"])
+    def test_an_msms_or_orthogonal_confirmation_saying_nothing_is_not_sent(
+        self, resource, server, evidence_level
+    ):
+        with pytest.raises(ValueError, match="evidence_detail"):
+            resource.verify(
+                SAMPLE_ID,
+                "pa-1",
+                "confirmed",
+                evidence_level=evidence_level,
+                claimed_inchikey=GLUCOSE_INCHIKEY,
+            )
+
+        assert server.requests == []
+
+    def test_a_level_one_claim_sends_its_independent_line(self, resource, server):
+        resource.verify(
+            SAMPLE_ID,
+            "pa-1",
+            "confirmed",
+            evidence_level="reference_standard",
+            independent_line="separation",
+            claimed_inchikey=GLUCOSE_INCHIKEY,
+        )
+
+        sent = server.sent("/verify")[0]["json"]
+        assert sent["independent_line"] == "separation"
+        assert "evidence_detail" not in sent
+
+    @pytest.mark.parametrize(
+        ("evidence_level", "detail"), [("msms", "loss"), ("orthogonal", "class")]
+    )
+    def test_a_class_claim_is_sent_with_its_class_alone(
+        self, resource, server, evidence_level, detail
+    ):
+        resource.verify(
+            SAMPLE_ID,
+            "pa-1",
+            "confirmed",
+            evidence_level=evidence_level,
+            evidence_detail=detail,
+            claimed_name="a carboxylic acid",
+        )
+
+        sent = server.sent("/verify")[0]["json"]
+        assert sent["evidence_detail"] == detail
+        assert sent["claimed_name"] == "a carboxylic acid"
+        assert "claimed_inchikey" not in sent
 
     def test_a_pattern_confirmation_is_sent_naming_no_structure(self, resource, server):
         resource.verify(SAMPLE_ID, "pa-1", "confirmed", evidence_level="pattern")

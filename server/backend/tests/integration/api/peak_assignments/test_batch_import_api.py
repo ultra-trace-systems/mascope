@@ -1067,6 +1067,51 @@ async def test_an_engine_level_outside_the_scale_is_refused():
     assert BatchImportRow(mz=1.0, formula="C", engine_level="5a").engine_level == "5a"
 
 
+async def test_an_engine_level_of_one_is_refused():
+    """Level 1 is a confirmed structure, a person's claim in review: no engine
+    states it, the reference included."""
+    with pytest.raises(ValidationError, match="assigned in review by a person"):
+        BatchImportRow(mz=181.0707, formula="C6H12O6", engine_level="1")
+    for level in ("2a", "2b", "3c", "4a"):
+        assert BatchImportRow(mz=1.0, formula="C", engine_level=level).engine_level == (
+            level
+        )
+
+
+async def test_the_route_refuses_an_import_stating_level_one(
+    editor_client, folded_batch, monkeypatch
+):
+    monkeypatch.setenv("MASCOPE_PEAK_ASSIGNMENT", "1")
+    launched = []
+
+    async def fake_task(**kwargs):
+        launched.append(kwargs)
+        return {"status": "success", "message": "", "data": {}}
+
+    from mascope_backend.api.new.peak_assignments import batch_peaks_routes
+
+    monkeypatch.setattr(batch_peaks_routes, "import_batch_run", fake_task)
+    response = await editor_client.post(
+        f"/api/batch-peaks/batch/{folded_batch['batch_id']}/runs/import",
+        json={
+            "engine": "peaky",
+            "engine_version": "0.7.0",
+            "mz_tolerance_ppm": 4.0,
+            "rows": [
+                {
+                    "mz": 181.0707,
+                    "formula": "C6H12O6",
+                    "ionization_mechanism_id": "mech-h",
+                    "engine_level": "1",
+                }
+            ],
+        },
+    )
+    assert response.status_code == 422, response.text
+    assert "engine_level '1' is refused" in response.text
+    assert launched == []
+
+
 async def test_a_rebuild_takes_every_verdict_off(folded_batch, two_identity_scorer):
     batch_id = folded_batch["batch_id"]
     await run_batch_import(

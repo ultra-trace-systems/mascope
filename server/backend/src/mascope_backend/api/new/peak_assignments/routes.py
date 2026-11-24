@@ -539,11 +539,15 @@ async def verify_assignment_route(
     calibration later (verification-calibration loop, V1).
 
     A confirmation may name a structure (``claimed_inchikey``, ``claimed_name``),
-    which makes it an identification claim, and a reference-standard, MS/MS or
-    orthogonal one must (422 otherwise). The record carries the level the verdict
-    states, fixed from its evidence: 1 to 3 with a structure, 4 on a pattern,
-    none on a visual confirmation or a rejection, where a reader takes the
-    engine's.
+    which makes it an identification claim. The record carries the level the
+    verdict states in the shared scale, its number and its letter, fixed from
+    its evidence and what that evidence showed (``evidence_detail``, a reference
+    standard's ``independent_line``; mapping version 2, ``claims.py``): 1 to 3
+    with a structure, 3b with a class named alone, 4a or 4b on a pattern, none
+    on a visual confirmation or a rejection, where a reader takes the engine's.
+    One that states 1, 2 or a 3 naming a candidate must name a structure (422
+    otherwise). A rejection on reference-standard evidence records the
+    confirmation it refutes.
 
     Returns 403 when peak assignment is not enabled for this environment.
 
@@ -561,8 +565,7 @@ async def verify_assignment_route(
         evidence_level=body.evidence_level,
         note=body.note,
         user_id=user.id,
-        claimed_inchikey=body.claimed_inchikey,
-        claimed_name=body.claimed_name,
+        identification=body,
     )
     return AssignmentVerificationsResponse.model_validate(result)
 

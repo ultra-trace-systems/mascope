@@ -610,11 +610,17 @@ class BatchPeaksResource(BaseResource):
                  ``verified_by``, ``verified_utc``, ``superseded_utc`` (null on
                  the live one), ``stale`` (a live verdict about a formula
                  the consensus has since left), ``claimed_inchikey`` and
-                 ``claimed_name`` (the structure a confirmation names, null
-                 where it names none) and ``level`` (the identification level
-                 the verdict states, fixed when it was recorded, with the
-                 mapping's ``level_mapping_version`` in ``context``; null
-                 where it states none). None when nothing was judged.
+                 ``claimed_name`` (the structure a confirmation names, or a
+                 class claim's class alone; null where it names none),
+                 ``level`` and ``level_letter`` (the identification level the
+                 verdict states, its number and the scale's letter, fixed
+                 when it was recorded, with the mapping's
+                 ``level_mapping_version`` and the statement it was fixed
+                 from in ``context``; null where it states none) and
+                 ``window_start_utc``, ``window_end_utc`` (a level-1 claim's
+                 first and last acquisition time: a member acquired outside
+                 them names no structure and reads the engine's level). None
+                 when nothing was judged.
         :rtype: pd.DataFrame | None
         """
         data = self._get(f"batch-peaks/batch/{sample_batch_id}/verdicts")
@@ -687,8 +693,9 @@ class BatchPeaksResource(BaseResource):
         ``engine_claim`` (free text, up to 1024 characters: an evidence level,
         the rule that decided) and ``engine_level`` (the identification level
         the engine stated, in the scale the engines share: ``5a``, ``5b``,
-        ``4a``, ``4b``, ``3a`` to ``3d``, ``2a``, ``2b`` or ``1``; anything
-        else is refused). They are kept on the batch peak the row landed
+        ``4a``, ``4b``, ``3a`` to ``3d``, ``2a`` or ``2b``; anything else is
+        refused, ``1`` included, since level 1 is a confirmed structure, a
+        person's claim in review). They are kept on the batch peak the row landed
         on, beside the consensus tier the server derives, wherever the
         consensus then names the row's identity; :meth:`list` reads them back
         and filters on the tier. The consensus tier stays the server's, and an

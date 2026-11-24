@@ -10,8 +10,8 @@ row worth a verdict.
 
 ``sheet`` reads the bench database (read-only) and writes, per set, the
 brightest such rows to a review sheet under the bench's home: the peak, the
-in-app reading and the reference's, and three empty columns for the verdict,
-its evidence level and a note. It leaves out a row that already has a live
+in-app reading and the reference's, and empty columns for the verdict, its
+evidence level, what that evidence showed, the claim and a note. It leaves out a row that already has a live
 verdict on its identity, and it never shows the evidence or P(correct): the
 verdict is about the data, not the number (guardrail 5 of
 ``docs/dev/verification_calibration_loop.md``). A person fills it in, looking
@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Callable
 
 
-#: The sheet's columns, in order. The last five are the reviewer's.
+#: The sheet's columns, in order. The last seven are the reviewer's.
 COLUMNS = (
     "set",
     "sample_item_id",
@@ -55,6 +55,8 @@ COLUMNS = (
     "reference_tier",
     "verdict",
     "evidence_level",
+    "evidence_detail",
+    "independent_line",
     "claimed_inchikey",
     "claimed_name",
     "note",
@@ -63,10 +65,22 @@ COLUMNS = (
 VERDICTS = ("confirmed", "rejected", "unsure")
 EVIDENCE_LEVELS = ("reference_standard", "msms", "orthogonal", "pattern", "visual")
 
-#: The evidence levels a confirmation names a structure on, by its InChIKey
-#: (``STRUCTURE_EVIDENCE`` in the backend's ``peak_assignments/claims.py``,
-#: whose rules the verify route applies).
-STRUCTURE_EVIDENCE = ("reference_standard", "msms", "orthogonal")
+#: What a confirmation's evidence showed, in each evidence level's words, and
+#: the line beside a reference standard (``EVIDENCE_DETAILS`` and
+#: ``INDEPENDENT_LINES`` in the backend's ``peak_assignments/claims.py``, whose
+#: rules the verify route applies, at version 2 of the claims' mapping).
+EVIDENCE_DETAILS = {
+    "msms": ("library", "fragments", "loss"),
+    "orthogonal": ("separation", "data_and_list", "class", "context_list", "homologue"),
+    "pattern": ("split_pinned", "split_open"),
+}
+INDEPENDENT_LINES = ("msms", "separation", "instrument")
+
+#: The evidence levels whose confirmation must say what it showed.
+DETAIL_REQUIRED = ("msms", "orthogonal")
+
+#: The details whose claim names a class (3b) by name alone, no InChIKey.
+CLASS_DETAILS = ("loss", "class")
 
 #: Rows per set a sheet holds by default.
 TOP = 25
@@ -192,6 +206,47 @@ class Filled:
     problems: list[str] = field(default_factory=list)
 
 
+def _claim_problem(verdict, level, inchikey, name, detail, line) -> str | None:
+    """What the verify route would refuse of a filled row's claim, or None."""
+    confirmed = verdict == "confirmed"
+    if confirmed and level is None:
+        return "a confirmation needs an evidence level"
+    if line is not None:
+        if not confirmed or level != "reference_standard":
+            return "independent_line goes with a confirmation on reference_standard"
+        if line not in INDEPENDENT_LINES:
+            return (
+                f"independent line {line!r} is none of {', '.join(INDEPENDENT_LINES)}"
+            )
+    if detail is not None:
+        words = EVIDENCE_DETAILS.get(level)
+        if not confirmed or words is None:
+            return (
+                "evidence_detail goes with a confirmation on msms, orthogonal "
+                "or pattern"
+            )
+        if detail not in words:
+            return (
+                f"evidence detail {detail!r} on {level} is none of {', '.join(words)}"
+            )
+    if confirmed and level in DETAIL_REQUIRED and detail is None:
+        return f"a confirmation on {level} says what it showed in evidence_detail"
+    if inchikey is not None and not confirmed:
+        return "only a confirmation names a structure"
+    if confirmed and level in DETAIL_REQUIRED and detail in CLASS_DETAILS:
+        if inchikey is not None:
+            return "a class claim names its class in claimed_name, no claimed_inchikey"
+        if name is None:
+            return "a class claim names its class in claimed_name"
+        return None
+    if name is not None and inchikey is None:
+        return "claimed_name goes with claimed_inchikey"
+    names_structure = level == "reference_standard" or level in DETAIL_REQUIRED
+    if confirmed and names_structure and inchikey is None:
+        return f"a confirmation on {level} names its structure in claimed_inchikey"
+    return None
+
+
 def read_filled(text: str) -> Filled:
     """The rows with a verdict, each checked before anything is posted.
 
@@ -227,32 +282,19 @@ def read_filled(text: str) -> Filled:
             continue
         inchikey = (row.get("claimed_inchikey") or "").strip() or None
         name = (row.get("claimed_name") or "").strip() or None
-        if verdict == "confirmed" and level is None:
-            filled.problems.append(
-                f"line {line}: a confirmation needs an evidence level"
-            )
-            continue
-        if verdict == "confirmed" and level in STRUCTURE_EVIDENCE and inchikey is None:
-            filled.problems.append(
-                f"line {line}: a confirmation on {level} names its structure "
-                "in claimed_inchikey"
-            )
-            continue
-        if inchikey is not None and verdict != "confirmed":
-            filled.problems.append(
-                f"line {line}: only a confirmation names a structure"
-            )
-            continue
-        if name is not None and inchikey is None:
-            filled.problems.append(
-                f"line {line}: claimed_name goes with claimed_inchikey"
-            )
+        detail = (row.get("evidence_detail") or "").strip().lower() or None
+        independent = (row.get("independent_line") or "").strip().lower() or None
+        problem = _claim_problem(verdict, level, inchikey, name, detail, independent)
+        if problem:
+            filled.problems.append(f"line {line}: {problem}")
             continue
         filled.rows.append(
             {
                 **row,
                 "verdict": verdict,
                 "evidence_level": level,
+                "evidence_detail": detail,
+                "independent_line": independent,
                 "claimed_inchikey": inchikey,
                 "claimed_name": name,
                 "line": line,
@@ -357,10 +399,14 @@ class Review:
                     "note": (row.get("note") or "").strip() or None,
                 }
                 # The claim's keys only where it names one.
-                if row["claimed_inchikey"] is not None:
-                    payload["claimed_inchikey"] = row["claimed_inchikey"]
-                if row["claimed_name"] is not None:
-                    payload["claimed_name"] = row["claimed_name"]
+                for key in (
+                    "evidence_detail",
+                    "independent_line",
+                    "claimed_inchikey",
+                    "claimed_name",
+                ):
+                    if row.get(key) is not None:
+                        payload[key] = row[key]
                 answer = api.post(
                     f"/api/peak-assignments/sample/{row['sample_item_id']}/verify",
                     payload,
