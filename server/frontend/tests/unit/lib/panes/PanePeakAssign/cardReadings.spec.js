@@ -178,7 +178,7 @@ describe('reasonGroup', () => {
   it("labels a series member by its step in the group's unit, another by its channel", () => {
     expect(memberLabel({ step: 0 }, SERIES)).toBe('root')
     expect(memberLabel({ step: 2 }, SERIES)).toBe('+2 CH2')
-    expect(memberLabel({ step: -1 }, SERIES)).toBe('-1 CH2')
+    expect(memberLabel({ step: -1 }, SERIES)).toBe('\u22121 CH2')
     expect(memberLabel({ step: 1 }, { ...SERIES, unit: 'O' })).toBe('+1 O')
     expect(memberLabel({ mechanism: '[M+NO3]-', formula: 'X' }, CHANNELS)).toBe('[M+NO3]-')
     expect(memberLabel({ formula: 'C3H4O4' }, CHANNELS)).toBe('C3H4O4')
