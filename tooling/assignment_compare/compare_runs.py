@@ -2779,6 +2779,7 @@ def batch_arm(collected: dict[str, dict], manifest: dict, truth: dict) -> dict |
                     frame,
                     skipped=after["skipped"],
                     source_ions=after["source_ions"],
+                    model_versions=after.get("model_versions"),
                     truth=[(frame, truth[name])] if name in truth else None,
                 )
                 if frame is not None

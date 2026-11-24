@@ -2475,6 +2475,9 @@ def test_the_batch_arm_reads_the_runs_after_the_pass_beside_the_control(
 ):
     _, control = _card_of(served, tmp_path / "control")
     after_pass = _add_after_pass()
+    # The pass refit the model; the control predates the model record.
+    rx1 = next(r for r in _Client.runs["s1"] if r["peak_assignment_run_id"] == "rx1")
+    rx1["config"] = {**rx1["config"], **_at_model(2)}
     # A run of a sample in a batch records every stage it read, at records: 0
     # too (MAS-985): the control read none of the batch's decisions.
     ra1 = next(r for r in _Client.runs["s1"] if r["peak_assignment_run_id"] == "ra1")
@@ -2498,6 +2501,15 @@ def test_the_batch_arm_reads_the_runs_after_the_pass_beside_the_control(
     # Every reading of the control, read on the runs after the pass: p2 is a
     # line now, and p1 a candidate.
     assert set(after["readings"]) == set(control["columns"]["A"]["readings"])
+    # The arm's column counts its runs' model versions as the control's does:
+    # the run after the pass took the refit, the control's predates the record.
+    model_rows = ("model_v1", "model_v2", "model_before")
+    assert [after["readings"][k]["value"] for k in model_rows] == [0, 1, 0]
+    assert [control["columns"]["A"]["readings"][k]["value"] for k in model_rows] == [
+        0,
+        0,
+        1,
+    ]
     assert after["readings"]["assigned"]["value"] == 0
     assert control["columns"]["A"]["readings"]["assigned"]["value"] == 2
     moves = after["moves"]
@@ -2755,6 +2767,27 @@ def test_the_card_counts_each_set_s_controls_by_model_version(
     v2 = " | ".join(str(values[name][1]) for name in ("A", "G", "pooled"))
     text = (out / "card.md").read_text()
     assert f"| of them read off a run at measurement model v2 | {v2} |" in text
+
+
+def test_a_set_of_two_samples_at_one_version_counts_both(served, tmp_path):
+    for sample in ("s1", "s2"):
+        run = _Client.runs[sample][0]
+        run["config"] = {**run["config"], **_at_model(2)}
+    manifest = tmp_path / "one_set.json"
+    manifest.write_text(
+        json.dumps(
+            {"sets": {"A": {"workspace": "Chamber study", "samples": ["s1", "s2"]}}}
+        )
+    )
+    out = tmp_path / "card"
+    compare_runs.main(["--sets", str(manifest), "--card", str(out)])
+    readings = json.loads((out / "card.json").read_text())["columns"]["A"]["readings"]
+    assert readings["samples"]["value"] == 2
+    assert [readings[f"model_{v}"]["value"] for v in ("v1", "v2", "before")] == [
+        0,
+        2,
+        0,
+    ]
 
 
 def test_with_decoy_each_arm_is_split_by_its_control_s_model_version(served, tmp_path):
