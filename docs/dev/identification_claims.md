@@ -1,7 +1,7 @@
 # Identification claims: identifiers, candidates and levels
 
 - **Status:** building
-- **As of:** 2026-11-17
+- **As of:** 2026-11-24
 - **Tracked in:** [FAIR data roadmap](https://linear.app/ultra-trace/project/fair-data-roadmap-0484070a43ea)
   (Linear: MAS-357 the structure lookup, MAS-363 the exports, MAS-361 the
   decision on the classic sheet; MAS-31 is the level's FAIR export),
@@ -252,9 +252,12 @@ Constraints, in the schema and the pydantic layer: `level` 1 to 3 requires
 InChIKey has MAS-28's shape. Version 2 of the mapping (5.4) narrows the
 first: a class claim (3b) names a class, not a structure, and records it in
 `claimed_name` with no InChIKey, so only 1, 2 and a level-3 claim naming a
-candidate require one; step 5.8f changes the CHECK
-`structure_level_names_structure`, `claims.claim_level` and
-`claims.claim_problem` with the mapping. When the InChIKey resolves to a candidate of the
+candidate require one. Step 5.8f (MAS-943) built it: the CHECK
+`structure_level_names_structure` lets a level 3 with the letter `b` name no
+structure, `claims.claim_level` and `claims.claim_problem` take the same
+exception (a class claim's name goes without an InChIKey, and it may carry
+none), and the claim records the scale's letter beside its number in
+`level_letter`, which a CHECK keeps in the scale's vocabulary. When the InChIKey resolves to a candidate of the
 row (a reference identity or the target's declaration) its formula agreement
 is already known; a free InChIKey no candidate carries is accepted with its
 name and shown as *unlisted*.
@@ -300,9 +303,11 @@ identity, so the requirement costs one look rather than a paste. Rows recorded
 before the columns exist keep their evidence level and read as level 4, with
 no structure.
 
-**Version 2 (planned: the quality plan's step 5.8f, decision 38).** The claim
-records the scale's letter beside its number, and version 1's two coarse rows
-split by what the evidence shows:
+**Version 2 (built: the quality plan's step 5.8f, decision 38, MAS-943).**
+The claim records the scale's letter beside its number, and version 1's two
+coarse rows split by what the evidence shows. The person says what it showed
+in the verdict's `evidence_detail` (a reference standard's line in
+`independent_line`), and the server fixes the level from it:
 
 | `evidence_level` | what the person states | `level` |
 |---|---|---|
@@ -315,12 +320,55 @@ split by what the evidence shows:
 | `pattern` | the formula, the split pinned or open | 4a or 4b |
 | `visual` | - | the engine's |
 
+| request | `evidence_detail` |
+|---|---|
+| `msms` | `library`, `fragments`, `loss` |
+| `orthogonal` | `separation`, `data_and_list` (3a), `class` (3b), `context_list` (3c), `homologue` (3d) |
+| `pattern` | `split_pinned`, `split_open`; none sent reads open |
+| `reference_standard` | none; `independent_line` is `msms`, `separation` or `instrument` |
+
+A reference standard is an authentic standard on this instrument with the
+same reagent chemistry: that is what the evidence level means under version 2,
+so the form says it where the level is picked and the request carries no
+separate field for it. An MS/MS or orthogonal confirmation must say what it
+showed; a pattern one that says nothing states 4b, the split open, since the
+level assumes no split nobody said was pinned, and a client that predates the
+field still records the formula it confirmed. Each claim records, in
+`context.claim`, what was said (`evidence_detail`, `independent_line`), its
+evidence line and its lift, as every level carries them (the confidence note's
+point 2); a reference standard with no line has the lift "an independent
+line" (decided 2026-11-17 by the plan owner).
+
 A class claim, 3b from one loss or from orthogonal class evidence, names a
 class and no structure: it records the class in `claimed_name` with no
 InChIKey, the one claim at 1 to 3 without one (section 5.2).
-A level-1 claim is scoped: on a sample to that sample, on a batch peak to a
-time window, outside which the batch peak reads the engine's level. A claim
-made under version 1 keeps its level and its version.
+
+A level-1 claim is scoped: on a sample to that sample, which its key already
+does; on a batch peak to a time window, `window_start_utc` and
+`window_end_utc` on `batch_peak_verification`, its first and last
+acquisition time, both ends included. The request requires the window on a
+level-1 batch claim and refuses it on any other, and CHECKs keep it whole, in
+order and on level 1 alone. Outside it the verdict still reaches a member
+(the window scopes the structure, not the formula confirmed), but its
+structure and its level do not: the anchor-context read and the batch or
+dataset read serve that member's record with no `claimed_inchikey`, no
+`claimed_name`, no level and `outside_window` set (`claims.level_reaches`,
+`claim_records.for_sample`), and the row reads the engine's level. The
+verdict, its evidence level and the window still reach the member. The
+batch's own read keeps the claim whole.
+
+A standard that disagrees refutes the structure. A rejection on
+`reference_standard` evidence that supersedes a live confirmation records it
+in `context.refutes` (its id, level, letter, evidence level, structure and
+time), and states no level, so the row reads the engine's again. It is a
+rejection like any other in the label pool.
+
+No engine path and no import states level 1. The engine's level records are
+checked as they are written (`identification_level.engine_stated`), and the
+batch import refuses an `engine_level` of 1.
+
+A claim made under version 1 keeps its level, its version and no letter: the
+migration (`2989ee6e6bde`) backfills nothing.
 
 ### 5.5 MS/MS as evidence
 
@@ -486,6 +534,16 @@ popovers offer that compound; the inspector offers every identity the detail
 read carries. The target's declaration reaches no read yet and joins the
 candidates with MAS-358. `verification_calibration_loop.md` section 4.6 has the
 whole.
+*Built (MAS-943, step 5.8f):* the mapping at version 2 as section 5.4 says,
+with the letter in `level_letter`, the statement in `context.claim`, the
+narrowed CHECK, a level-1 batch claim's window and the refutation. The capture
+forms ask what the evidence showed (`BaseClaimEvidence.vue`), take a class by
+name in place of a structure (`BaseClaimStructure.vue`) and a level-1 batch
+claim's window (`BaseClaimWindow.vue`, starting from the batch's first and
+last acquisition); the inspector's *Reject* dialog offers *A reference
+standard disagrees* where a confirmation is live. The badge shows the letter,
+the class, the window and the refutation. The bench's review sheet takes
+`evidence_detail` and `independent_line`.
 
 **D. Level and claim in the exports** (MAS-363; FAIR data roadmap, extends
 MAS-31; blocked by MAS-359, MAS-73 and MAS-361).

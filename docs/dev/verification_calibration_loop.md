@@ -239,24 +239,44 @@ The level is **stored when the verdict is recorded**, with the mapping's version
 later, while the engine's level (MAS-73) is recomputed per run. The two meet only when a row is
 read, and the live claim wins.
 
-| `evidence_level` | structure | `level` |
-|---|---|---|
-| `reference_standard` | required | 1 |
-| `msms` | required | 2 |
-| `orthogonal` | required | 3 |
-| `pattern` | optional | 4 |
-| `visual` | optional | none: the engine's |
+**Version 2** (step 5.8f, MAS-943; [`identification_claims.md`](identification_claims.md) section
+5.4) states the shared scale's level, its number in `level` and its letter in `level_letter`
+(migration `2989ee6e6bde`), from the evidence level and what the person says it showed:
+
+| `evidence_level` | what it showed (`evidence_detail`) | `level` | structure |
+|---|---|---|---|
+| `reference_standard` | with an `independent_line` (`msms`, `separation`, `instrument`) | 1 | required |
+| `reference_standard` | no independent line | 2b, lift "an independent line" | required |
+| `msms` | `library`, `fragments` | 2a, 2b | required |
+| `msms` | `loss` | 3b | a class in `claimed_name`, no InChIKey |
+| `orthogonal` | `separation`; `data_and_list`, `context_list`, `homologue` | 2b; 3a, 3c, 3d | required |
+| `orthogonal` | `class` | 3b | a class in `claimed_name`, no InChIKey |
+| `pattern` | `split_pinned`; `split_open` or none | 4a; 4b | optional |
+| `visual` | - | none: the engine's | optional |
+
+`context.claim` records what was said, the evidence line and the lift. A level-1 claim on a batch
+peak names its window (`window_start_utc`, `window_end_utc`); a member acquired outside it names no
+structure and reads the engine's level (`outside_window` on the per-sample reads). A rejection on a
+reference standard that supersedes a live confirmation records it in `context.refutes`. A claim
+recorded under version 1 (1 on a standard, 2 on MS/MS, 3 orthogonal, 4 a pattern) keeps its level,
+its version and no letter.
 
 A rejection or an unsure verdict states no level. A structure named on a pattern or a visual
 confirmation is kept and raises nothing.
 
-**Rules.** Four CHECKs on each table: `level` is 1 to 5; a level 1 to 3 names a structure; only a
-confirmation names one; the InChIKey has a target compound's shape (MAS-28). The request bodies
-(`VerifyAssignmentBody`, `VerifyBatchPeakBody`, through `claims.claim_problem`) apply the same and
-two more, each a 422 naming its rule: a name goes with an InChIKey, and a confirmation on
-`reference_standard`, `msms` or `orthogonal` evidence names a structure. That last one is the request
-layer's alone: every verdict recorded before the columns carries those evidence levels without one,
-and a CHECK would refuse the supersede stamp that later replaces it. Those earlier verdicts keep
+**Rules.** Five CHECKs on each table: `level` is 1 to 5; its letter is one the scale has for the
+number; a level 1 to 3 names a structure, but for a class claim (3b); only a confirmation names
+one; the InChIKey has a target compound's shape (MAS-28). Three more on `batch_peak_verification`
+keep a window whole, in order and on a level 1. The request bodies (`VerifyAssignmentBody`,
+`VerifyBatchPeakBody`, through `claims.claim_problem` and `claims.window_problem`) apply the same
+and more, each a 422 naming its rule: what the evidence showed and an independent line are said
+only of a confirmation, in their evidence level's words, and an MS/MS or orthogonal confirmation
+says it; a name goes with an InChIKey but on a class claim, which names a class and no InChIKey; a
+confirmation stating 1, 2 or a 3 naming a candidate names a structure; a level-1 batch claim names
+its window. That a confirmation on `reference_standard`, `msms` or `orthogonal` evidence states a
+level at all, and so names its structure, is the request layer's alone: every verdict recorded
+before the columns carries those evidence levels without one, and a CHECK would refuse the
+supersede stamp that later replaces it. Those earlier verdicts keep
 their evidence level; the migration writes `level = 4` on every confirmed one (the formula
 confirmed, no structure), and none on a rejection or an unsure one.
 
@@ -265,7 +285,13 @@ snapshot and reads no claim column: a confirmation is one positive whether it na
 not.
 
 **Capture.** The three forms (the inspector's verdict dialog, the sample ledger's and the batch
-ledger's Verdict popovers) show a *Structure* choice once an evidence level is picked
+ledger's Verdict popovers) ask what the evidence showed once an evidence level is picked
+(`BaseClaimEvidence.vue`: a standard's independent line, MS/MS's library spectrum, fragments or
+loss, orthogonal evidence's letter, a pattern's split, open until said pinned), and the batch
+popover a level-1 claim's window (`BaseClaimWindow.vue`, from the batch's first and last
+acquisition). The inspector's *Reject* dialog offers *A reference standard disagrees* where a
+confirmation is live, which sends the rejection on `reference_standard`. Then they show a
+*Structure* choice, or for a class claim a *Class* name
 (`BaseClaimStructure.vue`): the row's candidates (`claimCandidates` in `src/lib/verification.js`,
 the target's declaration first, then the reference identities, each InChIKey once), and an
 *Unlisted* InChIKey and name last. On structure evidence the first candidate is picked for the user
