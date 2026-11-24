@@ -172,9 +172,12 @@ const mode = {
 
     // A change to what a run computes makes the mode's next version. Samples
     // already processed keep theirs until they are reprocessed: a calibration
-    // collection change needs a re-calibration (the stronger signal), a
-    // mechanism or diagnostic change a rematch. Warn accordingly before
-    // persisting.
+    // collection change flags every affected batch for re-calibration (the
+    // stronger signal), a mechanism change every affected batch for a rematch.
+    // A diagnostic-only change flags only the daily acquisition batches: an
+    // analysis batch is matched against its own collections, so it keeps its
+    // status, and its samples move onto the new version only when someone
+    // re-matches or re-calibrates it. Warn accordingly before persisting.
     const next = `version ${(o.version ?? 1) + 1}`
     if (calibrationChanged) {
       confirm.require({
@@ -189,15 +192,30 @@ const mode = {
         acceptProps: { icon: 'pi pi-check', label: 'Update', severity: 'warn' },
         rejectProps: { label: 'Cancel', severity: 'secondary' }
       })
-    } else if (mechanismsChanged || diagnosticChanged) {
+    } else if (mechanismsChanged) {
       confirm.require({
         icon: 'pi pi-exclamation-triangle',
         header: 'Confirm ionization mode update',
         message:
-          `Changing the ionization mechanisms or diagnostic collection makes ${next} of ` +
-          'this mode. Samples already processed keep the version they were matched under. ' +
-          'Batches containing them will be flagged for re-matching, which moves their ' +
-          'samples onto the new version. Do you want to proceed?',
+          `Changing the ionization mechanisms makes ${next} of this mode. Samples already ` +
+          'processed keep the version they were matched under. Batches containing them ' +
+          'will be flagged for re-matching, which moves their samples onto the new ' +
+          'version. Do you want to proceed?',
+        accept: doSave,
+        acceptProps: { icon: 'pi pi-check', label: 'Update', severity: 'warn' },
+        rejectProps: { label: 'Cancel', severity: 'secondary' }
+      })
+    } else if (diagnosticChanged) {
+      confirm.require({
+        icon: 'pi pi-exclamation-triangle',
+        header: 'Confirm ionization mode update',
+        message:
+          `Changing the diagnostic collection makes ${next} of this mode. Samples already ` +
+          'processed keep the version they were matched under. Daily acquisition batches ' +
+          'containing them will be flagged for re-matching, which moves their samples onto ' +
+          'the new version. Analysis batches keep their status and their own collections; ' +
+          'their samples move onto the new version when you re-match or re-calibrate them. ' +
+          'Do you want to proceed?',
         accept: doSave,
         acceptProps: { icon: 'pi pi-check', label: 'Update', severity: 'warn' },
         rejectProps: { label: 'Cancel', severity: 'secondary' }
