@@ -505,7 +505,10 @@ As built (`batch_assignment_status.py`):
 - `resampled` (MAS-1090): of the samples the pass covered with an in-app run of their own
   completed after the pass started, those whose newest such run read older batch
   decisions than the current ones: a stage its `batch_decisions` record names (MAS-985)
-  is at a newer version in its `batch_peak_stage` row now. A run with no record, or one
+  is at a newer version in its `batch_peak_stage` row now, or was `running` when the run
+  read it: a stage's version counts up when the stage starts, so a run read during a
+  stage recorded the version the stage keeps, but read its records before the stage
+  decided. A run with no record, or one
   that names no stage, counts by its time alone, as before MAS-985. A sample not re-run
   since the pass is never `resampled`: it still reads what the pass wrote for it. Decoy
   runs and imported runs are not counted, and a new sample is new, not resampled. One

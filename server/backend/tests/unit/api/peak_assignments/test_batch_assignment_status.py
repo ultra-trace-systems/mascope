@@ -97,7 +97,29 @@ def _record(**versions):
         ({}, True),
         ({"stages": {}}, True),
         ({"applied": {}}, True),
+        # Read while the stage ran: its version counts up when it starts, so
+        # the run read records the stage had not decided yet.
+        (
+            {
+                "stages": {
+                    "known_species": {"version": 2, "state": "running"},
+                    "series": {"version": 1, "state": "current"},
+                }
+            },
+            True,
+        ),
+        # Read while it stood current or stale: what the version says.
+        (
+            {
+                "stages": {
+                    "known_species": {"version": 2, "state": "current"},
+                    "series": {"version": 1, "state": "stale"},
+                }
+            },
+            False,
+        ),
         # A stage's entry with no version it read: behind.
+        ({"stages": {"known_species": None}}, True),
         ({"stages": {"known_species": {"records": 1}}}, True),
         ({"stages": {"known_species": {"version": "2"}}}, True),
     ],

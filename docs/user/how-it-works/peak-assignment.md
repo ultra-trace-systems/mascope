@@ -2405,7 +2405,8 @@ it counts, and the samples or the collections it names:
 - **Re-run samples** (`resampled`). Samples the pass covered that were re-run since it
   started, where the newest such run read older batch decisions than the batch holds
   now. Each run records the version of every batch stage it read. When a stage has
-  decided again since, the sample is behind. A run made after the pass that read its
+  decided again since, the sample is behind. So is a sample whose run read a stage
+  while the pass was still running it. A run made after the pass that read its
   decisions is not. A run from before runs kept that record counts by its time alone.
   Each such run folds the sample in again. Decoy runs and imported runs do not count.
 - **Library changed.** A target collection attached to the batch, detached or edited, or

@@ -20,9 +20,9 @@ runs and the stage rows record:
   - ``resampled``: samples of the pass re-run since it started whose newest
     in-app run read older batch decisions than the current ones: a stage
     whose records it read (``batch_decisions`` in its config, MAS-985) is at
-    a newer version now (:func:`read_older_decisions`). A run that recorded
-    no stage, one from before runs kept the record, counts by its time
-    alone. A sample not re-run since the pass still reads what the pass
+    a newer version now, or was running when the run read it
+    (:func:`read_older_decisions`). A run that recorded no stage, one from
+    before runs kept the record, counts by its time alone. A sample not re-run since the pass still reads what the pass
     wrote for it, and is none;
   - ``library_changed``: a target collection attached, detached or edited, a
     reference list loaded or dropped, against the pass's record;
@@ -182,12 +182,16 @@ def sample_reasons(
 def read_older_decisions(record: Any, versions: dict[str, Any]) -> bool:
     """Whether a run read older batch decisions than the current ones: a
     stage its record names (``BatchDecisions.record``) is at a newer version
-    now.
+    now, or was running when the run read it.
 
-    A record that names no stage, or no record at all (a run from before
-    runs kept it), reads as older: the time rule the status kept until runs
-    recorded what they read. A stage the record names that has no row now is
-    none newer.
+    A stage's version counts up when the stage starts, not when it ends
+    (``batch_stages._begin``), so a run that read a stage while it ran
+    recorded the version the stage keeps, with the state ``running``: it
+    read the stage's records before the stage decided, and reads as older
+    whatever the version now. A record that names no stage, or no record at
+    all (a run from before runs kept it), reads as older: the time rule the
+    status kept until runs recorded what they read. A stage the record names
+    that has no row now is none newer.
 
     :param record: The run's ``batch_decisions`` record.
     :param versions: Stage name -> its row's version now.
@@ -199,8 +203,12 @@ def read_older_decisions(record: Any, versions: dict[str, Any]) -> bool:
         now = versions.get(stage)
         if now is None:
             continue
-        read = entry.get("version") if isinstance(entry, dict) else None
+        if not isinstance(entry, dict):
+            return True
+        read = entry.get("version")
         if not isinstance(read, int) or now > read:
+            return True
+        if entry.get("state") == STATE_RUNNING:
             return True
     return False
 
@@ -443,7 +451,7 @@ async def _resampled(
     """
     since = last_run.batch_peak_run_utc_created
     versions = {stage: row.version for stage, row in rows.items()}
-    rows = (
+    runs = (
         await session.execute(
             select(
                 PeakAssignmentRun.sample_item_id,
@@ -469,7 +477,7 @@ async def _resampled(
     ).all()
     return [
         sample_item_id
-        for sample_item_id, record in rows
+        for sample_item_id, record in runs
         if read_older_decisions(record, versions)
     ]
 
