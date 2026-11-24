@@ -3058,6 +3058,14 @@ class PeakAssignment(Base):
     # which is the in-app case (its tier IS `tier`) and the usual case for the
     # rows an external engine leaves untiered.
     engine_tier: Mapped[Optional[str]] = mapped_column(String(24))
+    # The identification level the ENGINE that produced this row stated, in the
+    # shared scale (``identification_level.LEVELS``), beside ``engine_tier`` and
+    # under its rules: an import's own statement, stored as supplied (checked
+    # only against the scale), read by no roll-up and following its formula
+    # through a hand edit as ``engine_tier`` does. ``level`` below stays the
+    # in-app engine's: NULL on an imported row, whose level is this one. NULL
+    # where the engine stated none, which is every in-app row.
+    engine_level: Mapped[Optional[str]] = mapped_column(String(4))
     # The row's identification level in the shared scale (``4a``, ``5a``, ...;
     # ``identification_level.LEVELS``), as the in-app engine stated it: a
     # column beside the tier so the ledger filters on it and the batch ledger

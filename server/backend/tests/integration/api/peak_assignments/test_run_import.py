@@ -2555,6 +2555,78 @@ class TestTheEnginesOwnTierIsRecorded:
         assert rows[0].engine_tier is None
 
 
+class TestTheEnginesOwnLevelIsRecorded:
+    """An imported run can state its engine's identification level per row,
+    beside its `engine_tier`, as a batch import states it per batch peak.
+
+    The row's own `level` stays this server's statement: an import never sets
+    it, so the reference's level reads beside Mascope's rather than as it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_it_round_trips_through_the_import_and_the_reads(
+        self, editor_client, import_sample, feature_enabled, async_session_factory
+    ):
+        response = await _post(
+            editor_client,
+            import_sample,
+            _body([_row("peak-0", engine_tier="candidate", engine_level="4b")]),
+        )
+        assert response.status_code == 200
+        run_id = response.json()["data"][0]["peak_assignment_run_id"]
+
+        async with async_session_factory() as session:
+            rows = await _rows_of(session, run_id)
+        assert [(r.engine_level, r.level) for r in rows] == [("4b", None)]
+
+        listed = await editor_client.get(
+            f"/api/peak-assignments/sample/{import_sample}",
+            params={"peak_assignment_run_id": run_id},
+        )
+        assert listed.status_code == 200
+        row = listed.json()["data"][0]
+        assert (row["engine_level"], row["level"]) == ("4b", None)
+
+        detail = await editor_client.get(
+            f"/api/peak-assignments/sample/{import_sample}"
+            f"/assignment/{row['peak_assignment_id']}"
+        )
+        assert detail.status_code == 200
+        assert detail.json()["data"][0]["engine_level"] == "4b"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("level", ["6", "1"])
+    async def test_a_level_outside_the_scale_or_of_review_is_refused(
+        self, editor_client, import_sample, feature_enabled, level
+    ):
+        # Level 1 is a confirmed structure, a person's claim in review: no
+        # engine states it, so an import cannot either (MAS-943).
+        response = await _post(
+            editor_client,
+            import_sample,
+            _body([_row("peak-0", engine_level=level)]),
+        )
+
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_absence_is_the_default(
+        self, editor_client, import_sample, feature_enabled, async_session_factory
+    ):
+        response = await _post(editor_client, import_sample, _body([_row("peak-0")]))
+
+        assert response.status_code == 200
+        run_id = response.json()["data"][0]["peak_assignment_run_id"]
+        async with async_session_factory() as session:
+            rows = await _rows_of(session, run_id)
+        assert rows[0].engine_level is None
+        listed = await editor_client.get(
+            f"/api/peak-assignments/sample/{import_sample}",
+            params={"peak_assignment_run_id": run_id},
+        )
+        assert listed.json()["data"][0]["engine_level"] is None
+
+
 class TestTheServerDerivesAnOmittedTier:
     """A row need not state a tier, and the documented advice is not to.
 

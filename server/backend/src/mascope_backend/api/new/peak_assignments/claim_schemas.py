@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field, field_validator
 from mascope_backend.api.models.target.compounds.target_compound_pydantic_model import (
     validate_inchikey,
 )
-from mascope_backend.api.new.peak_assignments.claims import claim_problem
+from mascope_backend.api.new.peak_assignments.claims import REVIEW_LEVEL, claim_problem
 
 
 # What a confirmation's evidence showed, which decides the letter of the level
@@ -117,3 +117,18 @@ def refuse_bad_claim(body) -> None:
     )
     if problem:
         raise ValueError(problem)
+
+
+def refuse_engine_level_one(value: str) -> str:
+    """Refuse an imported ``engine_level`` of 1, keeping any other as sent.
+
+    Level 1 is a confirmed structure, which a person assigns in review (a
+    claim, ``claims.REVIEW_LEVEL``) and no engine states: the per-sample and
+    the batch import rows refuse it alike.
+    """
+    if value == REVIEW_LEVEL:
+        raise ValueError(
+            f"engine_level '{value}' is refused: level 1 is a confirmed "
+            "structure, assigned in review by a person, never by an engine"
+        )
+    return value

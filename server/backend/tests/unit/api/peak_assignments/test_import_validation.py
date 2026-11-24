@@ -248,6 +248,27 @@ class TestTheEnginesOwnTierIsCheckedByNothing:
         assert _import_row().engine_tier is None
 
 
+class TestTheEnginesOwnLevel:
+    """`engine_level` is the producing engine's level, typed as the scale."""
+
+    @pytest.mark.parametrize("level", ["2a", "3d", "4a", "4b", "5a", "5b"])
+    def test_a_level_of_the_scale_is_kept_as_sent(self, level):
+        assert _import_row(engine_level=level).engine_level == level
+
+    def test_level_one_is_refused_as_no_engines_to_state(self):
+        # A confirmed structure is a person's claim in review (MAS-943).
+        with pytest.raises(ValidationError, match="level 1 is a confirmed structure"):
+            _import_row(engine_level="1")
+
+    @pytest.mark.parametrize("level", ["6", "4c", "4A", "", "level 4"])
+    def test_anything_else_is_refused(self, level):
+        with pytest.raises(ValidationError):
+            _import_row(engine_level=level)
+
+    def test_absence_is_the_default(self):
+        assert _import_row().engine_level is None
+
+
 class TestTierCoherence:
     """A tier must mean what the run's declared bands say it means.
 
@@ -408,7 +429,7 @@ class TestRowFieldBoundsMatchTheColumns:
 
     #: Fields a closed vocabulary bounds instead of a length: the Literal is
     #: already narrower than the column, so a max_length would add nothing.
-    VOCABULARY_BOUNDED = {"role", "source", "tier", "engine_tier"}
+    VOCABULARY_BOUNDED = {"role", "source", "tier", "engine_tier", "engine_level"}
 
     @pytest.mark.parametrize("poison", [float("inf"), float("-inf"), float("nan")])
     def test_no_float_field_accepts_a_non_finite_value(self, poison):
