@@ -885,8 +885,9 @@ class BatchPeaksResource(BaseResource):
         ``behind`` or ``current``. ``behind`` lists the reasons, each with its
         ``reason``, ``count`` and the first ``sample_item_ids`` or a
         ``detail``: ``new_samples`` and ``removed_samples`` against the
-        samples the last pass covered, ``resampled`` (a sample's in-app run
-        since the pass), ``library_changed`` (a target collection or
+        samples the last pass covered, ``resampled`` (a sample re-run since
+        the pass whose newest in-app run read older batch decisions than the
+        current ones, or recorded none), ``library_changed`` (a target collection or
         reference list since), ``settings_changed`` (the batch's
         assignment settings hash otherwise than the ones the pass ran on),
         ``engine_changed`` and ``stages_stale``. A

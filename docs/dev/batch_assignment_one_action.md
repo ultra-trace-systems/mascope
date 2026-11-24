@@ -502,9 +502,14 @@ As built (`batch_assignment_status.py`):
 - The reasons are measured against the newest completed pass (`batch_stages.last_pass`),
   as `needs_fold` is, and `needs_fold` is `fold_reasons` on the same reads, so the two
   never disagree. A failed or cancelled pass is compared with nothing.
-- `resampled` until MAS-985 merges: the samples the pass covered with an in-app run of
-  their own completed after the pass started; decoy runs and imported runs are not
-  counted, and a new sample is new, not resampled.
+- `resampled` (MAS-1090): of the samples the pass covered with an in-app run of their own
+  completed after the pass started, those whose newest such run read older batch
+  decisions than the current ones: a stage its `batch_decisions` record names (MAS-985)
+  is at a newer version in its `batch_peak_stage` row now. A run with no record, or one
+  that names no stage, counts by its time alone, as before MAS-985. A sample not re-run
+  since the pass is never `resampled`: it still reads what the pass wrote for it. Decoy
+  runs and imported runs are not counted, and a new sample is new, not resampled. One
+  query reads the newest run of every candidate.
 - `stages_stale` leaves out the marks that are not reasons: `curation` and `import`, a
   `consensus` mark made after the pass ended (the recompute of a fold, a pin or an
   import), and a `fold` mark where a sample reason holds. A `consensus` mark made inside

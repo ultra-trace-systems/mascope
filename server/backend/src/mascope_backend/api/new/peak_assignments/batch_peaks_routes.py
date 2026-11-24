@@ -1555,8 +1555,9 @@ async def get_batch_assignment_status_route(
 
     ``behind`` measures the batch against its newest completed pass
     (``last_pass``): ``new_samples`` and ``removed_samples`` against the
-    samples it covered, ``resampled`` (an in-app run of a sample completed
-    since it started), ``library_changed`` (a target collection or reference
+    samples it covered, ``resampled`` (a sample re-run since it started
+    whose newest in-app run read older batch decisions than the current
+    ones, or recorded none), ``library_changed`` (a target collection or reference
     list since), ``engine_changed`` and ``stages_stale`` (a stage stale for
     any other reason). A curation, a verdict or an import is none.
     ``needs_fold`` says whether the next pass folds every sample first, and

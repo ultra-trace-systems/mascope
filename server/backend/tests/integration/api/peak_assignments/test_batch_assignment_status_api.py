@@ -52,6 +52,7 @@ from mascope_backend.api.new.peak_assignments.batch_staleness import (
     BatchStage,
     mark_batch_stale,
     mark_stale,
+    stage_states,
 )
 from mascope_backend.api.new.peak_assignments.config import (
     PeakAssignmentConfig,
@@ -597,6 +598,113 @@ async def test_a_samples_run_completed_during_the_pass_is_resampled(
     assert reasons["resampled"]["sample_item_ids"] == [folded["s1"]]
 
 
+async def _versions(async_session_factory, batch_id) -> dict[str, int]:
+    async with async_session_factory() as session:
+        rows = await stage_states(session, batch_id)
+    return {stage: row.version for stage, row in rows.items()}
+
+
+def _read(versions: dict[str, int]) -> dict:
+    """A run's ``batch_decisions`` record of having read every stage at the
+    versions given (``BatchDecisions.record``)."""
+    return {
+        "batch_decisions": {
+            "stages": {
+                stage: {
+                    "version": version,
+                    "state": "current",
+                    "records": 1,
+                    "record_versions": [version],
+                }
+                for stage, version in versions.items()
+            }
+        }
+    }
+
+
+async def test_a_run_after_the_pass_that_read_its_decisions_is_not_resampled(
+    guest_client, folded, stand_ins, async_session_factory
+):
+    batch_id = folded["batch_id"]
+    await _pass(batch_id)
+    versions = await _versions(async_session_factory, batch_id)
+    assert set(versions) == set(ORDER)
+    await _add_run(async_session_factory, folded["s1"], config=_read(versions))
+    status = await _status(guest_client, batch_id)
+    assert status["state"] == "current", status["behind"]
+
+
+async def test_a_run_before_a_later_stage_of_the_pass_decided_is_resampled(
+    guest_client, folded, stand_ins, async_session_factory
+):
+    """Re-run after the pass started, before its later stages decided: what
+    it read of them is older than their versions now."""
+    batch_id = folded["batch_id"]
+    entered, release = _hold(stand_ins, ORDER[1])
+    task = asyncio.create_task(_pass(batch_id))
+    try:
+        await asyncio.wait_for(entered.wait(), 30)
+        # A stage that has not run yet is read at version 0, as
+        # ``BatchDecisions.record`` records one.
+        standing = await _versions(async_session_factory, batch_id)
+        read = {stage: standing.get(stage, 0) for stage in ORDER}
+        await _add_run(async_session_factory, folded["s1"], config=_read(read))
+    finally:
+        release.set()
+        await task
+    now = await _versions(async_session_factory, batch_id)
+    assert now[ORDER[-1]] > read[ORDER[-1]]
+    status = await _status(guest_client, batch_id)
+    assert status["state"] == "behind"
+    reasons = _reasons(status)
+    assert set(reasons) == {"resampled"}
+    assert reasons["resampled"]["sample_item_ids"] == [folded["s1"]]
+
+
+async def test_a_sample_not_re_run_since_the_pass_is_not_resampled(
+    guest_client, folded, stand_ins, async_session_factory
+):
+    """Its run, made before the pass, read older decisions by construction:
+    it still reads what the pass wrote for it."""
+    batch_id = folded["batch_id"]
+    await _add_run(async_session_factory, folded["s1"], config=_read({ORDER[0]: 0}))
+    await _add_run(async_session_factory, folded["s2"])
+    await _pass(batch_id)
+    assert (await _status(guest_client, batch_id))["state"] == "current"
+
+
+async def test_the_newest_run_since_the_pass_is_the_one_read(
+    guest_client, folded, stand_ins, async_session_factory
+):
+    """Of two runs since the pass, the newer's record counts: a stale run
+    followed by a current one is not resampled, and the other way round is."""
+    batch_id = folded["batch_id"]
+    await _pass(batch_id)
+    versions = await _versions(async_session_factory, batch_id)
+    older = {stage: version - 1 for stage, version in versions.items()}
+    now = datetime.now(timezone.utc)
+    later = now + timedelta(seconds=1)
+    for sample, first, second in (
+        (folded["s1"], older, versions),
+        (folded["s2"], versions, older),
+    ):
+        await _add_run(
+            async_session_factory,
+            sample,
+            config=_read(first),
+            peak_assignment_run_utc_completed=now,
+        )
+        await _add_run(
+            async_session_factory,
+            sample,
+            config=_read(second),
+            peak_assignment_run_utc_completed=later,
+        )
+    reasons = _reasons(await _status(guest_client, batch_id))
+    assert set(reasons) == {"resampled"}
+    assert reasons["resampled"]["sample_item_ids"] == [folded["s2"]]
+
+
 async def test_a_new_samples_run_makes_it_new_not_resampled(
     guest_client, folded, stand_ins, async_session_factory
 ):
@@ -1025,7 +1133,8 @@ async def test_the_read_costs_the_same_queries_for_5000_samples(
             ],
         )
         await session.commit()
-    # A pass that covered all but the last 100, and a run since on 1,000.
+    # A pass that covered all but the last 100, and a run since on 1,000, of
+    # which 400 read the batch's decisions as they stand now.
     async with async_session_factory() as session:
         library = await library_read(session, big)
     run_id = await start_run(big, ACTION_ASSIGN)
@@ -1051,8 +1160,9 @@ async def test_the_read_costs_the_same_queries_for_5000_samples(
                     "status": "completed",
                     "peak_assignment_run_utc_created": later,
                     "peak_assignment_run_utc_completed": later,
+                    "config": _read({ORDER[0]: 0}) if n_run < 400 else None,
                 }
-                for i in items[:1000]
+                for n_run, i in enumerate(items[:1000])
             ],
         )
         await session.commit()
@@ -1081,5 +1191,5 @@ async def test_the_read_costs_the_same_queries_for_5000_samples(
     reasons = _reasons(status)
     assert status["n_samples"] == n + 1
     assert reasons["new_samples"]["count"] == 100
-    assert reasons["resampled"]["count"] == 1000
+    assert reasons["resampled"]["count"] == 600
     assert len(reasons["resampled"]["sample_item_ids"]) == 100
