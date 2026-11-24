@@ -210,8 +210,11 @@ SHAPED_IDS = {
     "[M+(H2O)2H]+": "sysAddH2Ox2HPos",
     "[M+H2O2H]+": "sysAddH2O2HPos",
     "[M+(H2OH)2]+": "sysAdd2H2OHPos",
-    "[M-H-(H2O)2]-": "sysLoss2H2OHNeg",
+    "[M-H-(H2O)2]-": "sysLossH2Ox2HNeg",
+    "[M-(H2OH)2]-": "sysLoss2H2OHNeg",
     "[M-H-H2O2]-": "sysLossHH2O2Neg",
+    # A formula before a group does not run into it.
+    "[M+H+(CCH3)4]+": "sysAddCCH3x4HPos",
 }
 
 
@@ -237,24 +240,54 @@ def test_no_shape_takes_another_mechanism_s_id():
 
 
 @pytest.mark.parametrize(
-    ("term", "spelled"),
+    ("one", "other"),
     [
-        ("H2O", "H2O"),
-        ("(CH4N2O)H", "CH4N2OH"),
-        ("(H2O)2", "2H2O"),
-        ("(H2O)12", "12H2O"),
-        ("(H2O)2H", "H2Ox2H"),
-        ("C(CH3)4", "CCH3x4"),
-        # Two groups are not one group alone, whatever the term's ends.
-        ("(CH3)2(CO)2", "CH3x2COx2"),
-        ("((CH3)2CO)2", "2CH3x2CO"),
-        ("(C(CH3)3)2H", "CCH3x3x2H"),
+        # A count in front would run into the term after the group.
+        ("[M+(H2O)2+H]+", "[M+(H2OH)2]+"),
+        ("[M-H-(H2O)2]-", "[M-(H2OH)2]-"),
+        ("[M+H-(H2O)2-NH3]+", "[M+H-(H2ONH3)2]+"),
+        # An x alone would let the formula before a group run into it.
+        ("[M+H+(CCH3)4]+", "[M+C(CH3)4H]+"),
+        ("[M+((CH3)2CO)2H]+", "[M+(CH3)2(CO)2H]+"),
     ],
 )
-def test_a_group_s_multiplier_stands_apart_from_its_formula(term, spelled):
-    from mascope_backend.ionization_catalogue import _id_term
+def test_mechanisms_of_other_masses_take_other_ids(one, other):
+    """Pairs too long for :data:`SHAPED_IDS`, or that share an id with one
+    there by adding the same atoms in other terms (``[M+(H2O)2+H]+`` and
+    ``[M+(H2O)2H]+``, as ``[M+C+H2O]+`` and ``[M+CH2O]+`` do)."""
+    from mascope_backend.ionization_catalogue import _fixed_mechanism_id
+    from mascope_tools.composition.mechanism_notation import parse_mechanism
 
-    assert _id_term(term) == spelled
+    assert _fixed_mechanism_id(parse_mechanism(one)) != _fixed_mechanism_id(
+        parse_mechanism(other)
+    )
+
+
+@pytest.mark.parametrize(
+    ("terms", "spelled"),
+    [
+        (("H2O",), "H2O"),
+        (("H", "H2O"), "HH2O"),
+        (("(CH4N2O)H",), "CH4N2OH"),
+        # One group alone: its count in front.
+        (("(H2O)2",), "2H2O"),
+        (("(H2O)12",), "12H2O"),
+        (("((CH3)2CO)2",), "2CH3x2CO"),
+        # Any other group: q, its formula, x and its count; no q at the start.
+        (("(H2O)2", "H"), "H2Ox2H"),
+        (("H", "(H2O)2"), "HqH2Ox2"),
+        (("(H2O)2H",), "H2Ox2H"),
+        (("C(CH3)4",), "CqCH3x4"),
+        (("(CH3)2(CO)2",), "CH3x2qCOx2"),
+        (("((CH3)2CO)2", "H"), "CH3x2COx2H"),
+        (("(C(CH3)3)2H",), "CqCH3x3x2H"),
+        (("H", "((CH3)2CO)2"), "HqqCH3x2COx2"),
+    ],
+)
+def test_a_group_s_multiplier_stands_apart_from_its_formula(terms, spelled):
+    from mascope_backend.ionization_catalogue import _id_terms
+
+    assert _id_terms(terms) == spelled
 
 
 @pytest.mark.parametrize("notation", sorted(SHAPED_IDS))
