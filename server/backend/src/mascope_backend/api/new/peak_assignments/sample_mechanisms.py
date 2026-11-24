@@ -45,20 +45,26 @@ async def fetch_sample_mechanisms(
     CPU-bound work can use them off the event loop.
 
     :param sample: Sample model object
-    :return: (the mechanism ids of the sample's ionization mode,
-        polarity-matching mechanism rows as detached namespaces), both
-        without a row a run does not search (:func:`_readable`)
+    :return: (the mechanism ids of the sample's ionization mode, in the
+        mode's order, polarity-matching mechanism rows as detached namespaces,
+        by id), both without a row a run does not search (:func:`_readable`)
     """
     mechanism_ids = await fetch_sample_ionization_mechanism_ids(sample.sample_item_id)
     async with async_session() as session:
         mechanisms = (
             (
                 await session.execute(
-                    select(IonizationMechanism).where(
+                    select(IonizationMechanism)
+                    .where(
                         IonizationMechanism.ionization_mechanism_id.in_(mechanism_ids),
                         IonizationMechanism.ionization_mechanism_polarity
                         == sample.polarity,
                     )
+                    # A stated order, not the table's heap order: the
+                    # reference expansion lists each formula's ions in this
+                    # order, so a rewritten row would otherwise reorder a
+                    # run's known set (MAS-1164).
+                    .order_by(IonizationMechanism.ionization_mechanism_id)
                 )
             )
             .scalars()
@@ -177,8 +183,9 @@ async def fetch_mechanisms_by_notation(
     :param notations: Mechanism notations to look up.
     :param polarity: The sample's polarity; a mechanism of the wrong polarity
         cannot ionize this sample whatever its notation says.
-    :return: The matching rows, detached for use off the event loop. A row is
-        found by either spelling of its mechanism and read in the standard one.
+    :return: The matching rows by id, detached for use off the event loop. A
+        row is found by either spelling of its mechanism and read in the
+        standard one.
     """
     if not notations:
         return []
@@ -186,12 +193,17 @@ async def fetch_mechanisms_by_notation(
         rows = (
             (
                 await session.execute(
-                    select(IonizationMechanism).where(
+                    select(IonizationMechanism)
+                    .where(
                         IonizationMechanism.ionization_mechanism.in_(
                             mechanism_spellings(notations)
                         ),
                         IonizationMechanism.ionization_mechanism_polarity == polarity,
                     )
+                    # The searched mechanisms append these to the mode's, and
+                    # the reference expansion reads them in that order
+                    # (:func:`fetch_sample_mechanisms`).
+                    .order_by(IonizationMechanism.ionization_mechanism_id)
                 )
             )
             .scalars()

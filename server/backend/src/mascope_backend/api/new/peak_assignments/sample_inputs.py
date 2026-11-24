@@ -189,6 +189,8 @@ async def _fetch_known_target_isotopes(
                 IonizationMechanism.ionization_mechanism_polarity == sample.polarity,
                 TargetIsotope.resolution == FINE_LINES,
             )
+            # DISTINCT ON promises no order, and the known set keeps this one.
+            .order_by(TargetIsotope.target_isotope_id)
         )
         if not (rows := (await session.execute(stmt)).all()):
             return pd.DataFrame()
