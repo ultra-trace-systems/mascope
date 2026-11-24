@@ -2567,8 +2567,44 @@ read, and site E's job did not start.
   rule: a nitrate call on a TOF needs its anchors' summed area at 100,
   about 1.5 decades from each side. It keeps every source measured and
   drops every ambient call. It is not unit-free: it holds while TOF areas
-  are read in the same units on every reader. Sites B and E are not
-  measured; a rerun there is a check, not a gate.
+  are read in the same units on every reader. Sites B and E were measured
+  later (below); the floor holds where they could say, which is a check,
+  not a gate.
+
+**The floor at sites B and E** (MAS-814, 2026-11-24): a fourth read-only
+job re-read every negative TOF spectrum of the audit at sites B and E with
+the site's own reader, and ran rules versions 1, 2 and 3 on it. It counts
+first why a read fails, then the log10 of the nitrate anchors' summed area
+(NO3- and HNO3.NO3-), the quantity the floor tests, per TOF and per mode
+the polarity is bound to.
+
+| Site, TOF | Bound to | Polarities | Anchors' area, log10: min, p5, p50, p95, max | Under 100 | Nitrate calls v1 / v2 / v3 |
+|---|---|---|---|---|---|
+| A, three TOFs (MAS-639) | ambient-ion mode, called nitrate | of 232 on one TOF | -0.14 to 0.54 (NO3- alone) | all | 47 / 195 / 0 |
+| A, three TOFs (MAS-639) | nitrate source | 832, and 3 of the corpus | 3.32 to 4.11 (NO3- alone) | none | |
+| B, TOF 1 | nitrate mode | 885 | 3.56, 3.86, 4.20, 4.27, 4.27 | 0 | 885 / 885 / 885 |
+| B, TOF 2 | nitrate mode | 814 | 3.90, 3.99, 4.85, 5.01, 5.05 | 0 | 686 / 688 / 688 |
+| E | none found | 0 | | | |
+
+- **Site B reads now.** All 1,699 negative TOF polarities on its two TOFs
+  read, against the 106 that failed as not found in MAS-639's read. Its
+  stored answers are rules version 1, and the job's version 1 reproduces
+  1,686 of them; 13 differ.
+- **The floor costs site B no nitrate call.** Its lowest nitrate-mode
+  polarity sits 1.56 decades above the floor, and version 3 calls exactly
+  what version 2 does on both TOFs. Its areas reach the decades site A's
+  sources reach, so its reader gives areas in the same units.
+- **Site B cannot test the other side.** The site has four ambient-ion
+  modes, but no TOF polarity of the audit is bound to one: every one is
+  bound to a nitrate mode.
+- **TOF 2 leaves 126 nitrate-mode polarities uncalled** under every
+  version. All have their anchors, at or above the floor, so the floor is
+  not why: no fingerprint dominates their spectrum (`none`, #3586).
+- **Site E has nothing to read.** Its audit holds no negative TOF polarity,
+  and its filestore is closed to the job's user. The floor is not measured
+  there.
+- **Verdict.** The floor holds at site B on its nitrate side, the only side
+  the site has. Its ambient side still rests on site A alone.
 
 **Authority.**
 
