@@ -93,7 +93,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 3.4g - the chart draws each peak in the trace's unit, and a lone M0 | #2379 | 2026-10-19 | built: the lone M0 drawn, the envelope in the trace's unit; engine and tiers untouched |
 | 3.4h - the inspector links the other channels, and the listing column folds | #2988 | 2026-11-05 | built: the badge opens the other channels' peaks as links, the listed-as column folds to a mark with a view-menu switch in both ledgers, and rows whose peak the sample no longer has are marked (#2025); no tier moves |
 | 3.5 - calibrants below the brightest lines, an offset term, and the low-mass bend (calibration node) | #2593 (the gate's anchors) |  | in two PRs (decided 2026-10-22). Built: the mass gate's fit takes the reagent pass's monoisotopic lines beside its commits; estimated on the pass-10 ledgers, all seven K3 files fit a calibration. Built (MAS-469, on by default on the Orbitrap, decided 2026-11-13): the node leaves out a calibrant over 28 % of the ion current and reports the offset its calibrants carry; the mass gate leaves such a source line out of its anchors. Refit with the cap: C2's analytes from -0.7 to -0.1 ppm, B toward zero on two files, A 0.01 to 0.03 ppm away, K3 1 ppm away (its axis' offset) |
-| 3.5b - the envelope's tolerance, fitted per run | #2978 |  | built: Stage A fits a response curve per Orbitrap file (pooled with its 6 nearest samples in time at the same settings that share no scans with it, each read fresh, then the defaults; MAS-721, MAS-987) and a centre and width per TOF run; every fit score of the run reads it; pass 11 measures it |
+| 3.5b - the envelope's tolerance, fitted per run | #2978 |  | built: Stage A fits a response curve per Orbitrap file (pooled with its 6 nearest samples in time at the same settings that share no scans with it, windows that touch sharing the scan at their bound, each read fresh, then the defaults; MAS-721, MAS-987, MAS-1158) and a centre and width per TOF run; every fit score of the run reads it; pass 11 measures it |
 | 3.5c - the targeted matcher reads an isotope line over the scans that hold its anchor | - |  | built: an Orbitrap line's ratio is read over the scans it shares with its anchor, the count stored and shown in the Match tab; TOF unchanged |
 | 3.5d - the peak store keeps each Orbitrap peak's scan presence count; the scorer reads a line against its presence-corrected share | - |  | built: a raw Orbitrap store keeps `n_scans` and `n_scans_total` per peak, the peaks route, the batch table and the SDK serve them; the fit score reads a counted line at its mean per scan (the censored-normal estimate from its count and S/N); an absent line keeps the curve's threshold (the count's own, a hard gate, is held back for a soft one: #3123); a stage serves no counts until its S/N is its own (#3117); 3.5b's curve is the fallback for a file without counts; the gate's pass measures it |
 | 3.6 - priors and the dataset's context | - |  | built: ambient air, chamber and indoor air carry a sulfur prior and an odd-nitrogen prior (uronium the sulfur one), and a search row meeting one is held at candidate (`context_prior`) until a second channel, a series or its own 34S or 15N line sees it; a dataset or batch names its context (`chemistry_context`), which a run on auto takes, the batch's first; a TOF's untargeted window bounded by the sample's fitted width (the offset plus six widths, at most 10 ppm); chlorine and bromine read from their twin line, the second rider; on nitrate Orbitrap runs in a context that makes organonitrates, the windows and the oxygen lattice read up to three groups' skeletons and a row only that admits is a candidate (`nox_skeleton`), the first rider; tiering rule set 15; MAS-59; the next pass measures it |
@@ -1051,7 +1051,10 @@ Specifications of the completed steps (3.1, 3.1c, 3.1d, 3.2, 3.3, 3.3b, 3.3c,
     same batch that share no scans with it (MAS-987: a copy of it in its
     batch, or a window of its own file and stream that overlaps its window,
     is no neighbour; a window of its file that shares no scans is one, and
-    the record marks it `same_file`), nearest in time (each by its own
+    the record marks it `same_file`; a window is closed, `[t0, t1]`, as the
+    scan readers and the part contract read it, so two windows that touch
+    share the scan at their bound and are no neighbours, and a bound that is
+    not a finite number is the file's own, MAS-1158), nearest in time (each by its own
     start, the file's `datetime_utc` plus the window's `t0`, ties by sample
     id, a file with no time after every one with a time), that share its
     acquisition settings (polarity, microscan count and FT resolution,
@@ -4256,6 +4259,10 @@ gave its TOF rider a step of its own (MAS-922).
     that overlaps its window, a sample of its file with no window - is not
     its neighbour; a window of its file that shares no scans with it is,
     and counts as a neighbour of its own, placed in time by its own start.
+    Windows are closed, `[t0, t1]`, as the scan readers and the part
+    contract read them, so two windows that touch, one ending where the
+    other starts, share the scan at that time and are not each other's
+    neighbours (MAS-1158).
     A whole-batch pool
     with a stored per-file record (option 2) stays open as a cache for
     those reads (MAS-725).

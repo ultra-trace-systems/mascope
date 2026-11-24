@@ -12,6 +12,7 @@ and read for real in the integration suite. A decoy run fits nothing and scores
 at its control's (``envelope_fit.inherited_envelope_fit``).
 """
 
+import math
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -795,27 +796,74 @@ class TestSharedScans:
         assert share_scans(self._reach(0.0, 600.0), self._reach(300.0, 900.0))
         assert share_scans(self._reach(300.0, 900.0), self._reach(0.0, 600.0))
 
-    def test_windows_that_only_touch_do_not(self):
-        assert not share_scans(self._reach(0.0, 600.0), self._reach(600.0, 1200.0))
-        assert not share_scans(self._reach(600.0, 1200.0), self._reach(0.0, 600.0))
+    def test_windows_that_touch_share_the_scan_at_their_bound(self):
+        assert share_scans(self._reach(0.0, 600.0), self._reach(600.0, 1200.0))
+        assert share_scans(self._reach(600.0, 1200.0), self._reach(0.0, 600.0))
 
     def test_apart_windows_do_not(self):
         assert not share_scans(self._reach(0.0, 100.0), self._reach(200.0, 300.0))
+        assert not share_scans(self._reach(200.0, 300.0), self._reach(0.0, 100.0))
+
+    def test_windows_a_hair_apart_do_not(self):
+        assert not share_scans(self._reach(0.0, 600.0), self._reach(600.001, 1200.0))
+        assert not share_scans(self._reach(600.001, 1200.0), self._reach(0.0, 600.0))
+
+    @pytest.mark.parametrize("instant", [0.0, 300.0, 600.0])
+    def test_an_instant_inside_a_wider_window_shares_them(self, instant):
+        assert share_scans(self._reach(instant, instant), self._reach(0.0, 600.0))
+        assert share_scans(self._reach(0.0, 600.0), self._reach(instant, instant))
+
+    def test_an_instant_outside_a_wider_window_does_not(self):
+        assert not share_scans(self._reach(700.0, 700.0), self._reach(0.0, 600.0))
+        assert not share_scans(self._reach(0.0, 600.0), self._reach(700.0, 700.0))
+
+    def test_two_instants_apart_do_not(self):
+        assert not share_scans(self._reach(60.0, 60.0), self._reach(90.0, 90.0))
 
     @pytest.mark.parametrize(
         "window", [(None, None), (None, 700.0), (500.0, None), (0.0, None)]
     )
     def test_a_missing_end_is_the_file_s_own(self, window):
         assert share_scans(self._reach(*window), self._reach(550.0, 650.0))
+        assert share_scans(self._reach(550.0, 650.0), self._reach(*window))
 
     def test_an_open_start_reaches_back_past_any_start(self):
         assert share_scans(self._reach(None, 100.0), self._reach(-60.0, -30.0))
 
     def test_an_open_start_ends_where_its_window_does(self):
-        assert not share_scans(self._reach(None, 100.0), self._reach(100.0, 200.0))
+        assert share_scans(self._reach(None, 100.0), self._reach(100.0, 200.0))
+        assert not share_scans(self._reach(None, 100.0), self._reach(101.0, 200.0))
 
     def test_an_open_end_starts_where_its_window_does(self):
-        assert not share_scans(self._reach(500.0, None), self._reach(0.0, 500.0))
+        assert share_scans(self._reach(500.0, None), self._reach(0.0, 500.0))
+        assert not share_scans(self._reach(500.0, None), self._reach(0.0, 499.0))
+
+    @pytest.mark.parametrize("bound", [math.nan, math.inf, -math.inf])
+    @pytest.mark.parametrize("end", ["t0", "t1"])
+    def test_a_bound_that_is_not_a_number_is_open_either_way_round(self, end, bound):
+        # Open, it reaches the other window whichever side it is on, and the
+        # answer does not hang on which sample is named first.
+        odd = self._reach(**{end: bound})
+        far = self._reach(-900.0, -600.0) if end == "t0" else self._reach(900.0, 1200.0)
+
+        assert share_scans(odd, far)
+        assert share_scans(far, odd)
+
+    @pytest.mark.parametrize("end", ["t0", "t1"])
+    def test_a_bound_that_is_not_a_number_keeps_its_other_end(self, end):
+        odd = self._reach(**{end: math.nan})
+        beyond = (
+            self._reach(700.0, 900.0) if end == "t0" else self._reach(-300.0, -100.0)
+        )
+
+        assert not share_scans(odd, beyond)
+        assert not share_scans(beyond, odd)
+
+    @pytest.mark.parametrize(
+        "window", [(math.nan, 600.0), (0.0, math.nan), (math.nan, math.nan)]
+    )
+    def test_two_copies_with_a_nan_bound_share_them(self, window):
+        assert share_scans(self._reach(*window), self._reach(*window))
 
     def test_another_file_does_not(self):
         assert not share_scans(self._reach(), self._reach(sample_file_id="sf-2"))

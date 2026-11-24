@@ -50,9 +50,9 @@ share its instrument state better than a batch spanning days does, and a file
 that joins a growing batch later in time moves the pool only of the files near
 the batch's end. A neighbour is a sample that shares no scans with the file's
 own (:func:`share_scans`): a copy of it in its batch, or a window of its file
-that overlaps its window, gives its own lines again and is no neighbour, while
-a window of its file that shares no scans is one, placed by its own start
-(:func:`measured_at`). The record names the files pooled, the lines each gave,
+that overlaps or touches its window, gives its own lines again and is no
+neighbour, while a window of its file that shares no scans is one, placed by
+its own start (:func:`measured_at`). The record names the files pooled, the lines each gave,
 whether one is a window of the file itself, and the time span the pool covers.
 """
 
@@ -510,8 +510,10 @@ class ScanReach:
         spans every MS1 scan of its polarity.
     :param composite_stream_id: The composite that stream is a segment of,
         where it is one.
-    :param t0: Its window's start [s]; None from the file's first scan.
-    :param t1: Its window's end [s]; None to the file's last scan.
+    :param t0: Its window's start [s], a scan at it included; None (or not a
+        finite number) from the file's first scan.
+    :param t1: Its window's end [s], a scan at it included; None (or not a
+        finite number) to the file's last scan.
     """
 
     sample_file_id: str | None
@@ -538,12 +540,29 @@ def _streams_meet(one: ScanReach, other: ScanReach) -> bool:
     )
 
 
+def _bound(value: float | None, open_end: float) -> float:
+    """A window's bound as a number, a missing one or one that is not a finite
+    number (as :func:`measured_at` reads ``t0``) being the file's own end."""
+    if value is None or not math.isfinite(value):
+        return open_end
+    return float(value)
+
+
 def share_scans(one: ScanReach, other: ScanReach) -> bool:
     """Whether two samples read scans in common: of one file, of streams that
-    meet (:func:`_streams_meet`), and with windows that overlap. A missing end
-    is the file's own, so a sample with no window covers its whole file and an
-    exact copy is the case of full overlap. Windows that only touch, one ending
-    where the next starts, as a file split at ingest cuts them, share none.
+    meet (:func:`_streams_meet`), and with windows that overlap.
+
+    A window is closed, ``[t0, t1]``, as every reader of scans takes it: the
+    Thermo reader and the signal computation keep a scan whose time is at
+    either bound, and the part contract (``docs/dev/ingest_routing_and_
+    splitting.md`` 3.2) makes a sample's signal the scans inside ``[t0, t1]``.
+    So two windows share scans when the later start is at or before the
+    earlier end: windows that touch, one ending where the next starts, both
+    read a scan at that time, and a zero-length window inside a wider one
+    reads one of its scans. A missing bound, or one that is not a finite
+    number, is the file's own, so a sample with no window covers its whole
+    file, an exact copy is the case of full overlap, and the answer is the
+    same whichever sample is named first.
 
     Two such samples add no new evidence of the instrument's response to each
     other, so neither is the other's neighbour in a pool (MAS-987)."""
@@ -551,17 +570,9 @@ def share_scans(one: ScanReach, other: ScanReach) -> bool:
         return False
     if not _streams_meet(one, other):
         return False
-    if (one.t0, one.t1) == (other.t0, other.t1):
-        return True
-    start = max(
-        -math.inf if one.t0 is None else one.t0,
-        -math.inf if other.t0 is None else other.t0,
-    )
-    end = min(
-        math.inf if one.t1 is None else one.t1,
-        math.inf if other.t1 is None else other.t1,
-    )
-    return start < end
+    start = max(_bound(one.t0, -math.inf), _bound(other.t0, -math.inf))
+    end = min(_bound(one.t1, math.inf), _bound(other.t1, math.inf))
+    return start <= end
 
 
 def _by_distance_in_time(sample, candidates: Sequence) -> list:
@@ -588,7 +599,8 @@ async def _batch_candidates(sample) -> list:
     nearest it in time first (:func:`_by_distance_in_time`).
 
     A sample of its own file whose scans overlap its own (:func:`share_scans`:
-    a copy of it in the batch, a window that overlaps its window) is left out:
+    a copy of it in the batch, a window that overlaps or touches its window)
+    is left out:
     it gives the file's own lines again. A window of its file that shares no
     scans with it is other scans of the same instrument state, and is a
     neighbour of its own (the plan owner's decision on MAS-987)."""
