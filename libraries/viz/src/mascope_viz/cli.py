@@ -1127,6 +1127,43 @@ def _summary(
     }
 
 
+def _run_change_lines(changes: list[dict[str, Any]]) -> list[str]:
+    """One line per run change of a view's ``run_changes``, in their order.
+
+    The store gives one entry per polarity followed, so a polarity-switching
+    (``+-``) batch's change is two entries; entries of one moment, batch,
+    before and after are one line, which names their polarities, ``+``
+    before ``-``. Entries that differ in their before or after stay apart.
+    """
+    merged: dict[tuple[Any, ...], list[Any]] = {}
+    for change in changes:
+        moment = (
+            change["at"],
+            change["sample_batch_id"],
+            change["before"],
+            change["after"],
+        )
+        merged.setdefault(moment, []).append(change.get("polarity"))
+    lines = []
+    for (at, batch, before, after), polarities in merged.items():
+        named = [
+            str(polarity or "(none)")
+            for polarity in sorted(
+                polarities, key=lambda p: ({"+": 0, "-": 1}.get(p, 2), str(p))
+            )
+        ]
+        which = (
+            f"polarity {named[0]}"
+            if len(named) == 1
+            else f"polarities {', '.join(named[:-1])} and {named[-1]}"
+        )
+        lines.append(
+            f"    {_when(at)} (batch {batch}, {which}): "
+            f"{quoted(before)} -> {quoted(after)}"
+        )
+    return lines
+
+
 def _view_lines(name: str, payload: dict[str, Any], status: StoreStatus) -> list[str]:
     attrs = payload["attrs"]
     zone = attrs.get("tz")
@@ -1314,17 +1351,13 @@ def _view_lines(name: str, payload: dict[str, Any], status: StoreStatus) -> list
         )
     lines += _more(len(entries), payload["n_keys"], "key(s)")
 
-    changes = attrs.get("run_changes") or []
     if attrs.get("mixed_runs"):
+        changes = _run_change_lines(attrs.get("run_changes") or [])
         lines.append(
             f"  mixed runs: the formulas are read by more than one engine run "
             f"({len(changes):,} change(s) in the window):"
         )
-        lines += [
-            f"    {_when(change['at'])} (batch {change['sample_batch_id']}): "
-            f"{quoted(change['before'])} -> {quoted(change['after'])}"
-            for change in changes
-        ]
+        lines += changes
     if not status.complete:
         reasons = "; ".join(_incomplete(status))
         lines.append(f"  warning: the store is not complete ({reasons})")
