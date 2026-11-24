@@ -6,8 +6,9 @@ Opt-in, as ``test_ai_plans_contract.py``: a running demo stack and
 user (two scratch workspaces with look-alike names, a copy of a demo batch
 in each, a collection with compounds on the home copy, one with injected
 text in its description) and every scenario runs through the toolkit with
-an ``ai-agent`` token. The demo data is never written to; deleting the
-scratch workspaces afterwards deletes what is in them.
+an ``ai-agent`` token. The demo data is never written to. Afterwards the
+scratch workspaces' collections are deleted, then the workspaces, which
+deletes what else is in them.
 
 Two scenarios the fake server alone holds: a workspace the token is not a
 member of (the demo stack has one user), and a write the server is made to
@@ -73,26 +74,58 @@ def _eventually(probe, timeout: float = 180):
 
 
 def _demo_batch() -> dict:
-    """The first demo batch outside the scratch workspaces, read with the
-    demo stack's SDK token (the one the other contract suites read with)."""
+    """The first demo batch of two samples or more outside the scratch
+    workspaces, by name, read with the demo stack's SDK token (the one the
+    other contract suites read with).
+
+    By name, because the server lists in no set order: a demo bundle
+    rebuilt from its raw files draws new IDs, and with them which batch a
+    listing gives first. The copy has to hold two samples to be ready
+    (:func:`_copy_ready`), and some demo batches hold one.
+    """
     import requests
 
     headers = {"Authorization": f"Bearer {TOKEN}", "X-Service-Name": "mascope_sdk"}
 
-    def get(path: str, **params):
+    def get(path: str, key: str, **params):
         response = requests.get(
             f"{BASE_URL}/api/{path}", headers=headers, params=params, timeout=30
         )
         response.raise_for_status()
-        return response.json().get("data") or ()
+        return sorted(response.json().get("data") or (), key=lambda row: row[key])
 
-    for workspace in get("workspaces"):
+    for workspace in get("workspaces", "workspace_name"):
         if workspace["workspace_name"].startswith(SCRATCH_PREFIX):
             continue
-        for dataset in get(f"workspaces/{workspace['workspace_id']}/datasets"):
-            for batch in get("sample/batches", dataset_id=dataset["dataset_id"]):
-                return batch
-    pytest.fail("the demo stack has no batch")
+        datasets = get(
+            f"workspaces/{workspace['workspace_id']}/datasets", "dataset_name"
+        )
+        for dataset in datasets:
+            batches = get(
+                "sample/batches", "sample_batch_name", dataset_id=dataset["dataset_id"]
+            )
+            for batch in batches:
+                samples = get(
+                    "samples",
+                    "sample_item_id",
+                    sample_batch_id=batch["sample_batch_id"],
+                )
+                if len(samples) >= 2:
+                    return batch
+    pytest.fail("the demo stack has no batch of two samples")
+
+
+def _settled(kit: Toolkit) -> bool:
+    """Whether the world reads the same twice, two seconds apart.
+
+    The server finishes some of what the world's writes start after they
+    return (a new collection's compounds, the collections a batch copy
+    takes), and a scenario whose first snapshot falls in that window reports
+    the server's own work as its collateral.
+    """
+    first = ai_safety.snapshot(kit)
+    time.sleep(2)
+    return ai_safety.snapshot(kit) == first
 
 
 def _copy_ready(session, dataset_id: str, name: str) -> dict | None:
@@ -214,6 +247,7 @@ def stack(tmp_path_factory):
         kit = Toolkit(
             client, session=Session(root=tmp_path_factory.mktemp("safety-sessions"))
         )
+        _eventually(lambda: _settled(kit))
         world = World(
             home=home,
             home_name=home_name,
@@ -233,6 +267,19 @@ def stack(tmp_path_factory):
         )
         yield SimpleNamespace(kit=kit, client=client, world=world)
     finally:
+        # Deleting a workspace does not delete the collections made in it, so
+        # the world's, and those the scenarios applied, are deleted first.
+        scratch = {w["workspace_id"] for w in workspaces}
+        try:
+            listed = _api(session, "GET", "target/collections")
+        except Exception:
+            listed = []
+        for row in listed:
+            if row.get("workspace_id") in scratch:
+                session.delete(
+                    f"{BASE_URL}/api/target/collections/{row['target_collection_id']}",
+                    timeout=60,
+                )
         for workspace in workspaces:
             session.delete(
                 f"{BASE_URL}/api/workspaces/{workspace['workspace_id']}", timeout=60

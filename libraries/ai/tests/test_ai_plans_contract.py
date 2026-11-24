@@ -76,30 +76,42 @@ def _eventually(client, probe, timeout: float = 120):
 
 
 def _demo_batch(session) -> dict:
-    """A demo batch with samples, read over the session."""
+    """The first demo batch of two samples or more, by name.
+
+    By name, because the server lists in no set order: a demo bundle rebuilt
+    from its raw files draws new IDs, and with them which batch a listing
+    gives first. The copy has to hold two samples to be ready (``copied`` in
+    the fixture), and some demo batches hold one.
+    """
     headers = {"Authorization": f"Bearer {TOKEN}", "X-Service-Name": "mascope_sdk"}
     import requests
 
-    for workspace in requests.get(
-        f"{BASE_URL}/api/workspaces", headers=headers, timeout=30
-    ).json()["data"]:
+    def get(path: str, key: str, **params):
+        response = requests.get(
+            f"{BASE_URL}/api/{path}", headers=headers, params=params, timeout=30
+        )
+        response.raise_for_status()
+        return sorted(response.json().get("data") or (), key=lambda row: row[key])
+
+    for workspace in get("workspaces", "workspace_name"):
         if workspace["workspace_name"].startswith(SCRATCH_PREFIX):
             continue
-        datasets = requests.get(
-            f"{BASE_URL}/api/workspaces/{workspace['workspace_id']}/datasets",
-            headers=headers,
-            timeout=30,
-        ).json()
-        for dataset in datasets.get("data") or ():
-            batches = requests.get(
-                f"{BASE_URL}/api/sample/batches",
-                params={"dataset_id": dataset["dataset_id"]},
-                headers=headers,
-                timeout=30,
-            ).json()
-            for batch in batches.get("data") or ():
-                return batch
-    pytest.fail("the demo stack has no batch")
+        datasets = get(
+            f"workspaces/{workspace['workspace_id']}/datasets", "dataset_name"
+        )
+        for dataset in datasets:
+            batches = get(
+                "sample/batches", "sample_batch_name", dataset_id=dataset["dataset_id"]
+            )
+            for batch in batches:
+                samples = get(
+                    "samples",
+                    "sample_item_id",
+                    sample_batch_id=batch["sample_batch_id"],
+                )
+                if len(samples) >= 2:
+                    return batch
+    pytest.fail("the demo stack has no batch of two samples")
 
 
 @pytest.fixture(scope="module")
@@ -194,6 +206,19 @@ def scratch(tmp_path_factory):
             empty_id=empty["sample_batch_id"],
         )
     finally:
+        # Deleting a workspace does not delete the collections made in it, so
+        # the ones the tests applied are deleted first.
+        scratch = {w["workspace_id"] for w in workspaces}
+        try:
+            listed = _api(session, "GET", "target/collections")
+        except Exception:
+            listed = []
+        for row in listed:
+            if row.get("workspace_id") in scratch:
+                session.delete(
+                    f"{BASE_URL}/api/target/collections/{row['target_collection_id']}",
+                    timeout=60,
+                )
         for workspace in workspaces:
             session.delete(
                 f"{BASE_URL}/api/workspaces/{workspace['workspace_id']}", timeout=60
