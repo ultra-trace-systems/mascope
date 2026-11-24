@@ -41,14 +41,15 @@ cleanly, and the step reads it two ways:
   ``pi / (pi_+ - pi_-)`` for a share ``pi_-`` of anti-correlated true pairs.
   Those pairs show as an excess of channel pairs under the null's lower
   quartile (:data:`ANTI_QUANTILE`, :func:`anti_excess_shown`), where the
-  share expects a quarter of its chance pairings; where that excess stands
-  clear of its error the share cannot be read, and the ratio is 1
-  throughout too. A true pair whose noise alone puts it under the median is
+  share expects a quarter of its chance pairings, ``(1 - pi) / 4`` of all
+  channel pairs, and so half of the channel pairs under the median; where
+  that excess stands clear of its error the share cannot be read, and the
+  ratio is 1 throughout too. A true pair whose noise alone puts it under the median is
   the assumption's other side, and it overstates the ratio the same way, by
   ``1 / (1 - 2 b)`` for a share ``b`` of true pairs under the median. The
   isotope pairs measure ``b``: on the testbed 7 of 384 lie under the null's
-  median and none under its lower quartile, a ratio high by a fifth at most in
-  any stratum (the log, step 4.21).
+  median and none under its lower quartile, a ratio high by 22 % at most in
+  any stratum (1 of 11 over 20 to 49 spectra; the log, step 4.21).
 - **The upper bound** (:func:`ratio_lr`): an M0 against its own isotope line,
   one species by construction. Two channels of one neutral can move apart
   with the source state where an isotope line cannot, so this ratio is the
@@ -302,28 +303,39 @@ def anti_excess_shown(
     z: float = EXCESS_Z,
 ) -> bool:
     """Whether the channel pairs hold more pairs under the null's lower
-    quantile than chance gives there: anti-correlated true pairs, which
-    :func:`null_share` would count as chance pairings.
+    quantile than their chance pairings give there: anti-correlated true
+    pairs, which :func:`null_share` would count as chance pairings.
 
-    The channel share under the split is read against its exact one-sided
-    lower bound at ``z`` (Clopper and Pearson, as :func:`null_share_error`
-    reads its upper one), the null's own share with its binomial error; the
-    excess is shown where the channel share stands ``z`` standard errors
-    over the null's.
+    The share reads every channel pair under the null's median as chance, so
+    the chance pairings put ``(1 - pi)`` times the null's own share under the
+    quantile, a quarter of them at the lower quartile: not a quarter of all
+    channel pairs, which the positive true pairs dilute. Read among the
+    channel pairs under the median, the same reference is the null's own
+    ratio of the two shares, one half at the quartile, whatever ``pi`` is;
+    anti-correlated true pairs, all under the quantile, raise it. The
+    channel ratio is read against its exact one-sided lower bound at ``z``
+    (Clopper and Pearson, as :func:`null_share_error` reads its upper one),
+    the null's with its binomial error; the excess is shown where the
+    channel ratio stands ``z`` standard errors over the null's.
     """
+    channel_r = np.asarray(channel_r, dtype=float)
     null_r = np.asarray(null_r, dtype=float)
     if not null_r.size:
         return False
-    below = _below(channel_r, null_r, float(np.quantile(null_r, quantile)))
-    if below is None:
+    median = float(np.median(null_r))
+    split = float(np.quantile(null_r, quantile))
+    n_median = int(np.sum(channel_r < median))
+    n_null_median = int(np.sum(null_r < median))
+    if not n_median or not n_null_median:
         return False
-    below_channel, n_channel, below_null, n_null = below
-    k = round(below_channel * n_channel)
-    lower = 0.0 if k == 0 else float(beta.ppf(1 - norm.cdf(z), k, n_channel - k + 1))
-    error_channel = (below_channel - lower) / z
-    var_null = below_null * (1 - below_null) / n_null
+    k = int(np.sum(channel_r < split))
+    expected = float(np.sum(null_r < split)) / n_null_median
+    share = k / n_median
+    lower = 0.0 if k == 0 else float(beta.ppf(1 - norm.cdf(z), k, n_median - k + 1))
+    error_channel = (share - lower) / z
+    var_null = expected * (1 - expected) / n_null_median
     error = float(np.sqrt(error_channel * error_channel + var_null))
-    return below_channel - z * error > below_null
+    return share - z * error > expected
 
 
 def _monotone(raw: np.ndarray, weights: np.ndarray) -> np.ndarray:
