@@ -39,7 +39,7 @@ const choose = (wrapper, value) =>
 
 describe('BaseClaimStructure', () => {
   it('offers the candidates in order, an unlisted structure last', () => {
-    const wrapper = mountPicker({ evidence: 'msms' })
+    const wrapper = mountPicker({ evidence: 'msms', detail: 'fragments' })
     expect(options(wrapper)).toEqual([
       'target · D-glucose',
       'sugars · D-fructose',
@@ -56,7 +56,56 @@ describe('BaseClaimStructure', () => {
       ready: true,
       problem: null
     })
-    expect(wrapper.text()).toContain('Level 1')
+    // No independent line beside the standard: 2b (claims mapping version 2).
+    expect(wrapper.text()).toContain('Level 2b')
+  })
+
+  it('says level 1 for a standard with an independent line', () => {
+    const wrapper = mountPicker({ evidence: 'reference_standard', line: 'msms' })
+    expect(checked(wrapper)).toBe(GLUCOSE)
+    expect(wrapper.text()).toContain('Level 1: a statement about this structure.')
+  })
+
+  it('asks a class claim for its class by name, and no structure', async () => {
+    const wrapper = mountPicker({ evidence: 'msms', detail: 'loss' })
+    expect(wrapper.findAll('input[type="radio"]')).toHaveLength(0)
+    expect(wrapper.text()).toContain('Level 3b: a class, by name; no structure.')
+    expect(claim(wrapper)).toEqual({
+      claimed_inchikey: null,
+      claimed_name: null,
+      ready: false,
+      problem: expect.stringContaining('Name the class')
+    })
+    await wrapper.find('input.text').setValue(' a carboxylic acid ')
+    expect(claim(wrapper)).toEqual({
+      claimed_inchikey: null,
+      claimed_name: 'a carboxylic acid',
+      ready: true,
+      problem: null
+    })
+  })
+
+  it('starts a changed class claim from the class it named', () => {
+    const wrapper = mountPicker({
+      evidence: 'orthogonal',
+      detail: 'class',
+      initial: { level: 3, level_letter: 'b', claimed_inchikey: null, claimed_name: 'an amine' }
+    })
+    expect(claim(wrapper)).toMatchObject({ claimed_name: 'an amine', ready: true })
+  })
+
+  it('asks for a structure again when the evidence moves off the class', async () => {
+    const wrapper = mountPicker({ evidence: 'msms', detail: 'loss' })
+    await wrapper.setProps({ detail: 'library' })
+    expect(claim(wrapper)).toMatchObject({ claimed_inchikey: GLUCOSE, ready: true })
+    expect(wrapper.text()).toContain('Level 2a')
+  })
+
+  it('says the split of a pattern, open unless it is pinned', async () => {
+    const wrapper = mountPicker({ evidence: 'pattern' })
+    expect(wrapper.text()).toContain('Level 4b: the formula')
+    await wrapper.setProps({ detail: 'split_pinned' })
+    expect(wrapper.text()).toContain('Level 4a: the formula')
   })
 
   it('picks none on a pattern, where a structure is optional', () => {
@@ -73,14 +122,14 @@ describe('BaseClaimStructure', () => {
 
   it('fills the structure once the evidence comes to need one', async () => {
     const wrapper = mountPicker({ evidence: 'visual' })
-    await wrapper.setProps({ evidence: 'orthogonal' })
+    await wrapper.setProps({ evidence: 'orthogonal', detail: 'separation' })
     expect(claim(wrapper).claimed_inchikey).toBe(GLUCOSE)
     await wrapper.setProps({ evidence: 'pattern' })
     expect(claim(wrapper).claimed_inchikey).toBeNull()
   })
 
   it('keeps what the user picked when the evidence changes', async () => {
-    const wrapper = mountPicker({ evidence: 'msms' })
+    const wrapper = mountPicker({ evidence: 'msms', detail: 'fragments' })
     await choose(wrapper, FRUCTOSE).trigger('change')
     await wrapper.setProps({ evidence: 'pattern' })
     expect(claim(wrapper)).toMatchObject({ claimed_inchikey: FRUCTOSE, ready: true })
@@ -89,12 +138,12 @@ describe('BaseClaimStructure', () => {
   it('fills a structure the evidence comes to need, even after the user picked none', async () => {
     const wrapper = mountPicker({ evidence: 'pattern' })
     await choose(wrapper, 'none').trigger('change')
-    await wrapper.setProps({ evidence: 'msms' })
+    await wrapper.setProps({ evidence: 'msms', detail: 'fragments' })
     expect(claim(wrapper)).toMatchObject({ claimed_inchikey: GLUCOSE, ready: true })
   })
 
   it('names no structure when the one picked is no longer offered', async () => {
-    const wrapper = mountPicker({ evidence: 'msms' })
+    const wrapper = mountPicker({ evidence: 'msms', detail: 'fragments' })
     await choose(wrapper, FRUCTOSE).trigger('change')
     await wrapper.setProps({ candidates: [CANDIDATES[0]] })
     expect(claim(wrapper)).toEqual({
@@ -106,7 +155,7 @@ describe('BaseClaimStructure', () => {
   })
 
   it('takes an unlisted InChIKey and name, ready once the key is one', async () => {
-    const wrapper = mountPicker({ evidence: 'msms' })
+    const wrapper = mountPicker({ evidence: 'msms', detail: 'fragments' })
     await choose(wrapper, 'unlisted').trigger('change')
     const [key, name] = wrapper.findAll('input.text')
     expect(claim(wrapper)).toMatchObject({
@@ -183,7 +232,7 @@ describe('BaseClaimStructure', () => {
   })
 
   it('takes up the structure of a verdict that arrives after the form opened', async () => {
-    const wrapper = mountPicker({ evidence: 'msms' })
+    const wrapper = mountPicker({ evidence: 'msms', detail: 'fragments' })
     expect(checked(wrapper)).toBe(GLUCOSE)
     await wrapper.setProps({ initial: { claimed_inchikey: FRUCTOSE, claimed_name: 'D-fructose' } })
     expect(checked(wrapper)).toBe(FRUCTOSE)

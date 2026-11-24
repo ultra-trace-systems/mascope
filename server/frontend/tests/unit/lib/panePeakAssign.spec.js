@@ -155,7 +155,29 @@ vi.mock('@/lib/panes/PanePeakAssign/stores/batchPeakCuration.js', () => ({
 // The structure picker is stubbed below: it shows what the form hands it and
 // answers with the claim a test sets here (BaseClaimStructure.spec.js covers it).
 const claimStub = vi.hoisted(() => ({ claimed_inchikey: null, claimed_name: null, ready: true }))
+// What the evidence showed is stubbed the same way: by default an MS/MS or
+// orthogonal confirmation says it showed fragments or a separation (a 2b), and a
+// standard names no independent line (BaseClaimEvidence.spec.js covers it).
+const evidenceStub = vi.hoisted(() => ({
+  details: { msms: 'fragments', orthogonal: 'separation' },
+  line: null,
+  ready: true,
+  problem: null
+}))
 vi.mock('@/lib/base', async () => ({
+  BaseClaimEvidence: {
+    props: ['modelValue', 'evidence', 'initial'],
+    emits: ['update:modelValue'],
+    mounted() {
+      this.$emit('update:modelValue', {
+        evidence_detail: evidenceStub.details[this.evidence] ?? null,
+        independent_line: this.evidence === 'reference_standard' ? evidenceStub.line : null,
+        ready: evidenceStub.ready,
+        problem: evidenceStub.problem
+      })
+    },
+    template: '<div class="claim-evidence" :data-evidence="evidence" />'
+  },
   BaseClaimStructure: {
     props: ['modelValue', 'candidates', 'evidence', 'initial'],
     emits: ['update:modelValue'],
@@ -212,6 +234,13 @@ const GLOBAL_STUBS = {
       '@input="$emit(\'update:modelValue\', $event.target.value)" />'
   },
   Popover: PopoverStub,
+  Checkbox: {
+    props: ['modelValue', 'inputId'],
+    emits: ['update:modelValue'],
+    template:
+      '<input type="checkbox" class="checkbox" :id="inputId" :checked="modelValue" ' +
+      '@change="$emit(\'update:modelValue\', $event.target.checked)" />'
+  },
   // Marks the input Popover would focus, which the component names through
   // the input's passthrough options.
   RadioButton: {
@@ -297,6 +326,12 @@ beforeEach(() => {
   runRecord = null
   detailRecord = null
   otherDetails = new Map()
+  Object.assign(evidenceStub, {
+    details: { msms: 'fragments', orthogonal: 'separation' },
+    line: null,
+    ready: true,
+    problem: null
+  })
   Object.assign(claimStub, {
     claimed_inchikey: null,
     claimed_name: null,
@@ -1101,6 +1136,89 @@ describe('PanePeakAssign verdict dialog', () => {
     await verdictButton(wrapper, 'Confirm').trigger('click')
 
     expect(dialog(wrapper).find('.claim-structure').attributes('data-initial')).toBe(GLUCOSE)
+  })
+
+  it('sends what the MS/MS showed, and the structure it names, with the confirmation', async () => {
+    const GLUCOSE = 'WQZGKKKJIJFFOK-GASJEMHNSA-N'
+    Object.assign(claimStub, { claimed_inchikey: GLUCOSE, claimed_name: 'D-glucose' })
+    const wrapper = await mountPane()
+    await verdictButton(wrapper, 'Confirm').trigger('click')
+    await level(wrapper, 'msms').trigger('change')
+    await flushPromises()
+    expect(dialog(wrapper).find('.claim-evidence').attributes('data-evidence')).toBe('msms')
+    await submit(wrapper).trigger('click')
+    await flushPromises()
+    expect(verify.mock.calls[0][0]).toEqual({
+      peak_assignment_id: 'pa-1',
+      verdict: 'confirmed',
+      evidence_level: 'msms',
+      note: null,
+      claimed_inchikey: GLUCOSE,
+      claimed_name: 'D-glucose',
+      evidence_detail: 'fragments'
+    })
+  })
+
+  it("sends a standard's independent line, for level 1", async () => {
+    const GLUCOSE = 'WQZGKKKJIJFFOK-GASJEMHNSA-N'
+    evidenceStub.line = 'separation'
+    Object.assign(claimStub, { claimed_inchikey: GLUCOSE, claimed_name: 'D-glucose' })
+    const wrapper = await mountPane()
+    await verdictButton(wrapper, 'Confirm').trigger('click')
+    await level(wrapper, 'reference_standard').trigger('change')
+    await flushPromises()
+    await submit(wrapper).trigger('click')
+    await flushPromises()
+    expect(verify.mock.calls[0][0]).toMatchObject({
+      evidence_level: 'reference_standard',
+      independent_line: 'separation',
+      claimed_inchikey: GLUCOSE
+    })
+  })
+
+  it('will not confirm until the evidence says what it showed', async () => {
+    Object.assign(evidenceStub, { details: {}, ready: false, problem: 'Say what the MS/MS showed' })
+    const wrapper = await mountPane()
+    await verdictButton(wrapper, 'Confirm').trigger('click')
+    await level(wrapper, 'msms').trigger('change')
+    await flushPromises()
+    expect(dialog(wrapper).find('.claim-structure').exists()).toBe(false)
+    await submit(wrapper).trigger('click')
+    await flushPromises()
+    expect(verify).not.toHaveBeenCalled()
+  })
+
+  it('lets a rejection of a live confirmation say a standard disagreed, refuting it', async () => {
+    verdictRecord = VERDICT
+    const wrapper = await mountPane()
+    await wrapper.find('.verify-current button').trigger('click')
+    await verdictButton(wrapper, 'Reject').trigger('click')
+    const refute = dialog(wrapper).find('[data-testid="verdict-refute"]')
+    expect(refute.exists()).toBe(true)
+    await refute.setValue(true)
+    await submit(wrapper).trigger('click')
+    await flushPromises()
+    expect(verify.mock.calls[0][0]).toMatchObject({
+      verdict: 'rejected',
+      evidence_level: 'reference_standard'
+    })
+    expect(verify.mock.calls[0][0]).not.toHaveProperty('independent_line')
+  })
+
+  it('rejects with no basis unless a standard disagreed', async () => {
+    verdictRecord = VERDICT
+    const wrapper = await mountPane()
+    await wrapper.find('.verify-current button').trigger('click')
+    await verdictButton(wrapper, 'Reject').trigger('click')
+    await submit(wrapper).trigger('click')
+    await flushPromises()
+    expect(verify.mock.calls[0][0]).toMatchObject({ verdict: 'rejected', evidence_level: null })
+  })
+
+  it('offers no refutation where no confirmation is live', async () => {
+    const wrapper = await mountPane()
+    await verdictButton(wrapper, 'Reject').trigger('click')
+    expect(dialog(wrapper).find('[data-testid="verdict-refute"]').exists()).toBe(false)
   })
 
   it('offers a way back to the verdict as it was while changing it', async () => {

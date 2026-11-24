@@ -4,7 +4,7 @@ import InputText from 'primevue/inputtext'
 import RadioButton from 'primevue/radiobutton'
 
 import { isValidInchikey } from '@/lib/chem'
-import { claimLevel, levelLabel, needsStructure } from '@/lib/verification'
+import { claimStatement, isClassClaim, levelLabel, needsStructure } from '@/lib/verification'
 
 /**
  * The structure a confirmation names, picked from the row's candidates: an
@@ -22,16 +22,26 @@ import { claimLevel, levelLabel, needsStructure } from '@/lib/verification'
  * rather than a Select, which would swallow the Escape that closes the popover
  * around it.
  *
+ * What the evidence showed (`detail`, a standard's `line`) decides the level
+ * and so what is asked (claims mapping version 2): a level 1, a 2 or a 3
+ * naming a candidate needs a structure; a class claim (3b: one MS/MS loss, or
+ * orthogonal evidence for a class) names a class by name alone, with no
+ * InChIKey, so it asks for the class in place of a structure.
+ *
  * The model is `{ claimed_inchikey, claimed_name, ready, problem }`: `ready` is
- * false while a required structure is missing or an unlisted InChIKey is not
- * one, and `problem` then says which. An empty unlisted key on evidence that
- * needs no structure names none.
+ * false while a required structure or class is missing or an unlisted
+ * InChIKey is not one, and `problem` then says which. An empty unlisted key on
+ * evidence that needs no structure names none.
  */
 const props = defineProps({
   /** From `claimCandidates`: `{ inchikey, name, label }` each. */
   candidates: { type: Array, default: () => [] },
-  /** The evidence level picked; decides whether a structure is required. */
+  /** The evidence level picked. */
   evidence: { type: String, default: null },
+  /** What the evidence showed (`BaseClaimEvidence`). */
+  detail: { type: String, default: null },
+  /** A reference standard's independent line. */
+  line: { type: String, default: null },
   /** The verdict being changed: its `claimed_inchikey` and `claimed_name`. */
   initial: { type: Object, default: null }
 })
@@ -41,7 +51,16 @@ const NONE = 'none'
 const UNLISTED = 'unlisted'
 const id = useId()
 
-const required = computed(() => needsStructure(props.evidence))
+const required = computed(() => needsStructure(props.evidence, props.detail, props.line))
+const classClaim = computed(() => isClassClaim(props.evidence, props.detail))
+// A class claim being changed starts from the class it named.
+const className = ref(
+  props.initial?.level === 3 &&
+    props.initial?.level_letter === 'b' &&
+    !props.initial?.claimed_inchikey
+    ? (props.initial?.claimed_name ?? '')
+    : ''
+)
 const choice = ref(NONE)
 const touched = ref(false) // the user picked, so a change of evidence keeps it
 const unlistedKey = ref('')
@@ -87,7 +106,14 @@ const MISSING = 'Name the structure this evidence identifies'
 const MALFORMED = 'Not an InChIKey: it reads like WQZGKKKJIJFFOK-GASJEMHNSA-N'
 const none = (ready, problem) => ({ claimed_inchikey: null, claimed_name: null, ready, problem })
 
+const NO_CLASS = 'Name the class this evidence shows, such as a carboxylic acid'
 const claim = computed(() => {
+  if (classClaim.value) {
+    const name = className.value.trim()
+    return name
+      ? { claimed_inchikey: null, claimed_name: name, ready: true, problem: null }
+      : none(false, NO_CLASS)
+  }
   if (choice.value === UNLISTED) {
     if (unlistedBlank.value) return required.value ? none(false, MISSING) : none(true, null)
     if (!unlistedValid.value) return none(false, MALFORMED)
@@ -111,9 +137,13 @@ const claim = computed(() => {
 })
 watch(claim, (value) => (model.value = value), { immediate: true })
 
-const level = computed(() => levelLabel(claimLevel(props.evidence)))
+const statement = computed(() => claimStatement(props.evidence, props.detail, props.line))
+const level = computed(() =>
+  statement.value ? levelLabel(statement.value.level, statement.value.letter) : null
+)
 const hint = computed(() => {
   if (!props.evidence) return ''
+  if (classClaim.value) return `${level.value}: a class, by name; no structure.`
   if (required.value) return `${level.value}: a statement about this structure.`
   if (props.evidence === 'pattern')
     return `${level.value}: the formula; a structure raises nothing.`
@@ -122,7 +152,18 @@ const hint = computed(() => {
 </script>
 
 <template>
-  <div class="claim-structure" role="radiogroup" :aria-labelledby="`${id}-label`">
+  <div v-if="classClaim" class="claim-structure">
+    <span :id="`${id}-label`" class="claim-label">Class</span>
+    <InputText
+      v-model="className"
+      placeholder="A carboxylic acid"
+      aria-label="Class"
+      size="small"
+      fluid
+    />
+    <span v-if="hint" class="claim-hint">{{ hint }}</span>
+  </div>
+  <div v-else class="claim-structure" role="radiogroup" :aria-labelledby="`${id}-label`">
     <span :id="`${id}-label`" class="claim-label"
       >Structure{{ required ? '' : ' (optional)' }}</span
     >
