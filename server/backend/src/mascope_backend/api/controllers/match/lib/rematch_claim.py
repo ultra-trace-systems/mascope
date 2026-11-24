@@ -67,11 +67,24 @@ async def rematch_claim(sample_batch_id: str) -> AsyncIterator[bool]:
         )
         yield acquired
     finally:
+        # One shielded coroutine for the whole release. The app runs a
+        # rematch as a background task inside the http middlewares' anyio task
+        # group, whose cancellation is level-triggered: every await of a
+        # cancelled task raises again. Two shielded awaits in a row would stop
+        # at the first, and the session would never be closed. Shielded as a
+        # whole, a cancelled run still unlocks on its own connection and
+        # returns it to the pool, clean of a lock its next borrower knows
+        # nothing about.
+        await asyncio.shield(_release(session, sample_batch_id, acquired))
+
+
+async def _release(session, sample_batch_id: str, acquired: bool) -> None:
+    """Unlock the claim when it was taken, and close the session whatever
+    the unlock does."""
+    try:
         if acquired:
-            # Shielded: a cancelled run still returns a clean connection to
-            # the pool, one that holds no lock its next borrower knows nothing
-            # about.
-            await asyncio.shield(
-                session.execute(select(func.pg_advisory_unlock(*_key(sample_batch_id))))
+            await session.execute(
+                select(func.pg_advisory_unlock(*_key(sample_batch_id)))
             )
-        await asyncio.shield(session.close())
+    finally:
+        await session.close()
