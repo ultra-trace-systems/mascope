@@ -565,12 +565,43 @@ status says *N samples added since the last assignment*, not *stages stale*.
 
 ### 8.2 A provisional sample
 
-A sample is **provisional** from its fold until a pass covers it: it is in
-the batch and not in the newest completed pass's `samples`
+A sample is **provisional** from its fold until a pass covers it: it is
+folded, in the batch, and not in the newest completed pass's `samples`
 (`batch_stages.last_pass`, which records the samples a pass read as it
-started). That is the status read's `new_samples` set, so the per-sample
-state and the batch's count can never disagree. A failed or cancelled pass
-covers nothing.
+started). These are the **waiting** samples. The per-sample state and the
+batch's count are read from this one set, so they can never disagree. A
+failed or cancelled pass covers nothing.
+
+**Folded** means the sample has a kept model (`sample_measurement_model`,
+written by every run-less fold: `batch_fold.keep_fold` on ingest and the
+ledger's rebuild) or a completed run of its own (`peak_assignment_run`,
+status `completed`, which the `sample` ingest ledger and an explicit run
+write, and which folds its rows into the batch peaks on completion). One
+query against the batch's samples reads it.
+
+**A sample that was never folded** is not waiting and not provisional. The
+status read's `new_samples` holds it too, but the waiting set leaves it
+out. Three ways lead there:
+
+- the ingest peak ceiling skipped it (`peak_assignment_ingest_max_peaks`,
+  in `service.auto_assign_sample_peaks`);
+- its fold raised, which that function logs and swallows;
+- it was ingested with `peak_assignment_on_ingest` off.
+
+A pass does not fold it either: `fold="auto"` folds only on
+`batch_stages.fold_reasons`, which looks at the batch, never at a sample
+without members. The pass still records it in `samples`. So "covered by a
+pass" alone would call it decided while it has no rows. The design keeps
+the two apart:
+
+- it does not count toward k, and does not start the timer (8.3);
+- a pass started on its own does not fold it, as a person's **Assign
+  batch** does not today: the ceiling skipped it on purpose, a fold that
+  raised would likely raise again in the pass, and with ingest off the
+  trigger is off (8.3);
+- it carries words of its own, before and after a pass: *Not folded on
+  arrival* (8.6), with the two ways to fold it a person has today: a run of
+  its own, or **Assign batch** with every sample folded (`fold="always"`).
 
 What its rows carry, against what the batch will say after the pass:
 
@@ -593,7 +624,7 @@ say nothing.
 
 A pass starts on its own when the first of three things holds.
 
-- **The count.** k samples are waiting.
+- **The count.** k samples are waiting (8.2: folded and not covered).
 - **The timer.** The oldest waiting sample has waited T minutes, read off
   `SampleItem.sample_item_utc_created`. It bounds how long a sample stays
   provisional when samples come slowly.
@@ -617,9 +648,16 @@ has every sample waiting: its first pass starts on its k-th sample, and the
 status reads `folded_only` until then.
 
 **Which batches.** Only ACQUISITION batches: ingest folds into those alone.
-Only with peak assignment on, on ingest, into the batch ledger
-(`config.peak_assignment_enabled`, `peak_assignment_on_ingest`,
-`peak_assignment_ingest_ledger`).
+Only with peak assignment on, and on at ingest
+(`config.peak_assignment_enabled`, `peak_assignment_on_ingest`). **Both
+ingest ledgers** (`peak_assignment_ingest_ledger`): on `batch`, the fold
+writes members and no run; on `sample`, `assign_sample_peaks` writes a run
+and folds it into the batch peaks on completion (the comment in
+`auto_assign_sample_peaks`). Either way the batch's stages go stale the same
+way, through `fold_sample_into_batch_peaks`, and the sample is folded in
+8.2's sense. A trigger on one ledger only would leave the other's batches
+stale until a person presses **Assign batch**, for no reason the ledger
+gives.
 
 **Where it is checked.** After each fold commits, in the worker that folded
 the sample. And by a sweep in every worker's lifespan (`app/fast.py`), once a
@@ -631,8 +669,14 @@ There is no scheduler in the backend today; the sweep is the smallest one.
 with `fold="auto"`, on the batch's own settings, action `assign`, so the
 status, Details and Run history read it as a pass with no change. Its run
 records why it started (`trigger`: `count`, `timer` or `end`, and the count
-it saw) and no user. It runs as a task of the worker, kept and observed as
-the ingest pipelines' tasks are (`_background_tasks` in `process/service.py`).
+it saw) and no user. It runs as a task of the worker, in a set of its own
+in the trigger's module, observed as the ingest pipelines' tasks are
+(`_observe_background_task` in `process/service.py`), but **not in
+`_background_tasks`**. That set is the one `drain_auto_process_tasks` waits
+on at shutdown, for up to `AUTO_PROCESS_DRAIN_TIMEOUT_S` (60 s), before it
+cancels what is left. A pass kept there would hold every deploy for that
+minute and then be cancelled anyway. The lifespan (`app/fast.py`) cancels
+the auto passes' set at once instead, before the drain (8.7).
 
 **An arrival during a pass** folds as it does today, under the fold lock;
 the pass reads unlocked and writes under the lock. The pass recorded its
@@ -724,9 +768,15 @@ site, which only a prod job can read.
   pass. Served on the fold's synthetic run of the sample (`fold_view.py`) as
   `provisional` and `folded_utc`, and on a run of its own that no pass has
   covered.
+- **On a sample that was never folded** (8.2): *Not folded on arrival*, in
+  place of the provisional line, with the two ways to fold it: a run of its
+  own, or **Assign batch** with every sample folded. It says the same after
+  a pass, which does not fold it. Served as `folded: false` beside
+  `provisional`.
 - **On the batch** (the batch assignment status of MAS-1015,
   `BatchAssignControl.vue` and `stores/batchAssign.js`): *5 samples waiting
-  for the batch stages · next pass after 5*, or *by 14:30*, beside **Update
+  for the batch stages · next pass after 5*, or *by 14:30*, and *2 not
+  folded* where the batch has samples that were never folded, beside **Update
   assignment**, which runs the pass now. While a pass started on its own
   runs: *Assigning on its own · 5 samples arrived*, in place of *Another user
   is assigning this batch*. When the trigger holds after a failed pass: *Held
@@ -749,8 +799,17 @@ site, which only a prod job can read.
   works as it does today.
 - **A pass is cancelled.** By a person: the same hold, so a cancel is not
   undone a minute later. By a shutdown: a pass started on its own is
-  cancelled at shutdown, not drained (`drain_auto_process_tasks` drains the
-  pipelines): a pass can take an hour, and a deploy must not wait for it.
+  cancelled at once, not drained: a pass can take an hour, and a deploy must
+  not wait for it. `drain_auto_process_tasks` waits up to 60 s for every task
+  in `_background_tasks`, rematch tasks included, so the pass is kept in a
+  set of its own that the lifespan cancels before the drain (8.3), then
+  waits for a bounded grace, as the drain does for what it cancels
+  (`_DRAIN_CANCEL_GRACE_S`, 10 s), so its task closes its run as cancelled.
+- **A sample's fold fails, or never runs.** Ingest logs it and goes on
+  (`auto_assign_sample_peaks`); the ceiling and ingest off skip it on
+  purpose. The sample is not folded (8.2): it does not count, it does not
+  hold the trigger, the pass does not fold it, and it reads *Not folded on
+  arrival* until a person folds it.
 - **A restart between a fold and its pass.** Nothing is lost: the count, the
   timer's start and the quiet period are read from the database (8.3), and
   the first sweep after the start finds the batch due. A pass interrupted by
