@@ -356,24 +356,54 @@ def _targeted(formula, ion, mechanism, target=None):
     return entry
 
 
-def test_the_consensus_names_its_own_entrys_target():
+def test_the_consensus_names_the_target_its_members_agree_on():
     registry = [
-        _targeted("C6H12O6", "C6H13O6+", "m-h", "tc-other"),
-        _targeted("C6H12O6", "C6H12O6NO3-", "m-no3", "tc-1"),
+        _targeted("C6H12O6", "C6H13O6+", "m-h", "tc-1"),
+        _targeted("C6H12O6", "C6H12O6NO3-", "m-no3"),
     ]
-    assert consensus_target_id(registry, "C6H12O6", "C6H12O6NO3-", "m-no3") == "tc-1"
+    # Each member names its own; one that names none does not dissent.
+    members = [(0, "tc-1"), (1, "tc-1"), (1, None)]
+    assert consensus_target_id(registry, "C6H12O6", members) == "tc-1"
 
 
-def test_a_target_names_the_formula_whichever_channel_matched_it():
+def test_isomers_matched_by_two_members_leave_the_consensus_naming_none():
+    """MAS-992: glucose and fructose through one ion share the entry, which
+    keeps the first; the members keep their own, and disagree."""
+    registry = [_targeted("C6H12O6", "C6H13O6+", "m-h", "tc-glucose")]
+    members = [(0, "tc-glucose"), (0, "tc-fructose")]
+    assert consensus_target_id(registry, "C6H12O6", members) is None
+
+
+def test_a_member_naming_no_target_of_its_own_names_its_entrys():
+    """A member folded before members kept a target answers off its entry, as
+    every member did before: alone it names the entry's compound, and beside a
+    member that matched the isomer it disagrees."""
     registry = [
         _targeted("C6H12O6", "C6H12O6NO3-", "m-no3"),
-        _targeted("C6H12O6", "C6H13O6+", "m-h", "tc-1"),
+        _targeted("C6H12O6", "C6H13O6+", "m-h", "tc-glucose"),
     ]
-    assert consensus_target_id(registry, "C6H12O6", "C6H12O6NO3-", "m-no3") == "tc-1"
+    assert consensus_target_id(registry, "C6H12O6", [(1, None)]) == "tc-glucose"
+    # Through another channel of the formula: a target compound is a neutral.
+    assert (
+        consensus_target_id(registry, "C6H12O6", [(0, None), (1, None)]) == "tc-glucose"
+    )
+    assert consensus_target_id(registry, "C6H12O6", [(1, None), (0, "tc-x")]) is None
+    # No member names one, and neither does its entry.
+    assert consensus_target_id(registry, "C6H12O6", [(0, None), (0, "")]) is None
 
 
-def test_another_formulas_target_is_not_the_consensus_one():
-    registry = [_targeted("C6H12O6", "C6H13O6+", "m-h", "tc-1")]
-    assert consensus_target_id(registry, "C7H14O6", "C7H15O6+", "m-h") is None
-    assert consensus_target_id(registry, None) is None
-    assert consensus_target_id(None, "C6H12O6") is None
+def test_a_member_of_another_formula_is_not_the_consensuss():
+    registry = [
+        _targeted("C6H12O6", "C6H13O6+", "m-h", "tc-1"),
+        _targeted("C7H14O6", "C7H15O6+", "m-h"),
+    ]
+    assert consensus_target_id(registry, "C7H14O6", [(0, "tc-1"), (1, None)]) is None
+    assert consensus_target_id(registry, "C6H12O6", [(1, "tc-2"), (0, "tc-1")]) == (
+        "tc-1"
+    )
+    # An index the registry does not hold, or none, reads no entry.
+    assert (
+        consensus_target_id(registry, "C6H12O6", [(5, "tc-2"), (None, "tc-3")]) is None
+    )
+    assert consensus_target_id(registry, None, [(0, "tc-1")]) is None
+    assert consensus_target_id(None, "C6H12O6", [(0, "tc-1")]) is None

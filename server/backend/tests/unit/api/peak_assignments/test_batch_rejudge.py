@@ -39,6 +39,7 @@ def _member(anchor="bp-1", **fields):
         sample_item_id="s-1",
         sample_peak_id="p-1",
         candidate=0,
+        target_compound_id=None,
         tier=tier_code("candidate"),
         fit_score=0.7,
         role=role_code("M0"),
@@ -67,6 +68,7 @@ class TestTheMark:
         assert mark["version"] == 4
         assert mark["before"] == {
             "candidate": 0,
+            "target_compound_id": None,
             "tier": tier_code("candidate"),
             "fit_score": 0.7,
             "role": role_code("M0"),
@@ -85,6 +87,19 @@ class TestTheMark:
         assert batch_mark_of(member)["stage"] == "series"
         assert batch_mark_of(member)["before"]["batch_written"]["stage"] == "search"
 
+    def test_a_stage_takes_off_the_members_own_target_and_keeps_it_before(self):
+        """The member's own target compound is what its sample matched the
+        fold's reading to: a stage's claim is not that reading, so the mark
+        keeps it and the member names none until the claim is withdrawn. A
+        person's or an import's write leaves it."""
+        member = _member(target_compound_id="tc-1")
+        mark_member(member, "search")
+        assert member.target_compound_id is None
+        assert batch_mark_of(member)["before"]["target_compound_id"] == "tc-1"
+        member = _member(target_compound_id="tc-1")
+        mark_member(member, None)
+        assert member.target_compound_id == "tc-1"
+
     def test_a_person_or_an_import_takes_it_off(self):
         member = _member()
         mark_member(member, "search")
@@ -94,6 +109,16 @@ class TestTheMark:
 
 class TestTheWithdrawal:
     def test_a_member_reads_again_what_it_read_before_the_stage(self):
+        member = _member(target_compound_id="tc-1")
+        mark_member(member, "known_species")
+        member.candidate, member.tier, member.fit_score = 3, tier_code("assigned"), None
+        assert restore_marked(member, "known_species")
+        assert (
+            member.candidate,
+            member.target_compound_id,
+            member.tier,
+            member.fit_score,
+        ) == (0, "tc-1", tier_code("candidate"), 0.7)
         member = _member()
         mark_member(member, "search")
         mark_member(member, "known_species")

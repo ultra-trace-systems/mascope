@@ -19,10 +19,10 @@ Three rules:
   a new run starts, the current run's state is captured into
   ``batch_peak_run_anchor``: one row per anchor holding its consensus and its
   members as parallel arrays (sample, peak, offset, intensity, candidate index,
-  tier, role, fit, P(correct), owner). Columnar because a snapshot is written
-  once and read whole - the run selector reads the ledger as that run left it,
-  the chart reads the series - and the arrays cost a small fraction of a row per
-  member. The registry rides along, so the snapshot resolves its own candidate
+  own target compound, tier, role, fit, P(correct), owner). Columnar because a
+  snapshot is written once and read whole - the run selector reads the ledger as
+  that run left it, the chart reads the series - and the arrays cost a small
+  fraction of a row per member. The registry rides along, so the snapshot resolves its own candidate
   indices however the live registry grows.
 - **Retention is bounded.** Completing a run makes it current and prunes the
   batch's older runs beyond :data:`BATCH_RUN_KEEP`, snapshots and all.
@@ -157,6 +157,7 @@ MEMBER_FIELDS = (
     "mz_delta_ppms",
     "intensities",
     "candidates",
+    "target_compound_ids",
     "tiers",
     "roles",
     "fit_scores",
@@ -203,6 +204,7 @@ def member_arrays(members: Iterable[Any]) -> dict[str, list]:
         "mz_delta_ppms": [_get(m, "mz_delta_ppm") for m in rows],
         "intensities": [_get(m, "intensity") for m in rows],
         "candidates": [_get(m, "candidate") for m in rows],
+        "target_compound_ids": [_get(m, "target_compound_id") for m in rows],
         "tiers": [_get(m, "tier") for m in rows],
         "roles": [_get(m, "role") for m in rows],
         "fit_scores": [_get(m, "fit_score") for m in rows],
@@ -478,6 +480,7 @@ async def _snapshot(session, run: BatchPeakRun) -> int:
                     BatchPeakOccurrence.mz_delta_ppm,
                     BatchPeakOccurrence.intensity,
                     BatchPeakOccurrence.candidate,
+                    BatchPeakOccurrence.target_compound_id,
                     BatchPeakOccurrence.tier,
                     BatchPeakOccurrence.role,
                     BatchPeakOccurrence.fit_score,

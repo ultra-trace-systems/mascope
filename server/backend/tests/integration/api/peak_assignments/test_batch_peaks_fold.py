@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select, text, update
 
 from mascope_backend.api.new.peak_assignments import (
     batch_peaks,
@@ -1259,6 +1259,186 @@ async def test_a_sample_read_off_the_batch_ledger_shows_the_target_its_identity_
             await s.execute(
                 delete(TargetCompound).where(
                     TargetCompound.target_compound_id == compound_id
+                )
+            )
+            await s.commit()
+
+
+async def test_isomeric_targets_each_member_keeps_its_own_compound(
+    async_session_factory, seeded
+):
+    """MAS-992: two members of one anchor matched two isomeric target compounds
+    through the same ion. The registry keeps the first compound on the entry
+    they share, byte for byte, but each member keeps its own: a sample read off
+    the batch ledger shows its own compound, and the batch ledger names one only
+    while the members agree. A member folded before it kept one (NULL) answers
+    off its registry entry, as before. An earlier run's snapshot reads its own
+    member arrays, whatever the live members say since."""
+    batch, samples = seeded
+    glucose, fructose = gen_id(16), gen_id(16)
+    declared = {
+        glucose: ("glucose", "WQZGKKKJIJFFOK-GASJEMHNSA-N"),
+        fructose: ("fructose", "BJHIKXHVCXFQLS-UYFOZJQFSA-N"),
+    }
+
+    def target_of(compound_id):
+        name, inchikey = declared[compound_id]
+        return {"label": "target", "name": name, "inchikey": inchikey, "listed": False}
+
+    async def match(sample, peak, compound_id):
+        async with async_session_factory() as s:
+            await s.execute(
+                update(PeakAssignment)
+                .where(
+                    PeakAssignment.sample_item_id == samples[sample],
+                    PeakAssignment.sample_peak_id == peak,
+                )
+                .values(target_compound_id=compound_id)
+            )
+            await s.commit()
+
+    async def shared_anchor():
+        return next(
+            p
+            for p in await _batch_peaks(async_session_factory, batch)
+            if p.n_present == 2
+        )
+
+    async def registry_text(batch_peak_id):
+        async with async_session_factory() as s:
+            return (
+                await s.execute(
+                    text(
+                        "SELECT candidates::text FROM batch_peak WHERE batch_peak_id = :id"
+                    ),
+                    {"id": batch_peak_id},
+                )
+            ).scalar_one()
+
+    async def ledger_target(**params):
+        (record,) = (await get_batch_peak_ledger(sample_batch_id=batch, **params))[
+            "data"
+        ]
+        listing = record["reference_listing"]
+        return listing["target"] if listing else None
+
+    async with async_session_factory() as s:
+        for compound_id, (name, inchikey) in declared.items():
+            s.add(
+                TargetCompound(
+                    target_compound_id=compound_id,
+                    target_compound_name=name,
+                    target_compound_formula="C6H12O6",
+                    inchikey=inchikey,
+                )
+            )
+        await s.commit()
+    try:
+        # Both members matched glucose: the batch peak names it.
+        await match("A", "A1", glucose)
+        await match("B", "B1", glucose)
+        await fold_sample_into_batch_peaks(samples["A"])
+        await fold_sample_into_batch_peaks(samples["B"])
+        shared = await shared_anchor()
+        assert await ledger_target() == target_of(glucose)
+        registry = await registry_text(shared.batch_peak_id)
+
+        # B's peak is matched to fructose instead and B folds again. The
+        # registry keeps glucose on the shared entry, untouched; the members
+        # disagree, so the batch peak names neither.
+        await match("B", "B1", fructose)
+        await fold_sample_into_batch_peaks(samples["B"])
+        assert await registry_text(shared.batch_peak_id) == registry
+        async with async_session_factory() as s:
+            members = {
+                m.sample_item_id: m.target_compound_id
+                for m in (
+                    await s.execute(
+                        select(BatchPeakOccurrence).where(
+                            BatchPeakOccurrence.batch_peak_id == shared.batch_peak_id
+                        )
+                    )
+                ).scalars()
+            }
+            fold_run = (
+                await s.execute(
+                    select(BatchPeakRun.batch_peak_run_id).where(
+                        BatchPeakRun.sample_batch_id == batch,
+                        BatchPeakRun.is_current == 1,
+                    )
+                )
+            ).scalar_one()
+        assert members == {samples["A"]: glucose, samples["B"]: fructose}
+        assert await ledger_target() is None
+        series = await get_batch_peak_series(sample_batch_id=batch)
+        (charted,) = [
+            r for r in series["data"] if r["batch_peak_id"] == shared.batch_peak_id
+        ]
+        assert charted["reference_listing"] is None
+        # The fold's run is snapshotted as the next run starts.
+        run_id = await start_run(batch, ACTION_SEARCH)
+        await complete_run(batch, run_id)
+
+        # Both runs deleted: each sample reads its row off the batch ledger,
+        # and each row shows the compound its own member matched.
+        async with async_session_factory() as s:
+            await s.execute(
+                delete(PeakAssignmentRun).where(
+                    PeakAssignmentRun.sample_item_id.in_([samples["A"], samples["B"]])
+                )
+            )
+            await s.commit()
+
+        async def derived(sample, peak):
+            rows = {
+                r["sample_peak_id"]: r
+                for r in (await get_peak_assignments(samples[sample]))["data"]
+            }
+            assert rows[peak]["peak_assignment_run_id"] == fold_run_id(samples[sample])
+            (detail,) = (
+                await get_peak_assignment_detail(
+                    samples[sample], fold_assignment_id(shared.batch_peak_id)
+                )
+            )["data"]
+            assert rows[peak]["target_compound_id"] is None
+            assert detail["target_compound_id"] is None
+            assert detail["reference_listing"] == rows[peak]["reference_listing"]
+            return rows[peak]["reference_listing"]["target"]
+
+        assert await derived("A", "A1") == target_of(glucose)
+        assert await derived("B", "B1") == target_of(fructose)
+
+        # A member folded before it kept a target answers off its registry
+        # entry: B's then shows glucose, and the members agree on it.
+        async with async_session_factory() as s:
+            await s.execute(
+                update(BatchPeakOccurrence)
+                .where(BatchPeakOccurrence.sample_item_id == samples["B"])
+                .values(target_compound_id=None)
+            )
+            await s.commit()
+        assert await derived("B", "B1") == target_of(glucose)
+        assert await ledger_target() == target_of(glucose)
+        # The fold's snapshot reads the members as they were, in the ledger
+        # and the chart alike.
+        assert await ledger_target(batch_peak_run_id=fold_run) is None
+        earlier = await get_batch_peak_series(
+            sample_batch_id=batch, batch_peak_run_id=fold_run
+        )
+        (earlier_charted,) = [
+            r for r in earlier["data"] if r["batch_peak_id"] == shared.batch_peak_id
+        ]
+        assert earlier_charted["reference_listing"] is None
+    finally:
+        async with async_session_factory() as s:
+            await s.execute(
+                update(PeakAssignment)
+                .where(PeakAssignment.target_compound_id.in_(list(declared)))
+                .values(target_compound_id=None)
+            )
+            await s.execute(
+                delete(TargetCompound).where(
+                    TargetCompound.target_compound_id.in_(list(declared))
                 )
             )
             await s.commit()

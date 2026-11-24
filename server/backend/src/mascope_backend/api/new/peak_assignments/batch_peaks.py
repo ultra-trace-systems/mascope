@@ -521,9 +521,12 @@ def candidate_index(
         match.
     :param target_compound_id: The target compound the member was matched to,
         where it came from the target library. Recorded as ``listing`` is: on a
-        new entry, and on an existing entry that has none, so the batch ledger
-        can say what the consensus's target declares
-        (``listing.consensus_target_id``). Not part of the match.
+        new entry, and on an existing entry that has none. So an entry keeps
+        the first member's compound, and an isomer a later member matched
+        through the same ion is not on it: each member keeps its own
+        (``BatchPeakOccurrence.target_compound_id``), and the entry's answers
+        only for a member that names none (``fold_view.member_target_id``,
+        ``listing.consensus_target_id``). Not part of the match.
     :return: The position the member's row should name.
     """
     for index, entry in enumerate(candidates):
@@ -1992,10 +1995,12 @@ def resolution_from_tol_ppm(
 
 def member_state(member: Any) -> dict:
     """What a member reads - the fields a curation may overwrite and a release
-    puts back. ``tier`` and ``role`` stay as the codes the row stores."""
+    puts back. ``tier`` and ``role`` stay as the codes the row stores; the
+    member's own target compound goes with its ``candidate``."""
     return {
         "sample_item_id": _member(member, "sample_item_id"),
         "candidate": _member(member, "candidate"),
+        "target_compound_id": _member(member, "target_compound_id"),
         "tier": _member(member, "tier"),
         "fit_score": _member(member, "fit_score"),
         "role": _member(member, "role"),
@@ -2047,8 +2052,17 @@ def batch_mark(member: Any, stage: str) -> dict:
 def mark_member(member: Any, stage: Optional[str]) -> None:
     """Mark a member a batch stage is about to rewrite (:func:`batch_mark`);
     with no stage, take the mark off: a person's or an import's reading is
-    not the batch's."""
+    not the batch's.
+
+    A stage's mark also takes off the member's own target compound: that is
+    what its sample matched the fold's reading to, not a claim of the batch's.
+    The mark keeps it under ``before``, so a withdrawn claim puts it back
+    (:func:`restore_marked`), and until then the member is read as one folded
+    without it (``fold_view.member_target_id``).
+    """
     member.batch_written = None if stage is None else batch_mark(member, stage)
+    if stage is not None:
+        member.target_compound_id = None
 
 
 def restore_marked(member: Any, stage: str) -> bool:
@@ -2065,6 +2079,7 @@ def restore_marked(member: Any, stage: str) -> bool:
     before = mark.get("before") or {}
     for key in (
         "candidate",
+        "target_compound_id",
         "tier",
         "fit_score",
         "role",

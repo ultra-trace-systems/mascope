@@ -3302,6 +3302,18 @@ class BatchPeakOccurrence(Base):
     # Which entry of the anchor's ``candidates`` this member's assignment is;
     # NULL for an unassigned member.
     candidate: Mapped[Optional[int]] = mapped_column(SmallInteger)
+    # The target compound this member's own sample matched its reading to,
+    # where the fold brought it from the target library: two isomeric
+    # compounds share a registry entry, which keeps the first one only. NULL
+    # on a member no target matched, on one a batch stage rewrote
+    # (``batch_peaks.mark_member``), and on one folded before the column, which
+    # the readers answer off its registry entry (``fold_view.member_target_id``).
+    # Shown, never read by a tier. SET NULL with the compound, indexed only
+    # where set: most members name none.
+    target_compound_id: Mapped[Optional[str]] = mapped_column(
+        String(16),
+        ForeignKey("target_compound.target_compound_id", ondelete="SET NULL"),
+    )
     # The member's per-sample role and, for an isotopologue, the anchor its
     # owning peak folded into in the same sample. NULL when the owner is unknown
     # or folded nowhere, in which case the member abstains from the family vote;
@@ -3346,6 +3358,11 @@ class BatchPeakOccurrence(Base):
             "ix_batch_peak_occurrence_peak_assignment_id",
             "peak_assignment_id",
             postgresql_where=text("peak_assignment_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_batch_peak_occurrence_target_compound_id",
+            "target_compound_id",
+            postgresql_where=text("target_compound_id IS NOT NULL"),
         ),
     )
 

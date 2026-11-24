@@ -23,12 +23,13 @@ Derived rows are a lossy view of a run: no mass or abundance error, no isotope
 label, no target ids, no evidence (the source is the registry entry's, where
 the member that brought the identity recorded one). Those are per-sample numbers a
 run computes and a member does not carry; the design note leaves them to an
-on-demand re-score. The target a member of the batch matched the identity to is
-the registry entry's (``batch_peaks.candidate_index``), shared by every member
-of that identity and never cleared, so it is no claim about one row and stays
-out of ``target_compound_id``: the ledger and detail reads only put what that
-compound declares on ``reference_listing`` (:func:`member_target_id`), as the
-batch ledger does for its consensus.
+on-demand re-score. The target compound is the one the member's own sample
+matched (``BatchPeakOccurrence.target_compound_id``), else, for a member folded
+before the member kept one, its registry entry's (``batch_peaks.candidate_index``),
+shared by every member of that identity. Neither is a claim the batch makes
+about the row, so it stays out of ``target_compound_id``: the ledger and detail
+reads only put what that compound declares on ``reference_listing``
+(:func:`member_target_id`), as the batch ledger does for its consensus.
 
 The engine tier is the anchor's: an import's verdict (``engine_tier``) is kept
 on the batch peak, about the identity its consensus names. A member shows it
@@ -226,8 +227,15 @@ def member_row(member: Any, anchor: Any) -> dict:
 
 
 def member_target_id(member: Any, anchor: Any) -> str | None:
-    """The target compound a member of the batch matched this member's
-    identity to, as the registry entry recorded it, or None.
+    """The target compound this member's sample matched its identity to, or
+    None.
+
+    The member's own (``BatchPeakOccurrence.target_compound_id``), which the
+    fold writes: two members that matched two isomeric compounds through one
+    ion share a registry entry, and the entry keeps the first compound only.
+    Where the member names none - folded before it kept one, or rewritten by
+    a batch stage (``batch_peaks.mark_member``) - its registry entry answers,
+    as it did for every member before, until the sample folds again.
 
     Only for the display (``reference_listing.target``, through
     :func:`~mascope_backend.api.new.peak_assignments.target_listing.with_target_listings`'s
@@ -241,6 +249,9 @@ def member_target_id(member: Any, anchor: Any) -> str | None:
     :param anchor: The ``BatchPeak`` the member sits in.
     :return: The compound id, or None.
     """
+    own = getattr(member, "target_compound_id", None)
+    if own:
+        return own
     identity = resolve_candidate(anchor.candidates, member.candidate)
     return identity.get("target_compound_id") or None
 

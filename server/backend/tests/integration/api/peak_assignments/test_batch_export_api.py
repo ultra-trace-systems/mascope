@@ -548,18 +548,22 @@ async def test_a_ledger_without_levels_serves_none(guest_client, ledger):
 
 
 def _member_level_reads(async_engine):
-    """Collect the grouped member-level reads sent while the block runs, each
-    as its parameters: the read is the one over the occurrence table that
-    groups by level. A ``plan_cache_mode`` setting sent is collected too, as
-    the statement itself, so its place around the read shows."""
+    """Collect the grouped reads over the occurrence table sent while the
+    block runs, each as its parameters: the member-level read, which groups by
+    level, and the member-target read, which groups by the members' own target
+    (``_member_targets``). A ``plan_cache_mode`` setting sent is collected too,
+    as the statement itself, so its place around each read shows."""
     reads: list = []
 
     def capture(conn, cursor, statement, parameters, context, executemany):
         if "plan_cache_mode" in statement:
             reads.append(statement)
         elif "batch_peak_occurrence" in statement and "GROUP BY" in statement:
-            if "peak_assignment.level" in statement.split("GROUP BY")[1]:
-                reads.append(tuple(parameters))
+            grouped = statement.split("GROUP BY")[1]
+            if "peak_assignment.level" in grouped:
+                reads.append(("level", tuple(parameters)))
+            elif "batch_peak_occurrence.target_compound_id" in grouped:
+                reads.append(("target", tuple(parameters)))
 
     return reads, capture
 
@@ -596,12 +600,15 @@ async def test_a_filtered_ledger_reads_only_its_rows_members(
             .all()
         )
     assert len(whole) == 2
-    # One read, over the served anchor's members alone, not the batch's, and
-    # planned for those ids: a generic plan cannot see how many they are.
-    [custom, read, back] = reads
-    assert custom == "SET LOCAL plan_cache_mode = force_custom_plan"
-    assert [p for p in read if isinstance(p, list)] == [[glucose["batch_peak_id"]]]
-    assert back == "SET LOCAL plan_cache_mode = DEFAULT"
+    # One read of each, over the served anchor's members alone, not the
+    # batch's, and planned for those ids: a generic plan cannot see how many
+    # they are.
+    custom = "SET LOCAL plan_cache_mode = force_custom_plan"
+    back = "SET LOCAL plan_cache_mode = DEFAULT"
+    assert reads == [custom, reads[1], back, custom, reads[4], back]
+    assert [kind for kind, _ in (reads[1], reads[4])] == ["target", "level"]
+    for _, read in (reads[1], reads[4]):
+        assert [p for p in read if isinstance(p, list)] == [[glucose["batch_peak_id"]]]
 
 
 async def test_a_ledger_that_serves_no_row_reads_no_members(

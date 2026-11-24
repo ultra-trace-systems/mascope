@@ -258,6 +258,7 @@ def test_a_member_state_round_trips_through_restore():
     member = SimpleNamespace(
         sample_item_id="s1",
         candidate=0,
+        target_compound_id="tc-1",
         tier=3,
         fit_score=0.95,
         role=1,
@@ -268,6 +269,7 @@ def test_a_member_state_round_trips_through_restore():
     assert state == {
         "sample_item_id": "s1",
         "candidate": 0,
+        "target_compound_id": "tc-1",
         "tier": 3,
         "fit_score": 0.95,
         "role": 1,
@@ -275,6 +277,7 @@ def test_a_member_state_round_trips_through_restore():
         "p_correct": 0.9,
     }
     member.candidate, member.tier, member.fit_score, member.p_correct = 1, 2, 0.5, None
+    member.target_compound_id = None
     restore_member(member, state)
     assert (member.candidate, member.tier, member.fit_score, member.p_correct) == (
         0,
@@ -282,6 +285,8 @@ def test_a_member_state_round_trips_through_restore():
         0.95,
         0.9,
     )
+    # The member's own target goes back with the reading it was matched for.
+    assert member.target_compound_id == "tc-1"
 
 
 # --- what the inspector is handed ---------------------------------------------
