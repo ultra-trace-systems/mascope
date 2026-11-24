@@ -27,7 +27,16 @@ import { blendOf } from '@/lib/batchBlend'
 import { flatSeriesOf } from '@/lib/batchFlatSeries'
 import { holdingReasons, holdingTooltip } from '@/lib/batchPersistence'
 import { bucketOf, bucketRank, engineBucketOf, tierName } from '@/lib/tiers'
-import { isLevel, levelMeta, levelRank, memberLevelTooltip } from '@/lib/levels'
+import {
+  isLevel,
+  isShownLevel,
+  levelFilterOptions,
+  levelMeta,
+  levelRank,
+  levelTooltip,
+  memberLevelTooltip,
+  readerLevel
+} from '@/lib/levels'
 import { VERDICT_META } from '@/lib/verification'
 import {
   AssignmentLedger,
@@ -244,7 +253,49 @@ const engineTierTooltip = (row) => {
 // members split (`member_levels`). It is the members' level: the batch states
 // none of its own, and the chip's hover says so. Offered only where some
 // batch peak shown carries one.
-const hasMemberLevels = computed(() => shown.value.some((bp) => isLevel(bp.member_level)))
+//
+// Where the batch-level verdict on the row's present claim states a level of
+// its own, the column shows the claim's in its place (readerLevel), and the
+// hover says so and what the members' runs stated. A stale verdict, on a
+// formula the consensus has left, speaks for no level of the row. The batch's
+// own read serves a level-1 claim whole, window and all: the window decides
+// which members it reaches, which the sample ledger shows.
+const shownLevelOf = (row) => {
+  const record = verdictFor(row)
+  return readerLevel({
+    verdict: record && !verdicts.value.isStale(record, row) ? record : null,
+    level: row.member_level
+  })
+}
+const hasMemberLevels = computed(() =>
+  shown.value.some((bp) => isShownLevel(shownLevelOf(bp)?.level))
+)
+const levelOptions = computed(() =>
+  levelFilterOptions(decorated.value.map((row) => row.shownLevel?.level))
+)
+// The hover of the Level cell's chip: the members' level as before, or the
+// claim's, with what the members' runs stated beside it.
+const shownLevelTooltip = (row) => {
+  const level = row.shownLevel
+  if (!level) return ''
+  if (level.source !== 'claim') {
+    return [
+      memberLevelTooltip(row.member_level, row.member_levels),
+      'Source: engine - no live batch-level verdict states a level'
+    ].join('\n')
+  }
+  return [
+    levelTooltip({
+      level: level.level,
+      evidence: level.evidence,
+      lift: level.lift,
+      source: 'claim'
+    }),
+    isLevel(row.member_level)
+      ? `The members' runs stated ${row.member_level}`
+      : "The members' runs stated no level for it"
+  ].join('\n')
+}
 
 // The level an importing engine stated for the identity, beside the members'
 // as its tier is beside the consensus tier.
@@ -422,6 +473,8 @@ const decorated = computed(() => {
     // is what the column sorts on, the target's name first.
     const listing = ledgerListing(batchPeak.reference_listing)
     const target = targetOf(batchPeak.reference_listing, listing)
+    // The level the Level column draws: the claim's, else the members'.
+    const shownLevel = shownLevelOf(batchPeak)
     return {
       ...batchPeak,
       tierRank: bucketRank(batchPeak.consensus_tier, batchPeak.consensus_role),
@@ -433,7 +486,8 @@ const decorated = computed(() => {
         batchPeak.consensus_tier,
         batchPeak.consensus_role
       ),
-      memberLevelRank: isLevel(batchPeak.member_level) ? levelRank(batchPeak.member_level) : null,
+      shownLevel,
+      memberLevelRank: shownLevel ? levelRank(shownLevel.level) : null,
       acrossRank: acrossRankOf(batchPeak),
       verdictRank: verdictRank(verdictFor(batchPeak)),
       parentId: rootParentId(batchPeak, index),
@@ -531,6 +585,8 @@ const { activeTiers, toggleTier, filters, verdictFilter, searchQuery, passes } =
   bucketOf: (row) => (readsEngineTiers.value ? row.engineBucket : row.bucket),
   state: view,
   menus: { member_level: FilterMatchMode.EQUALS },
+  // The menu filters on the level the column draws, a claim's included.
+  valueOf: { member_level: (row) => row.shownLevel?.level ?? null },
   menuShown: { member_level: hasMemberLevels },
   view: readsEngineTiers,
   verdictOf: verdictFor,
@@ -1049,6 +1105,7 @@ watch(
     v-model:sortField="sortField"
     v-model:sortOrder="sortOrder"
     :fields="FIELDS"
+    :levelOptions="levelOptions"
     :headers="headers"
     :strip="ledger.list.length > 0"
     v-model:search="searchQuery"
@@ -1421,9 +1478,9 @@ watch(
          importing engine's own, outlined beside it. -->
     <template #level="{ data }">
       <BaseLevelTag
-        v-if="isLevel(data.member_level)"
-        :level="data.member_level"
-        :tooltip="memberLevelTooltip(data.member_level, data.member_levels)"
+        v-if="data.shownLevel"
+        :level="data.shownLevel.level"
+        :tooltip="shownLevelTooltip(data)"
       />
       <BaseLevelTag
         v-if="engineReadings && isLevel(data.engine_level)"

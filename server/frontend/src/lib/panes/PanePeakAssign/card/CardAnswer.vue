@@ -220,6 +220,7 @@ const provisional = TIERING_PROVISIONAL
         v-if="identificationLevel"
         :level="identificationLevel.level"
         :role="focusedAssignment.role"
+        :tooltip="identificationLevel.tooltip"
       />
       <BaseVerdictBadge
         v-if="verification && verifiable"

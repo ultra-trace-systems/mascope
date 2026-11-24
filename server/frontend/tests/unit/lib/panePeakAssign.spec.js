@@ -205,7 +205,8 @@ vi.mock('@/lib/base', async () => ({
   // the chip itself has a spec of its own (base/BaseLevelTag.spec.js).
   BaseLevelTag: {
     props: ['level', 'role', 'evidence', 'lift', 'tooltip'],
-    template: '<span class="level-tag" :data-level="level" :data-role="role" />'
+    template:
+      '<span class="level-tag" :data-level="level" :data-role="role" :data-tooltip="tooltip" />'
   },
   BaseVerdictBadge: { props: ['record', 'compact'], template: '<span class="verdict-badge" />' },
   // Real: the tier row's provisional mark is read off what it draws.
@@ -2110,6 +2111,110 @@ describe('PanePeakAssign identification level', () => {
     const wrapper = await mountPane()
 
     expect(section(wrapper).exists()).toBe(false)
+  })
+
+  // The level a reader is shown is the live claim's where a verdict states
+  // one, else the engine's (docs/dev/identification_claims.md, section 6.1).
+  describe("a live claim's level", () => {
+    const CLAIM = {
+      peak_assignment_id: 'pa-1',
+      verdict: 'confirmed',
+      evidence_level: 'msms',
+      level: 2,
+      level_letter: 'b',
+      claimed_inchikey: 'XLYOFNOQVPJJNP-UHFFFAOYSA-N',
+      context: { claim: { evidence: 'two fragments fit one structure', lift: 'a standard' } }
+    }
+    const chips = (wrapper) => wrapper.findAll('.level-tag')
+    const sourceText = (wrapper) => wrapper.find('[data-testid="level-source"]').text()
+    afterEach(() => {
+      anchorVerdictRecord = null
+    })
+
+    it("shows the claim's level, its lines and its source, in the chip and the section", async () => {
+      focusedAssignment = M0
+      verdictRecord = CLAIM
+      // Unlisted engine rivals too: under a claim the card says nothing of them either.
+      detailRecord = { provenance: { identification_level: levelRecord({ rivals_unlisted: 3 }) } }
+      const wrapper = await mountPane()
+
+      // The chip beside the tier and the section's own read the same.
+      expect(chips(wrapper).map((chip) => chip.attributes('data-level'))).toEqual(['2b', '2b'])
+      for (const chip of chips(wrapper)) {
+        const tooltip = chip.attributes('data-tooltip').split('\n')
+        expect(tooltip).toContain(
+          'Source: claim - the live verdict states this level; the engine read 4a'
+        )
+        expect(tooltip).toContain('Why: two fragments fit one structure')
+      }
+      expect(section(wrapper).text()).toContain('diagnostic evidence')
+      expect(sourceText(wrapper)).toContain('claim, the engine read 4a')
+      expect(wrapper.find('[data-testid="level-evidence"]').text()).toContain(
+        'two fragments fit one structure'
+      )
+      expect(wrapper.find('[data-testid="level-lift"]').text()).toContain('a standard')
+      // The engine's rivals are what its level was read against, not the claim's.
+      expect(rivals(wrapper)).toHaveLength(0)
+      expect(wrapper.find('[data-testid="rivals-unlisted"]').exists()).toBe(false)
+    })
+
+    it("shows the engine's level where no verdict states one, and says so", async () => {
+      focusedAssignment = M0
+      verdictRecord = { ...CLAIM, verdict: 'unsure', level: null, level_letter: null }
+      detailRecord = { provenance: { identification_level: levelRecord() } }
+      const wrapper = await mountPane()
+
+      expect(section(wrapper).find('.level-tag').attributes('data-level')).toBe('4a')
+      expect(section(wrapper).find('.level-tag').attributes('data-tooltip')).toContain(
+        'Source: engine - no live verdict states a level'
+      )
+      expect(sourceText(wrapper)).toContain('engine')
+      expect(rivals(wrapper)).toHaveLength(2)
+    })
+
+    it('reads a batch-level claim reaching the peak inside its window', async () => {
+      focusedAssignment = M0
+      anchorVerdictRecord = { ...CLAIM, level: 1, level_letter: null }
+      const wrapper = await mountPane()
+
+      expect(section(wrapper).find('.level-tag').attributes('data-level')).toBe('1')
+    })
+
+    it("reads the engine's level where a batch claim's window leaves the sample out", async () => {
+      focusedAssignment = M0
+      anchorVerdictRecord = {
+        ...CLAIM,
+        level: null,
+        level_letter: null,
+        claimed_inchikey: null,
+        outside_window: true
+      }
+      const wrapper = await mountPane()
+
+      expect(section(wrapper).find('.level-tag').attributes('data-level')).toBe('4a')
+      expect(sourceText(wrapper)).toContain('engine')
+    })
+
+    it("prefers the peak's own verdict to the batch-level one", async () => {
+      focusedAssignment = M0
+      verdictRecord = CLAIM
+      anchorVerdictRecord = { ...CLAIM, level: 1, level_letter: null }
+      const wrapper = await mountPane()
+
+      expect(section(wrapper).find('.level-tag').attributes('data-level')).toBe('2b')
+    })
+
+    it("shows a version-1 claim's bare number and says it predates the letters", async () => {
+      focusedAssignment = M0
+      verdictRecord = { ...CLAIM, level: 3, level_letter: null, context: {} }
+      const wrapper = await mountPane()
+
+      expect(section(wrapper).find('.level-tag').attributes('data-level')).toBe('3')
+      expect(section(wrapper).text()).toContain('recorded before the letters')
+      expect(section(wrapper).find('.level-tag').attributes('data-tooltip')).toContain(
+        "recorded before the scale's letters"
+      )
+    })
   })
 
   it('shows nothing for a level the scale does not name', async () => {

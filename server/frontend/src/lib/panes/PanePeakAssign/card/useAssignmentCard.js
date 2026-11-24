@@ -13,7 +13,7 @@ import { coVariationLabel } from '@/lib/batchCoVariation'
 import { checksSummary } from '@/lib/batchChecks'
 import { persistenceHold, persistenceHoldNote } from '@/lib/batchPersistence'
 import { ROLE_BUCKETS, bucketRank, tierName } from '@/lib/tiers'
-import { isLevel, isOpenRival, levelMeta, unlistedRivalsLine } from '@/lib/levels'
+import { isOpenRival, levelMeta, levelTooltip, readerLevel, unlistedRivalsLine } from '@/lib/levels'
 import { sourceLabel } from '@/lib/assignmentSources'
 import { EVIDENCE_LEVELS, VERDICT_META, claimCandidates, claimStatement } from '@/lib/verification'
 import { useBatchPeakJump } from '@/lib/panes/PaneBrowserMatch/stores/batchPeakJump.js'
@@ -1086,22 +1086,40 @@ export function useAssignmentCard({ showSearch }) {
   //
   // An isotopologue carries its M0's level and no rivals of its own (its record
   // names the M0 it inherits from); the card says whose level it is.
+  //
+  // Where a live verdict states a level, the claim's is the one shown, with the
+  // claim's own lines (readerLevel; docs/dev/identification_claims.md, section
+  // 6.1): the peak's own verdict on its M0, else the batch-level verdict that
+  // reaches it - which the server serves with no level to a sample a level-1
+  // claim's window leaves out, so that sample reads the engine's. The rivals
+  // are the engine's reading, what its level was read against; under a claim
+  // they are not the level's, so the card lists them only for the engine's.
+  const liveVerdict = computed(() => {
+    const target = verifyTarget.value
+    if (!target?.assigned_formula) return null
+    return app.data.peakAssignment.verification.forAssignment(target) ?? anchorVerdict.value
+  })
   const identificationLevel = computed(() => {
     const row = focusedAssignment.value
     if (!row || derivedRun.value) return null
     const record = provenance.value?.identification_level ?? null
-    const level = row.level ?? focusedDetail.value?.level ?? record?.level ?? null
-    if (!isLevel(level)) return null
-    const rivals = Array.isArray(record?.rivals) ? record.rivals : []
-    return {
-      level,
-      name: levelMeta(level).name,
+    const shown = readerLevel({
+      verdict: liveVerdict.value,
+      level: row.level ?? focusedDetail.value?.level ?? record?.level ?? null,
       evidence:
         row.level_evidence ?? focusedDetail.value?.level_evidence ?? record?.evidence ?? null,
-      lift: row.level_lift ?? focusedDetail.value?.level_lift ?? record?.lift ?? null,
+      lift: row.level_lift ?? focusedDetail.value?.level_lift ?? record?.lift ?? null
+    })
+    if (!shown) return null
+    const engine = shown.source === 'engine'
+    const rivals = engine && Array.isArray(record?.rivals) ? record.rivals : []
+    return {
+      ...shown,
+      name: levelMeta(shown.level).name,
+      tooltip: levelTooltip({ ...shown, role: row.role }),
       inherited: row.role === 'iso_child' || record?.inherited_from != null,
       rivals,
-      unlisted: unlistedRivalsLine(record?.rivals_unlisted, rivals.length)
+      unlisted: engine ? unlistedRivalsLine(record?.rivals_unlisted, rivals.length) : null
     }
   })
   // What a rival's line says on hover: the ion it would be, where the record names

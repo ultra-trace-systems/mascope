@@ -1440,6 +1440,19 @@ isotope line carries none of its own: its main peak's row shows it. A reagent or
 another engine and a run made before the level show none. A peak you assign by hand
 reads 5a with its rivals not measured, or 5b where its lines refute it.
 
+**A verdict's level comes first.** Where a live verdict states a level, the chip beside
+the tier, the **Identification level** section, the sample ledger's **Level** column and
+its filter show the verdict's level in place of the engine's. That verdict is the peak's
+own, else the batch-level verdict that reaches it. The chip's hover says whose level it
+is, *claim* or *engine*, and under a claim what the engine read. **Why** and **would lift
+it** are then the claim's, and the rivals, which the engine's level was read against,
+are not listed. A level-1 batch claim reaches only the samples inside its window: a
+sample outside it reads the engine's level. The *Batch peaks* ledger's **Level** column
+shows the level of the batch-level verdict on the batch peak's present formula, the
+window aside, and its hover says what the members' runs stated. A claim recorded before
+the scale's letters shows its number alone, *3* rather than *3a*, and its hover says
+why: no letter is guessed for it.
+
 The ledger export (`level`, `level_evidence`, `level_lift` on each member row, beside the
 batch peak's `engine_level`), the SDK's ledger frames and the API carry the same three
 fields. The run records the version of the rules that read its facts into a level with its

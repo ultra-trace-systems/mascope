@@ -37,6 +37,17 @@ const props = defineProps({
     type: String,
     default: null
   },
+  // Whose level it is where a reader could be shown either, the live claim's
+  // or the engine's (readerLevel in lib/levels.js), and under a claim the
+  // engine's own: the hover text says which. Left out where only one can be.
+  source: {
+    type: String,
+    default: null
+  },
+  engineLevel: {
+    type: String,
+    default: null
+  },
   tooltip: {
     type: String,
     default: null
@@ -58,7 +69,9 @@ const autoTooltip = computed(() =>
         level: props.level,
         evidence: props.evidence,
         lift: props.lift,
-        role: props.role
+        role: props.role,
+        source: props.source,
+        engineLevel: props.engineLevel
       })
 )
 </script>

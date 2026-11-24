@@ -109,6 +109,11 @@ const props = defineProps({
    * `ion`, `level`, and `levelSort` for the level's rank.
    */
   fields: { type: Object, required: true },
+  /**
+   * The Level filter's options: the scale's, and a version-1 claim's bare
+   * number where a row shows one (levelFilterOptions).
+   */
+  levelOptions: { type: Array, default: () => LEVEL_FILTER_OPTIONS },
   /** Header tooltips by column key. */
   headers: { type: Object, default: () => ({}) },
   intensityLabel: { type: String, default: 'Intensity' },
@@ -666,7 +671,7 @@ const engineChipTooltip = (row) =>
             <Select
               v-model="filterModel.value"
               @change="filterCallback()"
-              :options="LEVEL_FILTER_OPTIONS"
+              :options="levelOptions"
               optionLabel="label"
               optionValue="value"
               placeholder="Any level"

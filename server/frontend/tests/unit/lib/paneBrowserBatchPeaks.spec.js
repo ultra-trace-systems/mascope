@@ -353,9 +353,9 @@ afterEach(() => {
 })
 
 // Renders a column's cells through a stub that hands each its row.
-async function cellsOf(field, rows) {
+async function cellsOf(field, rows, verdicts = {}) {
   const tableRows = ref([])
-  app = makeApp({ peaks: rows })
+  app = makeApp({ peaks: rows, verdicts })
   localStorage.clear()
   setActivePinia(createPinia())
   wrapper = mount(PaneBrowserBatchPeaks, {
@@ -3314,6 +3314,101 @@ describe('PaneBrowserBatchPeaks identification level', () => {
     wrapper.vm.filters.member_level.constraints[0].value = null
     await wrapper.vm.$nextTick()
     expect(ids()).toHaveLength(4)
+  })
+
+  // The batch-level verdict on the row's present claim states a level: the
+  // column reads the claim's in place of the members' (docs/dev/
+  // identification_claims.md, section 6.1).
+  describe("a live batch-level claim's level", () => {
+    const claimOn = (batch_peak_id, extra = {}) => ({
+      batch_peak_verification_id: `v-${batch_peak_id}`,
+      batch_peak_id,
+      assigned_formula: 'C6H12O6',
+      ionization_mechanism_id: null,
+      verdict: 'confirmed',
+      evidence_level: 'reference_standard',
+      level: 1,
+      level_letter: null,
+      window_start_utc: '2026-01-01T00:00:00Z',
+      window_end_utc: '2026-01-02T00:00:00Z',
+      context: { claim: { evidence: 'a standard and an MS/MS line', lift: null } },
+      superseded_utc: null,
+      ...extra
+    })
+
+    it("shows the claim's level, says so, and what the members stated", async () => {
+      const cells = await cellsOf('member_level', peaks(), { 'bp-2': claimOn('bp-2') })
+
+      const chip = cells['bp-2'].find('.level-tag')
+      expect(chip.attributes('data-level')).toBe('1')
+      const tooltip = chip.attributes('data-tooltip').split('\n')
+      expect(tooltip).toContain('Source: claim - the live verdict states this level')
+      expect(tooltip).toContain('Why: a standard and an MS/MS line')
+      expect(tooltip).toContain("The members' runs stated 5a")
+      // A row no claim reaches reads the members' level, and says whose.
+      expect(cells['bp-1'].find('.level-tag').attributes('data-level')).toBe('4a')
+      expect(cells['bp-1'].find('.level-tag').attributes('data-tooltip')).toContain(
+        'Source: engine - no live batch-level verdict states a level'
+      )
+    })
+
+    it("ranks, sorts and filters on the claim's level", async () => {
+      wrapper = await mountPane({ peaks: peaks(), verdicts: { 'bp-4': claimOn('bp-4') } })
+      const byId = Object.fromEntries(wrapper.vm.rows.map((row) => [row.batch_peak_id, row]))
+      expect(byId['bp-4'].memberLevelRank).toBe(LEVELS.indexOf('1'))
+
+      wrapper.vm.sortField = 'memberLevelRank'
+      wrapper.vm.sortOrder = 1
+      await wrapper.vm.$nextTick()
+      expect(ids()).toEqual(['bp-4', 'bp-1', 'bp-2', 'bp-3'])
+
+      wrapper.vm.filters.member_level.constraints[0].value = '1'
+      await wrapper.vm.$nextTick()
+      expect(ids()).toEqual(['bp-4'])
+    })
+
+    it('offers the column where only a claim states a level', async () => {
+      wrapper = await mountPane({
+        peaks: withoutLevels(),
+        verdicts: { 'bp-3': claimOn('bp-3', { level: 2, level_letter: 'a' }) }
+      })
+
+      expect(wrapper.vm.hasMemberLevels).toBe(true)
+      expect(columnFor('member_level')).toBeDefined()
+    })
+
+    // A claim recorded under version 1 of the mapping has a number and no letter.
+    it("shows a version-1 claim's bare number, and offers it in the menu", async () => {
+      wrapper = await mountPane({
+        peaks: peaks(),
+        verdicts: { 'bp-1': claimOn('bp-1', { level: 3, level_letter: null }) }
+      })
+      const byId = Object.fromEntries(wrapper.vm.rows.map((row) => [row.batch_peak_id, row]))
+      expect(byId['bp-1'].shownLevel.level).toBe('3')
+
+      const options = wrapper
+        .findComponent({ name: 'AssignmentLedger' })
+        .props('levelOptions')
+        .map((option) => option.value)
+      expect(options).toEqual([...LEVELS.slice(0, 3), '3', ...LEVELS.slice(3)])
+    })
+
+    // A stale verdict is about a formula the consensus has left.
+    it('reads no level off a stale verdict', async () => {
+      const cells = await cellsOf('member_level', peaks(), {
+        'bp-1': claimOn('bp-1', { assigned_formula: 'C7H14O7' })
+      })
+
+      expect(cells['bp-1'].find('.level-tag').attributes('data-level')).toBe('4a')
+    })
+
+    it("reads the members' level off a verdict that states none", async () => {
+      const cells = await cellsOf('member_level', peaks(), {
+        'bp-1': claimOn('bp-1', { verdict: 'rejected', level: null })
+      })
+
+      expect(cells['bp-1'].find('.level-tag').attributes('data-level')).toBe('4a')
+    })
   })
 
   // Left on with no column to show it, the filter would empty the table for a
