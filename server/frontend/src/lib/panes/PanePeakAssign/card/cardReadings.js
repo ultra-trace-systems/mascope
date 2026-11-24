@@ -173,24 +173,9 @@ export function reasonGroup(reason, groups, series = null) {
   )
 }
 
-const signed = new Intl.NumberFormat('en-US', { signDisplay: 'always' })
-
-/**
- * How a group's member is labelled beside its m/z: a series member by its
- * step from the root in the group's own unit ("root", "+1 CH2", "-2 CH2"),
- * any other by its channel, else its formula.
- *
- * @param {object} member - one of a group's `members`
- * @param {object} group - the group
- * @returns {string}
- */
-export function memberLabel(member, group) {
-  if (group?.kind === 'series' && Number.isInteger(member?.step)) {
-    if (member.step === 0) return 'root'
-    return `${signed.format(member.step)} ${group.unit || 'unit'}`
-  }
-  return member?.mechanism || member?.ion_formula || member?.formula || 'another row'
-}
+// How a group's member is labelled beside its m/z: the ledger's lens labels
+// it the same (lib/ledger/groups.js), so the card and the lens agree.
+export { memberLabel } from '@/lib/ledger/groups.js'
 
 /**
  * The isotope tile: the lines found of those predicted, from the family the
