@@ -403,19 +403,27 @@ def _try_lock(handle) -> bool:
     return True
 
 
-def _held_message(directory: str, holder: str) -> str:
+def _held_message(directory: str, holder: str, refused: str) -> str:
     """The refusal: who holds the ledger, and how to start again after it.
 
     ``STOP`` ends a run, and must be gone before the next one starts: a run
     started while it is there refits nothing. A rollback does not heed it
     between files, so it is waited out. The lock file names the holder's
     action first; when it cannot be read, both ways are given.
+
+    :param refused: The action refused. Only a run going on after a ``STOP``
+        skips the pre-script dump; a rollback keeps its restore point.
     """
     action = holder.split(",", 1)[0].strip() if holder else ""
+    again = (
+        "start this again with --skip-backup: a run started while STOP is "
+        "there refits nothing."
+        if refused == RUN
+        else "start this again."
+    )
     run_way = (
         "To end the run, create the file STOP in that directory. Once it has "
-        "ended, remove STOP, then start this again with --skip-backup: a run "
-        "started while STOP is there refits nothing."
+        f"ended, remove STOP, then {again}"
     )
     rollback_way = (
         "A rollback does not heed STOP: it ends by itself once its files are "
@@ -454,7 +462,7 @@ def hold_ledger(directory: str, action: str) -> Iterator[None]:
                 holder = handle.read().strip()
             except OSError:
                 holder = ""
-            raise LedgerHeld(_held_message(directory, holder))
+            raise LedgerHeld(_held_message(directory, holder, action))
         handle.seek(0)
         handle.truncate()
         handle.write(f"{action}, process {os.getpid()}, since {_utc_now()}\n")
