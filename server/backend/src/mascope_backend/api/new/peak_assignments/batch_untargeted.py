@@ -92,6 +92,7 @@ from mascope_backend.api.new.peak_assignments.batch_search_records import (
     searched_in_vain,
     write_search_records,
 )
+from mascope_backend.api.new.peak_assignments.batch_staleness import count_unread
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import (
     evidence_for,
@@ -1411,7 +1412,7 @@ async def run_batch_untargeted_search(
                 # alone - a peak file that has moved, a spectrum that will not
                 # read - and the other samples' anchors are still searchable.
                 # Logged with the traceback: the caller only ever sees a count.
-                counts["samples_failed"] += 1
+                count_unread(counts, sample_item_id)
                 runtime.logger.exception(
                     f"The untargeted batch search failed for sample '{sample_item_id}'."
                 )
@@ -1494,7 +1495,7 @@ async def run_batch_untargeted_search(
             try:
                 await _apply_search_rows(sample_batch_id, sample_item_id, readings)
             except Exception:  # noqa: BLE001 - one bad sample must not abort the search
-                counts["samples_failed"] += 1
+                count_unread(counts, sample_item_id)
                 runtime.logger.exception(
                     "Writing the untargeted batch search failed for sample "
                     f"'{sample_item_id}'."
@@ -1519,7 +1520,7 @@ async def run_batch_untargeted_search(
                     )
                     counts["samples_rescored"] += 1
                 except Exception:  # noqa: BLE001 - one bad sample must not abort the pass
-                    counts["samples_failed"] += 1
+                    count_unread(counts, sample_item_id)
                     runtime.logger.exception(
                         "Measuring the found compositions failed for sample "
                         f"'{sample_item_id}'."

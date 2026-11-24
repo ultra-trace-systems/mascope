@@ -374,6 +374,28 @@ async def test_the_family_is_committed_and_its_proposals_measured(
     assert tier_name(s2["up-1"].tier) in {"assigned", "candidate"}
 
 
+async def test_a_sample_whose_proposals_cannot_be_measured_is_named(
+    series_batch, stubbed, monkeypatch
+):
+    """A sample whose measurement raises is counted and skipped, the other
+    still measured, and named, as its stage records it (MAS-1060)."""
+    batch_id, samples = series_batch["batch_id"], series_batch["samples"]
+    measure = batch_series._propagate_to_sample
+
+    async def failing(sample_batch_id, sample_item_id, *args, **kwargs):
+        if sample_item_id == samples["S2"]:
+            raise FileNotFoundError("S2's peak file has moved")
+        return await measure(sample_batch_id, sample_item_id, *args, **kwargs)
+
+    monkeypatch.setattr(batch_series, "_propagate_to_sample", failing)
+    counts = await run_batch_series_detection(
+        batch_id, PeakAssignmentConfig(), batch_peak_run_id="run-series"
+    )
+    assert counts["samples_measured"] == 1
+    assert counts["samples_failed"] == 1
+    assert counts["samples_unread"] == [samples["S2"]]
+
+
 async def test_a_proposal_the_envelope_does_not_reach_leaves_its_anchor_as_it_was(
     async_session_factory, series_batch, stubbed
 ):

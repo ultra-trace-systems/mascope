@@ -23,7 +23,6 @@ from mascope_backend.api.new.peak_assignments.batch_stages import (
     settings_moved,
     stages_after,
     standing_entries,
-    stopped_partway,
     upstream_reason,
     with_version,
 )
@@ -142,15 +141,6 @@ class TestThePlan:
         assert plan({name: STATE_CURRENT for name in ORDER}, None) == ()
 
 
-def test_a_step_that_left_samples_unread_stopped_partway():
-    assert stopped_partway({"status": "partial", "data": {"samples_failed": 2}})
-    assert not stopped_partway({"status": "partial", "data": {"samples_failed": 0}})
-    # A pass with nothing to walk is partial in its notification's words, but
-    # it read everything it had to.
-    assert not stopped_partway({"status": "partial", "data": {"modes_walked": 0}})
-    assert not stopped_partway(None)
-
-
 def test_the_upstream_reason_names_the_stage():
     assert upstream_reason(BatchStage.SEARCH) == "upstream:search"
 
@@ -177,7 +167,16 @@ def test_the_ledger_serves_every_stage_in_order():
             stale_reason="fold",
             utc_ran=None,
             utc_stale=None,
-        )
+            skipped_samples=None,
+        ),
+        "series": SimpleNamespace(
+            state=STATE_CURRENT,
+            version=1,
+            stale_reason=None,
+            utc_ran=None,
+            utc_stale=None,
+            skipped_samples=[{"sample_item_id": "s2", "peaks_read": False}],
+        ),
     }
     entries = standing_entries(rows)
     assert [e["stage"] for e in entries] == ORDER
@@ -187,6 +186,12 @@ def test_the_ledger_serves_every_stage_in_order():
     assert by["search"]["stale_reason"] == "fold"
     assert by["search"]["label"] == "Search untargeted"
     assert by["water_ladders"]["state"] == STATE_NOT_RUN
+    # The samples a stage skipped, as its row records them; none elsewhere.
+    assert by["series"]["skipped_samples"] == [
+        {"sample_item_id": "s2", "peaks_read": False}
+    ]
+    assert by["search"]["skipped_samples"] == []
+    assert by["water_ladders"]["skipped_samples"] == []
     assert by["water_ladders"]["phase"] == batch_stages.PHASE_SOURCE
 
 

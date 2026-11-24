@@ -1080,6 +1080,8 @@ async def test_a_sample_that_cannot_be_measured_is_skipped_and_the_pass_finishes
     counts = await run_batch_untargeted_search(batch_id, PeakAssignmentConfig())
 
     assert counts["samples_failed"] == 1
+    # Named, so its stage records which sample it skipped (MAS-1060).
+    assert counts["samples_unread"] == [samples["S2"]]
     assert counts["samples_rescored"] == 1
     assert counts["anchors_annotated"] == 2
     anchors = await _anchors_by_mz(async_session_factory, batch_id)
@@ -1118,12 +1120,32 @@ async def test_a_sample_that_will_not_read_leaves_its_anchors_unsearched(
     # is the one that failed.
     assert counts["anchors_searched"] == 3
     assert counts["samples_failed"] == 1
+    assert counts["samples_unread"] == [folded_batch["samples"]["S1"]]
     assert counts["samples_searched"] == 0
     assert counts["anchors_annotated"] == 0
     assert counts["members_propagated"] == 0
     anchors = await _anchors_by_mz(async_session_factory, batch_id)
     assert all(anchor.consensus_formula is None for anchor in anchors.values())
     assert search_outcome(counts, batch_id)["status"] == "partial"
+
+
+async def test_a_sample_whose_readings_will_not_write_is_named(
+    folded_batch, stubbed_engine, monkeypatch
+):
+    """Writing a sample's search readings raising is the same stand-down: the
+    sample is counted and named, as its stage records it (MAS-1060)."""
+    batch_id = folded_batch["batch_id"]
+    write = batch_untargeted._apply_search_rows
+
+    async def failing(sample_batch_id, sample_item_id, readings):
+        if sample_item_id == folded_batch["samples"]["S1"]:
+            raise OSError("the store went away")
+        return await write(sample_batch_id, sample_item_id, readings)
+
+    monkeypatch.setattr(batch_untargeted, "_apply_search_rows", failing)
+    counts = await run_batch_untargeted_search(batch_id, PeakAssignmentConfig())
+    assert counts["samples_failed"] == 1
+    assert counts["samples_unread"] == [folded_batch["samples"]["S1"]]
 
 
 # --- an isotopologue line represented in another sample than its ion ----------

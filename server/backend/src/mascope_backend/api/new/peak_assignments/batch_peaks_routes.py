@@ -181,8 +181,9 @@ class BatchPeakRecordsResponse(BaseModel):
         description=(
             "The ledger only: where each batch stage stands, in order - "
             "``stage``, ``label``, ``phase``, ``state`` (current, running, "
-            "stale or not_run), ``version``, ``stale_reason``, ``utc_ran`` and "
-            "``utc_stale`` (``batch_stages.stage_standing``)."
+            "stale or not_run), ``version``, ``stale_reason``, ``utc_ran``, "
+            "``utc_stale`` and ``skipped_samples``, the samples its latest run "
+            "could not read (``batch_stages.stage_standing``)."
         ),
     )
     stale_stages: list[str] | None = Field(
@@ -1559,8 +1560,10 @@ async def get_batch_assignment_status_route(
     whose newest in-app run read older batch decisions than the current
     ones, or recorded none), ``library_changed`` (a target collection or reference
     list since), ``engine_changed`` and ``stages_stale`` (a stage stale for
-    any other reason). A curation, a verdict or an import is none.
-    ``needs_fold`` says whether the next pass folds every sample first, and
+    any other reason, ``read_again`` among them: a sample it skipped reads
+    again). A curation, a verdict or an import is none, and so are the
+    samples a stage could not read: it is current with them, and each of
+    ``stages`` names them under ``skipped_samples``. ``needs_fold`` says whether the next pass folds every sample first, and
     ``fold_reasons`` why (``batch_stages.needs_fold``). Read-only, and open
     like every read here where the feature is off.
 

@@ -1726,7 +1726,8 @@ class BatchAssignmentStatus(BaseModel):
     last_pass: BatchAssignmentLastPass | None = None
     stopped_pass: BatchAssignmentStoppedPass | None = None
     running: BatchAssignmentRunning | None = None
-    #: Every stage in order, as the ledger serves them.
+    #: Every stage in order, as the ledger serves them, each with the samples
+    #: it could not read and skipped (``skipped_samples``, by id and name).
     stages: list[dict]
     #: The stale stages, first first: the next pass starts at the first.
     stale_stages: list[str]

@@ -2242,7 +2242,8 @@ once a pass has run, and while an earlier run is on screen. It holds:
   since*, *Detect series ran again since*, ...), *Waiting* for a stage the pass has
   yet to reach, or *Not run*, a stage before the one the pass started at. A fold the
   pass did not need reads *No rebuild needed*, and one it ran says why. While your
-  pass runs the list moves with it, stage by stage.
+  pass runs the list moves with it, stage by stage. A stage that could not read some
+  of the batch's samples names them: *Skipped 1 sample it could not read: ...*.
 - **A one-line result for each stage that finished**, from the counts the pass
   kept: *24 samples folded*, *52 of 80 batch peaks assigned a composition*, *38 rows
   folded under their compound, 14 isotope lines stamped*. A stage that found
@@ -2359,8 +2360,20 @@ below), and a completed pass leaves every stage current.
   members in every sample and changes the reading the search, the series and the claims
   start from. An import, or a pin, that stops partway still does: the samples it reached
   keep what it wrote. A stage that runs makes the stages after it stale until they run.
-  A stage that stops partway keeps what it wrote and is stale itself, and so is one that
-  could not read every sample. Running the stages again starts at the first stale one.
+  A stage that stops partway keeps what it wrote and is stale itself. Running the stages
+  again starts at the first stale one.
+- **Skipped samples.** A stage that cannot read one of the batch's samples, such as a
+  sample whose peak file has moved or whose spectrum does not read, skips it, goes on
+  with the others and keeps what it wrote. It is current all the same, and it records
+  the samples it skipped (`skipped_samples` on each stage of the ledger read and the
+  batch's assignment status). Running it again would fail on the same samples, so no
+  later step runs it again for them. A skipped sample whose peak list did not read
+  then and reads now, its file put back, makes the stage stale (*A sample it skipped
+  reads again*), and the next pass reads it. A sample processed again, or a new one,
+  is folded in, which makes every stage stale anyway, and the run after that records
+  the samples it skips then. A sample whose peak list reads but that the stage still
+  could not use, a failure further into its reading, stays skipped until something
+  else makes the stage stale; the server's log has its error.
 - **Judged as a run judges.** A stage that rewrites a sample's members - a water-ladder rung
   or a known species claimed, the search's or a series' reading measured, a row stripped
   to a parent's isotope line - then judges that sample again through the same stages a run
@@ -2504,7 +2517,11 @@ it counts, and the samples or the collections it names:
   `fold_reasons` says why.
 - **Engine changed.** The pass ran under another engine version than the server's.
 - **Stages stale.** A stage stale for any other reason, such as a rebuild since the pass,
-  or a stage the pass itself left stale.
+  a stage the pass itself left stale, or a sample a stage skipped that reads again
+  (`read_again`).
+
+Samples a stage skipped are no reason: the stage is current with them, and each
+stage's `skipped_samples` names them, by id and name.
 
 A curation, a verdict and an import are not reasons. Each acts on the current run by
 design, and an import is a run of its own. A pin on a batch peak, or its release, still

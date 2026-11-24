@@ -27,7 +27,7 @@ vi.mock('@/lib/panes/PaneBrowserMatch/stores/batchAssign.js', async (importOrigi
 
 const { default: BatchAssignDetails } =
   await import('@/lib/panes/PaneBrowserMatch/BatchAssignDetails.vue')
-const { stageResult, staleWords, tierChanges, tierCounts, settingsLines } =
+const { skippedWords, stageResult, staleWords, tierChanges, tierCounts, settingsLines } =
   await import('@/lib/panes/PaneBrowserMatch/batchPass.js')
 
 const STAGES = [
@@ -278,6 +278,45 @@ describe('BatchAssignDetails checklist', () => {
     expect(stateOf('co_variation')).toBe('not_run')
     expect(stageRow('series').find('[data-testid="stage-state"]').text()).toBe('Failed')
     expect(stageRow('search').find('[data-testid="stage-state"]').text()).toBe('Out of date')
+  })
+
+  it('names the samples a current stage skipped, and says when one reads again', async () => {
+    const pass = run('run-9', { current: true, summary: summaryOf(allDone) })
+    const skipped = [{ sample_item_id: 'si-2', sample_item_name: 'Blank 2', peaks_read: false }]
+    await mountDetails({
+      status: statusOf('current', {
+        last_pass: { batch_peak_run_id: 'run-9' },
+        stages: STAGES.map((s) =>
+          s.stage === 'search' || s.stage === 'series' ? { ...s, skipped_samples: skipped } : s
+        )
+      }),
+      runs: [pass]
+    })
+
+    expect(stateOf('search')).toBe('done')
+    expect(stageRow('search').find('[data-testid="stage-skipped"]').text()).toBe(
+      'Skipped 1 sample it could not read: Blank 2'
+    )
+    expect(stageRow('series').find('[data-testid="stage-skipped"]').exists()).toBe(true)
+    expect(stageRow('water_ladders').find('[data-testid="stage-skipped"]').exists()).toBe(false)
+
+    wrapper.unmount()
+    await mountDetails({
+      status: statusOf('behind', {
+        last_pass: { batch_peak_run_id: 'run-9' },
+        stale_stages: ['search'],
+        stages: STAGES.map((s) =>
+          s.stage === 'search'
+            ? { ...s, state: 'stale', stale_reason: 'read_again', skipped_samples: skipped }
+            : s
+        )
+      }),
+      runs: [pass]
+    })
+    expect(stateOf('search')).toBe('stale')
+    expect(stageRow('search').find('[data-testid="stage-reason"]').text()).toBe(
+      'A sample it skipped reads again'
+    )
   })
 
   it('marks a cancelled pass’s unfinished stages cancelled, an interrupted one with its error', async () => {
@@ -833,6 +872,19 @@ describe('batchPass helpers', () => {
     expect(staleWords('upstream:series', status)).toBe('Detect series ran again since')
     expect(staleWords('curation', status)).toBe('A batch peak was pinned or released since')
     expect(staleWords(null, status)).toBe('Out of date')
+    expect(staleWords('read_again', status)).toBe('A sample it skipped reads again')
+  })
+
+  it('names the skipped samples, the first few, and counts the rest', () => {
+    expect(skippedWords(null)).toBeNull()
+    expect(skippedWords([])).toBeNull()
+    const many = Array.from({ length: 7 }, (_, i) => ({
+      sample_item_id: `si-${i}`,
+      sample_item_name: i === 0 ? null : `S${i}`
+    }))
+    expect(skippedWords(many)).toBe(
+      'Skipped 7 samples it could not read: si-0, S1, S2, S3, S4 and 2 more'
+    )
   })
 
   it('says how many samples the fold skipped', () => {

@@ -92,6 +92,7 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     in_batch_run,
     touch_ledger,
 )
+from mascope_backend.api.new.peak_assignments.batch_staleness import count_unread
 from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     Annotation,
     _propagate_to_sample,
@@ -821,10 +822,9 @@ async def run_batch_series_detection(
                 )
                 counts["samples_measured"] += 1
             except Exception:  # noqa: BLE001 - one bad sample must not abort the pass
-                counts["samples_failed"] += 1
+                count_unread(counts, sample_item_id)
                 runtime.logger.exception(
-                    "Measuring the series' proposals failed for sample "
-                    f"'{sample_item_id}'."
+                    f"Measuring the series' proposals failed for '{sample_item_id}'."
                 )
         # Again once the members read the proposals. A fold of an anchor keeps
         # its record only while its consensus names the record's formula, and
