@@ -758,10 +758,14 @@ describe('BatchAssignDetails Run history', () => {
       config: { from_stage: 'water_ladders' }
     }),
     run('r5', { current: true, summary: summaryOf(allDone) }),
-    run('r4', { summary: summaryOf({ series: 'done' }, { first: 'series' }) }),
+    // An earlier completed run has the snapshot the next run's start kept.
+    run('r4', {
+      summary: summaryOf({ series: 'done' }, { first: 'series' }),
+      snapshot_utc: local(16, 14, 0)
+    }),
     run('r3', { action: 'detect_series', status: 'cancelled' }),
-    run('r2', { action: 'import', engine: 'peaky' }),
-    run('r1', { action: 'fold' })
+    run('r2', { action: 'import', engine: 'peaky', snapshot_utc: local(16, 13, 0) }),
+    run('r1', { action: 'fold', snapshot_utc: local(16, 12, 0) })
   ]
 
   it('opens from Details’ link', async () => {

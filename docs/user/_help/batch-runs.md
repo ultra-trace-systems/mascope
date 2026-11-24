@@ -9,6 +9,9 @@ for a pass its API route started, and *Import*, *Rebuild* or *Folded samples*
 for the rest. Exactly one run is **current**: the live ledger, which every
 new sample folds into and every curation and verdict edits. When a new run
 starts, the ledger as the current run left it is kept as a **snapshot**, so
-any earlier run can be viewed read-only from Run history, and **Back to
-current** returns to the live one. The newest few runs are kept per batch;
+an earlier run can be viewed read-only from Run history, and **Back to
+current** returns to the live one. Only the current run and a run with a
+snapshot open: a failed run left the ledger as the run before it, a cancelled
+run's writes stand in the current ledger, and a running run has not finished,
+so none of them has a ledger of its own, and its row says which. The newest few runs are kept per batch;
 older ones are pruned with their snapshots when a run completes.

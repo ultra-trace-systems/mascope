@@ -3,7 +3,12 @@ import { computed } from 'vue'
 
 import { BaseRunProvenance } from '@/lib/base'
 import { useApp } from '@/stores'
-import { runLabel, runStateWords } from '@/stores/data/modules/batchPeak/run.js'
+import {
+  runClosedReason,
+  runLabel,
+  runOpenable,
+  runStateWords
+} from '@/stores/data/modules/batchPeak/run.js'
 
 import { whenWords } from './stores/batchAssign.js'
 
@@ -17,6 +22,11 @@ import { whenWords } from './stores/batchAssign.js'
  * read-only, from its snapshot; the bar then says so and offers Back to
  * current (BatchAssignControl). Opened in Assign batch's Details popover, from
  * its link or the menu's Run history.
+ *
+ * Only a run with a ledger to show opens: the current one, or one with a
+ * snapshot. A failed, cancelled or running run stays listed, says why it
+ * cannot be opened, and is no choice: its read would answer with no rows,
+ * which reads as "that run left nothing".
  */
 const emit = defineEmits(['picked'])
 
@@ -31,11 +41,14 @@ const rows = computed(() =>
     label: runLabel(run),
     state: runStateWords(run),
     when: whenWords(run.batch_peak_run_utc_created),
+    openable: runOpenable(run),
+    reason: runClosedReason(run),
     viewing: runs.value.viewing?.batch_peak_run_id === run.batch_peak_run_id
   }))
 )
 
 function pick(run) {
+  if (!runOpenable(run)) return
   if (run.current) runs.value.backToCurrent()
   else runs.value.focus(run)
   emit('picked', run)
@@ -62,7 +75,8 @@ function pick(run) {
         role="option"
         :aria-selected="row.viewing"
         class="history-row"
-        :class="{ viewing: row.viewing, current: row.run.current }"
+        :aria-disabled="row.openable ? undefined : 'true'"
+        :class="{ viewing: row.viewing, current: row.run.current, closed: !row.openable }"
         :data-run="row.id"
         tabindex="0"
         @click="pick(row.run)"
@@ -75,6 +89,9 @@ function pick(run) {
         </span>
         <span class="row-when">{{ row.when }}</span>
         <BaseRunProvenance :run="row.run" compact />
+        <span v-if="row.reason" class="row-reason" data-testid="run-closed-reason">
+          {{ row.reason }}
+        </span>
       </li>
     </ul>
   </div>
@@ -111,9 +128,22 @@ function pick(run) {
   border-radius: var(--p-border-radius-sm, 4px);
   cursor: pointer;
 }
-.history-row:hover,
-.history-row:focus-visible {
+.history-row:not(.closed):hover,
+.history-row:not(.closed):focus-visible {
   background: var(--p-content-hover-background);
+}
+/* A run with no ledger to show: listed, not a choice. */
+.history-row.closed {
+  cursor: default;
+}
+.history-row.closed:focus-visible {
+  outline: 1px solid var(--p-focus-ring-color, var(--p-text-muted-color));
+  outline-offset: -1px;
+}
+.row-reason {
+  grid-column: 2 / -1;
+  color: var(--p-text-muted-color);
+  font-size: 0.85rem;
 }
 .history-row.viewing {
   background: var(--p-highlight-background);
