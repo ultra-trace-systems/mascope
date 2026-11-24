@@ -10,6 +10,12 @@ per file - and the success or error packet was dropped.
 These tests drive the route itself and run the task it schedules, so a route
 that stops passing the id fails them, not only a controller that stops
 accepting it.
+
+Only the error packet is the decorator's to send: a request that succeeds is
+reported by its own pending packet and then by the file converter, under the
+same process id (``test_compute_peaks_packet_sequence.py`` follows that
+sequence through ``request_peak_detection``). Here ``request_peak_detection``
+is patched out, so these tests see the decorator's packets alone.
 """
 
 from types import SimpleNamespace
@@ -62,14 +68,12 @@ async def _request_peaks(converter_available=AsyncMock()):
 
 
 @pytest.mark.asyncio
-async def test_a_requested_detection_tells_the_user_it_was_requested():
+async def test_a_requested_detection_sends_no_outcome_of_its_own():
+    # A success packet here would end the request's progress bar before the
+    # converter has detected anything; the converter reports the outcome.
     emit = await _request_peaks()
 
-    emit.assert_awaited_once()
-    notification = emit.await_args.args[0]
-    assert emit.await_args.kwargs == {"user_id": USER_ID}
-    assert notification.type == "compute_sample_file_peaks"
-    assert notification.status == "success"
+    emit.assert_not_awaited()
 
 
 @pytest.mark.asyncio

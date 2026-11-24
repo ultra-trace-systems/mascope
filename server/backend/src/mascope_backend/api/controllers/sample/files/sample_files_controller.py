@@ -1701,8 +1701,18 @@ async def get_sample_file_peaks(
     }
 
 
+# The success path is quiet on purpose: no success_notification_rooms. This
+# task only hands the request to the file converter, and its process id is the
+# one the converter reports progress and the outcome under. The frontend's
+# notification store ends a process on its first packet that is not pending,
+# so a success packet sent here, before any detection has run, closed the
+# progress bar at once, logged a success for work not yet done, and left the
+# converter's progress to open a second bar. The request's own pending packet
+# (request_peak_detection) acknowledges it, and the converter's
+# peak_detection_* handlers send the outcome to the same user. A request that
+# fails before it reaches the converter still tells its user: the error rooms
+# stay.
 @api_controller_background_task(
-    success_notification_rooms=["user_id"],
     error_notification_rooms=["user_id"],
 )
 async def compute_sample_file_peaks(
@@ -1727,9 +1737,9 @@ async def compute_sample_file_peaks(
     :type sample_file_id: str
     :param user: The authenticated user performing the operation, used for notifications.
     :type user: User
-    :param user_id: ID of that user. The decorator addresses the success and the
-        error notification to it: it reads ``user_id`` from the kwargs and
-        never from ``user``, and an error has no result to carry one.
+    :param user_id: ID of that user. The decorator addresses the error
+        notification to it: it reads ``user_id`` from the kwargs and never
+        from ``user``, and an error has no result to carry one.
     :type user_id: int
     :param access_token: Pre-validated user's access token for file converter service.
     :type access_token: str
