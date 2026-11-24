@@ -168,17 +168,7 @@ test.describe('the peak inspector card', () => {
     const formula = (
       await row.getByTestId('compound-cell').locator('.field > span').first().innerText()
     ).trim()
-    // The click focuses the row's peak, found in the sample's peak list. A
-    // click before that list is in is dropped, and the row stays unselected
-    // (#3588): on CI the ledger's rows can show first. So click until the row
-    // holds the selection, and never on a selected row, which a click
-    // unselects.
-    await expect(async () => {
-      if ((await row.getAttribute('aria-selected')) !== 'true') {
-        await row.getByTestId('ledger-mz').click()
-      }
-      await expect(row).toHaveAttribute('aria-selected', 'true', { timeout: 2_000 })
-    }).toPass({ timeout: 60_000 })
+    await row.getByTestId('ledger-mz').click()
 
     const card = page.locator('section.inspector')
     const answer = card.getByTestId('answer')
