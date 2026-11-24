@@ -706,6 +706,48 @@ jobs:
           CI: "true"
         run: npm run test:e2e
 
+      - name: Run the assignment views' e2e specs
+        # The run above drives the demo's UI, without the assignment views,
+        # as customers run it until assignment is on by default, so the two
+        # specs of those views skip there. Recreate the frontend container
+        # alone with the views on (.github/docker-compose.demo.assignment.yaml
+        # says how) and run the two again, with the switch that makes a skip
+        # a failure. The backend, its data and the rest of the stack stay as
+        # the run above left them. Runs whenever the stack came up, as the
+        # SDK contract tests do, so a failure above does not hide it.
+        if: ${{ !cancelled() && steps.wait-stack.outcome == 'success' }}
+        env:
+          CI: "true"
+          MASCOPE_E2E_REQUIRE_ASSIGNMENT: "1"
+          MASCOPE_PATH: ${{ github.workspace }}
+          # Beside the run above's, which this would otherwise overwrite.
+          PLAYWRIGHT_HTML_OUTPUT_DIR: playwright-report-assignment
+        run: |
+          # The tag the images were built with, as "Start the demo stack"
+          # reads it: compose needs it to recreate from the built image, and
+          # the script needs it to derive the runtime the build baked in.
+          MASCOPE_VERSION=$(docker images "ghcr.io/${{ github.repository }}/backend" --format '{{.Tag}}' | head -1)
+          export MASCOPE_VERSION
+          MASCOPE_E2E_FRONTEND_RUNTIME=$(uv run python .github/scripts/frontend_runtime.py meta.peak_assignment=true)
+          export MASCOPE_E2E_FRONTEND_RUNTIME
+          docker compose -f docker-compose.demo.yaml -f .github/docker-compose.demo.ci.yaml \
+            -f .github/docker-compose.demo.assignment.yaml up -d --no-deps --force-recreate frontend
+          # Up once it serves the runtime with the views on. Read into a
+          # variable, not piped into grep -q, which can close the pipe on
+          # curl and fail the step under pipefail.
+          for i in $(seq 1 60); do
+            published=$(curl -fsS http://127.0.0.1:8080/runtime-config.js || true)
+            case "$published" in *'"peak_assignment": true'*) break ;; esac
+            sleep 2
+          done
+          case "$published" in
+            *'"peak_assignment": true'*) echo "The frontend publishes the assignment views." ;;
+            *) echo "The frontend did not come back with the views on." >&2
+               docker logs mascope_demo_frontend --tail 50; exit 1 ;;
+          esac
+          cd server/frontend
+          npx playwright test --project=e2e --output=test-results-assignment inspector-card batch-assign
+
       - name: Run SDK contract tests
         # Independent signal from the Playwright suite: run whenever the
         # stack came up, even if an e2e step failed, so an unrelated frontend
@@ -751,6 +793,8 @@ jobs:
           path: |
             server/frontend/playwright-report/
             server/frontend/test-results/
+            server/frontend/playwright-report-assignment/
+            server/frontend/test-results-assignment/
           retention-days: 7
 
   test:
