@@ -115,3 +115,37 @@ async def test_a_cancelled_claim_closes_its_session(monkeypatch, taken):
     cancelled = sessions[-1]
     assert not cancelled.in_transaction()
     assert await _held(batch) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_failed_unlock_drops_the_connection_and_its_lock(monkeypatch):
+    """An unlock that raises may leave the lock on its connection, and the
+    pool's reset (a rollback) does not release a session-level lock: the
+    release must drop that connection, not hand it back to the pool."""
+    sessions = []
+
+    def failing_unlock_session():
+        session = async_session()
+        sessions.append(session)
+        execute = session.execute
+
+        async def execute_failing_unlock(statement, *args, **kwargs):
+            if "pg_advisory_unlock" in str(statement):
+                raise RuntimeError("unlock failed")
+            return await execute(statement, *args, **kwargs)
+
+        session.execute = execute_failing_unlock
+        return session
+
+    monkeypatch.setattr(claim_module, "async_session", failing_unlock_session)
+    batch = "rc-batch-failed-unlock"
+    with pytest.raises(RuntimeError, match="unlock failed"):
+        async with rematch_claim(batch) as acquired:
+            assert acquired is True
+            assert await _held(batch) == 1
+    session = sessions[-1]
+    assert not session.in_transaction()
+    assert await _held(batch) == 0
+    monkeypatch.undo()
+    async with rematch_claim(batch) as again:
+        assert again is True
