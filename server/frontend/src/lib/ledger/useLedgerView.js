@@ -243,8 +243,9 @@ export const useLedgerViewStore = defineStore('browser.match.ledgerView', () => 
     restoreLedgerView(scope, upgradeLedgerView(scope, stored?.[scope], stored?.version))
   const sample = reactive(restore('sample'))
   const batch = reactive(restore('batch'))
-  // "Listed as" folded or in full: one switch for both ledgers, so a reader who
-  // opened the column in one finds it open in the other.
+  // Listed names folded or in full (Write listed names in full): one switch for
+  // both ledgers, so a reader who writes them out in one finds them written out
+  // in the other.
   const listing = reactive({ full: stored?.listingFull === true })
 
   watch(

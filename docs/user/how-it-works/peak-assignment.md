@@ -2007,7 +2007,7 @@ from the batch ledger instead. The run selector lists it as **Batch ledger**; th
 ledger carries what the batch knows about each peak (formula, adduct, tier, fit and
 isotopologue family), and the inspector's close alternatives are what
 the rest of the batch saw at that m/z. Where this sample's peak was matched to a
-target compound, **listed as** and the inspector show *target* and that compound's
+target compound, **Compound** and the inspector show *target* and that compound's
 name, as the batch ledger does. Two samples whose peaks were matched to two isomers
 through the same ion, glucose in one and fructose in the other, each show their own.
 A peak folded into the batch before the batch kept each sample's target, or one a
@@ -3368,7 +3368,7 @@ compound the members were matched to, off the consensus as a sample's ledger doe
 It names one only where every member reading the consensus formula that was matched to
 a target was matched to the same one. Where members were matched to two isomers of the
 formula, glucose and fructose read through the same ion, it names none: a target is
-shown beside the formula, never part of the reading, and each sample's ledger still
+shown under the formula, never part of the reading, and each sample's ledger still
 shows its own. A batch ledger folded before the target was recorded shows it once its
 samples are folded again. The column a ledger is sorted by is kept per ledger - it
 survives the switch between the *Batch peaks* ledger and a sample's ledger, and a reload.
