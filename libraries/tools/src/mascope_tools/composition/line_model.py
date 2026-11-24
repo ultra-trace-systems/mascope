@@ -40,6 +40,8 @@ References: isotope fine structure, Lacki et al., Anal. Chem. 2017, 89, 3272
 Bioinformatics 2007, 8, 105.
 """
 
+import math
+from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
@@ -499,31 +501,56 @@ def group_unresolved_lines(
     :return: One array of indices into the lines per group, the groups in the
         order their brightest lines were taken, each group's indices ascending.
     """
+    return [
+        np.array(members, dtype=np.intp)
+        for members in _group_lines(predicted_mz, predicted_intensity, resolution, span)
+    ]
+
+
+def _group_lines(predicted_mz, predicted_intensity, resolution, span=0.5):
+    """:func:`group_unresolved_lines`, each group a list of indices."""
     predicted_mz = np.asarray(predicted_mz, dtype=float)
     predicted_intensity = np.asarray(predicted_intensity, dtype=float)
     # Brightest first: a peak sits on its dominant line, and which line
     # happens to be the lightest of a cluster (the 15N line, below 13C) must
     # not decide what the peak holds.
     order = np.lexsort((np.arange(predicted_mz.size), -predicted_intensity))
-    taken = np.zeros(predicted_mz.size, dtype=bool)
-    groups: list[np.ndarray] = []
-    for brightest in order:
+    # The lines by m/z, so a group reads only the lines near it. Python floats
+    # subtract and compare as numpy's float64 do, to the last bit.
+    by_mz = np.argsort(predicted_mz, kind="stable")
+    sorted_mz = predicted_mz[by_mz].tolist()
+    by_mz, mz = by_mz.tolist(), predicted_mz.tolist()
+    taken = [False] * len(mz)
+    groups: list[list[int]] = []
+    for brightest in order.tolist():
         if taken[brightest]:
             continue
-        centre_mz = float(predicted_mz[brightest])
+        centre_mz = mz[brightest]
         try:
             resolving_power = float(resolution(centre_mz))
         except (TypeError, ValueError, ArithmeticError):
             resolving_power = float("nan")
-        members = np.array([brightest])
-        if np.isfinite(resolving_power) and resolving_power > 0:
+        members = [brightest]
+        if math.isfinite(resolving_power) and resolving_power > 0:
             reach = centre_mz / resolving_power * span
-            within = np.flatnonzero(~taken & (np.abs(predicted_mz - centre_mz) < reach))
+            # A line within the reach lies between the edges as rounded, since
+            # rounding keeps the order; a NaN reach takes no line.
+            window = by_mz[
+                bisect_left(sorted_mz, centre_mz - reach) : bisect_right(
+                    sorted_mz, centre_mz + reach
+                )
+            ]
+            within = sorted(
+                index
+                for index in window
+                if not taken[index] and abs(mz[index] - centre_mz) < reach
+            )
             # A width at or under zero (an m/z at or under zero) takes no
             # line, not even its own.
-            if within.size:
+            if within:
                 members = within
-        taken[members] = True
+        for index in members:
+            taken[index] = True
         groups.append(members)
     return groups
 
@@ -542,13 +569,20 @@ def _merged_line(
     else the brightest member.
     """
     centre, total = _line_of(members, mzs, intensities, resolution)
+    return _naming_member(members, intensities, labels), centre, total
+
+
+def _naming_member(members, intensities: np.ndarray, labels: Sequence[str]) -> int:
+    """The member that names a group's line: ``M0`` where it is one, else the
+    brightest member, the first of them on a tie."""
+    if len(members) == 1:
+        return int(members[0])
     own = [index for index in members if labels[index] == "M0"]
-    named = (
+    return (
         int(own[0])
         if own
         else int(np.asarray(members)[np.argmax(intensities[members])])
     )
-    return named, centre, total
 
 
 def merge_unresolved_lines(
@@ -701,11 +735,12 @@ def fold_targets(
             continue
         if np.isfinite(resolving_power) and resolving_power > 0:
             fwhm[position] = float(mzs[index]) / resolving_power
-    for index in dropped:
-        distance = np.abs(mzs[kept] - mzs[index])
-        within = np.flatnonzero(distance < fwhm)
-        if within.size:
-            targets[index] = int(kept[within[np.argmin(distance[within])]])
+    # One row per dropped line: its distance to each kept line, inf where
+    # the kept line is a FWHM or more away. argmin takes the first nearest.
+    distance = np.abs(mzs[kept][np.newaxis, :] - mzs[dropped][:, np.newaxis])
+    distance[~(distance < fwhm)] = np.inf
+    near = np.isfinite(distance).any(axis=1)
+    targets[dropped[near]] = kept[np.argmin(distance[near], axis=1)]
     return targets
 
 
@@ -870,16 +905,38 @@ def _line_of(
     the dominant member alone. The brightest member is the dominant one, the
     first of them on a tie.
     """
+    return _line_at(
+        members, mzs, intensities, height_sum_span(resolution), _power_of(resolution)
+    )
+
+
+def _power_of(resolution) -> Callable[[float], float]:
+    """The resolving power at an m/z, read once per m/z value: NaN where it
+    cannot be read. The line model reads it at the same lines again and again
+    within one ion's lines, and a function of m/z answers the same each time."""
+    read: dict[float, float] = {}
+
+    def power(mz: float) -> float:
+        value = read.get(mz)
+        if value is None:
+            try:
+                value = float(resolution(mz))
+            except (TypeError, ValueError, ArithmeticError):
+                value = float("nan")
+            read[mz] = value
+        return value
+
+    return power
+
+
+def _line_at(members, mzs, intensities, sum_span, power) -> tuple[float, float]:
+    """:func:`_line_of`, the height's span and the resolving power read."""
     members = np.asarray(members, dtype=int)
     weights = intensities[members]
-    sum_span = height_sum_span(resolution)
     if sum_span is not None and members.size > 1:
         dominant = int(members[np.argmax(weights)])
         centre = float(mzs[dominant])
-        try:
-            resolving_power = float(resolution(centre))
-        except (TypeError, ValueError, ArithmeticError):
-            resolving_power = float("nan")
+        resolving_power = power(centre)
         # A NaN reads False here; an infinite one reaches no other member.
         if resolving_power > 0:
             reach = centre / resolving_power * sum_span
@@ -894,6 +951,29 @@ def _line_of(
         else float(mzs[members].mean())
     )
     return centre, total
+
+
+def _lines_at(groups, mzs, intensities, sum_span, power):
+    """:func:`_line_at` for every group, the groups of one member at once.
+
+    A line of one member is its m/z times its abundance over its abundance, or
+    its m/z where it carries none, as :func:`_line_at` reads it.
+    """
+    centres = np.empty(len(groups))
+    totals = np.empty(len(groups))
+    single = np.array([len(group) == 1 for group in groups], dtype=bool)
+    if single.any():
+        index = np.array([group[0] for group, one in zip(groups, single) if one])
+        weights = intensities[index]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            centre = mzs[index] * weights / weights
+        centres[single] = np.where(weights > 0, centre, mzs[index])
+        totals[single] = weights
+    for position in np.flatnonzero(~single):
+        centres[position], totals[position] = _line_at(
+            groups[position], mzs, intensities, sum_span, power
+        )
+    return centres, totals
 
 
 def line_centre(mzs, intensities, members: Sequence[int]) -> float:
@@ -935,7 +1015,7 @@ def line_groups(
     ]
 
 
-def _join_under_floor(fine, lines, resolution, level):
+def _join_under_floor(fine, lines, reading, level):
     """Step 2 of :func:`resolve_lines`: lines under the floor less than one
     FWHM from one another that together clear it are one line over it.
 
@@ -949,31 +1029,32 @@ def _join_under_floor(fine, lines, resolution, level):
         each line's naming member.
     :param lines: Per line, its naming member, its members, whether it is kept,
         its centre and its abundance.
-    :param resolution: The resolving power.
+    :param reading: The height's span (:func:`height_sum_span`) and the
+        resolving power read (:func:`_power_of`).
     :param level: The floor, as an abundance.
     :return: The naming members, the members and whether each is kept, of the
         lines left once the joined ones are taken into their heads.
     """
     mzs, intensities, line_labels = fine
     names, members, keep, centres, totals = lines
+    sum_span, power = reading
     under = np.flatnonzero(~keep)
     absorbed = np.zeros(len(members), dtype=bool)
-    for group in group_unresolved_lines(
-        centres[under], totals[under], resolution, span=1.0
-    ):
+    for group in _group_lines(centres[under], totals[under], power, span=1.0):
         together = under[group]
-        if height_sum_span(resolution) is None:
+        if sum_span is None:
             joined = float(totals[together].sum())
         else:
-            joined = _line_of(
+            joined = _line_at(
                 [member for index in together for member in members[index]],
                 mzs,
                 intensities,
-                resolution,
+                sum_span,
+                power,
             )[1]
         if joined < level:
             continue
-        head, _, _ = _merged_line(together, centres, totals, line_labels)
+        head = _naming_member(together, totals, line_labels)
         for index in together:
             if index != head:
                 members[head].extend(members[index])
@@ -1035,57 +1116,48 @@ def resolve_lines(
     labels = list(labels)
     if not mzs.size:
         return []
+    # Each step reads the resolving power at the lines it starts from, the
+    # same lines again and again: read once per m/z (:func:`_power_of`).
+    reading = (height_sum_span(resolution), _power_of(resolution))
     if resolution is None:
-        groups = [np.array([index]) for index in range(mzs.size)]
+        groups = [[index] for index in range(mzs.size)]
     else:
-        groups = group_unresolved_lines(mzs, intensities, resolution)
-    named = []
-    for members in groups:
-        own, _, _ = _merged_line(members, mzs, intensities, labels)
-        named.append((own, sorted(int(index) for index in members)))
-    named.sort(key=lambda line: line[0])
+        groups = _group_lines(mzs, intensities, reading[1])
+    named = sorted(
+        ((_naming_member(group, intensities, labels), group) for group in groups),
+        key=lambda line: line[0],
+    )
     names = [own for own, _ in named]
-    members = [list(group) for _, group in named]
-
-    def arrays() -> tuple[np.ndarray, np.ndarray]:
-        pairs = [_line_of(group, mzs, intensities, resolution) for group in members]
-        return (
-            np.array([centre for centre, _ in pairs], dtype=float),
-            np.array([total for _, total in pairs], dtype=float),
-        )
-
-    centres, totals = arrays()
+    members = [sorted(group) for _, group in named]
+    centres, totals = _lines_at(members, mzs, intensities, *reading)
     level = floor * float(totals.max())
     keep = totals >= level
+    targets = np.full(len(members), -1, dtype=int)
     if resolution is not None:
         under = np.flatnonzero(~keep)
         if under.size and float(totals[under].sum()) >= level:
             names, members, keep = _join_under_floor(
                 (mzs, intensities, [labels[own] for own in names]),
                 (names, members, keep, centres, totals),
-                resolution,
+                reading,
                 level,
             )
-            centres, totals = arrays()
-        targets = fold_targets(centres, keep, resolution)
+            centres, totals = _lines_at(members, mzs, intensities, *reading)
+        targets = fold_targets(centres, keep, reading[1])
         for index in np.flatnonzero(targets >= 0):
             members[int(targets[index])].extend(members[index])
-        for group in members:
-            group.sort()
-    else:
-        targets = np.full(len(members), -1, dtype=int)
+            members[int(targets[index])].sort()
     lines = []
     for index, group in enumerate(members):
         if not keep[index] and (targets[index] >= 0 or not keep_under_floor):
             continue
-        if height_sum_span(resolution) is not None:
-            # On a height a folded line is named on the kept line and adds
-            # nothing, so the line is read as it was before the fold. Read
-            # over the folded members too, a folded line's brighter member
-            # would become the dominant one and move the line onto it.
-            centre, total = float(centres[index]), float(totals[index])
-        else:
-            centre, total = _line_of(group, mzs, intensities, resolution)
+        centre, total = float(centres[index]), float(totals[index])
+        if reading[0] is None and index in targets:
+            # By areas a folded line's share is added. On a height it is
+            # named on the kept line and adds nothing, so the line is read as
+            # it was before the fold: read over the folded members too, a
+            # folded line's brighter member would move the line onto it.
+            centre, total = _line_at(group, mzs, intensities, *reading)
         lines.append(ResolvedLine(centre, total, labels[names[index]], tuple(group)))
     return lines
 
