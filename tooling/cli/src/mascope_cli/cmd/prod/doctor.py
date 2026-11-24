@@ -640,6 +640,32 @@ def unreadable_secrets(mascope_path: str) -> list[UnreadableSecret]:
     ]
 
 
+@dataclass
+class UnwritableDir:
+    """
+    A directory the backend image writes to and cannot, and who owns it.
+    ``recursive`` marks the filestore, whose fix takes in the files in it.
+    """
+
+    path: str
+    owner_uid: int
+    recursive: bool = False
+
+
+def unwritable_dirs(
+    mascope_path: str, env: str = "default", filestore: Optional[Path] = None
+) -> list[UnwritableDir]:
+    """
+    The directories the published images, running as ``IMAGE_UID``, write to
+    and cannot: the env's filestore and logs, and the pre-migration dumps'
+    (`init_cmd.dirs_unwritable_by_image`).
+    """
+    return [
+        UnwritableDir(str(d.path), d.owner_uid, d.recursive)
+        for d in init_cmd.dirs_unwritable_by_image(Path(mascope_path), env, filestore)
+    ]
+
+
 # A secret open to group or others is the opposite failure. Compose mounts each file secret into its containers as the file is on the
 # host, mode included. A secret file that group or others can read is readable
 # by every user on the server and by every uid in the containers it is mounted
@@ -830,6 +856,9 @@ class Report:
     # Secrets the published images could not read. Flagged without failing
     # the report: an image built with its own MASCOPE_UID reads them as that.
     secrets_unreadable: list[UnreadableSecret] = field(default_factory=list)
+    # Directories the published images could not write to, flagged without
+    # failing the report for the same reason.
+    dirs_unwritable: list[UnwritableDir] = field(default_factory=list)
     # Secret files group or others can access. Unlike an unreadable
     # secret, this fails the report: anyone on the server, and any uid in
     # the containers, can read them.
@@ -882,6 +911,7 @@ class Report:
             "units": [asdict(u) for u in self.units],
             "units_outdated": list(self.units_outdated),
             "secrets_unreadable": [asdict(s) for s in self.secrets_unreadable],
+            "dirs_unwritable": [asdict(d) for d in self.dirs_unwritable],
             # ok and the fix are derived, so asdict() does not carry them
             "secrets_open": {
                 **asdict(self.secrets_open),
@@ -906,8 +936,16 @@ def build_report(
     min_days_to_floor: float = 0.0,
     systemd_dir: Optional[Path] = None,
     now: Optional[datetime.datetime] = None,
+    env_name: str = "default",
+    filestore: Optional[Path] = None,
 ) -> Report:
-    """Assemble the report from injected container names and paths."""
+    """
+    Assemble the report from injected container names and paths.
+
+    ``env_name`` and ``filestore`` name the env the stack runs and where its
+    filestore is, when that is a path of its own: the directories the images
+    write to are checked there.
+    """
     stamp = now.timestamp() if now else None
     disks = [
         disk_usage(
@@ -930,6 +968,7 @@ def build_report(
         units=unit_scripts(systemd_dir),
         units_outdated=outdated_units(mascope_path, systemd_dir),
         secrets_unreadable=unreadable_secrets(mascope_path),
+        dirs_unwritable=unwritable_dirs(mascope_path, env_name, filestore),
         secrets_open=secrets_status(
             secrets_dir or Path(mascope_path) / SECRETS_DIR, backend_container
         ),
@@ -1020,26 +1059,49 @@ def _units_line(units: list[UnitScript], outdated: list[str]) -> str:
     return " · ".join(parts) + " · re-run 'mascope prod units install'"
 
 
-def _secrets_line(unreadable: list[UnreadableSecret]) -> str:
-    """The secrets: readable by the images, or which are not and the fix."""
-    if not unreadable:
-        return f"readable by uid {init_cmd.IMAGE_UID}"
+def _image_owner_lines(
+    unreadable: list[UnreadableSecret], unwritable: list[UnwritableDir]
+) -> list[str]:
+    """
+    The secrets the images cannot read and the directories they cannot write
+    to, each with its owner, then the one command that fixes exactly those.
+    Empty when there are none.
+    """
+    if not unreadable and not unwritable:
+        return []
     uid = init_cmd.IMAGE_UID
-    names = ", ".join(Path(s.path).name for s in unreadable)
-    owners = ", ".join(sorted({str(s.owner_uid) for s in unreadable}))
-    secrets_dir = Path(unreadable[0].path).parent
-    return (
-        f"{names} owned by uid {owners}, unreadable to uid {uid} the "
-        f"published images run as  UNREADABLE · sudo chown {uid} "
-        f"{secrets_dir}/* (an image built with another MASCOPE_UID reads "
-        "them as that uid)"
+    lines = []
+    if unreadable:
+        names = ", ".join(Path(s.path).name for s in unreadable)
+        owners = ", ".join(sorted({str(s.owner_uid) for s in unreadable}))
+        lines.append(
+            f"{names} owned by uid {owners}, unreadable to uid {uid} the "
+            "published images run as  UNREADABLE"
+        )
+    if unwritable:
+        dirs = ", ".join(d.path for d in unwritable)
+        owners = ", ".join(sorted({str(d.owner_uid) for d in unwritable}))
+        lines.append(
+            f"{dirs} owned by uid {owners}, not writable by uid {uid} the "
+            "published images run as  UNWRITABLE"
+        )
+    fix = init_cmd.image_owner_fix(
+        [Path(s.path) for s in unreadable]
+        + [Path(d.path) for d in unwritable if not d.recursive],
+        [Path(d.path) for d in unwritable if d.recursive],
     )
+    lines.append(
+        f"fix: {fix} (an image built with another MASCOPE_UID reads and writes "
+        "as that uid)"
+    )
+    return lines
 
 
 def _secrets_lines(report: Report) -> list[str]:
     """
     The Secrets rows: open secrets and the fix first, then secrets the images
-    cannot read, else one line saying both are fine.
+    cannot read and directories they cannot write to, with their fix, else one
+    line saying all is fine.
     """
     s = report.secrets_open
     lines = []
@@ -1059,11 +1121,10 @@ def _secrets_lines(report: Report) -> list[str]:
                 "the backend's secrets must be owned by the uid its image runs "
                 f"as ({init_cmd.IMAGE_UID} unless built with MASCOPE_UID)"
             )
-    if report.secrets_unreadable:
-        lines.append(_secrets_line(report.secrets_unreadable))
+    lines += _image_owner_lines(report.secrets_unreadable, report.dirs_unwritable)
     if lines:
         return lines
-    readable = _secrets_line([])
+    readable = f"readable by uid {init_cmd.IMAGE_UID}, its directories writable"
     if s.skipped:
         # A report built without gathering the modes has no path to name.
         note = f" · modes not checked ({s.skipped})" if s.path else ""

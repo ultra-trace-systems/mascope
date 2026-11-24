@@ -687,7 +687,7 @@ def test_the_long_standing_secrets_are_the_ones_not_auto_provisioned():
 )
 @pytest.mark.parametrize("args", UP_SHAPES, ids=lambda a: " ".join(a))
 def test_every_up_warns_when_the_image_cannot_read_the_secrets(
-    compose_env, secrets_dir, monkeypatch, args
+    compose_env, secrets_dir, monkeypatch, args, split_fix
 ):
     # A home another user made holds 0600 secrets the image's uid cannot
     # open, and db_init would stop on them with a bare "Permission denied".
@@ -704,7 +704,48 @@ def test_every_up_warns_when_the_image_cannot_read_the_secrets(
     owner = [w for w in warnings if "Permission denied" in w]
     assert len(owner) == 1, warnings
     assert AUTO_SECRET in owner[0] and "turnstile_secret_key.txt" in owner[0]
-    assert f"chown {init_cmd.IMAGE_UID} {secrets_dir}/*" in owner[0]
+    plain, _ = split_fix(_fix_of(owner[0]))
+    assert str(secrets_dir / AUTO_SECRET) in plain
+    assert str(secrets_dir / "turnstile_secret_key.txt") in plain
+
+
+def _fix_of(warning):
+    """The fix command a warning names."""
+    return warning.split("Give them to that uid (", 1)[1].rsplit("), or run", 1)[0]
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="the check runs on Linux only"
+)
+def test_up_warns_when_the_image_cannot_write_to_the_envs_directories(
+    compose_env, secrets_dir, mascope_home, monkeypatch, tmp_path, split_fix
+):
+    # The env the stack runs, and its filestore on a path of its own: the
+    # ones compose mounts, not the default env's.
+    compose_env(0)
+    monkeypatch.setattr(init_cmd, "IMAGE_UID", os.getuid())
+    monkeypatch.setattr(init_cmd, "IMAGE_GID", os.getgid())
+    monkeypatch.setattr(prod_main.runtime.env, "name", "site1")
+    store = tmp_path / "volume store"
+    store.mkdir()
+    monkeypatch.setattr(prod_main.runtime.meta, "filestore", str(store))
+    logs = mascope_home / ".runtime" / "env" / "site1" / "logs"
+    logs.mkdir(parents=True)
+    logs.chmod(0o555)
+    store.chmod(0o555)
+    warnings = []
+    monkeypatch.setattr(prod_main.runtime.logger, "warning", warnings.append)
+    try:
+        prod_main._run_compose(["up", "--detach"])
+    finally:
+        logs.chmod(0o755)
+        store.chmod(0o755)
+        shutil.rmtree(logs.parent)
+
+    owner = [w for w in warnings if "cannot write to them" in w]
+    assert len(owner) == 1, warnings
+    assert "The secrets" not in owner[0]
+    assert split_fix(_fix_of(owner[0])) == ([str(logs)], [str(store)])
 
 
 @pytest.mark.skipif(
@@ -721,4 +762,4 @@ def test_up_is_quiet_when_the_image_can_read_the_secrets(
 
     prod_main._run_compose(["up", "--detach"])
 
-    assert not [w for w in warnings if "Permission denied" in w]
+    assert not [w for w in warnings if "published images" in w]

@@ -71,6 +71,24 @@ and the checkout.
    image's uid could not read them; `mascope prod doctor` flags them
    `UNREADABLE`.
 
+   The same uid writes to three directories `mascope init` makes as whoever
+   runs it: the env's `filestore` (followed to where it really is, a data
+   volume or a path of its own) and `logs`, and
+   `.runtime/database/backups/prod`, where `db_init` writes its pre-migration
+   dump. `mascope init`, `mascope prod up` and the doctor check those as well
+   and flag one the image cannot write to `UNWRITABLE`. Their warning names one
+   command for exactly the paths found, each quoted for the shell, with `-R`
+   for the filestore alone because the uploads already in it carry the old
+   owner too:
+
+   ```sh
+   sudo chown 1000 /srv/mascope/.runtime/secrets/postgres_password.txt /srv/mascope/.runtime/env/default/logs && sudo chown -R 1000 '/srv/data store/filestore'
+   ```
+
+   Never `chown -R` the whole `.runtime`: the Postgres data directory in it
+   belongs to the postgres image's own user. Running mascope as the user with
+   uid 1000 avoids all of it.
+
    `mascope prod up` generates a missing *newly introduced* secret on its own
    (today that is `mfa_encryption_key.txt`) - the CLI does that, so an existing
    deployment picks the secret up on its next start only once the CLI has been

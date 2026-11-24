@@ -14,6 +14,7 @@ import datetime
 import json
 import os
 import secrets as _secrets
+import shlex
 import shutil
 import stat
 import sys
@@ -96,7 +97,8 @@ IMAGE_GID = 1000
 IMAGE_READ_SECRETS = GENERATED_SECRETS + PRIVATE_PLACEHOLDER_SECRETS
 
 # Directories the containers bind-mount from the home. Docker creates missing
-# mount sources as root, so pre-create them owned by the invoking user.
+# mount sources as root, so pre-create them owned by the invoking user, at the
+# umask. `dirs_unwritable_by_image` checks the ones the backend image writes to.
 RUNTIME_DIRS = (
     ".runtime/env/default/filestore",
     ".runtime/env/default/logs",
@@ -297,23 +299,160 @@ def secrets_unreadable_by_image(secrets_dir: Path) -> list[tuple[str, int]]:
     return unreadable
 
 
-def secrets_owner_warning(secrets_dir: Path, unreadable: list[tuple[str, int]]) -> str:
+def _writable_by(st: os.stat_result, uid: int, gid: int) -> bool:
     """
-    The warning for what `secrets_unreadable_by_image` found, naming the fix.
+    Whether a directory with stat ``st`` takes new entries from ``uid`` and
+    ``gid``, as POSIX decides it: the write and search bits both, the owner's
+    for its owner, else the group's for its group, else the others'.
+    """
+    if st.st_uid == uid:
+        bits = stat.S_IWUSR | stat.S_IXUSR
+    elif st.st_gid == gid:
+        bits = stat.S_IWGRP | stat.S_IXGRP
+    else:
+        bits = stat.S_IWOTH | stat.S_IXOTH
+    return st.st_mode & bits == bits
 
-    A warning, never a refusal: an image built with its own ``MASCOPE_UID``
-    reads the secrets as that uid instead.
+
+@dataclass(frozen=True)
+class UnwritableDir:
+    """
+    A directory the backend image writes to and cannot, with its owner.
+
+    ``recursive`` marks the filestore: files already in it carry the old
+    owner too, so its fix is a ``chown -R`` of that one path.
+    """
+
+    path: Path
+    owner_uid: int
+    recursive: bool = False
+
+
+def image_write_dirs(
+    home: Path, env: str = "default", filestore: Optional[Path] = None
+) -> list[tuple[Path, bool]]:
+    """
+    The directories the backend image writes to as ``IMAGE_UID``.
+
+    The env's filestore and logs, which compose mounts into db_init, the
+    backend and the file converter, and ``.runtime/database/backups/prod``,
+    where db_init writes its pre-migration dump. Not the Postgres data
+    directory, which belongs to the postgres image's user, and not the
+    transfer directory, which postgres alone mounts.
+
+    :param home: The runtime home.
+    :param env: The env whose filestore and logs the stack mounts.
+    :param filestore: The filestore when it is a path of its own
+        (``MASCOPE_FILESTORE``); the env's ``filestore`` when None.
+    :return: ``(directory, whether it is the filestore)`` of each, the
+        filestore followed to where it really is (a symlink to a data volume).
+    """
+    env_dir = home / ".runtime" / "env" / env
+    store = Path(filestore) if filestore is not None else env_dir / "filestore"
+    return [
+        (store.resolve(), True),
+        (env_dir / "logs", False),
+        (home / ".runtime" / "database" / "backups" / "prod", False),
+    ]
+
+
+def dirs_unwritable_by_image(
+    home: Path, env: str = "default", filestore: Optional[Path] = None
+) -> list[UnwritableDir]:
+    """
+    The directories of `image_write_dirs` the backend image, running as
+    ``IMAGE_UID`` and ``IMAGE_GID``, could not write to.
+
+    `mascope init` makes them as whoever runs it, at the umask, so in a home
+    another user made the logs, the uploads and the pre-migration dump all
+    fail, even once a chown of the secrets has got the stack past db_init.
+    Each directory itself is read, never the filestore's contents, so the
+    check stays instant on a large store. Checked on Linux alone, and a
+    missing directory skipped, as `secrets_unreadable_by_image` does.
+
+    :return: Each unwritable directory, in `image_write_dirs` order; empty
+        when the image can write them all.
+    """
+    if not sys.platform.startswith("linux"):
+        return []
+    unwritable = []
+    for path, recursive in image_write_dirs(home, env, filestore):
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        if not _writable_by(st, IMAGE_UID, IMAGE_GID):
+            unwritable.append(UnwritableDir(path, st.st_uid, recursive))
+    return unwritable
+
+
+def image_owner_fix(paths: list[Path], recursive: list[Path] = ()) -> str:
+    """
+    The one command that gives ``paths`` to ``IMAGE_UID``, and ``recursive``
+    with everything in them, each path quoted for the shell.
+
+    Never a ``chown -R`` over the runtime home: the Postgres data directory
+    under it belongs to the postgres image's user.
     """
     uid = IMAGE_UID
-    owners = ", ".join(sorted({str(owner) for _, owner in unreadable}))
-    names = ", ".join(name for name, _ in unreadable)
+    commands = []
+    if paths:
+        quoted = " ".join(shlex.quote(str(p)) for p in paths)
+        commands.append(f"sudo chown {uid} {quoted}")
+    if recursive:
+        quoted = " ".join(shlex.quote(str(p)) for p in recursive)
+        commands.append(f"sudo chown -R {uid} {quoted}")
+    return " && ".join(commands)
+
+
+def image_owner_fix_for(
+    secrets_dir: Path,
+    unreadable: list[tuple[str, int]],
+    unwritable: list[UnwritableDir],
+) -> str:
+    """The `image_owner_fix` for exactly the secrets and directories found."""
+    return image_owner_fix(
+        [secrets_dir / name for name, _ in unreadable]
+        + [d.path for d in unwritable if not d.recursive],
+        [d.path for d in unwritable if d.recursive],
+    )
+
+
+def image_owner_warning(
+    secrets_dir: Path,
+    unreadable: list[tuple[str, int]],
+    unwritable: list[UnwritableDir] = (),
+) -> str:
+    """
+    The warning for what `secrets_unreadable_by_image` and
+    `dirs_unwritable_by_image` found, naming the fix for exactly those paths.
+
+    A warning, never a refusal: an image built with its own ``MASCOPE_UID``
+    reads and writes as that uid instead.
+    """
+    uid = IMAGE_UID
+    found = []
+    if unreadable:
+        owners = ", ".join(sorted({str(owner) for _, owner in unreadable}))
+        names = ", ".join(name for name, _ in unreadable)
+        found.append(
+            f"The secrets {names} in {secrets_dir} belong to uid {owners}, and "
+            f"the published images read them as uid {uid}: the stack would stop "
+            "in db_init with 'Permission denied'."
+        )
+    if unwritable:
+        owners = ", ".join(sorted({str(d.owner_uid) for d in unwritable}))
+        dirs = ", ".join(str(d.path) for d in unwritable)
+        found.append(
+            f"The directories {dirs} belong to uid {owners}, and the published "
+            f"images cannot write to them as uid {uid}: the logs, the uploads and "
+            "the pre-migration dumps written there would fail."
+        )
+    fix = image_owner_fix_for(secrets_dir, unreadable, unwritable)
     return (
-        f"The secrets {names} in {secrets_dir} belong to uid {owners}, and the "
-        f"published images read them as uid {uid}: the stack would stop in "
-        "db_init with 'Permission denied'. Give them to that uid "
-        f"(sudo chown {uid} {secrets_dir}/*), or run mascope as the user with "
-        f"uid {uid}. An image built with its own MASCOPE_UID reads them as that "
-        "uid instead."
+        " ".join(found) + f" Give them to that uid ({fix}), or run mascope as "
+        f"the user with uid {uid}. An image built with its own MASCOPE_UID "
+        "reads and writes as that uid instead."
     )
 
 
@@ -391,9 +530,11 @@ def init(
 
     secrets_dir = home / ".runtime" / "secrets"
     unreadable = secrets_unreadable_by_image(secrets_dir)
-    if unreadable:
+    unwritable = dirs_unwritable_by_image(home)
+    if unreadable or unwritable:
         typer.echo(
-            "\nWARNING: " + secrets_owner_warning(secrets_dir, unreadable), err=True
+            "\nWARNING: " + image_owner_warning(secrets_dir, unreadable, unwritable),
+            err=True,
         )
 
     ssl_pem = home / ".runtime" / "secrets" / "mascope.app.pem"

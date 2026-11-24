@@ -69,7 +69,7 @@ Updates  no pending migration recorded
 Backups  5 local dump(s) · newest 8h ago
 Images   11 images · 6.2GB (2.1GB reclaimable)
 Units    scripts in place
-Secrets  readable by uid 1000 · owner-only
+Secrets  readable by uid 1000, its directories writable · owner-only
 ```
 
 It exits `0` when the stack is healthy, the running images match the release
@@ -123,10 +123,27 @@ read the secret files in `.runtime/secrets` that `db_init` and the backend
 mount. `mascope init` writes them readable by their owner alone, so a home
 made by another user holds secrets the containers cannot open, and the stack
 stops in `db_init` with `Permission denied`. A secret they cannot read is
-named with its owner and flagged `UNREADABLE`, with the command that gives
-it to uid 1000. An image built with its own `MASCOPE_UID` reads them as that
-uid instead, so the flag does not change the exit code. `mascope init` and
-every `mascope prod up` print the same warning. The check runs on Linux only.
+named with its owner and flagged `UNREADABLE`. The row also checks that uid
+1000 can write to the directories the images write to, which `mascope init`
+makes as whoever runs it: the env's filestore, followed to where it really
+is, its `logs`, and `.runtime/database/backups/prod`, where `db_init` writes
+the pre-migration dump. One it cannot write to is named with its owner and
+flagged `UNWRITABLE`. Only the filestore directory itself is read, not the
+files in it, so the check stays instant on a large store. Then one `fix:`
+line gives exactly the paths found to uid 1000, each quoted for the shell,
+with `-R` for the filestore alone, whose files already carry the old owner:
+
+```
+Secrets  postgres_password.txt owned by uid 1001, unreadable to uid 1000 the published images run as  UNREADABLE
+         /srv/data store/filestore, /srv/mascope/.runtime/env/default/logs owned by uid 1001, not writable by uid 1000 the published images run as  UNWRITABLE
+         fix: sudo chown 1000 /srv/mascope/.runtime/secrets/postgres_password.txt /srv/mascope/.runtime/env/default/logs && sudo chown -R 1000 '/srv/data store/filestore' (an image built with another MASCOPE_UID reads and writes as that uid)
+```
+
+The fix never chowns the whole `.runtime`: the Postgres data directory in it
+belongs to the postgres image's own user. An image built with its own
+`MASCOPE_UID` reads and writes as that uid instead, so neither flag changes
+the exit code. `mascope init` and every `mascope prod up` print the same
+warning. The check runs on Linux only.
 
 **Version** compares the tag the containers are actually running against the
 one this deployment would deploy right now (the `MASCOPE_VERSION` pin, else the
