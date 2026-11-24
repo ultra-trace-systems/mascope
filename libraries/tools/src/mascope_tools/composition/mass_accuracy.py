@@ -33,6 +33,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from mascope_tools.composition.robust import robust_spread
+
 
 #: Matched anchors below which no width is fitted and the caller falls back.
 #: A handful of mass errors has a median and a spread like any sample does, but
@@ -103,7 +105,7 @@ def fit_mass_accuracy(
     mu = float(me.median())
     if len(me) < MASS_ACCURACY_MIN_ANCHORS:
         return mu, None
-    sigma = max(float(1.4826 * (me - mu).abs().median()), MIN_FITTED_SIGMA_PPM)
+    sigma = max(robust_spread(me.to_numpy(), mu), MIN_FITTED_SIGMA_PPM)
     return mu, sigma
 
 
@@ -482,7 +484,7 @@ def fit_mass_trend(
         (intercept, slope), *_ = np.linalg.lstsq(design, y[keep], rcond=None)
         residuals = y - (intercept + slope * x)
         kept = residuals[keep]
-        mad = 1.4826 * np.median(np.abs(kept - np.median(kept)))
+        mad = robust_spread(kept)
         if mad <= 0:
             break
         keep = np.abs(residuals) <= _TREND_TRIM_WIDTHS * max(mad, sigma_floor_ppm)
@@ -511,7 +513,7 @@ def fit_mass_trend(
         MassTrend(
             intercept_ppm=float(intercept),
             offset_mda=float(slope),
-            sigma_ppm=max(float(1.4826 * np.median(np.abs(r_kept))), sigma_floor_ppm),
+            sigma_ppm=max(robust_spread(r_kept, 0.0), sigma_floor_ppm),
             points=int(keep.sum()),
             mz_lo=float(mz_kept.min()),
             mz_hi=float(mz_kept.max()),

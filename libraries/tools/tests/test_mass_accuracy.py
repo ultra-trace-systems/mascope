@@ -287,6 +287,37 @@ class TestTheMassTrend:
         assert trend.offset_mda == pytest.approx(-0.12, abs=0.01)
         assert trend.points == 36
 
+    @staticmethod
+    def _skewed(seed):
+        # A one-sided tail (exponential noise): the least-squares residuals
+        # then have a median below zero, so a spread about the residuals'
+        # median and one about the line itself differ.
+        rng = np.random.default_rng(seed)
+        mz = 1000.0 / np.linspace(1000.0 / 400.0, 1000.0 / 59.0, 40)
+        return mz, -0.25 - 0.12 * 1000.0 / mz + rng.exponential(0.1, 40)
+
+    def test_the_width_is_the_scatter_about_the_line(self):
+        mz, ppm = self._skewed(14)
+
+        trend, refused = fit_mass_trend(mz, ppm)
+
+        assert refused is None
+        assert trend.points == 40  # nothing trimmed: every residual counts
+        residuals = ppm - (trend.intercept_ppm + trend.offset_mda * 1000.0 / mz)
+        about_line = 1.4826 * np.median(np.abs(residuals))
+        about_median = 1.4826 * np.median(np.abs(residuals - np.median(residuals)))
+        assert trend.sigma_ppm == pytest.approx(about_line, rel=1e-9)
+        assert abs(about_line - about_median) > 0.01
+
+    def test_the_trim_reads_the_residuals_spread_about_their_median(self):
+        # The trimming width is the residuals' scaled MAD about their own
+        # median, the narrower one on a one-sided tail: it trims seven of
+        # the tail's points, where a width about the line would trim none.
+        trend, refused = fit_mass_trend(*self._skewed(12))
+
+        assert refused is None
+        assert trend.points == 33
+
     def test_an_offset_no_working_calibration_has_is_refused(self):
         assert fit_mass_trend(*_on_a_trend(40, b=-0.8)) == (
             None,
