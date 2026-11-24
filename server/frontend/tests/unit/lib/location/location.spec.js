@@ -215,6 +215,101 @@ describe('useLocation.apply', () => {
   })
 })
 
+// The restore holds the tab store's automatic switches off until the link's
+// chain settles, then ends the hold. Inside that window only the user can move
+// the tab (#3456): a pick of theirs must survive the settle, and an untouched
+// tab must still be the link's tab when the hold ends.
+describe('useLocation.apply: tab restore while the chain settles', () => {
+  const POLL_MS = 700
+  const SETTLE_TIMEOUT_MS = 20000
+
+  // A tab store that behaves like the real one where it matters here: hydrate
+  // sets the tab and starts the hold, endHydrate ends it.
+  const makeTab = () => {
+    const tab = { active: 'raw files', hydrating: false }
+    tab.hydrate = vi.fn((value) => {
+      tab.hydrating = true
+      tab.active = value
+    })
+    tab.endHydrate = vi.fn(() => {
+      tab.hydrating = false
+    })
+    return tab
+  }
+
+  // A shared link that names a workspace, a sample, a collection and a tab.
+  const LINK = { workspace: 'w1', samples: ['s1'], collection: 'c1', tab: 'sample' }
+
+  const resolveChain = (data) => {
+    data.workspace.focusedId = 'w1'
+    data.sample.selectedIds = ['s1']
+    data.match.collection.focusedId = 'c1'
+  }
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.useFakeTimers()
+    app.current = makeApp()
+    app.current.ui.tab = makeTab()
+  })
+  afterEach(() => vi.useRealTimers())
+
+  it.each([
+    ['opens a match', 'match'],
+    ['clicks another tab', 'batch']
+  ])('keeps the tab when the user %s before the chain resolves', (_, picked) => {
+    const { data, ui } = app.current
+    useLocation().apply(LINK)
+    expect(ui.tab.active).toBe('sample')
+    expect(ui.tab.hydrating).toBe(true)
+
+    // One poll with the chain unresolved: the hold stays on.
+    vi.advanceTimersByTime(POLL_MS)
+    expect(ui.tab.hydrating).toBe(true)
+
+    ui.tab.active = picked
+    resolveChain(data)
+    vi.advanceTimersByTime(POLL_MS)
+
+    expect(ui.tab.active).toBe(picked)
+    expect(ui.tab.endHydrate).toHaveBeenCalledTimes(1)
+    expect(ui.tab.hydrating).toBe(false)
+  })
+
+  it("ends the hold on the link's tab when nobody touched it", () => {
+    const { data, ui } = app.current
+    useLocation().apply(LINK)
+    vi.advanceTimersByTime(POLL_MS * 3)
+    expect(ui.tab.hydrating).toBe(true)
+
+    resolveChain(data)
+    vi.advanceTimersByTime(POLL_MS)
+
+    expect(ui.tab.active).toBe('sample')
+    expect(ui.tab.endHydrate).toHaveBeenCalledTimes(1)
+    expect(ui.tab.hydrating).toBe(false)
+  })
+
+  it('ends the hold at the timeout on a chain that never resolves, setting nothing', () => {
+    const { ui } = app.current
+    useLocation().apply(LINK)
+    // A tab the user picks late in the window, just before the timeout.
+    vi.advanceTimersByTime(SETTLE_TIMEOUT_MS - POLL_MS)
+    expect(ui.tab.hydrating).toBe(true)
+    ui.tab.active = 'batch'
+
+    vi.advanceTimersByTime(POLL_MS * 2)
+
+    expect(ui.tab.endHydrate).toHaveBeenCalledTimes(1)
+    expect(ui.tab.hydrating).toBe(false)
+    expect(ui.tab.active).toBe('batch')
+    // The poll has stopped: nothing runs later.
+    vi.advanceTimersByTime(SETTLE_TIMEOUT_MS)
+    expect(ui.tab.endHydrate).toHaveBeenCalledTimes(1)
+    expect(ui.tab.active).toBe('batch')
+  })
+})
+
 // The share button copies a link to the current view. navigator.clipboard is
 // missing on a page served over plain HTTP from a network address, so the copy
 // has to fall back to the copy command and, when that fails too, hand the user

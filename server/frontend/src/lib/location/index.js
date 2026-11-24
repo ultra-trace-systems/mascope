@@ -27,8 +27,9 @@ const CONVERGE_TIMEOUT_MS = 30000
 const VERIFY_POLL_MS = 700
 const VERIFY_TIMEOUT_MS = 20000
 
-// How long to keep re-asserting a restored tab while the chain converges, so a
-// late data-driven tab switch (samples loading forces 'batch') cannot win.
+// How long to hold the tab store's automatic switches off while the chain
+// converges, so a late data-driven tab switch (samples loading forces 'batch')
+// cannot move the restored tab. Equal to the tab store's own hydrate cap.
 const TAB_SETTLE_TIMEOUT_MS = 20000
 
 // Friendly singular labels for the warning message, keyed by location field.
@@ -177,9 +178,15 @@ export const useLocation = defineStore('app.location', () => {
   /**
    * Restore the active tab. 'match' follows the visualization (the tab store's
    * own guard drives it there once an ion is visualized). Other tabs are set
-   * now and then re-asserted until the chain settles, so a late data-driven tab
-   * switch - e.g. samples loading forces 'batch' - cannot override the restored
-   * tab when the chain converges slower than the initial hydrate window.
+   * now through hydrate(), which holds the tab store's automatic switches off,
+   * and the hold ends once the chain settles - so a late data-driven switch,
+   * e.g. samples loading forces 'batch', cannot move the restored tab while the
+   * chain converges slower than the data streams in.
+   *
+   * settle() only ends the hold; it never sets the tab again. While the hold is
+   * on, the watchers stand down, so the only thing that can move the tab is the
+   * user - a click on a tab, Open match, Enter on an ion row - and that pick
+   * wins (#3456). An untouched tab is still the link's tab when the hold ends.
    */
   const restoreTab = (loc) => {
     const { ui } = useApp()
@@ -190,12 +197,7 @@ export const useLocation = defineStore('app.location', () => {
     const deadline = Date.now() + TAB_SETTLE_TIMEOUT_MS
     const settle = () => {
       const { data } = useApp()
-      if (!firstUnresolved(data, loc)) {
-        ui.tab.active = loc.tab
-        ui.tab.endHydrate()
-        return
-      }
-      if (Date.now() >= deadline) {
+      if (!firstUnresolved(data, loc) || Date.now() >= deadline) {
         ui.tab.endHydrate()
         return
       }
