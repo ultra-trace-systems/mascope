@@ -44,6 +44,34 @@ async function openRawFilesTab(page) {
   }
 }
 
+/**
+ * The Raw files date pickers' text for a few minutes around an acquisition
+ * time, as `{ min, max }`.
+ *
+ * The pickers read and show the browser's local time, minutes only, so the
+ * ends are formatted in the page, in its own time zone, and the minute the
+ * file was acquired in is padded by one minute before it and two after (the
+ * seconds the pickers drop). Wide enough for that rounding and for any time
+ * zone the browser runs in; narrow enough that the list holds the file, its
+ * demo original and little else, on the first page, however full the day is.
+ *
+ * @param {import('@playwright/test').Page} page
+ * @param {string} utc The file's `datetime_utc`, which the API sends with its offset.
+ */
+async function acquisitionRange(page, utc) {
+  return page.evaluate((iso) => {
+    const minute = 60_000
+    const at = Math.floor(Date.parse(iso) / minute) * minute
+    const pad = (n) => String(n).padStart(2, '0')
+    const text = (ms) => {
+      const d = new Date(ms)
+      const day = `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())}`
+      return `${day} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+    }
+    return { min: text(at - minute), max: text(at + 2 * minute) }
+  }, utc)
+}
+
 /** Resolve a source .raw file: explicit env var, or the local bundle cache. */
 function findSourceRaw() {
   const fromEnv = process.env.MASCOPE_E2E_RAW_FILE
@@ -53,9 +81,8 @@ function findSourceRaw() {
   if (!existsSync(cacheRoot)) return null
   // Newest bundle first; then the last file in name order. Sorted, so every
   // machine re-ingests the same file: readdirSync lists entries in the
-  // filesystem's order. On the demo bundle the last name is a late
-  // acquisition, which the Raw files tab lists on its first page, the only
-  // one its filename search reads.
+  // filesystem's order. Any file of the bundle does: the test narrows the
+  // Raw files list to the upload's own acquisition time before it searches.
   const byName = (a, b) => a.localeCompare(b, 'en', { numeric: true })
   for (const version of readdirSync(cacheRoot).sort(byName).reverse()) {
     const rawDir = path.join(cacheRoot, version, 'raw')
@@ -231,14 +258,19 @@ test.describe('sample file upload', () => {
     expect(sampleFile.polarity).toBeTruthy()
 
     // --- Browse: the file is findable in the Raw files tab ---
-    // The demo measurement was acquired in the past, so widen the time range
-    // (filling Min. Datetime switches the pane to range mode), then filter by
-    // our unique token.
+    // The upload keeps its source's acquisition time, which can be long past.
+    // The filename search narrows only the page on screen (100 rows, newest
+    // first), so narrow the list on the server to the file's own time first:
+    // filling the date pickers switches the pane to range mode, and the range
+    // goes to the API. Then filter the page by our unique token.
     await page.reload()
     await page.locator('#instrument-selector').waitFor({ state: 'attached' })
     await openRawFilesTab(page)
-    await page.locator('#min-datetime').fill('2000/01/01 00:00')
+    const range = await acquisitionRange(page, sampleFile.datetime_utc)
+    await page.locator('#min-datetime').fill(range.min)
     await page.locator('#min-datetime').press('Enter')
+    await page.locator('#max-datetime').fill(range.max)
+    await page.locator('#max-datetime').press('Enter')
     await page.getByPlaceholder('Search filenames').fill(token)
     await expect(page.getByRole('cell', { name: new RegExp(token) })).toBeVisible({
       timeout: 60_000
