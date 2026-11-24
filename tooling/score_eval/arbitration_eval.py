@@ -105,7 +105,6 @@ import polars as pl
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from score_eval import (  # noqa: E402
-    PRED_SIGMA_PPM,
     fit_mass_accuracy,
     load_filestore_peaks,
     score_ion_v2,
@@ -131,6 +130,7 @@ from mascope_tools.composition.heuristic_filter import (  # noqa: E402
     element_counts,
     rule_context_ratios,
 )
+from mascope_tools.composition.mass_accuracy import widen_sigma_ppm  # noqa: E402
 from mascope_tools.composition.models import (  # noqa: E402
     CompositionSearchConfig,
     HeuristicFilterConfig,
@@ -337,7 +337,7 @@ def evaluate_file(job: tuple) -> dict:
     )
     mu, sigma, _ = fit_mass_accuracy(bundle_dir, filename)
     if sigma is not None:
-        sigma = float(np.hypot(sigma, PRED_SIGMA_PPM))
+        sigma = widen_sigma_ppm(sigma)
         window = max(MATCH_K * sigma, 1.0)
     else:
         window, mu = widest.mass_range_ppm, 0.0

@@ -34,6 +34,7 @@ import score_eval as se
 from mascope_tools.composition.arbitration import threshold_at_fdr
 from mascope_tools.composition.corroboration import _corroboration_score
 from mascope_tools.composition.heuristic_filter import formula_plausibility
+from mascope_tools.composition.mass_accuracy import widen_sigma_ppm
 from mascope_tools.composition.utils import (
     parse_composition,
     parse_ionization,
@@ -89,7 +90,7 @@ def score_candidates(bundle_dir: str, limit: int) -> pd.DataFrame:
     def params(f):
         mu, sigma, _ = cal.get(f, (0.0, None, 0))
         if sigma is not None:
-            sigma = float(np.hypot(sigma, se.PRED_SIGMA_PPM))
+            sigma = widen_sigma_ppm(sigma)
             return max(6.0 * sigma, 1.0), sigma, mu
         return se.MZ_PPM, None, 0.0
 
