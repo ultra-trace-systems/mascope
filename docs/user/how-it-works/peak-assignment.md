@@ -130,6 +130,12 @@ discharge, and sets none aside. Then:
   element-ratio rules of [Kind & Fiehn 2007][kf07];
 - the context caps the window a reference list is matched in.
 
+A **Formula range** left empty follows the profile's grid, whatever the profile becomes.
+**Use profile grid**, beside the field in Peak assign and in the composition search, fills
+the field with that grid as a value to edit, for example to add one element. Emptied
+again, the field follows the profile once more. The button is off where a batch's samples
+search different grids.
+
 | Profile | Polarity | Recognised by | Context it takes |
 |---|---|---|---|
 | Bromide CIMS | negative | `[M+Br]-` | Ambient air |

@@ -146,13 +146,22 @@ const getResult = vi.fn((url) => {
 // `/params` answers without a `peak_assignment` block, which leaves the shared
 // parameter store unloaded: the pane then never launches a search of its own,
 // so the results under test are exactly the ones the test delivered.
+// What the focused sample's profile preview answers: null, as most tests leave
+// it, fails the lookup, so the fields say where a value would come from.
+let previewRecords = null
+const answer = (url) => {
+  if (url.endsWith('/profile-preview')) {
+    return previewRecords
+      ? Promise.resolve({ data: { data: previewRecords } })
+      : Promise.reject(new Error('Not found'))
+  }
+  return Promise.resolve({ data: { data: { params: {} } } })
+}
 vi.mock('@/api', () => ({
   api: {
     http: {
       get: (url, config) =>
-        url.startsWith('/cheminfo/mz/match/result/')
-          ? getResult(url, config)
-          : Promise.resolve({ data: { data: { params: {} } } }),
+        url.startsWith('/cheminfo/mz/match/result/') ? getResult(url, config) : answer(url),
       post: () => Promise.resolve({})
     }
   }
@@ -239,7 +248,13 @@ const GLOBAL_STUBS = {
     template: '<button :disabled="disabled"><slot /></button>'
   },
   FloatLabel: { template: '<div><slot /></div>' },
-  InputText: true,
+  // A text box that can be typed in, blurred and read, as the formula range is.
+  InputText: {
+    props: ['modelValue', 'placeholder'],
+    emits: ['update:modelValue'],
+    template:
+      '<input class="text" :placeholder="placeholder" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" @blur="$emit(\'blur\')" />'
+  },
   InputNumber: true,
   MultiSelect: true,
   ProgressSpinner: true
@@ -258,12 +273,22 @@ const helpDirective = {
 }
 const curationCards = (cards) => cards.filter((card) => card?.helpKey === 'assignment-curation')
 
+// The tooltip a control carries, kept on its element where a test can read it.
+const tooltip = {
+  mounted(el, { value }) {
+    el.dataset.tooltip = typeof value === 'string' ? value : (value?.value ?? '')
+  },
+  updated(el, { value }) {
+    el.dataset.tooltip = typeof value === 'string' ? value : (value?.value ?? '')
+  }
+}
+
 const { default: PanePeakSearch } = await import('@/lib/panes/PanePeakAssign/PanePeakSearch.vue')
 
 async function mountPane() {
   const wrapper = mount(PanePeakSearch, {
     props: { height: 400 },
-    global: { stubs: GLOBAL_STUBS, directives: { tooltip: {}, help: helpDirective } }
+    global: { stubs: GLOBAL_STUBS, directives: { tooltip, help: helpDirective } }
   })
   await wrapper.vm.$nextTick()
   return wrapper
@@ -308,6 +333,7 @@ beforeEach(() => {
   helpMounted.length = 0
   helpUnmounted.length = 0
   served.clear()
+  previewRecords = null
   socketHandlers = new Map()
   focusedPeak = ref(PEAK_A)
   Object.assign(gateState, {
@@ -933,5 +959,59 @@ describe('PanePeakSearch title', () => {
     const wrapper = await mountPane()
 
     expect(wrapper.find('.search-title').text()).toContain('Find other formulas for this peak')
+  })
+})
+
+// The profile's grid as a value to start from, as the launcher's form offers
+// it (MAS-859).
+describe('PanePeakSearch profile grid', () => {
+  const GRID = 'C1-40 H0-80 N0-3 O0-18 S0-1 Cl0-2 Br0-2'
+  const holder = (wrapper) => wrapper.find('[data-testid="profile-grid"]')
+  const gridButton = (wrapper) => holder(wrapper).find('button')
+
+  async function mountWithGrid() {
+    previewRecords = [{ element_ranges: GRID, mz_precision_ppm: 3 }]
+    const wrapper = await mountPane()
+    await flushPromises()
+    return wrapper
+  }
+
+  it('fills the field with the profile grid and commits it', async () => {
+    const wrapper = await mountWithGrid()
+    const { usePeakAssignParams } = await import('@/lib/peakAssignParams')
+    const store = usePeakAssignParams()
+    // Untouched and blurred, the empty field sends no range.
+    await wrapper.find('#formulaRange').trigger('blur')
+    expect(store.params.formula_ranges).toBeNull()
+    expect(gridButton(wrapper).attributes('disabled')).toBeUndefined()
+
+    await gridButton(wrapper).trigger('click')
+
+    expect(wrapper.find('#formulaRange').element.value).toBe(GRID)
+    expect(store.params.formula_ranges).toBe(GRID)
+  })
+
+  it('is disabled, and says why, while the profile is not read', async () => {
+    const wrapper = await mountPane()
+    await flushPromises()
+
+    expect(gridButton(wrapper).attributes('disabled')).toBeDefined()
+    expect(holder(wrapper).attributes('data-tooltip')).toBe(
+      'Use profile grid: the chemistry profile is not read yet'
+    )
+  })
+
+  it('sends no range again once the filled field is emptied', async () => {
+    const wrapper = await mountWithGrid()
+    const { usePeakAssignParams } = await import('@/lib/peakAssignParams')
+    const store = usePeakAssignParams()
+    await gridButton(wrapper).trigger('click')
+    expect(store.params.formula_ranges).toBe(GRID)
+
+    const field = wrapper.find('#formulaRange')
+    await field.setValue('')
+    await field.trigger('blur')
+
+    expect(store.params.formula_ranges).toBeNull()
   })
 })

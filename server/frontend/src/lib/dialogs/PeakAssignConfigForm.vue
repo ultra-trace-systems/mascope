@@ -314,6 +314,23 @@ const fromProfile = () =>
 const formulaRangePlaceholder = computed(
   () => shared('element_ranges')?.element_ranges ?? fromProfile()
 )
+// The profile's grid, offered as a value to start from: a click writes it into
+// the field and commits it as a typed range is, and from then on it is the
+// user's to edit. Emptied again, the field follows the profile once more. It
+// is offered only where one grid is known for the whole launch, and the
+// disabled button says why there is none.
+const profileGrid = computed(() => shared('element_ranges')?.element_ranges ?? null)
+const profileGridReason = computed(() => {
+  if (untargetedOff.value) return 'Turn on Untargeted search to set a formula range.'
+  if (profileGrid.value) return "Fill the field with the chemistry profile's grid, to edit it."
+  if (distinct('element_ranges') > 1) return "The samples' chemistry profiles give different grids."
+  return 'The chemistry profile is not read yet.'
+})
+function useProfileGrid() {
+  if (!profileGrid.value) return
+  formulaRangeModel.value = profileGrid.value
+  commitFormulaRange()
+}
 const mzPrecisionPlaceholder = computed(() => {
   const ppm = shared('mz_precision_ppm')?.mz_precision_ppm
   return ppm != null ? String(ppm) : fromProfile()
@@ -494,10 +511,11 @@ const chemistryDoc = app.ui.help.docUrl(
       />
       <label for="mz_precision_ppm">m/z precision (ppm)</label>
     </FloatLabel>
-    <FloatLabel
-      :pt="
-        app.ui.help.right(
-          `
+    <div class="field-row">
+      <FloatLabel
+        :pt="
+          app.ui.help.right(
+            `
           <h1>Formula Range</h1>
           <p>
           Element-count bounds for untargeted candidate formulas, as
@@ -510,27 +528,47 @@ const chemistryDoc = app.ui.help.docUrl(
           Left empty, the run uses the grid its chemistry profile implies
           &mdash; the elements the sample's reagent chemistry can actually
           produce, which is both a narrower and a faster search.
+          <b>Use profile grid</b> fills the field with that grid, for you to
+          edit; empty the field again to follow the profile.
           </p>`,
-          { layer, doc: stagesDoc }
-        )
-      "
-    >
-      <InputText
-        v-model="formulaRangeModel"
-        id="formula_ranges"
-        :disabled="readonly || untargetedOff"
-        :invalid="!formulaRangeValid"
-        @blur="commitFormulaRange"
-        @keydown.enter="commitFormulaRange"
-        v-tooltip.bottom="{
-          value: 'Format: Element + range, e.g. C0-80 H0-160 [15N]0-1 ^N0-1',
-          showDelay: 500
-        }"
-        :placeholder="formulaRangePlaceholder"
-        fluid
-      />
-      <label for="formula_ranges">Formula range</label>
-    </FloatLabel>
+            { layer, doc: stagesDoc }
+          )
+        "
+      >
+        <InputText
+          v-model="formulaRangeModel"
+          id="formula_ranges"
+          :disabled="readonly || untargetedOff"
+          :invalid="!formulaRangeValid"
+          @blur="commitFormulaRange"
+          @keydown.enter="commitFormulaRange"
+          v-tooltip.bottom="{
+            value: 'Format: Element + range, e.g. C0-80 H0-160 [15N]0-1 ^N0-1',
+            showDelay: 500
+          }"
+          :placeholder="formulaRangePlaceholder"
+          fluid
+        />
+        <label for="formula_ranges">Formula range</label>
+      </FloatLabel>
+      <!-- A disabled button takes no hover, so the reason sits on its wrapper. -->
+      <span
+        v-if="!readonly"
+        class="profile-grid"
+        v-tooltip.bottom="profileGridReason"
+        data-testid="profile-grid"
+      >
+        <Button
+          label="Use profile grid"
+          icon="pi ph ph-grid-four"
+          size="small"
+          text
+          severity="secondary"
+          :disabled="untargetedOff || !profileGrid"
+          @click="useProfileGrid"
+        />
+      </span>
+    </div>
     <FloatLabel
       :pt="
         app.ui.help.right(
@@ -653,6 +691,18 @@ const chemistryDoc = app.ui.help.docUrl(
 .chemistry-resolved ul {
   margin: 0;
   padding-left: 1.1rem;
+}
+
+/* The profile-grid button trails the field it fills, as the reset control
+   trails the form: the field keeps the dialog's full width. */
+.field-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.profile-grid {
+  align-self: flex-end;
 }
 
 .toggle-row {
