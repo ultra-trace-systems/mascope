@@ -1,7 +1,7 @@
 # Peak Assignment & Identification Confidence — Study, Design and Plan
 
 - **Status:** building
-- **As of:** 2026-11-17
+- **As of:** 2026-11-24
 - **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear; MAS-73, MAS-939 to MAS-944 and MAS-1262 carry the identification level, decision 38 is MAS-938; MAS-324 to MAS-327 the open P2 to P4 steps)
 - **What:** The layered science of going from a peak to a confident identification: plausibility, arbitration, calibration, tiers.
 
@@ -121,6 +121,54 @@ first real evidence layer. **Landed (see §4 P1 progress).**
 *Gap.* None fundamental for the chemistry layer itself. What remains is *consuming* the
 plausibility in arbitration (P2): calibrating how it combines with the fit score per
 instrument, and the target–decoy FDR. The isotope rule (3) stays in the fit score, not here.
+
+*The formula-shape table* (decision MAS-979, 2026-11-22; built in MAS-1111). The same
+chemistry used to be checked as a hard reject, a graded score and a tier cap, each with its
+own numbers and exemptions. Each criterion now has one row, in
+`mascope_tools.composition.formula_shape` (version `FORMULA_SHAPE_VERSION`, recorded on a
+run's tiering record beside the rule version), and every reader reads it. A hard reject is
+only what Senior's rules or valence forbid (`rule_senior`); every ratio rule is graded or a
+tier cap. The graded bands are Kind & Fiehn 2007, Tables 2 and 3.
+
+| Criterion | Hard bound | Graded band (common, extended) | Tier cap | Exemption half |
+|---|---|---|---|---|
+| Hydrogen, H/C | none (was 0.1-6) | 0.2-3.1, 0.1-6.0 | - | composition |
+| Nitrogen, N/C | none (was 2) | 0-1.3, 0-4.0 | `context_prior`, odd nitrogen: N >= 2 and O < 2 per N | composition |
+| Oxygen, O/C | none (was 2) | 0-1.2, 0-3.0 | `oxygen_lattice`: O/C > 1.3 with O >= 5 | composition |
+| Sulfur, S/C | none (was 0.1) | 0-0.8, 0-3.0 | `context_prior`, sulfur: S >= 1 | composition |
+| Phosphorus, P/C | none (was 0.05) | 0-0.3, 0-2.0 | - | composition |
+| Halogens, F/C, Cl/C, Br/C | none (was 0.05; the twin re-read opened 0.8) | F 0-1.5, 0-6.0; Cl, Br 0-0.8, 0-2.0 | - | composition |
+| Iodine, I/C | none (was 0.05) | not graded | - | composition |
+| Silicon, Si/C | none | 0-0.5, 0-1.0 | - | composition |
+| Heteroatom co-occurrence (Rule 6) | none | the paper's Table 3 caps, graded | - | composition |
+| Context windows, H/C O/C N/C DBE/C | none; a context may opt in to the gate (`windows_gate`) | 1.0 inside, half a quarter of the window's width past its edge, the floor at half; below C3 the valence checks | `nox_skeleton` | composition |
+| Carbon-free | none: the grid's carbon floor is open (`GRID_CARBON_FLOOR` 0) | fails open, 1.0 | `carbon_free` | composition |
+| Radical | none (Senior keeps odd-electron formulas) | none | `odd_electron` | ion |
+| Oxygen-free nitrate cluster | none | none | `oxygen_free_cluster` | ion |
+| Polyhalide through a halide | none | none | `polyhalide_cluster` | ion |
+| Same-ion reading | none | none | `ambiguous_nitrogen`, `ambiguous_adduct` | ion |
+| Plausibility floor | 0.0, Senior-impossible | floor 0.1 (`PLAUSIBILITY_FLOOR`) | the identification level's 5b, under the floor | - |
+
+The **exemption rule** (`formula_shape.exempt`), revised the same day after the demo's
+uronium targets were read against their spectra (MAS-885: five of eight user-authored
+targets named the wrong neutral): a cap in the composition half is not asked of a row a
+reference list names (`engine.named_by_a_list`, the row's `reference_identities`); a cap
+in the ion half is asked of every row; a row only the target library names is spared
+nothing, and still shows its match. The tiering pass and the cross-channel election read
+it; a target no longer settles a same-ion reading.
+
+**Radicals** meet one rule: the tiering pass holds no radical at assigned, whoever names it,
+so a radical is no rival to a molecule. The same-ion election prefers the molecule, a list
+hit's grid rivals leave radicals out (`closed_shell_rivals`), a rival set leaves them out of
+a molecule's density and confidence (`rival_set._rivals`), and the cross-channel pass gives
+a reading whose other readings are all radicals no rival. A radical's own rivals are every
+other ion.
+
+The context windows' factor enters every formula's plausibility in a run
+(`heuristic_filter.graded_in`, which `pipeline.run_stages` enters after the resolve
+stage): the search's ranking, both stages' evidence and tiers, the rival sets and the
+identification level read one number. Stage A's formulas are graded too, as the universal
+bands grade them; the exemption rule is about caps.
 
 ### L2 — Spectral-neighbourhood corroboration (adducts, isotopes, fragments)
 *Basis.* A real compound rarely appears as a single peak. Its isotopologues, its different

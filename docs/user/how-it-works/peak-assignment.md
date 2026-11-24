@@ -125,9 +125,11 @@ discharge, and sets none aside. Then:
 - the profile gives the untargeted stage its element grid, its m/z window on each
   instrument class, and the extra channels a source of its kind produces;
 - the context narrows that grid, never widening it;
-- the context also rejects formulas whose hydrogen, oxygen, nitrogen or
+- the context also weighs down formulas whose hydrogen, oxygen, nitrogen or
   ring-and-double-bond count per carbon no such sample holds, in the manner of the
-  element-ratio rules of [Kind & Fiehn 2007][kf07];
+  element-ratio rules of [Kind & Fiehn 2007][kf07]: such a formula is still searched,
+  and its plausibility falls the further it sits outside the window (*Plausibility*,
+  below);
 - the context caps the window a reference list is matched in.
 
 A **Formula range** left empty follows the profile's grid, whatever the profile becomes.
@@ -798,9 +800,20 @@ each candidate's **chemical plausibility** on `[0, 1]` from the **Seven Golden R
 3. **Heteroatom co-occurrence (Rule 6).** Simultaneous high counts of N, O, P and S are
    improbable; graded against the paper's multi-element restrictions (its Table 3).
 
+4. **The chemistry context's windows.** Inside a run, the context's hydrogen, oxygen,
+   nitrogen and ring-and-double-bond windows per carbon grade every formula too: full
+   credit inside, half a quarter of the window's width past its edge, and the floor of
+   0.1 at half its width. Below three carbons the windows say nothing, and a formula
+   without carbon is not judged by them. They used to reject a formula outside them,
+   which under the wrong context removed real compounds, glycerol among them.
+
 Plausibility is **conservative and fail-open**: it *grades* candidates rather than
 hard-rejecting them, and unusual-but-real chemistry (radicals, exotic elements) is never
-penalised — only the provably impossible is.
+penalised — only the provably impossible is. No element ratio rejects a formula: a
+chlorine or bromine formula under twenty carbons, or a sulfur one under ten, is searched
+and graded like any other. The one hard limit is the structural rule (Rule 2). A formula
+with no carbon at all is searched too; the *carbon-free formula* cap below holds it at
+*candidate*.
 
 ## Arbitration — competing the candidates
 
@@ -990,14 +1003,27 @@ A row the run judged that names nothing holding it reads *no reason recorded*. T
 the engine's to answer. The tier chip names the same rules when you hover it, on the card
 and in the ledger.
 
+Which rows a cap on the formula's shape asks is one rule:
+
+- a cap on the **compound's composition** - *needs corroboration here*, *organonitrate
+  skeleton*, *oxygen lattice*, *carbon-free formula* - is not asked of a row a loaded
+  reference list names. A reference list comes from peer-reviewed work.
+- a cap on the **ion** - *radical neutral*, *no oxygen to cluster on*, *polyhalide: air or
+  source*, *ambiguous nitrogen*, *ambiguous adduct* - is asked of every row. A list
+  names a compound, not the channel it is seen through.
+- a compound only your own **target library** names is spared nothing. Your library can
+  hold anything, so its row still shows the match and is capped like any other row.
+
 What caps a row at candidate:
 
 - **radical neutral** — the committed neutral breaks the even-valence rule, the first of
   the SENIOR rules among [Kind & Fiehn 2007][kf07]'s checks: its ring-and-double-bond count
   is a half-integer, so it has an unpaired electron and names a radical rather than a
   molecule. Radicals are real chemistry, but a formula search chooses a radical reading of
-  an ion rather than measuring it against a closed-shell one. A curated identity is exempt,
-  because it was matched to a compound somebody authored rather than chosen by the search.
+  an ion rather than measuring it against a closed-shell one. Every row is asked, a
+  compound of a reference list or of your target library too. A radical is no rival to
+  a molecule either: it does not count among a peak's rivals, nor take a list
+  compound's peak.
 - **no oxygen to cluster on** — the peak was read as nitrate clustered with a neutral that
   has no oxygen. Nitrate holds on to a molecule by hydrogen bonds from its oxygen-bearing
   groups, and quantum-chemical modelling of what a nitrate source detects puts the bar at
@@ -1005,9 +1031,8 @@ What caps a row at candidate:
   offers none of them. The row keeps its formula, since its mass and isotope pattern
   still fit. The rule covers every form of the nitrate channel: the plain and the
   15N-labelled ion, and their clusters with nitric acid. Carbonate clusters are not
-  judged this way. A second ionization channel does not lift the cap. A compound of your
-  own target library is exempt; a formula from a loaded reference list is not, since a
-  list names a compound rather than the channel it is seen through.
+  judged this way. A second ionization channel does not lift the cap. Every row is
+  asked, a compound of your target library or of a reference list too.
 - **polyhalide: air or source** — the peak was read as a halide attached to a neutral
   made only of halogens: IBr read through bromide is the polyhalide anion IBr2-. A
   halide source measures the air's halogen molecules exactly this way, and it also makes
@@ -1015,7 +1040,7 @@ What caps a row at candidate:
   give back ([Wang et al. 2021][wa21]), so the mass and the isotope pattern cannot tell
   the air from the source. The row keeps its formula; only how the peak moves over time
   can settle where it came from. A second ionization channel does not lift the cap, and
-  a compound of your own target library is exempt.
+  every row is asked, a compound of your target library too.
 - **rivals left standing** — the peak's own evidence could not separate the committed
   formula from at least one other, no second ionization channel of the run committed
   the same neutral, and no homologous series of the batch names it (*Detecting series*,
@@ -1055,12 +1080,13 @@ What caps a row at candidate:
   the batch names it, or a line of that element's own heavy isotope is committed beside
   it: 34S for sulfur, 15N for nitrogen. A 13C line is not enough here: it proves how
   many carbons the ion holds, never whether the sulfur or the nitrogen is there, which
-  is the isotope evidence [Kind & Fiehn 2007][kf07] ask of a heteroatom. A formula
-  matched from a list is not asked.
+  is the isotope evidence [Kind & Fiehn 2007][kf07] ask of a heteroatom. A formula a
+  reference list names is not asked; one only your target library names is.
 - **organonitrate skeleton** — on a run that reads organonitrates' carbon skeletons
   (*Organonitrates on a nitrate run*, above), the formula passes the context's windows,
   or escapes the oxygen lattice, only with its groups taken off. The reason names the
-  skeleton. A batch's *Search untargeted* holds such a reading at *candidate* too.
+  skeleton. A batch's *Search untargeted* holds such a reading at *candidate* too. A
+  formula a reference list names is not asked; one only your target library names is.
 - **expected line absent** — the formula's isotope pattern predicts a line the
   spectrum should show, and no peak is there. A line is expected where the fit
   score would count it missing (above): where its expected signal-to-noise, the main
@@ -1172,9 +1198,9 @@ What caps a row at candidate:
   corroborates its M0.
 - **oxygen lattice** and **carbon-free formula** — shapes a mass search produces rather
   than a source: more than 1.3 oxygens per carbon with at least five oxygens, or no carbon
-  at all without being one of the small inorganics these sources make. A curated identity
-  is exempt here too, for the same reason: both shapes describe what a search arrives at,
-  and a curated row was not arrived at by one.
+  at all without being one of the small inorganics these sources make. A formula a
+  reference list names is not asked: both shapes describe what a search arrives at. A
+  compound only your target library names is asked.
 - **ambiguous nitrogen** and **ambiguous adduct** — the committed ion reads just as well
   as another molecule through another of the run's ionization channels, and no second
   channel of the run settles which. Dimethylformamide with a proton is the same ion as
@@ -1185,8 +1211,9 @@ What caps a row at candidate:
   adduct* is the rest, such as a bromide cluster against the deprotonated molecule that
   holds the hydrogen bromide, or a formate adduct against the deprotonated acid that holds
   the formic acid. The row keeps its formula. A radical reading is no rival,
-  since the run never holds a radical at *assigned*, and a compound of your own target
-  library is exempt, since your curation chose the reading. A second channel settles the
+  since the run never holds a radical at *assigned*. Neither a reference list nor your
+  target library settles which reading it is: either names a compound, not which of two
+  molecules the ion is. A second channel settles the
   question only where the sample does not also commit the other molecule through one of
   the mode's own channels: where it does, each reading has an observation of its own, and
   the two are weighed as two opportunistic readings are (*Auto*, above). Where the

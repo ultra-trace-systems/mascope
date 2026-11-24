@@ -121,6 +121,40 @@ def _frames(*, rival_fit=0.86, shortlist_fit=0.4, at=None) -> tuple[RivalFrames,
     return frames, {"search": search, "short": short}
 
 
+class TestARadicalIsNoRivalToAMolecule:
+    """Decision MAS-979's radical rule: the tiering pass holds no radical at
+    assigned, whoever names it, so a molecule's set leaves radicals out, as a
+    list hit's rivals and the cross-channel pass do."""
+
+    @staticmethod
+    def _frames(winner: str, rival: str) -> RivalFrames:
+        search = SeededFrame(
+            pd.DataFrame(
+                [_line("w", winner, "p1", 0.9), _line("r", rival, "p1", 0.89)]
+            ),
+            {(winner, "im-h"): "w", (rival, "im-h"): "r"},
+            {(rival, "im-h"): frozenset({"p1"})},
+        )
+        return RivalFrames(None, (search,), base=V1)
+
+    def test_a_molecules_set_leaves_a_radical_out(self):
+        # C4H7O3 reads DBE 1.5: an unpaired electron.
+        row = _winner()
+        measure_rival_sets([row], self._frames("C5H10O2", "C4H7O3"), V1)
+        assert row["provenance"]["candidate_density"] == 1
+        assert row["provenance"][RIVAL_SET]["rivals"] == []
+
+    def test_a_molecule_rival_is_counted(self):
+        row = _winner()
+        measure_rival_sets([row], self._frames("C5H10O2", "C4H6O3"), V1)
+        assert row["provenance"]["candidate_density"] == 2
+
+    def test_a_radicals_set_holds_every_other_ion(self):
+        row = _winner(formula="C5H9O2")
+        measure_rival_sets([row], self._frames("C5H9O2", "C4H6O3"), V1)
+        assert row["provenance"]["candidate_density"] == 2
+
+
 class TestOnePeakOneSet:
     """Verify 1: one peak's density, ``no_close_rival``, 4.15 share and level
     exclusions read the same rivals, at the same centre and width."""
