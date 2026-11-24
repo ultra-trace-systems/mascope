@@ -156,9 +156,18 @@ class TestRowCap:
         assert len(error.left) == 3
         assert error.to_dict()["n_left"] == 3
         assert "max_rows" in str(error)
-        # One worker: it may have started the next sample by the time the
-        # count passed the cap, but no other
-        assert len(api.requests_to(r"samples/\w+/peaks")) <= 3
+        # How many samples the worker read before the cap stopped the load is
+        # timing: the SDK submits every sample at once, and one worker can
+        # outrun the thread that counts. That the tasks not yet started are
+        # cancelled is the SDK's to pin (test_sdk_load_hooks.py). What the
+        # cap guarantees: each sample is read once at most, and the samples
+        # left are the dataset's but the two the count saw, both read.
+        read = [call[1].split("/")[1] for call in api.requests_to(r"samples/\w+/peaks")]
+        assert len(read) == len(set(read))
+        everything = {"s11", "s21", "s22", "s23", "s31"}
+        left = {item["sample_item_id"] for item in error.left}
+        assert left < everything
+        assert everything - left <= set(read)
 
     def test_no_frame_is_made_above_the_cap(self, kit, api, monkeypatch):
         monkeypatch.setattr(toolkit_module, "ROWS_PER_SAMPLE_ESTIMATE", 1)
