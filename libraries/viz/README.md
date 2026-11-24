@@ -219,7 +219,9 @@ What every view does the same way:
   `polarities`: those of the window's samples, `+` before `-`.
   A chart prints them; a run change is flagged, never joined silently. A
   `spectrum` against another period flags a change between the two, at
-  the batch where the run changed.
+  the batch where the run changed. `run_changes` holds one entry per
+  polarity, so a `+-` batch's change is two; `mascope-viz view` prints
+  them as one line that names both polarities, and counts lines.
 - **Long series come from the rollups.** `series` at `cadence="1h"`, in
   UTC or a zone a whole number of hours from it, or at `1D` in UTC, bins
   from the store's hourly and daily rollups rather than every sample's

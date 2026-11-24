@@ -877,6 +877,78 @@ def test_a_view_reports_mixed_runs(synced):
     shown = text("view", "composition", *DATASET)
     assert "mixed runs: the formulas are read by more than one engine run" in shown
     assert '"mascope 0.5.0" -> "mascope 0.6.0"' in shown
+    # A change in one polarity's batches alone names that polarity
+    (line,) = [line for line in shown.splitlines() if "->" in line]
+    assert "(1 change(s) in the window)" in shown
+    assert ", polarity -): " in line
+
+
+def test_a_view_prints_a_polarity_switching_batchs_run_change_once(server):
+    # Every batch reads both polarities, and the run changes at the middle one
+    for batch_id in server.batch_ids:
+        server.batch_polarity[batch_id] = "+-"
+    payload("store", "sync", *DATASET)
+
+    found = payload("view", "composition", *DATASET)
+    changes = found["attrs"]["run_changes"]
+    assert [change["polarity"] for change in changes] == ["+", "-"]
+    assert len({(c["at"], c["sample_batch_id"]) for c in changes}) == 1
+    shown = text("view", "composition", *DATASET)
+    (line,) = [line for line in shown.splitlines() if "->" in line]
+    assert "(1 change(s) in the window)" in shown
+    batch = changes[0]["sample_batch_id"]
+    assert f"(batch {batch}, polarities + and -): " in line
+    assert line.endswith('"mascope 0.5.0" -> "mascope 0.6.0"')
+
+
+def _mixed(changes: list[dict]) -> list[str]:
+    """The run-change lines `_view_lines` prints for *changes*."""
+    t = pd.Timestamp("2026-06-01", tz="UTC")
+    payload = {"attrs": {"tz": "UTC", "cadence": "all", "by": "key"}, "key": "k"}
+    payload.update(rows=0, n_keys=0, entries=[], csv=[], span={"first": t})
+    payload["span"]["last"] = t
+    payload["attrs"].update(mixed_runs=True, run_changes=changes)
+    status = cli.StoreStatus(path=cli.Path("."), exists=False)
+    lines = cli._view_lines("composition", payload, status)
+    (count,) = [line for line in lines if "mixed runs" in line]
+    shown = [line for line in lines if "->" in line]
+    assert f"({len(shown)} change(s) in the window)" in count
+    return shown
+
+
+def test_run_changes_of_one_moment_to_different_readings_stay_apart():
+    at = "2026-06-02T00:00:00+00:00"
+    change = {"at": at, "sample_batch_id": "b2", "after": "run C"}
+    shown = _mixed(
+        [
+            {**change, "polarity": "-", "before": "run A"},
+            {**change, "polarity": "+", "before": "run B"},
+            {**change, "polarity": "+", "before": "run A", "after": "run D"},
+        ]
+    )
+    assert shown == [
+        f'    {at} (batch b2, polarity -): "run A" -> "run C"',
+        f'    {at} (batch b2, polarity +): "run B" -> "run C"',
+        f'    {at} (batch b2, polarity +): "run A" -> "run D"',
+    ]
+
+
+def test_merged_run_changes_name_their_polarities_plus_first():
+    at = "2026-06-02T00:00:00+00:00"
+    change = {"at": at, "sample_batch_id": "b2", "before": "A", "after": "B"}
+    later = {**change, "at": "2026-06-03T00:00:00+00:00", "sample_batch_id": "b3"}
+    shown = _mixed(
+        [
+            {**change, "polarity": "-"},
+            {**change, "polarity": "+"},
+            {**later, "polarity": None},
+            {**later, "polarity": "-"},
+        ]
+    )
+    assert shown == [
+        f'    {at} (batch b2, polarities + and -): "A" -> "B"',
+        '    2026-06-03T00:00:00+00:00 (batch b3, polarities - and (none)): "A" -> "B"',
+    ]
 
 
 @pytest.mark.parametrize(
