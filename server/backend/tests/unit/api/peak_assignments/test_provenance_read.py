@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from mascope_backend.api.new.peak_assignments import tiering
 from mascope_backend.api.new.peak_assignments.ledger_reads import _provenance_scalars
 from mascope_backend.api.new.peak_assignments.model_readers import (
     provenance_with_calibration,
@@ -305,6 +306,13 @@ _RULE_SHAPES = {
         "cross_channel": {"separated_through": ["b"]},
     },
     "an envelope with no lines": {"predicted_envelope": {}},
+    "a row a series of its batch keeps at assigned": {
+        "tier_reasons": [
+            {"rule": "series_anchor", "detail": "", "caps": False},
+            {"rule": "no_close_rival", "detail": "", "caps": False},
+        ],
+        "series": {"has_anchor": True},
+    },
 }
 
 
@@ -318,3 +326,30 @@ def test_the_card_reads_off_the_ledger_what_it_read_off_the_detail(provenance):
     assert metrics.ledger_columns(
         _provenance_scalars(dict(provenance))
     ) == metrics.provenance_columns(dict(provenance))
+
+
+def test_g12_knows_every_escape_of_the_tiering_rule():
+    """G12 names the four second observations ``tiering.lone_peak_reason``
+    lets a search row escape on, by the reasons the rule's rows keep their
+    tier on; the series one is the reason it reads off the ledger."""
+    metrics = _card_metrics()
+    assert metrics.LONE_PEAK_ESCAPES == (
+        tiering.REASON_SECOND_LINE,
+        tiering.REASON_CORROBORATED,
+        tiering.REASON_SERIES_ANCHOR,
+        tiering.REASON_ON_A_LIST,
+    )
+    assert metrics.SERIES_ANCHOR == tiering.REASON_SERIES_ANCHOR
+    # The rule's series escape is what raises that reason on a kept row.
+    row = {
+        "source": "untargeted",
+        "assigned_formula": "C6H10O4",
+        "provenance": {
+            "cross_channel": {"channels": ["dep"]},
+            tiering.SERIES: {"has_anchor": True, "unit": "CH2"},
+        },
+    }
+    assert tiering.lone_peak_reason(row, []) is None
+    assert metrics.SERIES_ANCHOR in [r["rule"] for r in tiering.standing_reasons(row)]
+    row["provenance"].pop(tiering.SERIES)
+    assert tiering.lone_peak_reason(row, [])["rule"] == tiering.REASON_LONE_PEAK

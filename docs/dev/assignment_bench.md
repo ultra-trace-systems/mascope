@@ -3,8 +3,8 @@
 # The assignment bench: both engines on demand, on the agent box
 
 - **Status:** building
-- **As of:** 2026-11-23
-- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, milestone 6: MAS-64, MAS-835 to MAS-841, MAS-849, MAS-955, MAS-1055, MAS-1057, MAS-1140)
+- **As of:** 2026-11-24
+- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, milestone 6: MAS-64, MAS-835 to MAS-841, MAS-849, MAS-955, MAS-1055, MAS-1057, MAS-1140, MAS-1256)
 - **What:** One command on the agent box that runs a branch's in-app assignment engine beside peaky at a pinned release on fixed sample sets, prints the plan's metrics as a card, and posts it on the PR; a worker runs it in its own session.
 
 ## 1. Why
@@ -292,7 +292,13 @@ reading in both, and the rows that moved, counted by the batch decision
 each cites. The gate judges the control until the plan owner says
 otherwise; the decoy arms stay on the control; readings that live on the
 batch peak alone (co-variation, the batch checks, blends, the ratio grade)
-are on no sample's row and so on no card (MAS-909). A pass that is refused,
+are on no sample's row and so on no card (MAS-909). On the demo's bromide
+Orbitrap batch the series lifts lone peaks to assigned, and G12 read 1,392 on
+the arm (MAS-1208); the plan owner ruled the series corroboration enough
+(MAS-1255), so G12 now exempts a series-anchored row as the tiering rule
+does, and the lines under it count the lifted rows and how the reference
+reads them beside the run's other assigned search rows (MAS-1256), on a
+column whose runs hold any, the arm's. A pass that is refused,
 fails, is cancelled or ends with a stage stale, a set over its budget, a
 sample in no batch or a batch two sets share leaves the arm off that set's
 card, named with why, and the control stands. A pass writes decisions a

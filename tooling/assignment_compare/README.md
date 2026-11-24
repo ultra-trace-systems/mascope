@@ -449,7 +449,26 @@ for G9 to G14):
   at any n, the pairing finds a quarter of a bromide set's intensity.
 - **G12** counts an assigned monoisotopic row from the formula search with no
   isotopologue row of its own, fewer than two channels committing its neutral
-  (`corroboration_channels`) and no list naming it (`reference_listing`).
+  (`corroboration_channels`), no list naming it (`reference_listing`) and no
+  homologous series of its batch anchoring it (a `series_anchor` tier reason,
+  read off `tier_reason_rules`): the four escapes of the tiering rule's
+  `lone_peak` (`tiering.lone_peak_reason`, `metrics.LONE_PEAK_ESCAPES`; a
+  backend test pins the two lists together). A row a series alone saw twice
+  is the series' lift, which the plan owner ruled corroboration enough
+  (MAS-1255): G12 exempts it, and the lines under G12 count it, so the card
+  still watches what a series lifts. They appear only on a column whose runs
+  hold such a row, in practice the batch arm's; the control has none, and its
+  card is the card it was. Readings, never gated:
+  - `G12_series`: the series-lifted lone peaks, over the assigned search rows;
+  - `G12_series_same`, `G12_series_other`, `G12_series_silent`: of them, over
+    the samples with a reference run, the share on which the reference commits
+    the same formula through the same adduct, any other reading (another
+    formula, adduct or role), and nothing at all;
+  - `G12_yardstick_same`, `_other`, `_silent`: the same three shares over the
+    run's other assigned search rows, the yardstick beside them.
+
+  Whether the stage 4 gate should hold the lifted rows' agreement near the
+  yardstick is the plan owner's call (MAS-1104); nothing gates it yet.
 - **G13** counts an assigned monoisotopic row whose `predicted_envelope` holds
   an asked line that is absent; **G14** one whose `peak_separation` says it is
   not separated and whose `cross_channel.separated_through` names no partner.

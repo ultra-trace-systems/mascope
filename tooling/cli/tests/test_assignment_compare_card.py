@@ -106,6 +106,7 @@ def _frame(a_rows, b_rows=None, *, sample="s1", provenance=None, **columns):
         "a_mass_gate_corroborated",
         "a_absent_lines",
         "a_unseparated",
+        "a_series_anchor",
     ):
         if provenance is not None:
             frame[column] = frame["a_assignment_id"].map(
@@ -504,6 +505,102 @@ def test_g12_counts_assigned_search_rows_nothing_else_saw():
         _row("p6", tier="candidate"),
     ]
     assert _value(metrics.g12_lone_peaks(_frame(rows))) == (1, 4)
+
+
+#: A row's provenance where a series of its batch anchors it and nothing else
+#: saw it twice: the reason the tiering rule keeps it at assigned on.
+_SERIES = {"tier_reasons": [{"rule": "series_anchor"}, {"rule": "no_close_rival"}]}
+
+
+def test_g12_exempts_a_series_anchored_row_and_the_line_beside_it_counts_it():
+    rows = [
+        # No escape at all: G12's, not the line's.
+        _row("p1"),
+        # A series is all that saw it: the line's, not G12's.
+        _row("p2"),
+        # A series and a second channel: another escape, so in neither.
+        _row("p3", corroboration_channels=2),
+        # A series and a line of its own isotope pattern: in neither.
+        _row("p4"),
+        _row("p4i", role="iso_child", owner_peak_assignment_id="pa-p4"),
+        # A series and a list: in neither.
+        _row("p5", reference_listing={"name": "an acid", "tags": []}),
+        # A series on a row the search did not elect: in neither.
+        _row("p6", source="database"),
+    ]
+    provenance = {peak: _SERIES for peak in ("p2", "p3", "p4", "p5", "p6")}
+    frame = _frame(rows, provenance={"p1": {"tier_reasons": []}, **provenance})
+    assert _value(metrics.g12_lone_peaks(frame)) == (1, 5)
+    lifted = metrics.series_lifted(frame)
+    assert _value(lifted["G12_series"]) == (1, 5)
+    # No reference run: the shares are not read, not 0.
+    for key in ("series_same", "series_other", "yardstick_silent"):
+        assert lifted[f"G12_{key}"] == {"value": None, "n": None}
+    readings = metrics.card_readings(frame)
+    keys = list(readings)
+    assert keys[keys.index("G12") + 1] == "G12_series"
+    assert readings["G12"] == {"value": 1, "n": 5}
+
+
+def test_without_a_series_anchored_row_the_card_holds_no_series_line():
+    # The control's runs read no series: G12 as it was, and no line beside it.
+    rows = [_row("p1"), _row("p2", corroboration_channels=2)]
+    frame = _frame(rows, provenance={"p1": {"tier_reasons": []}})
+    assert metrics.series_lifted(frame) == {}
+    readings = metrics.card_readings(frame)
+    assert not [key for key in readings if key.startswith("G12_")]
+    assert readings["G12"] == {"value": 1, "n": 2}
+    # A frame from before the record reads as one with no series.
+    assert metrics.series_lifted(_frame(rows)) == {}
+
+
+def test_the_series_line_reads_the_lifted_rows_and_the_rest_against_the_reference():
+    mine = [
+        # Lifted by the series: the reference agrees, reads otherwise, says
+        # nothing, and agrees.
+        _row("p1"),
+        _row("p2"),
+        _row("p3"),
+        _row("p4"),
+        # The yardstick: the other assigned search rows, lone or not.
+        _row("q1", corroboration_channels=2),
+        _row("q2", corroboration_channels=2),
+        _row("q3"),
+        # Not a search row at assigned: in neither.
+        _row("r1", tier="candidate"),
+        _row("r2", source="database"),
+    ]
+    theirs = [
+        _row("p1"),
+        _row("p2", assigned_formula="C7H12O3", ion_formula="C7H11O3-"),
+        _row("p4"),
+        _row("q1"),
+        _row("q2", role="reagent", tier="unassigned", source=None),
+        _row("r1"),
+        _row("r2"),
+    ]
+    provenance = {peak: _SERIES for peak in ("p1", "p2", "p3", "p4", "r1", "r2")}
+    lifted = metrics.series_lifted(_frame(mine, theirs, provenance=provenance))
+    assert {key: _value(one) for key, one in lifted.items()} == {
+        "G12_series": (4, 7),
+        "G12_series_same": (50.0, 4),
+        "G12_series_other": (25.0, 4),
+        "G12_series_silent": (25.0, 4),
+        "G12_yardstick_same": (33.3, 3),
+        "G12_yardstick_other": (33.3, 3),
+        "G12_yardstick_silent": (33.3, 3),
+    }
+    # The shares read the samples with a reference run alone; the count all.
+    pooled = pd.concat(
+        [
+            _frame(mine, theirs, provenance=provenance),
+            _frame([_row("s1")], sample="s2", provenance={"s1": _SERIES}),
+        ],
+        ignore_index=True,
+    )
+    lifted = metrics.series_lifted(pooled)
+    assert _value(lifted["G12_series"]) == (5, 8)
+    assert _value(lifted["G12_series_same"]) == (50.0, 4)
 
 
 def test_the_level_shares_and_where_tier_and_level_cross():
@@ -2196,7 +2293,7 @@ def test_the_ledger_columns_read_a_frames_missing_values_as_no_record():
     are a row with no record, as the detail read gives one."""
     frame = pd.DataFrame(
         {
-            "tier_reason_rules": [["a"], None, []],
+            "tier_reason_rules": [["a", "series_anchor"], None, []],
             "mass_gate_corroborated": [True, None, False],
             "envelope_absent_lines": [1, None, 0],
             "peak_unseparated": [False, np.nan, True],
@@ -2208,18 +2305,21 @@ def test_the_ledger_columns_read_a_frames_missing_values_as_no_record():
             "a_mass_gate_corroborated": True,
             "a_absent_lines": 1,
             "a_unseparated": False,
+            "a_series_anchor": True,
         },
         {
             "a_reasons": False,
             "a_mass_gate_corroborated": False,
             "a_absent_lines": None,
             "a_unseparated": None,
+            "a_series_anchor": False,
         },
         {
             "a_reasons": False,
             "a_mass_gate_corroborated": False,
             "a_absent_lines": 0,
             "a_unseparated": True,
+            "a_series_anchor": False,
         },
     ]
 
@@ -2551,6 +2651,46 @@ def test_the_batch_arm_reads_the_runs_after_the_pass_beside_the_control(
         arm_of = json.loads(files[f"card_{name}.json"])["batch_arm"]
         assert list(arm_of["columns"]) == [name]
         assert list(arm_of["off"]) == [name]
+
+
+def test_the_batch_arm_carries_the_series_line_and_the_control_none(
+    served, after_pass, tmp_path
+):
+    """A run after the pass whose p1 a series alone keeps at assigned: G12
+    exempts it on the arm, the line beside G12 counts it, and the control,
+    whose runs read no series, carries no line."""
+    _Client.ledgers[after_pass] = _with_rule_records(
+        [
+            _row("p1", peak_assignment_id="px-p1"),
+            _unassigned("p3", mz=150.0, intensity=50.0),
+        ],
+        {"px-p1": {"tier_reason_rules": ["series_anchor", "no_close_rival"]}},
+    )
+    _, card = _card_of(
+        _arm_manifest(
+            tmp_path, runs={"s1": "ra1"}, batch_arm={"runs": {"s1": after_pass}}
+        ),
+        tmp_path / "arm",
+    )
+    control = card["columns"]["A"]["readings"]
+    assert not [key for key in control if key.startswith("G12_")]
+    after = card["batch_arm"]["columns"]["A"]["readings"]
+    assert after["G12"] == {"value": 0, "n": 1}
+    assert after["G12_series"] == {"value": 1, "n": 1}
+    # s1 carries a reference run, which commits p1's formula.
+    assert after["G12_series_same"] == {"value": 100.0, "n": 1}
+    assert after["G12_yardstick_same"] == {"value": None, "n": 0}
+    text = (tmp_path / "arm" / "card_A.md").read_text()
+    arm_part = text[text.index("## After the batch pass") :]
+    assert "| G12 exempt: lone peaks a batch series lifts | - | 1 |" in arm_part
+    assert "G12 exempt" not in text[: text.index("## After the batch pass")]
+    assert compare_runs.SERIES_NOTE in arm_part
+    assert compare_runs.SERIES_NOTE not in text[: text.index("## After the batch pass")]
+    # A table that holds the line says what it counts, wherever it is.
+    on_control = json.loads(json.dumps(card))
+    on_control["columns"]["A"]["readings"]["G12_series"] = after["G12_series"]
+    head = compare_runs.card_markdown(on_control, ["A"])
+    assert compare_runs.SERIES_NOTE in head[: head.index("## After the batch pass")]
 
 
 def test_a_moved_row_that_cites_nothing_or_whose_read_failed_is_counted_so(
