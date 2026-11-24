@@ -251,6 +251,28 @@ async def _seeds_batch_peaks(session, sample_batch_id: str) -> bool:
     )
 
 
+def _member_candidate(registry: list, row, provenance: dict) -> tuple[int, str | None]:
+    """A folded row's index into its anchor's registry (``registry`` extended
+    in place, :func:`~mascope_backend.api.new.peak_assignments.batch_peaks.
+    candidate_index`), and the target compound the member keeps as its own.
+
+    The member keeps its own beside the registry's: an isomer of the compound
+    an earlier member brought through the same ion shares that member's entry,
+    which keeps the first one (``fold_view.member_target_id``).
+    """
+    target_compound_id = getattr(row, "target_compound_id", None) or None
+    candidate = candidate_index(
+        registry,
+        row.assigned_formula,
+        row.ion_formula,
+        row.ionization_mechanism_id,
+        source=getattr(row, "source", None),
+        listing=reference_listing(provenance.get("reference_identities")),
+        target_compound_id=target_compound_id,
+    )
+    return candidate, target_compound_id
+
+
 async def fold_sample_into_batch_peaks(
     sample_item_id: str,
     *,
@@ -500,20 +522,14 @@ async def fold_sample_into_batch_peaks(
         for f in folded:
             r = f.peak["row"]
             provenance = r.provenance if isinstance(r.provenance, dict) else {}
-            candidate = None
+            candidate, target_compound_id = None, None
             if r.assigned_formula or (r.role in SOURCE_ROLES and r.ion_formula):
-                registry = registries.get(f.batch_peak_id)
-                if registry is None:
-                    registry = list(rows_by_id[f.batch_peak_id].candidates or [])
-                    registries[f.batch_peak_id] = registry
-                candidate = candidate_index(
-                    registry,
-                    r.assigned_formula,
-                    r.ion_formula,
-                    r.ionization_mechanism_id,
-                    source=getattr(r, "source", None),
-                    listing=reference_listing(provenance.get("reference_identities")),
-                    target_compound_id=getattr(r, "target_compound_id", None) or None,
+                if f.batch_peak_id not in registries:
+                    registries[f.batch_peak_id] = list(
+                        rows_by_id[f.batch_peak_id].candidates or []
+                    )
+                candidate, target_compound_id = _member_candidate(
+                    registries[f.batch_peak_id], r, provenance
                 )
             session.add(
                 BatchPeakOccurrence(
@@ -528,6 +544,7 @@ async def fold_sample_into_batch_peaks(
                     tier=tier_code(r.tier),
                     fit_score=r.fit_score,
                     candidate=candidate,
+                    target_compound_id=target_compound_id,
                     role=role_code(r.role),
                     owner_batch_peak_id=(
                         anchor_of_assignment.get(r.owner_peak_assignment_id)

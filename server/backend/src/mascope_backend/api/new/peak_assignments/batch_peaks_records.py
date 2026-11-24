@@ -11,6 +11,7 @@ another sample. See ``docs/dev/peak_assignment_batch_primary.md`` (sections 6 an
 from __future__ import annotations
 
 from collections import defaultdict
+from typing import Any, Optional
 
 from sqlalchemy import String, any_, bindparam, func, select, text
 from sqlalchemy.dialects.postgresql import ARRAY
@@ -276,31 +277,87 @@ async def _with_member_levels(session, data: list[dict]) -> list[dict]:
     return data
 
 
-async def _with_consensus_targets(session, data: list[dict], rows) -> list[dict]:
+async def _with_consensus_targets(
+    session, data: list[dict], rows, *, snapshot: bool = False
+) -> list[dict]:
     """Put the target compound each anchor's consensus names on its listing.
 
-    The registry entry the consensus names records the target compound a
-    member brought it from (:func:`~mascope_backend.api.new.peak_assignments.
+    The consensus names a compound where its members reading the consensus
+    formula agree on one (:func:`~mascope_backend.api.new.peak_assignments.
     listing.consensus_target_id`); what that compound declares is read now,
-    as the sample ledger reads it.
+    as the sample ledger reads it. A live anchor's members are read in one
+    grouped statement over the served anchors, whatever their number
+    (:func:`_member_targets`); a snapshot's ride in its member arrays, and one
+    taken before the members kept their targets answers off its registry.
 
     :param session: An open async session.
     :param data: The served records, one per row, modified in place.
     :param rows: The live anchors or the snapshot rows they were built from.
+    :param snapshot: Whether ``rows`` are a run's snapshot rows.
     :return: ``data``.
     """
+    if snapshot:
+        members_of = {row.batch_peak_id: _snapshot_member_targets(row) for row in rows}
+    else:
+        members_of = await _member_targets(session, [row.batch_peak_id for row in rows])
     target_of = {
         row.batch_peak_id: consensus_target_id(
             row.candidates,
             row.consensus_formula,
-            row.consensus_ion_formula,
-            row.ionization_mechanism_id,
+            members_of.get(row.batch_peak_id, ()),
         )
         for row in rows
     }
     return await with_target_listings(
         session, data, lambda record: target_of.get(record["batch_peak_id"])
     )
+
+
+async def _member_targets(
+    session, batch_peak_ids: list[str]
+) -> dict[str, list[tuple[int, Optional[str]]]]:
+    """Each anchor's distinct (registry index, own target) pairs among its
+    assigned members: one grouped read, the ids as one array parameter, so a
+    ledger of any size stays one statement, planned for that array (as
+    :func:`_with_member_levels` reads)."""
+    found: dict[str, list[tuple[int, Optional[str]]]] = defaultdict(list)
+    if not batch_peak_ids:
+        return found
+    query = (
+        select(
+            BatchPeakOccurrence.batch_peak_id,
+            BatchPeakOccurrence.candidate,
+            BatchPeakOccurrence.target_compound_id,
+        )
+        .where(
+            BatchPeakOccurrence.batch_peak_id
+            == any_(bindparam("anchors", batch_peak_ids, type_=ARRAY(String))),
+            BatchPeakOccurrence.candidate.is_not(None),
+        )
+        .group_by(
+            BatchPeakOccurrence.batch_peak_id,
+            BatchPeakOccurrence.candidate,
+            BatchPeakOccurrence.target_compound_id,
+        )
+    )
+    await session.execute(text("SET LOCAL plan_cache_mode = force_custom_plan"))
+    rows = (await session.execute(query)).all()
+    await session.execute(text("SET LOCAL plan_cache_mode = DEFAULT"))
+    for batch_peak_id, candidate, target_compound_id in rows:
+        found[batch_peak_id].append((candidate, target_compound_id))
+    return found
+
+
+def _snapshot_member_targets(row) -> list[tuple[Any, Optional[str]]]:
+    """A snapshot row's (registry index, own target) per member; every target
+    None in a snapshot taken before the members kept one."""
+    arrays = row.members if isinstance(row.members, dict) else {}
+    candidates = arrays.get("candidates") or []
+    targets = arrays.get("target_compound_ids") or []
+    return [
+        (candidate, targets[i] if i < len(targets) else None)
+        for i, candidate in enumerate(candidates)
+    ]
 
 
 @api_controller()
@@ -368,7 +425,7 @@ async def get_batch_peak_series(
                             "peak_series": series,
                         }
                     )
-                await _with_consensus_targets(session, data, rows)
+                await _with_consensus_targets(session, data, rows, snapshot=True)
                 return {
                     "status": "success",
                     "message": (
@@ -494,7 +551,7 @@ async def get_batch_peak_ledger(
                 tier_disagrees=tier_disagrees,
             )
             data = [snapshot_anchor_meta(row, sample_batch_id) for row in rows]
-            await _with_consensus_targets(session, data, rows)
+            await _with_consensus_targets(session, data, rows, snapshot=True)
             # The groups span the whole snapshot, whatever the rows' filters.
             filtered = bool(tier or engine_tier or tier_disagrees is not None) or (
                 bool(min_n_present) and min_n_present > 1

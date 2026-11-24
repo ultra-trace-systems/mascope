@@ -100,6 +100,7 @@ def _member(**overrides):
         tier=3,  # assigned
         fit_score=0.91,
         candidate=0,
+        target_compound_id=None,
         role=1,  # M0
         owner_batch_peak_id=None,
         p_correct=0.9,
@@ -347,3 +348,18 @@ def test_the_target_shown_is_the_registry_entrys_and_never_the_rows_own():
     assert member_target_id(_member(), _anchor()) is None
     assert member_target_id(_member(candidate=None), anchor) is None
     assert member_row(_member(candidate=0), anchor)["target_compound_id"] is None
+
+
+def test_the_target_shown_is_the_members_own_over_its_entrys():
+    """MAS-992: two members matched two isomers through one ion and share the
+    entry, which keeps the first compound. Each shows its own; one that names
+    none (folded before members kept one, or rewritten by a stage) shows the
+    entry's. The row's own ``target_compound_id`` stays None either way."""
+    anchor = _anchor()
+    anchor.candidates = [{**_REGISTRY[0], "target_compound_id": "tc-glucose"}]
+    fructose = _member(candidate=0, target_compound_id="tc-fructose")
+    assert member_target_id(fructose, anchor) == "tc-fructose"
+    assert member_target_id(_member(candidate=0), anchor) == "tc-glucose"
+    # A member of an entry with no target still shows its own.
+    assert member_target_id(fructose, _anchor()) == "tc-fructose"
+    assert member_row(fructose, anchor)["target_compound_id"] is None

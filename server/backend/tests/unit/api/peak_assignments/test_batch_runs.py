@@ -31,6 +31,7 @@ def _member(sample, peak, **over):
         mz_delta_ppm=0.5,
         intensity=1000.0,
         candidate=0,
+        target_compound_id=None,
         tier=3,
         role=1,
         fit_score=0.9,
@@ -75,12 +76,17 @@ def _anchor(**over):
 
 def test_member_arrays_are_parallel_and_in_sample_order():
     arrays = member_arrays(
-        [_member("s2", "p9", intensity=20.0), _member("s1", "p1", intensity=10.0)]
+        [
+            _member("s2", "p9", intensity=20.0, target_compound_id="tc-2"),
+            _member("s1", "p1", intensity=10.0),
+        ]
     )
     assert tuple(arrays) == MEMBER_FIELDS
     assert arrays["sample_item_ids"] == ["s1", "s2"]
     assert arrays["sample_peak_ids"] == ["p1", "p9"]
     assert arrays["intensities"] == [10.0, 20.0]
+    # Each member's own target compound, as the batch ledger names one off it.
+    assert arrays["target_compound_ids"] == [None, "tc-2"]
     assert {len(v) for v in arrays.values()} == {2}
 
 

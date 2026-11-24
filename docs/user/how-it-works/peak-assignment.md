@@ -1925,10 +1925,14 @@ runs were deleted or pruned, or it was folded into the batch without one &mdash;
 from the batch ledger instead. The run selector lists it as **Batch ledger**; the
 ledger carries what the batch knows about each peak (formula, adduct, tier, fit and
 isotopologue family), and the inspector's close alternatives are what
-the rest of the batch saw at that m/z. Where a member of the batch was matched to a
-target compound with the peak's identity, **listed as** and the inspector show
-*target* and that compound's name, as the batch ledger does. The target is the
-identity's, not this sample's: this peak itself may not have been matched to it. It
+the rest of the batch saw at that m/z. Where this sample's peak was matched to a
+target compound, **listed as** and the inspector show *target* and that compound's
+name, as the batch ledger does. Two samples whose peaks were matched to two isomers
+through the same ion, glucose in one and fructose in the other, each show their own.
+A peak folded into the batch before the batch kept each sample's target, or one a
+batch step such as *Search untargeted* has re-read since, shows the target another
+member of the batch matched the same identity to, which this peak itself may not have
+been matched to; folding the sample again (*Re-assign from scratch*) shows its own. It
 carries no mass error or isotope label, and
 it cannot be edited by hand &mdash; assign the sample for a ledger of its own. Verdicts
 can still be recorded against it.
@@ -3269,9 +3273,14 @@ consensus formula's. It is folded to the name cut short and the list's tags, the
 name and its list on hover,
 as in a sample's ledger, and **Write listed names in full** in the **...** menu writes it out. A batch ledger folded before this column existed shows it once its
 samples are folded again (*Re-assign from scratch*). The column also names the target
-compound a member was matched to, off the consensus as a sample's ledger does: *target*
-and its name, shown once with the list's where both name the same structure. A batch
-ledger folded before the target was recorded shows it once its samples are folded again. The column a ledger is sorted by is kept per ledger - it
+compound the members were matched to, off the consensus as a sample's ledger does:
+*target* and its name, shown once with the list's where both name the same structure.
+It names one only where every member reading the consensus formula that was matched to
+a target was matched to the same one. Where members were matched to two isomers of the
+formula, glucose and fructose read through the same ion, it names none: a target is
+shown beside the formula, never part of the reading, and each sample's ledger still
+shows its own. A batch ledger folded before the target was recorded shows it once its
+samples are folded again. The column a ledger is sorted by is kept per ledger - it
 survives the switch between the *Batch peaks* ledger and a sample's ledger, and a reload.
 
 Because a batch peak is one identity for a species across the batch, the focused peak

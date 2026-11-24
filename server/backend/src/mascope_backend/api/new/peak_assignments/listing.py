@@ -19,7 +19,7 @@ A row the run matched to a target compound adds what the target declares
 beside it (:func:`target_candidate`, :func:`with_target`): the compound's name
 and InChIKey, and whether a list carries that key. It is what the target stands
 for, a candidate as a list's name is, not what the peak is. The batch ledger
-finds it off the registry entry its consensus names
+names one where the members reading its consensus formula agree on it
 (:func:`consensus_target_id`).
 
 Pure: no database, no I/O.
@@ -27,7 +27,7 @@ Pure: no database, no I/O.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 
 def reference_listing(identities: Any) -> Optional[dict]:
@@ -98,31 +98,41 @@ def consensus_listing(
 def consensus_target_id(
     candidates: Any,
     formula: Optional[str],
-    ion_formula: Optional[str] = None,
-    ionization_mechanism_id: Optional[str] = None,
+    members: Iterable[tuple[Any, Any]],
 ) -> Optional[str]:
-    """The target compound a batch peak's consensus was matched to, off its registry.
+    """The target compound a batch peak's consensus names, off its members.
 
-    Chosen as :func:`consensus_listing` chooses: the entry naming the consensus
-    identity exactly, else another entry of the same formula that a member
-    brought from the target library. A target compound is a neutral, so a
-    member that matched it through one channel names the compound the
-    consensus names through another.
+    A member names the compound its own sample matched (its
+    ``target_compound_id``), else, folded before it kept one or rewritten by a
+    batch stage, the one its registry entry recorded: what the member's row
+    shows (``fold_view.member_target_id``). The members that count are the
+    ones whose entry reads the consensus formula, through any channel: a
+    target compound is a neutral. The consensus names a compound only where
+    every such member that names one names the same: two members that
+    matched two isomers of the formula leave it naming none, as a target is
+    shown and never made part of the reading.
 
     :param candidates: The anchor's registry (``BatchPeak.candidates``).
     :param formula: The consensus formula; None names no target.
-    :param ion_formula: The consensus ion formula.
-    :param ionization_mechanism_id: The consensus mechanism.
-    :return: The ``target_compound_id``, or None where no member brought one.
+    :param members: ``(candidate, target_compound_id)`` per member, or per
+        distinct pair: the registry index the member names and its own target,
+        either None.
+    :return: The ``target_compound_id``, or None where no member names one or
+        the members disagree.
     """
-    entry = _consensus_entry(
-        candidates,
-        formula,
-        ion_formula,
-        ionization_mechanism_id,
-        lambda entry: bool(_text(entry.get("target_compound_id"))),
-    )
-    return entry["target_compound_id"] if entry else None
+    if not formula or not isinstance(candidates, list):
+        return None
+    named: set[str] = set()
+    for index, own in members:
+        if not isinstance(index, int) or not 0 <= index < len(candidates):
+            continue
+        entry = candidates[index]
+        if not isinstance(entry, dict) or entry.get("formula") != formula:
+            continue
+        target = _text(own) or _text(entry.get("target_compound_id"))
+        if target is not None:
+            named.add(target)
+    return next(iter(named)) if len(named) == 1 else None
 
 
 def _consensus_entry(candidates, formula, ion_formula, mechanism, carries):

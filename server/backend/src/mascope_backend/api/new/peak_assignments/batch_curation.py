@@ -279,6 +279,7 @@ def manual_pin(
 def restore_member(member: Any, state: dict) -> None:
     """Put an archived state back on a member."""
     member.candidate = state.get("candidate")
+    member.target_compound_id = state.get("target_compound_id")
     member.tier = state.get("tier")
     member.fit_score = state.get("fit_score")
     member.role = state.get("role")
