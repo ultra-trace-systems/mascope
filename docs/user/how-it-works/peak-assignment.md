@@ -1632,7 +1632,8 @@ or the **×N** pill in the **Ion** column, narrows the ledger to the group's row
   formula it would have and *no batch peak*. A gap is counted apart from the batch peaks.
 - The lens lists every member whatever the tier chips, the search or **Show** hide, and
   gives the filters back when it closes. A sort picked while it is open orders the members
-  by that column, the greyed lines after them.
+  by that column, the greyed lines after them, and lasts only as long as the lens: closing
+  it gives back the sort the ledger had before.
 - In the batch's ledger, **Plot the group** draws the group's batch peaks in the batch
   chart, in place of what it drew.
 - In a sample's ledger, the pill reads the row's detail for the batch's groups, so the

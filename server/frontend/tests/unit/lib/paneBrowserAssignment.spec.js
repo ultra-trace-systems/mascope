@@ -1586,6 +1586,15 @@ describe('PaneBrowserAssignment Group by compound', () => {
     expect(lines(wrapper)).toEqual(['C10H16O | 3 rows | assigned', 'nh4', 'na'])
   })
 
+  it('lists the rows the search keeps, though no group holds one of them', async () => {
+    const lone = reading('lone', 'm-h', { mz: 123.117, formula: 'C9H14' })
+    const wrapper = await grouped(protonated(), ammoniated(), lone)
+    // C9H14 is read through one channel: it is in no group.
+    wrapper.vm.searchQuery = 'C9H14'
+    await wrapper.vm.$nextTick()
+    expect(lines(wrapper)).toEqual(['Ungrouped | 1 row | null', 'lone'])
+  })
+
   it('never groups a row that names no neutral of the sample', async () => {
     const reagent = family({ id: 'br', mz: 78.918, intensity: 9, formula: null, role: 'reagent' })
     reagent.parent.ion_formula = 'Br-'
@@ -1863,6 +1872,96 @@ describe('PaneBrowserAssignment the lens', () => {
     await opening
     const { useLedgerLensStore } = await import('@/lib/ledger/useLedgerLens.js')
     expect(useLedgerLensStore().lenses.sample).toBeNull()
+  })
+
+  // A slow detail read behind one pill, and a later click or close: the
+  // reader's last act is what the ledger shows.
+  const STALE = { ...SERVED, group_id: 'channels:stale', formula: 'C10H16O (stale)' }
+  const slowRead = () => {
+    let answer
+    detailRecord = new Promise((resolve) => (answer = resolve))
+    return (detail) => answer(detail)
+  }
+
+  it('opens no lens from a read a newer click overtook', async () => {
+    const { useLedgerLensStore } = await import('@/lib/ledger/useLedgerLens.js')
+    seed(...PEAKS())
+    const wrapper = await mountPane()
+    const answer = slowRead()
+    const first = wrapper.vm.openChannelLens(
+      wrapper.vm.rows.find((row) => row.peak_assignment_id === 'nh4')
+    )
+    // The second row's detail is at hand: its lens opens at once.
+    detailRecord = { batch_groups: [SERVED] }
+    await wrapper.vm.openChannelLens(wrapper.vm.rows.find((row) => row.peak_assignment_id === 'h'))
+    expect(useLedgerLensStore().lenses.sample.group.group_id).toBe(SERVED.group_id)
+    answer({ batch_groups: [STALE] })
+    await first
+    expect(useLedgerLensStore().lenses.sample.group.group_id).toBe(SERVED.group_id)
+  })
+
+  it("opens the last click's lens when two slow reads land out of order", async () => {
+    const { useLedgerLensStore } = await import('@/lib/ledger/useLedgerLens.js')
+    seed(...PEAKS())
+    const wrapper = await mountPane()
+    const answerFirst = slowRead()
+    const first = wrapper.vm.openChannelLens(
+      wrapper.vm.rows.find((row) => row.peak_assignment_id === 'nh4')
+    )
+    const answerLast = slowRead()
+    const last = wrapper.vm.openChannelLens(
+      wrapper.vm.rows.find((row) => row.peak_assignment_id === 'h')
+    )
+    answerFirst({ batch_groups: [STALE] })
+    await first
+    expect(useLedgerLensStore().lenses.sample).toBeNull()
+    answerLast({ batch_groups: [SERVED] })
+    await last
+    expect(useLedgerLensStore().lenses.sample.group.group_id).toBe(SERVED.group_id)
+  })
+
+  it('opens no lens from a read that lands after the reader closed the lens', async () => {
+    const { useLedgerLensStore } = await import('@/lib/ledger/useLedgerLens.js')
+    const wrapper = await opened({ batch_groups: [SERVED] })
+    const answer = slowRead()
+    const opening = wrapper.vm.openChannelLens(
+      wrapper.vm.rows.find((row) => row.peak_assignment_id === 'h')
+    )
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await wrapper.vm.$nextTick()
+    expect(useLedgerLensStore().lenses.sample).toBeNull()
+    answer({ batch_groups: [STALE] })
+    await opening
+    expect(useLedgerLensStore().lenses.sample).toBeNull()
+  })
+
+  it('opens the lens a slow read was for, when nothing came after the click', async () => {
+    const { useLedgerLensStore } = await import('@/lib/ledger/useLedgerLens.js')
+    seed(...PEAKS())
+    const wrapper = await mountPane()
+    const answer = slowRead()
+    const opening = wrapper.vm.openChannelLens(
+      wrapper.vm.rows.find((row) => row.peak_assignment_id === 'nh4')
+    )
+    answer({ batch_groups: [SERVED] })
+    await opening
+    expect(useLedgerLensStore().lenses.sample.group.group_id).toBe(SERVED.group_id)
+  })
+
+  it('gives back the sort it had before, after a sort picked under it', async () => {
+    seed(...PEAKS())
+    detailRecord = { batch_groups: [SERVED] }
+    const wrapper = await mountPane()
+    const before = [wrapper.vm.sortField, wrapper.vm.sortOrder]
+    const rowsBefore = wrapper.vm.rows.map((row) => row.peak_assignment_id)
+    await wrapper.vm.openChannelLens(wrapper.vm.rows.find((row) => row.peak_assignment_id === 'h'))
+    wrapper.vm.sortField = 'sample_peak_mz'
+    wrapper.vm.sortOrder = -1
+    await wrapper.vm.$nextTick()
+    ledgerOf(wrapper).vm.$emit('close-lens')
+    await wrapper.vm.$nextTick()
+    expect([wrapper.vm.sortField, wrapper.vm.sortOrder]).toEqual(before)
+    expect(wrapper.vm.rows.map((row) => row.peak_assignment_id)).toEqual(rowsBefore)
   })
 
   it('marks no greyed line stale', async () => {

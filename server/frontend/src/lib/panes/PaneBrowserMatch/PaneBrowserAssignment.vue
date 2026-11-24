@@ -530,12 +530,21 @@ const lensState = computed(() => {
 const lensGroup = computed(() => lensState.value?.group ?? null)
 const closeLens = () => lenses.close('sample')
 
+// Each click on a pill counts, so a read that lands after a newer click opens
+// nothing: the reader's last click wins, however slow the read behind an
+// earlier one.
+let lensClicks = 0
 async function openChannelLens(row) {
   const sampleId = app.data.sample.focusedId
+  const click = ++lensClicks
+  const lensBefore = lenses.lenses.sample
   // A failed read has been reported by the http layer; the lens then stands
   // on the sample's own rows.
   const detail = await assignments.value.loadDetail(row).catch(() => null)
   if (app.data.sample.focusedId !== sampleId) return
+  // A newer click, or a lens opened or closed since - Escape, ×, the card's
+  // Show in the ledger - is what the reader asked for last.
+  if (click !== lensClicks || lenses.lenses.sample !== lensBefore) return
   // The detail serves the groups the row's batch peak is in, and a batch peak
   // is in one channel group at most: its neutral's.
   const served = (detail?.batch_groups ?? []).find((group) => group?.kind === GROUP_CHANNELS)
