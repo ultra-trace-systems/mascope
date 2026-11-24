@@ -1,6 +1,6 @@
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from mascope_backend.api.models.base_pydantic_model import QueryParamsModel
 
@@ -21,7 +21,19 @@ class AttributeTemplateBase(BaseModel):
         ..., description="Type of the attribute template, e.g., 'sample_item'"
     )
     template: List[TemplateField] = Field(
-        ..., description="List of template fields for the attribute template"
+        default_factory=list,
+        description=(
+            "The free-form labels the template shows: batch annotations, "
+            "stored as text on each sample of a batch."
+        ),
+    )
+    fields: List[str] | None = Field(
+        None,
+        description=(
+            "The keys of the metadata registry fields the template shows, in "
+            "order (`/api/metadata/fields`). A retired field stays where a "
+            "template already selects it, but is not newly added."
+        ),
     )
 
     @field_validator("type")
@@ -37,8 +49,6 @@ class AttributeTemplateBase(BaseModel):
     @field_validator("template")
     @classmethod
     def validate_unique_labels(cls, template_fields):
-        if not template_fields:
-            raise ValueError("Template is empty.")
         labels = [field.label for field in template_fields]
         if len(labels) != len(set(labels)):
             raise ValueError(
@@ -48,7 +58,11 @@ class AttributeTemplateBase(BaseModel):
 
 
 class AttributeTemplateCreateBody(AttributeTemplateBase):
-    pass
+    @model_validator(mode="after")
+    def validate_not_empty(self):
+        if not self.template and not self.fields:
+            raise ValueError("Template is empty: it needs a label or a metadata field.")
+        return self
 
 
 class AttributeTemplateUpdateBody(AttributeTemplateBase):
