@@ -274,7 +274,7 @@ def _build_reference_isotopes_df(
 
 
 # The expanded reference frame, its ions' fine lines, is identical for every
-# run over the same (reference state, licence gate, mechanism set), so a
+# run over the same (reference state, licence gate, mechanism list), so a
 # Stage-A batch of N samples should pay the IsoSpec expansion once, not N
 # times; each run then resolves it at its own file's R(m/z) and floor. The key's reference part comes from known_state_fingerprint, so a
 # re-synced or (de)activated source invalidates naturally; the licence gate is
@@ -333,7 +333,11 @@ async def _fetch_reference_known_isotopes(
     cache_key = (
         fingerprint,
         None if licenses is None else tuple(licenses),
-        tuple(sorted(m.ionization_mechanism_id for m in mechanisms)),
+        # The list's own order, not a sorted one: the frame lists each
+        # formula's ions in the order of the list it was built from, and the
+        # lists differ in order (secondary channels appended, a decoy's swap),
+        # so a frame serves only a list in that order (MAS-1164).
+        tuple(m.ionization_mechanism_id for m in mechanisms),
         known_window,
         polarity,
         # The lines of a labelled ion are built at the purity in effect, the
