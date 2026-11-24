@@ -296,7 +296,7 @@ def _fixed_mechanism_id(parts: "MechanismParts") -> str:
       ``sysAdd2HPos2``.
 
     A group's multiplier is kept apart from the formula it multiplies, so
-    that two waters never read as hydrogen peroxide (:func:`_id_term`):
+    that two waters never read as hydrogen peroxide (:func:`_id_terms`):
     ``[M+H-(H2O)2]+`` is ``sysAddHLs2H2OPos`` and ``[M+H-H2O2]+``
     ``sysAddHLsH2O2Pos``.
 
@@ -307,10 +307,10 @@ def _fixed_mechanism_id(parts: "MechanismParts") -> str:
     moiety = (
         "E"
         if parts.electron_transfer
-        else "".join(_id_term(term) for term in parts.removed_terms or parts.terms)
+        else _id_terms(parts.removed_terms or parts.terms)
     )
     if parts.addition and parts.neutral_loss:
-        moiety += "Ls" + "".join(_id_term(term) for term in parts.loss_terms)
+        moiety += "Ls" + _id_terms(parts.loss_terms)
     moiety = re.sub(r"[^A-Za-z0-9]", "", moiety.replace("^", "Lab"))
     count = f"{parts.multimer}M" if parts.multimer > 1 else ""
     operation = "Add" if parts.addition else "Loss"
@@ -319,24 +319,51 @@ def _fixed_mechanism_id(parts: "MechanismParts") -> str:
     return f"sys{count}{operation}{moiety}{polarity}{size}"
 
 
-def _id_term(term: str) -> str:
-    """A term as an id spells it: each group's multiplier apart from its
-    formula, which the id's letters and digits would otherwise run together.
+def _id_terms(terms: tuple[str, ...]) -> str:
+    """The terms of one join, as an id spells them: each group's multiplier
+    apart from its formula, which the id's letters and digits would
+    otherwise run together into another formula.
 
-    A term that is one group alone takes its count in front, as a chemist
-    writes it and as ``[M+2H]2+``'s ``2H`` reads already: ``(H2O)2`` is
-    ``2H2O``. That is as short as the group's formula and count can be, so
-    ``[M+H-(H2O)2]+`` fits the column. A group inside a term takes an ``x``
-    before its count, a letter no element symbol holds: ``(H2O)2H`` is
-    ``H2Ox2H``, apart from both ``H2O2H`` and ``(H2OH)2``'s ``2H2OH``. A
-    group without a count, and a term without a group, read as before.
+    - A join that is one group alone takes its count in front, as a chemist
+      writes it and as ``[M+2H]2+``'s ``2H`` reads already: ``(H2O)2`` is
+      ``2H2O``. A join can start with a digit only so, since the parser
+      refuses a count on a term, and the count is as short as a group's
+      spelling can be, so ``[M+H-(H2O)2]+`` fits the column.
+    - Any other group with a count closes with ``x`` and the count, and opens
+      with ``q`` unless it opens the join: ``(H2O)2H`` is ``H2Ox2H``,
+      ``C(CH3)4H`` is ``CqCH3x4H``. Both ends are marked because either one
+      alone lets a formula run into the group: with ``x`` only,
+      ``[M+H+(CCH3)4]+`` would read as ``[M+C(CH3)4H]+``, and with the count
+      in front, ``[M-H-(H2O)2]-`` as ``[M-(H2OH)2]-``. No element symbol
+      holds a ``q`` or an ``x`` after its capital, so neither reads as part
+      of one.
+    - A group without a count, and a term without a group, read as before,
+      which keeps every id the catalogue seeds.
 
-    :param term: One of the mechanism's terms, as written.
-    :return: The term with its groups spelled, the brackets still in.
+    What the terms do not say is where one ends and the next begins, as
+    before: ``[M+C+H2O]+`` and ``[M+CH2O]+`` add the same atoms and share an
+    id, and so do ``[M+(H2O)2+H]+`` and ``[M+(H2O)2H]+``.
+
+    :param terms: One join of the mechanism's terms, as written.
+    :return: The terms spelled, the brackets still in.
     """
-    whole = _GROUP.fullmatch(term)
-    if whole is not None and _closing(term, 0) == whole.end(1):
-        return whole.group(2) + _id_term(whole.group(1))
+    whole = _GROUP.fullmatch(terms[0]) if len(terms) == 1 else None
+    if whole is not None and _closing(terms[0], 0) == whole.end(1):
+        return whole.group(2) + _id_term(whole.group(1), opens_join=True)
+    return "".join(
+        _id_term(term, opens_join=index == 0) for index, term in enumerate(terms)
+    )
+
+
+def _id_term(term: str, *, opens_join: bool) -> str:
+    """A term spelled as :func:`_id_terms` says: each counted group as
+    ``q``, its formula, ``x`` and its count, without the ``q`` when the
+    group opens the join.
+
+    :param term: The term, or a group's formula inside it.
+    :param opens_join: Whether ``term`` starts where its join does.
+    :return: The term spelled, the brackets still in.
+    """
     spelled = []
     position = 0
     while position < len(term):
@@ -346,8 +373,12 @@ def _id_term(term: str) -> str:
             continue
         close = _closing(term, position)
         count = re.match(r"[0-9]*", term[close + 1 :]).group()
-        spelled.append(_id_term(term[position + 1 : close]))
-        spelled.append(f"x{count}" if count else "")
+        at_start = opens_join and position == 0
+        inner = _id_term(term[position + 1 : close], opens_join=at_start)
+        if count:
+            spelled.append(("" if at_start else "q") + inner + "x" + count)
+        else:
+            spelled.append(inner)
         position = close + 1 + len(count)
     return "".join(spelled)
 
