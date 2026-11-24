@@ -101,7 +101,7 @@ not read, and the rest of the set still is.
 
 | file | content |
 |---|---|
-| `decoy.json` | per arm, pooled over the set and per sample: the control's and the arm's assigned rows and intensity below and above m/z 350 and per 50-Da bin, the share the arm holds, and on the adduct arm the rows that are new ions against those that read an ion the control reads as another neutral; the arms that were refused, are still running or lost their control, and why |
+| `decoy.json` | per arm, pooled over the set and per sample: the control's and the arm's assigned rows and intensity below and above m/z 350 and per 50-Da bin, the share the arm holds, and on the adduct arm the rows that are new ions against those that read an ion the control reads as another neutral; per sample the measurement model version of the control and of the decoy, and per arm the same counts split by the control's version (`by_model`) and the decoys at another version than their control (`model_differs`); the arms that were refused, are still running or lost their control, and why |
 | `decoy.md` | the pooled table, one row per arm, ready to paste |
 
 A row counts where it is a monoisotopic row at the `assigned` tier. The m/z
@@ -158,7 +158,14 @@ the reference's run is joined to it, and one that does not is read by the
 intrinsic metrics alone (G3, G7 to G14, the mass error, the reasons), its
 reference metrics left out. A set with no reference run at all reads `-` on
 every reference metric. A sample with no completed run of the first engine, or
-an empty ledger, is skipped and counted on the card's `samples_skipped` row. A
+an empty ledger, is skipped and counted on the card's `samples_skipped` row.
+The `model_v1`, `model_v2` and `model_before` rows count the samples read by
+the measurement model their run of the first engine recorded
+(`config.measurement_model.version`): 1, the model fitted after Stage A's
+match, or 2, the refit on the corroborated commits the run adopted. A run
+from before that record kept only its `pattern_scoring` snapshot and counts
+as `model_before`, not as v1. They are readings, gated by no target; a
+baseline made before them reads them as moved from `-`, which fails nothing. A
 set on which no sample is read keeps its column, every reading `-`, and fails
 the gate (`no sample read on D`): the bench could not read it, which is not a
 pass. `truth` is the set's authors' list (below): the neutral formulas
@@ -250,6 +257,13 @@ whose misses are its own.
 `decoy <arm> held`, `held_lt_350`, `held_ge_350`, `held_intensity`,
 `new_ion` and `on_control_reagent`, per set and pooled. They have no target
 yet (decision 31).
+A decoy reads its control's measurement model unchanged, so each arm's held
+share is also read per model version of the controls:
+`decoy <arm> held_model_v1`, `held_model_v2` and `held_model_before`, each
+the share of the rows of the controls at that version the arm still holds,
+with those rows as its count. An arm's move can so be read against the
+controls that moved to the refit. `decoy <arm> model_differs` counts the arms
+whose decoy states another version than its control, which should be none.
 A card reads a sample's arm only where its control is the run the card
 reads of that sample. An arm refused before it ran makes no run, so the
 newest arm the store keeps can be one an earlier build made against its own

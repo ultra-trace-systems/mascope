@@ -2638,3 +2638,184 @@ def test_a_set_s_runs_and_arm_of_another_shape_are_refused(tmp_path, spec, why):
     )
     with pytest.raises(SystemExit, match=why):
         compare_runs.load_sets(manifest)
+
+
+# --- The measurement model each control scored at -----------------------------------
+
+
+def test_a_column_counts_its_samples_by_the_model_version_they_were_read_at():
+    readings = metrics.card_readings(
+        _frame([_row("p1")]), model_versions={"v2": 3, "before": 1}
+    )
+    assert readings["model_v1"] == {"value": 0, "n": None}
+    assert readings["model_v2"] == {"value": 3, "n": None}
+    assert readings["model_before"] == {"value": 1, "n": None}
+    # Without the counts the rows are there, and read nothing.
+    plain = metrics.card_readings(_frame([_row("p1")]))
+    assert {plain[f"model_{v}"]["value"] for v in ("v1", "v2", "before")} == {None}
+    # A version beyond the known ones adds a row of its own.
+    later = metrics.card_readings(_frame([_row("p1")]), model_versions={"v3": 2})
+    assert later["model_v3"] == {"value": 2, "n": None}
+    assert compare_runs.unit_of("model_v1") == "count"
+    assert compare_runs.label_of("model_before") == (
+        "of them read off a run from before the model record"
+    )
+
+
+def _arm_part(control_rows, decoy_rows):
+    control = {"rows": control_rows, "rows_lt_350": control_rows, "rows_ge_350": 0}
+    control.update(intensity=1.0, intensity_lt_350=1.0, intensity_ge_350=0.0)
+    decoy = {"rows": decoy_rows, "rows_lt_350": decoy_rows, "rows_ge_350": 0}
+    decoy.update(intensity=0.5, intensity_lt_350=0.5, intensity_ge_350=0.0)
+    return {
+        "samples": 1,
+        "control": control,
+        "decoy": decoy,
+        **compare_runs.decoy_rates(control, decoy),
+    }
+
+
+def test_an_arm_s_held_share_is_split_by_its_controls_model_version():
+    v1, v2 = _arm_part(40, 2), _arm_part(10, 3)
+    total = {
+        **_arm_part(50, 5),
+        "samples": 2,
+        "by_model": {"v1": v1, "v2": v2},
+        "model_differs": 1,
+    }
+    readings = metrics.card_readings(_frame([_row("p1")]), decoy_arms={"x9": total})
+    assert _value(readings["decoy x9 held"]) == (10.0, 50)
+    assert _value(readings["decoy x9 held_model_v1"]) == (5.0, 40)
+    assert _value(readings["decoy x9 held_model_v2"]) == (30.0, 10)
+    # No control from before the record: the row is there, over no rows.
+    assert _value(readings["decoy x9 held_model_before"]) == (None, 0)
+    assert _value(readings["decoy x9 model_differs"]) == (1, 2)
+    assert compare_runs.unit_of("decoy x9 model_differs") == "count"
+    assert compare_runs.unit_of("decoy x9 held_model_v2") == "%"
+    assert compare_runs.label_of("decoy x9 held_model_v2") == (
+        "decoy x9: held at assigned, controls at model v2"
+    )
+    assert compare_runs.label_of("decoy x9 held_model_before") == (
+        "decoy x9: held at assigned, controls from before the model record"
+    )
+    # A total from before the split reads no split.
+    old = {k: v for k, v in total.items() if k not in ("by_model", "model_differs")}
+    plain = metrics.card_readings(_frame([_row("p1")]), decoy_arms={"x9": old})
+    assert not any("model" in key for key in plain if key.startswith("decoy "))
+
+
+def test_the_pooled_arms_add_each_set_s_parts_by_model_version():
+    a = {
+        **_arm_part(50, 5),
+        "by_model": {"v1": _arm_part(40, 2), "v2": _arm_part(10, 3)},
+        "model_differs": 0,
+    }
+    b = {**_arm_part(20, 4), "by_model": {"v2": _arm_part(20, 4)}, "model_differs": 1}
+    pooled = compare_runs.pooled_arms([{"pooled": {"x9": a}}, {"pooled": {"x9": b}}])
+    arm = pooled["x9"]
+    assert arm["samples"] == 2 and arm["model_differs"] == 1
+    assert arm["by_model"]["v1"]["held_pct"] == 5.0
+    # 3 + 4 of 10 + 20 rows at v2.
+    assert arm["by_model"]["v2"]["samples"] == 2
+    assert arm["by_model"]["v2"]["held_pct"] == pytest.approx(23.3)
+    assert arm["held_pct"] == pytest.approx(12.9)
+
+
+def _at_model(version):
+    if version is None:
+        return {"pattern_scoring": {"mz_tolerance_ppm": 3.0}}
+    return {"measurement_model": {"version": version, "width_ppm": 1.2}}
+
+
+@pytest.mark.parametrize(
+    "versions, expected",
+    [
+        # s1's control took the refit; s2's predates the model record.
+        ((2, None), {"A": [0, 1, 0], "G": [0, 0, 1], "pooled": [0, 1, 1]}),
+        # Both kept v1: the pooled column adds the two sets' counts.
+        ((1, 1), {"A": [1, 0, 0], "G": [1, 0, 0], "pooled": [2, 0, 0]}),
+    ],
+)
+def test_the_card_counts_each_set_s_controls_by_model_version(
+    served, tmp_path, versions, expected
+):
+    for sample, version in zip(("s1", "s2"), versions):
+        run = _Client.runs[sample][0]
+        run["config"] = {**run["config"], **_at_model(version)}
+    out = tmp_path / "card"
+    compare_runs.main(["--sets", str(served), "--card", str(out)])
+    card = json.loads((out / "card.json").read_text())
+    values = {
+        name: [
+            column["readings"][f"model_{v}"]["value"] for v in ("v1", "v2", "before")
+        ]
+        for name, column in card["columns"].items()
+    }
+    assert values == expected
+    v2 = " | ".join(str(values[name][1]) for name in ("A", "G", "pooled"))
+    text = (out / "card.md").read_text()
+    assert f"| of them read off a run at measurement model v2 | {v2} |" in text
+
+
+def test_with_decoy_each_arm_is_split_by_its_control_s_model_version(served, tmp_path):
+    first = _Client.runs["s1"][0]
+    first["config"] = {**first["config"], **_at_model(2)}
+    _Client.runs["s1"].append(
+        _run(
+            "rd1",
+            "mascope",
+            "0.6.0",
+            "2026-11-10T11:00:00Z",
+            {"decoy_arm": {"control_run_id": "ra1"}, **_at_model(2)},
+            decoy="swap_adducts",
+        )
+    )
+    _Client.ledgers["rd1"] = [_row("p1"), _row("p2", tier="candidate")]
+    out = tmp_path / "card"
+    compare_runs.main(["--sets", str(served), "--card", str(out), "--decoy"])
+    card = json.loads((out / "card.json").read_text())
+    for name in ("A", "pooled"):
+        readings = card["columns"][name]["readings"]
+        assert readings["decoy swap_adducts held_model_v2"] == {"value": 50.0, "n": 2}
+        assert readings["decoy swap_adducts held_model_v1"] == {"value": None, "n": 0}
+        assert readings["decoy swap_adducts model_differs"] == {"value": 0, "n": 1}
+    assert (
+        "decoy swap_adducts: held at assigned, controls at model v2"
+        in (out / "card_A.md").read_text()
+    )
+
+
+def test_a_baseline_without_the_model_rows_reads_them_as_new_and_fails_nothing(
+    served, tmp_path, capsys
+):
+    first, second = tmp_path / "first", tmp_path / "second"
+    compare_runs.main(["--sets", str(served), "--card", str(first)])
+    baseline = json.loads((first / "card.json").read_text())
+    for column in baseline["columns"].values():
+        for key in ("model_v1", "model_v2", "model_before"):
+            del column["readings"][key]
+    (first / "older.json").write_text(json.dumps(baseline))
+    code = compare_runs.main(
+        [
+            "--sets",
+            str(served),
+            "--card",
+            str(second),
+            "--gate",
+            "--baseline",
+            str(first / "older.json"),
+        ]
+    )
+    card = json.loads((second / "card.json").read_text())
+    moved = card["baseline"]["moved"]
+    # Every row the baseline lacks is named with no value before it, and
+    # nothing else moved.
+    assert {(m["set"], m["metric"]) for m in moved} == {
+        (name, f"model_{v}")
+        for name in ("A", "G", "pooled")
+        for v in ("v1", "v2", "before")
+    }
+    assert {str(m["was"]) for m in moved} == {"None"}
+    # The gate against the baseline reads no new miss off them.
+    assert card["gate"]["against"]["new"] == []
+    assert card["gate"]["verdict"] == "pass" and code == 0
