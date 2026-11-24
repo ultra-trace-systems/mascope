@@ -81,6 +81,15 @@ async def test_the_library_is_read_at_its_fine_lines():
     assert "'LOW'" not in sql
 
 
+async def test_the_library_is_read_in_its_distinct_on_keys_order():
+    # DISTINCT ON keeps its rows in no order unless the query states one, and
+    # the known set lists its ions in the order they come (MAS-1164).
+    _, sql = await _fetch(FileLines("HIGH"))
+
+    assert "SELECT DISTINCT ON (target_isotope.target_isotope_id)" in sql
+    assert sql.rstrip().endswith("ORDER BY target_isotope.target_isotope_id")
+
+
 async def test_a_tof_file_reads_one_line_where_one_peak_holds_two():
     # At 5000 a FWHM at m/z 197 is 39 mDa: the 13C and 15N lines are one line,
     # which clears the threshold neither clears alone.
