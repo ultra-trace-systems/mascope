@@ -8,6 +8,7 @@ import { TIERING_PROVISIONAL } from '@/lib/tiers'
 import { LEVELS } from '@/lib/levels'
 import { SORT_FIELDS } from '@/lib/ledger/useLedgerView.js'
 import { listingName } from '@/lib/referenceListings'
+import { runLabel } from '@/stores/data/modules/batchPeak/run.js'
 
 // The tier strip and the tier column's sort: both read the confidence order out
 // of @/lib/tiers, and both used to be wrong in the same direction (alphabetical,
@@ -70,6 +71,8 @@ vi.mock('@/lib/base', async () => ({
       ':data-outlined="String(outlined)" />'
   },
   BaseVerdictBadge: true,
+  // Run history's row provenance; the run tests read its ordinal and label alone.
+  BaseRunProvenance: true,
   // Rendered, so a failed load's message can be read where the table would be.
   BaseLoadError: {
     props: ['error', 'fallback', 'onRetry'],
@@ -164,7 +167,13 @@ function makeApp({
         focused: null,
         viewing: null,
         viewingCurrent: true,
-        viewingId: null
+        viewingId: null,
+        // As the real store counts (stores/data/modules/batchPeak/run.js): the
+        // list is newest first, the oldest kept is #1, an unlisted run null.
+        ordinal(run) {
+          const index = this.list.findIndex((r) => r.batch_peak_run_id === run?.batch_peak_run_id)
+          return index === -1 ? null : this.list.length - index
+        }
       }
     },
     ui: {
@@ -291,6 +300,9 @@ const GLOBAL_STUBS = {
 // first test it lands on that one test's clock.
 const { default: PaneBrowserBatchPeaks } =
   await import('@/lib/panes/PaneBrowserMatch/PaneBrowserBatchPeaks.vue')
+// Run history, read beside the banner: the two name a run alike.
+const { default: BatchRunHistory } =
+  await import('@/lib/panes/PaneBrowserMatch/BatchRunHistory.vue')
 const { useBatchAssign } = await import('@/lib/panes/PaneBrowserMatch/stores/batchAssign.js')
 
 async function mountPane(options = {}) {
@@ -2885,13 +2897,28 @@ describe('PaneBrowserBatchPeaks batch-level verdicts', () => {
 })
 
 describe('PaneBrowserBatchPeaks batch runs', () => {
-  /** Put an earlier run on screen, as Run history does. */
-  async function viewEarlierRun(action = 'search_untargeted') {
-    app.data.batchPeakRun.viewing = { batch_peak_run_id: 'r-old', action, current: false }
-    app.data.batchPeakRun.viewingCurrent = false
-    app.data.batchPeakRun.viewingId = 'r-old'
+  /** A batch's runs as the runs route lists them, newest first: one of each kind. */
+  const HISTORY = [
+    { batch_peak_run_id: 'r-7', action: 'assign', current: true },
+    { batch_peak_run_id: 'r-6', action: 'assign', summary: { first_stage: 'series' } },
+    { batch_peak_run_id: 'r-5', action: 'assign', summary: { first_stage: 'water_ladders' } },
+    { batch_peak_run_id: 'r-4', action: 'search_untargeted' },
+    { batch_peak_run_id: 'r-3', action: 'import' },
+    { batch_peak_run_id: 'r-2', action: 'rebuild' },
+    { batch_peak_run_id: 'r-1', action: 'fold' }
+  ].map((run) => ({ current: false, status: 'completed', ...run }))
+
+  /** Put a run on screen, as Run history does. */
+  async function viewRun(run) {
+    app.data.batchPeakRun.viewing = run
+    app.data.batchPeakRun.viewingCurrent = Boolean(run.current)
+    app.data.batchPeakRun.viewingId = run.current ? null : run.batch_peak_run_id
     await wrapper.vm.$nextTick()
   }
+
+  /** Put an earlier run on screen, one the history does not list. */
+  const viewEarlierRun = (action = 'search_untargeted') =>
+    viewRun({ batch_peak_run_id: 'r-old', action, current: false })
 
   it('says nothing about history while the live ledger is on screen', async () => {
     wrapper = await mountPane({ peaks: [peak('bp-1', 'assigned', 0.9)] })
@@ -2900,30 +2927,75 @@ describe('PaneBrowserBatchPeaks batch runs', () => {
 
   it('names the run whose snapshot is on screen, and that it is read-only', async () => {
     wrapper = await mountPane({ peaks: [peak('bp-1', 'assigned', 0.9)] })
-    await viewEarlierRun('search_untargeted')
+    app.data.batchPeakRun.list = HISTORY
+    await viewRun(HISTORY[1])
 
     const notice = wrapper.findAll('.pane-message').map((message) => message.text())
     expect(notice).toHaveLength(1)
-    expect(notice[0]).toContain('as an untargeted search left it, read-only')
+    expect(notice[0]).toContain(
+      'Showing the ledger as run #6, Assignment from a stage (Detect series), left it, read-only.'
+    )
     expect(notice[0]).toContain('Back to current, in the bar above')
   })
 
-  it('describes each kind of run in words rather than by its code', async () => {
+  // The banner and Run history name a run alike: the same number, the same label.
+  it("names each kind of run by Run history's number and label", async () => {
     wrapper = await mountPane({ peaks: [peak('bp-1', 'assigned', 0.9)] })
-    for (const [action, label] of [
-      ['fold', 'folded samples'],
-      ['rebuild', 'a rebuild'],
-      ['import', 'an import'],
-      ['detect_series', 'a series detection'],
-      ['read_co_variation', 'a co-variation reading'],
-      ['stamp_isotopologues', 'an isotopologue stamping'],
-      ['strip_isotopologues', 'a strip of isotopologue rows'],
-      ['read_batch_checks', 'a batch checks reading'],
-      ['unknown_action', 'unknown_action']
-    ]) {
-      await viewEarlierRun(action)
-      expect(wrapper.vm.viewedRunLabel).toBe(label)
+    app.data.batchPeakRun.list = HISTORY
+    const history = mount(BatchRunHistory, {
+      global: { stubs: GLOBAL_STUBS, directives: { tooltip: {}, help: {} } }
+    })
+    await history.vm.$nextTick()
+    const rowOf = (run) => {
+      const row = history.find(`[data-run="${run.batch_peak_run_id}"]`)
+      return {
+        ordinal: row.find('.row-ordinal').text(),
+        label: row.find('[data-testid="run-label"]').text()
+      }
     }
+
+    const seen = []
+    for (const run of HISTORY.slice(1)) {
+      await viewRun(run)
+      const { ordinal, label } = rowOf(run)
+      const notice = wrapper.find('.pane-message').text()
+      expect(notice).toContain(
+        `Showing the ledger as run ${ordinal}, ${label}, left it, read-only.`
+      )
+      seen.push(`${ordinal} ${label}`)
+    }
+    // What those rows say, so the comparison above is not of two empty strings.
+    expect(seen).toEqual([
+      '#6 Assignment from a stage (Detect series)',
+      '#5 Assignment',
+      '#4 Search untargeted',
+      '#3 Import',
+      '#2 Rebuild',
+      '#1 Folded samples'
+    ])
+    history.unmount()
+  })
+
+  it('names a run the history no longer lists by its label alone', async () => {
+    wrapper = await mountPane({ peaks: [peak('bp-1', 'assigned', 0.9)] })
+    app.data.batchPeakRun.list = HISTORY
+    await viewRun({ batch_peak_run_id: 'r-pruned', action: 'rebuild', current: false })
+
+    const notice = wrapper.find('.pane-message').text()
+    expect(notice).toContain('Showing the ledger as Rebuild left it, read-only.')
+    expect(notice).not.toContain('#')
+  })
+
+  it('names an action Run history does not know as Run history gives it', async () => {
+    wrapper = await mountPane({ peaks: [peak('bp-1', 'assigned', 0.9)] })
+    const run = { batch_peak_run_id: 'r-x', action: 'unknown_action', current: false }
+    app.data.batchPeakRun.list = [HISTORY[0], run]
+    await viewRun(run)
+
+    expect(runLabel(run)).toBe('unknown_action')
+    expect(wrapper.find('.pane-message').text()).toContain(
+      'Showing the ledger as run #1, unknown_action, left it, read-only.'
+    )
   })
 
   // History is read-only: the cells keep their badges and lose their hand.

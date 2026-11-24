@@ -65,6 +65,7 @@ import { useApp } from '@/stores'
 import { useBatchPeakJump } from './stores/batchPeakJump.js'
 import { INSTRUMENT_TYPE_LABELS } from '@/lib/batchChart'
 import { MAX_SELECTED_BATCH_PEAKS } from '@/stores/data/modules/batchPeak/ledger'
+import { runLabel } from '@/stores/data/modules/batchPeak/run.js'
 
 import { useBatchAssign } from './stores/batchAssign.js'
 import { useBatchChartSelection } from './stores/batchChartSelection.js'
@@ -107,23 +108,15 @@ const verdicts = computed(() => app.data.batchPeakVerification)
 // The batch's runs: which one the ledger is reading, and whether that is the
 // live one. An earlier run is history - shown from its snapshot, read-only.
 const runs = computed(() => app.data.batchPeakRun)
-const RUN_ACTION_LABELS = {
-  fold: 'folded samples',
-  rebuild: 'a rebuild',
-  search_untargeted: 'an untargeted search',
-  import: 'an import',
-  detect_series: 'a series detection',
-  read_co_variation: 'a co-variation reading',
-  stamp_isotopologues: 'an isotopologue stamping',
-  strip_isotopologues: 'a strip of isotopologue rows',
-  read_batch_checks: 'a batch checks reading',
-  decide_known_species: 'a known-species decision',
-  measure_water_ladders: 'a water ladder measurement',
-  assign: 'an assignment'
-}
+// The run on screen, named as Run history names it: its number in the batch's
+// history and its label, or the label alone for a run the history no longer
+// lists.
 const viewedRunLabel = computed(() => {
   const run = runs.value.viewing
-  return run ? (RUN_ACTION_LABELS[run.action] ?? run.action) : ''
+  if (!run) return ''
+  const label = runLabel(run)
+  const ordinal = runs.value.ordinal?.(run)
+  return ordinal != null ? `run #${ordinal}, ${label},` : label
 })
 
 // --- Batch-level verdicts ----------------------------------------------------
