@@ -20,7 +20,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 import pytest_asyncio
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from stage_stubs import (  # the tests root, on sys.path
     frame,
     mechanism,
@@ -70,6 +70,9 @@ from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     fold_sample_into_batch_peaks,
     recompute_batch_consensus,
 )
+from mascope_backend.api.new.peak_assignments.batch_peaks_records import (
+    get_batch_peak_ledger,
+)
 from mascope_backend.api.new.peak_assignments.batch_runs import (
     ACTION_SEARCH,
     complete_run,
@@ -94,6 +97,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     evidence_for,
     tier_for_evidence,
 )
+from mascope_backend.api.new.peak_assignments.fold_view import member_target_id
 from mascope_backend.api.new.peak_assignments.tiering import DETECT_DEFAULT, LineGate
 from mascope_backend.db import (
     BatchPeak,
@@ -106,6 +110,7 @@ from mascope_backend.db import (
     SampleBatch,
     SampleFile,
     SampleItem,
+    TargetCompound,
 )
 from mascope_backend.db.id import gen_id
 from mascope_tools.composition.envelope_tolerance import (
@@ -439,6 +444,91 @@ async def test_release_puts_the_members_back_and_lets_the_vote_decide(
     )
     assert again.status_code == 409, again.text
     assert NOT_CURATED_CODE in again.text
+
+
+async def test_a_pin_takes_the_members_own_target_off_and_its_release_puts_it_back(
+    async_session_factory, anchor, stubbed_scorer
+):
+    """MAS-992: a member keeps the target compound its own sample matched. A pin
+    re-points it to another identity, so the compound, glucose here, is no
+    longer what it reads: neither its row nor the batch peak on the pinned
+    formula may name it. The release puts the member back, its target with it."""
+    compound_id = gen_id(16)
+    async with async_session_factory() as session:
+        session.add(
+            TargetCompound(
+                target_compound_id=compound_id,
+                target_compound_name="glucose",
+                target_compound_formula="C6H12O6",
+                inchikey="WQZGKKKJIJFFOK-GASJEMHNSA-N",
+            )
+        )
+        await session.flush()
+        # What the fold writes for a member whose row matched the compound.
+        await session.execute(
+            update(BatchPeakOccurrence)
+            .where(
+                BatchPeakOccurrence.batch_peak_id == anchor["batch_peak_id"],
+                BatchPeakOccurrence.sample_item_id == anchor["s1"],
+            )
+            .values(target_compound_id=compound_id)
+        )
+        await session.commit()
+    target = {
+        "label": "target",
+        "name": "glucose",
+        "inchikey": "WQZGKKKJIJFFOK-GASJEMHNSA-N",
+        "listed": False,
+    }
+
+    async def ledger_target():
+        [record] = (
+            await get_batch_peak_ledger(
+                sample_batch_id=anchor["batch_id"], min_n_present=1
+            )
+        )["data"]
+        return record["consensus_formula"], (record["reference_listing"] or {}).get(
+            "target"
+        )
+
+    try:
+        assert await ledger_target() == ("C6H12O6", target)
+        await run_batch_peak_curation(
+            anchor["batch_id"],
+            anchor["batch_peak_id"],
+            anchor["other"],
+            "C6H12O6",
+            PeakAssignmentConfig(),
+        )
+        bp = await _anchor_row(async_session_factory, anchor["batch_peak_id"])
+        s1 = (await _members(async_session_factory, anchor["batch_peak_id"]))[
+            anchor["s1"]
+        ]
+        assert resolve_candidate(bp.candidates, s1.candidate)["formula"] == "C7H14O7"
+        assert s1.target_compound_id is None
+        assert member_target_id(s1, bp) is None
+        assert await ledger_target() == ("C7H14O7", None)
+        # The pin archived the target with the rest of what the member read.
+        [displaced] = manual_pin_of(bp)["displaced_members"]
+        assert displaced["target_compound_id"] == compound_id
+
+        await release_batch_peak_curation(anchor["batch_id"], anchor["batch_peak_id"])
+        bp = await _anchor_row(async_session_factory, anchor["batch_peak_id"])
+        s1 = (await _members(async_session_factory, anchor["batch_peak_id"]))[
+            anchor["s1"]
+        ]
+        assert resolve_candidate(bp.candidates, s1.candidate)["formula"] == "C6H12O6"
+        assert s1.target_compound_id == compound_id
+        assert member_target_id(s1, bp) == compound_id
+        assert await ledger_target() == ("C6H12O6", target)
+    finally:
+        async with async_session_factory() as session:
+            await session.execute(
+                delete(TargetCompound).where(
+                    TargetCompound.target_compound_id == compound_id
+                )
+            )
+            await session.commit()
 
 
 async def test_the_ledger_marks_a_curated_anchor(guest_client, anchor, stubbed_scorer):

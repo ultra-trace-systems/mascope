@@ -1930,10 +1930,10 @@ target compound, **listed as** and the inspector show *target* and that compound
 name, as the batch ledger does. Two samples whose peaks were matched to two isomers
 through the same ion, glucose in one and fructose in the other, each show their own.
 A peak folded into the batch before the batch kept each sample's target, or one a
-batch step such as *Search untargeted* has re-read since, shows the target another
-member of the batch matched the same identity to, which this peak itself may not have
-been matched to; folding the sample again (*Re-assign from scratch*) shows its own. It
-carries no mass error or isotope label, and
+batch step such as *Search untargeted* or a pin on the batch peak has re-read since,
+shows the target another member of the batch matched the same identity to, which this
+peak itself may not have been matched to; folding the sample again (*Re-assign from
+scratch*) shows its own. It carries no mass error or isotope label, and
 it cannot be edited by hand &mdash; assign the sample for a ledger of its own. Verdicts
 can still be recorded against it.
 
