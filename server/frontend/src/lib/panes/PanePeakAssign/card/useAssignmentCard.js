@@ -13,7 +13,14 @@ import { coVariationLabel } from '@/lib/batchCoVariation'
 import { checksSummary } from '@/lib/batchChecks'
 import { persistenceHold, persistenceHoldNote } from '@/lib/batchPersistence'
 import { ROLE_BUCKETS, bucketRank, tierName } from '@/lib/tiers'
-import { isOpenRival, levelMeta, levelTooltip, readerLevel, unlistedRivalsLine } from '@/lib/levels'
+import {
+  isLevel,
+  isOpenRival,
+  levelMeta,
+  levelTooltip,
+  readerLevel,
+  unlistedRivalsLine
+} from '@/lib/levels'
 import { sourceLabel } from '@/lib/assignmentSources'
 import { EVIDENCE_LEVELS, VERDICT_META, claimCandidates, claimStatement } from '@/lib/verification'
 import { useBatchPeakJump } from '@/lib/panes/PaneBrowserMatch/stores/batchPeakJump.js'
@@ -74,6 +81,31 @@ export function useAssignmentCard({ showSearch }) {
         : "It differs from Mascope's tier, which reads the evidence alone; the engine also " +
           'weighs arbitration, corroboration and degeneracy.')
     )
+  })
+
+  // The producing engine's own identification level, beside the run's: an
+  // imported run states one per row as its engine tier, while the row's own
+  // level is this server's statement and an import never sets it. Null where
+  // the engine stated none, which is every in-app row.
+  const engineLevel = computed(() => {
+    const level = focusedAssignment.value?.engine_level
+    return isLevel(level) ? level : null
+  })
+  // Says whose level the chip is, and how it stands against the run's own.
+  const engineLevelTooltip = computed(() => {
+    const level = engineLevel.value
+    if (!level) return null
+    const own = focusedAssignment.value?.level
+    const against = !isLevel(own)
+      ? 'Mascope states no level of its own for an imported row'
+      : own === level
+        ? "It agrees with Mascope's level"
+        : `Mascope's level for this row is ${own}`
+    return [
+      `Engine level: ${level}, as the engine that made this run stated it`,
+      levelMeta(level).description,
+      against
+    ].join('\n')
   })
 
   // The ledger rows are a slim projection; the full record (alternatives +
@@ -1839,6 +1871,8 @@ export function useAssignmentCard({ showSearch }) {
     nextSample,
     noRowLine,
     engineTierTooltip,
+    engineLevel,
+    engineLevelTooltip,
     focusedDetail,
     headlineIsIon,
     peakSummary,
