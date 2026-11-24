@@ -46,6 +46,7 @@ import os
 import re
 import socket
 import sys
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlparse
@@ -204,6 +205,25 @@ def run_config(runs: pd.DataFrame | None, run_id: str | None) -> dict:
         return {}
     config = row.iloc[0].get("config")
     return config if isinstance(config, dict) else {}
+
+
+#: What a run's config calls its one record of the measurement model it scored
+#: and capped at (``mascope_tools.composition.measurement_model.RECORD_KEY``).
+#: Its ``version`` is 1 for the model fitted after Stage A's match, 2 for the
+#: refit on the corroborated commits the run adopted.
+MEASUREMENT_MODEL_KEY = "measurement_model"
+
+
+def model_version(config: dict | None) -> str:
+    """The measurement model a run scored and capped at, as the card counts it:
+    ``v1``, ``v2`` (``v<n>`` for any version the record states), or
+    :data:`metrics.MODEL_BEFORE` for a run from before the record. Such a run
+    kept only its ``pattern_scoring`` snapshot, which is no version 1."""
+    model = (config or {}).get(MEASUREMENT_MODEL_KEY)
+    version = model.get("version") if isinstance(model, dict) else None
+    if isinstance(version, bool) or not isinstance(version, (int, float)):
+        return metrics.MODEL_BEFORE
+    return f"v{int(version)}"
 
 
 def unsearched_peaks(ledger: pd.DataFrame, config: dict) -> set[str]:
@@ -923,6 +943,37 @@ def _added(total: dict, one: dict) -> dict:
     return out
 
 
+def _empty_arm() -> dict:
+    """An arm's total before any sample: its counts, and the same split by the
+    model version of each sample's control (``by_model``)."""
+    return {
+        "samples": 0,
+        "control": {},
+        "decoy": {},
+        "by_model": {},
+        "model_differs": 0,
+    }
+
+
+def _add_arm(
+    total: dict, control: dict, decoy: dict, model: str, differs: bool
+) -> None:
+    """Add one sample's arm to an arm's total and to the part of its control's
+    model version; ``differs`` where the decoy's model is not its control's."""
+    for into in (total, total["by_model"].setdefault(model, {"samples": 0})):
+        into["samples"] += 1
+        into["control"] = _added(into.get("control", {}), control)
+        into["decoy"] = _added(into.get("decoy", {}), decoy)
+    total["model_differs"] += int(differs)
+
+
+def _rate_arm(total: dict) -> None:
+    """An arm's total's rates, and each model version's part's."""
+    total.update(decoy_rates(total["control"], total["decoy"]))
+    for part in total["by_model"].values():
+        part.update(decoy_rates(part["control"], part["decoy"]))
+
+
 def newest_decoys(runs: pd.DataFrame | None) -> dict[str, pd.Series]:
     """A sample's newest decoy run per arm: the newest completed one, else the
     newest of any status, so a refused or unfinished arm is still reported."""
@@ -1003,19 +1054,22 @@ def decoy_report(
             decoy.update(metrics.level_counts(decoy_ledger))
             if arm == "swap_adducts":
                 decoy.update(ion_split(decoy_rows, control_ledger))
+            # The model the control scored and capped at, which its decoy
+            # reads unchanged: an arm's move is read against the controls that
+            # moved to the refit, and a decoy at another version is named.
+            model = model_version(run_config(runs, control_id))
+            decoy_model = model_version(config)
             per_sample.setdefault(sample_id, {})[arm] = {
                 "run": run["peak_assignment_run_id"],
                 "control_run": control_id,
+                "model": model,
+                "decoy_model": decoy_model,
                 "control": control,
                 "decoy": decoy,
                 **decoy_rates(control, decoy),
             }
-            arm_total = pooled.setdefault(
-                arm, {"samples": 0, "control": {}, "decoy": {}}
-            )
-            arm_total["samples"] += 1
-            arm_total["control"] = _added(arm_total["control"], control)
-            arm_total["decoy"] = _added(arm_total["decoy"], decoy)
+            arm_total = pooled.setdefault(arm, _empty_arm())
+            _add_arm(arm_total, control, decoy, model, decoy_model != model)
         print(
             f"{sample_id}: "
             + ", ".join(
@@ -1024,7 +1078,7 @@ def decoy_report(
             )
         )
     for total in pooled.values():
-        total.update(decoy_rates(total["control"], total["decoy"]))
+        _rate_arm(total)
     return {
         "pooled": dict(sorted(pooled.items())),
         "per_sample": per_sample,
@@ -1668,7 +1722,7 @@ def describe_target(target: dict | None) -> str:
 def unit_of(key: str) -> str:
     """A reading's unit: ``%``, ``count`` or ``ppm``."""
     if key.startswith("decoy "):
-        return "count" if key.endswith(" on_control_reagent") else "%"
+        return "count" if key.rsplit(" ", 1)[-1] in metrics.DECOY_COUNTS else "%"
     rows = metrics.METRICS + metrics.TRUTH_METRICS
     return {key: unit for key, _, unit in rows}.get(key, "count")
 
@@ -1680,7 +1734,7 @@ def label_of(key: str) -> str:
         return labels[key]
     if key.startswith("decoy "):
         _, arm, name = key.split(" ", 2)
-        return f"decoy {arm}: {metrics.DECOY_LABELS.get(name, name)}"
+        return f"decoy {arm}: {metrics.decoy_label(name)}"
     return key
 
 
@@ -2271,6 +2325,7 @@ class _Column:
         self.versions = {"a": set(), "b": set()}
         self.rules: set[int] = set()
         self.level_rules: set[int] = set()
+        self.models: dict[str, int] = {}
 
     def add(self, sample_id: str, one: dict, version_b: str | None) -> None:
         self.frames.append(one["joined"])
@@ -2283,6 +2338,8 @@ class _Column:
             self.rules.add(one["tiering"])
         if one["level"] is not None:
             self.level_rules.add(one["level"])
+        model = model_version(one["config"])
+        self.models[model] = self.models.get(model, 0) + 1
 
     def result(self) -> dict:
         return {
@@ -2292,6 +2349,7 @@ class _Column:
             "engine_versions": {side: sorted(v) for side, v in self.versions.items()},
             "tiering_rules": sorted(self.rules),
             "level_rules": sorted(self.level_rules),
+            "model_versions": dict(sorted(self.models.items())),
         }
 
 
@@ -2311,7 +2369,9 @@ def collect_set(client: MascopeClient, name: str, spec: dict, args) -> dict:
     card reads (:func:`batch_moves`).
 
     :return: ``{"samples", "skipped", "frame", "source_ions",
-        "engine_versions", "tiering_rules", "level_rules", "decoy"}``, and
+        "engine_versions", "tiering_rules", "level_rules", "model_versions",
+        "decoy"}``, ``model_versions`` the read samples' count per
+        measurement model version of the run read (:func:`model_version`), and
         ``"arm"`` with a batch arm: the same for the arm's column, with its
         ``moves``.
     """
@@ -2574,12 +2634,18 @@ def pooled_arms(decoys: list[dict]) -> dict:
     pooled: dict = {}
     for decoy in decoys:
         for arm, total in decoy.get("pooled", {}).items():
-            into = pooled.setdefault(arm, {"samples": 0, "control": {}, "decoy": {}})
-            into["samples"] += total["samples"]
-            into["control"] = _added(into["control"], total["control"])
-            into["decoy"] = _added(into["decoy"], total["decoy"])
+            into = pooled.setdefault(arm, _empty_arm())
+            parts = [(into, total)] + [
+                (into["by_model"].setdefault(model, {"samples": 0}), part)
+                for model, part in (total.get("by_model") or {}).items()
+            ]
+            for one, add in parts:
+                one["samples"] += add["samples"]
+                one["control"] = _added(one.get("control", {}), add["control"])
+                one["decoy"] = _added(one.get("decoy", {}), add["decoy"])
+            into["model_differs"] += total.get("model_differs", 0)
     for total in pooled.values():
-        total.update(decoy_rates(total["control"], total["decoy"]))
+        _rate_arm(total)
     return dict(sorted(pooled.items()))
 
 
@@ -2590,6 +2656,15 @@ def _not_read_arms(decoy: dict | None) -> dict[str, int]:
         for arm in arms:
             counts[arm] = counts.get(arm, 0) + 1
     return dict(sorted(counts.items()))
+
+
+def _summed(counts: Iterable[dict[str, int]]) -> dict[str, int]:
+    """Counts by key, summed."""
+    out: dict[str, int] = {}
+    for one in counts:
+        for key, n in one.items():
+            out[key] = out.get(key, 0) + n
+    return dict(sorted(out.items()))
 
 
 def build_card(collected: dict[str, dict], manifest: dict, args) -> dict:
@@ -2617,6 +2692,7 @@ def build_card(collected: dict[str, dict], manifest: dict, args) -> dict:
                     frame,
                     skipped=one["skipped"],
                     source_ions=one["source_ions"],
+                    model_versions=one.get("model_versions"),
                     decoy_arms=(one["decoy"] or {}).get("pooled"),
                     truth=[(frame, truth[name])] if name in truth else None,
                 )
@@ -2640,6 +2716,7 @@ def build_card(collected: dict[str, dict], manifest: dict, args) -> dict:
             pooled_frame,
             skipped=sum(one["skipped"] for one in collected.values()),
             source_ions={k: v for one in read for k, v in one["source_ions"].items()},
+            model_versions=_summed(one.get("model_versions") or {} for one in read),
             decoy_arms=pooled_arms([one["decoy"] for one in read if one["decoy"]])
             if args.decoy
             else None,

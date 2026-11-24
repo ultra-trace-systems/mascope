@@ -320,3 +320,105 @@ def test_a_card_reads_only_the_arms_of_the_run_it_reads():
     # Outside a card every arm is read against its own control, as before.
     result = compare_runs.decoy_report(client, ["s1"])
     assert set(result["per_sample"]["s1"]) == {"swap_adducts", "mz_shift_ppm=+9"}
+
+
+# --- The measurement model each control scored at -----------------------------------
+
+
+def _at(version):
+    """A run config's measurement model record at ``version``; None for a run
+    from before the record, which kept only its scoring snapshot."""
+    if version is None:
+        return {"pattern_scoring": {"mz_tolerance_ppm": 3.0}}
+    return {"measurement_model": {"version": version, "width_ppm": 1.2}}
+
+
+def _modelled(run_id, version, **kwargs):
+    run = _run(run_id, **kwargs)
+    run["config"] = {**run["config"], **_at(version)}
+    return run
+
+
+def test_a_run_from_before_the_model_record_is_counted_apart_from_version_1():
+    assert compare_runs.model_version(_at(1)) == "v1"
+    assert compare_runs.model_version(_at(2)) == "v2"
+    assert compare_runs.model_version(_at(None)) == "before"
+    assert compare_runs.model_version({}) == "before"
+    assert compare_runs.model_version(None) == "before"
+    # A record that states no version is no version of it.
+    assert compare_runs.model_version({"measurement_model": {}}) == "before"
+
+
+def test_an_arm_is_split_by_the_model_version_of_each_sample_s_control():
+    # s1's control took the refit, s2's kept v1, s3's predates the record.
+    # Each decoy reads its control's model, so none differs.
+    held_one = pd.DataFrame([_row("p1", 181.0716, 4000.0, ion="C9H9O4+")])
+    held_two = pd.DataFrame(
+        [
+            _row("p1", 181.0716, 4000.0, ion="C9H9O4+"),
+            _row("p2", 203.0518, 3000.0, ion="C9H9O4+"),
+        ]
+    )
+    runs = {
+        sample: [
+            _modelled(
+                f"arm-{sample}", v, decoy="mz_shift_ppm=+9", control=f"c-{sample}"
+            ),
+            _modelled(f"c-{sample}", v),
+        ]
+        for sample, v in (("s1", 2), ("s2", 1), ("s3", None))
+    }
+    ledgers = {
+        "c-s1": CONTROL,
+        "c-s2": CONTROL,
+        "c-s3": CONTROL,
+        "arm-s1": held_two,
+        "arm-s2": held_one,
+        "arm-s3": CONTROL.iloc[:0],
+    }
+
+    _, result = _report(runs, ledgers, samples=("s1", "s2", "s3"))
+
+    per = result["per_sample"]
+    assert [per[s]["mz_shift_ppm=+9"]["model"] for s in ("s1", "s2", "s3")] == [
+        "v2",
+        "v1",
+        "before",
+    ]
+    assert per["s1"]["mz_shift_ppm=+9"]["decoy_model"] == "v2"
+    arm = result["pooled"]["mz_shift_ppm=+9"]
+    assert arm["samples"] == 3 and arm["model_differs"] == 0
+    assert arm["held_pct"] == 25.0
+    # Each version's part holds its own samples' rows: two of four at v2,
+    # one of four at v1, none of four before the record.
+    by_model = arm["by_model"]
+    assert sorted(by_model) == ["before", "v1", "v2"]
+    assert {v: part["samples"] for v, part in by_model.items()} == {
+        "before": 1,
+        "v1": 1,
+        "v2": 1,
+    }
+    assert by_model["v2"]["held_pct"] == 50.0
+    assert by_model["v1"]["held_pct"] == 25.0
+    assert by_model["before"]["held_pct"] == 0.0
+    assert by_model["v2"]["control"]["rows"] == 4
+    assert by_model["v2"]["decoy"]["rows"] == 2
+
+
+def test_a_decoy_at_another_model_version_than_its_control_is_counted():
+    runs = {
+        "s1": [
+            _modelled("arm", 1, decoy="mz_shift_ppm=+9", control="control"),
+            _modelled("control", 2),
+        ]
+    }
+    ledgers = {"control": CONTROL, "arm": CONTROL.iloc[:1]}
+
+    _, result = _report(runs, ledgers)
+
+    one = result["per_sample"]["s1"]["mz_shift_ppm=+9"]
+    assert (one["model"], one["decoy_model"]) == ("v2", "v1")
+    arm = result["pooled"]["mz_shift_ppm=+9"]
+    # The arm is split by its control's version, and the mismatch is counted.
+    assert list(arm["by_model"]) == ["v2"]
+    assert arm["model_differs"] == 1

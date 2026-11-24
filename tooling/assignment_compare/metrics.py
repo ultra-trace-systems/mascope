@@ -799,11 +799,42 @@ DECOY_READINGS = (
 )
 
 
+#: The measurement model version a run from before its record is counted at
+#: (``compare_runs.model_version``): such a run is no version 1.
+MODEL_BEFORE = "before"
+#: The versions a card always reads, so two cards hold the same rows; a version
+#: a run states beyond them adds its own.
+MODEL_VERSIONS = ("v1", "v2", MODEL_BEFORE)
+
+
+def _versions(seen: Iterable[str]) -> list[str]:
+    """:data:`MODEL_VERSIONS`, then any other version seen, in order."""
+    return list(MODEL_VERSIONS) + sorted(set(seen) - set(MODEL_VERSIONS))
+
+
+def model_readings(model_versions: Mapping[str, int] | None) -> dict[str, dict]:
+    """How many of a column's samples were read off a run at each measurement
+    model version (``model_v1``, ``model_v2``, ``model_before``), or nothing
+    read where the counts are not given. Readings: no target."""
+    if model_versions is None:
+        return {f"model_{version}": reading() for version in MODEL_VERSIONS}
+    return {
+        f"model_{version}": reading(int(model_versions.get(version, 0)))
+        for version in _versions(model_versions)
+    }
+
+
 def decoy_arm_readings(arm_total: Mapping) -> dict[str, dict]:
     """The decoy arm's readings: the share of its control's assigned rows (below
     and above m/z 350) and of their intensity the arm still holds at assigned,
     the rows it assigns on the control's reagent peaks, and on the adduct arm
     the share that are new ions. No target yet (decision 31).
+
+    A decoy reads its control's measurement model unchanged, so the held share
+    is also read per model version of the controls (``held_model_v1``, ...: of
+    the rows of the controls at that version, the share the arm holds), and
+    the arms whose decoy states another version than its control are counted
+    (``model_differs``), which should be none.
 
     :param arm_total: One arm's total over the set (``compare_runs.decoy_report``'s
         ``pooled`` entry).
@@ -822,6 +853,16 @@ def decoy_arm_readings(arm_total: Mapping) -> dict[str, dict]:
     if "at_4_or_above_pct" in arm_total:
         out["at_4_or_above"] = reading(
             arm_total["at_4_or_above_pct"], decoy.get("levelled")
+        )
+    if "by_model" in arm_total:
+        by_model = arm_total["by_model"]
+        for version in _versions(by_model):
+            part = by_model.get(version) or {}
+            out[f"held_model_{version}"] = reading(
+                part.get("held_pct"), (part.get("control") or {}).get("rows", 0)
+            )
+        out["model_differs"] = reading(
+            arm_total.get("model_differs", 0), arm_total.get("samples")
         )
     return out
 
@@ -923,6 +964,9 @@ METRICS = (
     ("samples", "samples read", "count"),
     ("samples_skipped", "samples skipped: no ledger of the first engine", "count"),
     ("reference_samples", "of them with a reference run", "count"),
+    ("model_v1", "of them read off a run at measurement model v1", "count"),
+    ("model_v2", "of them read off a run at measurement model v2", "count"),
+    ("model_before", "of them read off a run from before the model record", "count"),
     ("peaks", "peaks", "count"),
     ("assigned", "assigned monoisotopic rows", "count"),
     ("detail_failed", "committed rows whose detail read failed", "count"),
@@ -1021,7 +1065,23 @@ DECOY_LABELS = {
     "new_ion": "new ions",
     "on_control_reagent": "rows on the control's reagent peaks",
     "at_4_or_above": "committed rows at level 4 or above",
+    "model_differs": "decoys at another model version than their control",
 }
+
+#: The decoy readings that are counts; every other one is a share.
+DECOY_COUNTS = frozenset({"on_control_reagent", "model_differs"})
+
+
+def decoy_label(name: str) -> str:
+    """The label of an arm's reading, after the arm's name."""
+    if name in DECOY_LABELS:
+        return DECOY_LABELS[name]
+    if name.startswith("held_model_"):
+        version = name.removeprefix("held_model_")
+        if version == MODEL_BEFORE:
+            return "held at assigned, controls from before the model record"
+        return f"held at assigned, controls at model {version}"
+    return name
 
 
 def decoy_key(arm: str, name: str) -> str:
@@ -1050,6 +1110,7 @@ def card_readings(
     source_ions: Mapping[str, tuple[Iterable[float], float]] | None = None,
     decoy_arms: Mapping[str, Mapping] | None = None,
     truth: Sequence[tuple[pd.DataFrame, AbstractSet[str]]] | None = None,
+    model_versions: Mapping[str, int] | None = None,
 ) -> dict[str, dict]:
     """Every reading of one card column, in :data:`METRICS` order, then the
     authors' lists' readings where the column has any, then the arms.
@@ -1063,6 +1124,8 @@ def card_readings(
     :param truth: Per set of the column that carries an authors' list, its
         frame and its list (:func:`truth_readings`): one pair on a set's
         column, one per such set on the pooled one.
+    :param model_versions: How many of the column's samples were read off a
+        run at each measurement model version (:func:`model_readings`).
     """
     samples = frame["sample_item_id"].nunique() if len(frame) else 0
     reference = (
@@ -1078,6 +1141,7 @@ def card_readings(
         "samples": reading(samples),
         "samples_skipped": reading(skipped),
         "reference_samples": reading(reference),
+        **model_readings(model_versions),
         "peaks": reading(len(frame)),
         "assigned": reading(len(_a_assigned_main(frame))),
         "detail_failed": detail_failed(frame),
