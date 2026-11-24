@@ -600,10 +600,9 @@ async def _batch_candidates(sample) -> list:
 
     A sample of its own file whose scans overlap its own (:func:`share_scans`:
     a copy of it in the batch, a window that overlaps or touches its window)
-    is left out:
-    it gives the file's own lines again. A window of its file that shares no
-    scans with it is other scans of the same instrument state, and is a
-    neighbour of its own (the plan owner's decision on MAS-987)."""
+    is left out: it gives the file's own lines again. A window of its file
+    that shares no scans with it is other scans of the same instrument state,
+    and is a neighbour of its own (the plan owner's decision on MAS-987)."""
     async with async_session() as session:
         rows = (
             await session.execute(
