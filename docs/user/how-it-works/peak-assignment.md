@@ -2402,9 +2402,12 @@ it counts, and the samples or the collections it names:
 - **New samples.** Samples the batch holds now that the pass did not cover, such as
   samples processed after it. They hold known compositions only.
 - **Removed samples.** Samples the pass covered that are no longer in the batch.
-- **Re-run samples** (`resampled`). Samples the pass covered with an assignment run of
-  their own completed since it started. Each such run folds the sample in again.
-  Decoy runs and imported runs do not count.
+- **Re-run samples** (`resampled`). Samples the pass covered that were re-run since it
+  started, where the newest such run read older batch decisions than the batch holds
+  now. Each run records the version of every batch stage it read. When a stage has
+  decided again since, the sample is behind. A run made after the pass that read its
+  decisions is not. A run from before runs kept that record counts by its time alone.
+  Each such run folds the sample in again. Decoy runs and imported runs do not count.
 - **Library changed.** A target collection attached to the batch, detached or edited, or
   a reference list loaded or dropped, since the pass. Only a fold reads the libraries, so
   the next pass folds every sample first: the read's `needs_fold` says so, and

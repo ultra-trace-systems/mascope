@@ -16,6 +16,7 @@ from mascope_backend.api.new.peak_assignments.batch_assignment_status import (
     SAMPLE_IDS_CAP,
     engine_reason,
     library_reason,
+    read_older_decisions,
     running_record,
     sample_reasons,
     stale_reason,
@@ -71,6 +72,39 @@ def test_the_samples_against_the_pass_give_new_removed_and_resampled():
         # d is new, a is gone: only c was re-run of what the pass covered.
         {"reason": "resampled", "count": 1, "sample_item_ids": ["c"]},
     ]
+
+
+def _record(**versions):
+    return {
+        "stages": {stage: {"version": v, "records": 1} for stage, v in versions.items()}
+    }
+
+
+@pytest.mark.parametrize(
+    "record, behind",
+    [
+        # Every stage it read is where it stands now.
+        (_record(known_species=2, series=1), False),
+        # A stage it read has decided again since.
+        (_record(known_species=1, series=1), True),
+        (_record(known_species=2, series=0), True),
+        # A stage with no row now is none newer.
+        (_record(known_species=2, blends=5), False),
+        # Read at a version newer than the row's: not behind.
+        (_record(known_species=3, series=1), False),
+        # No record, or one that names no stage: the time rule.
+        (None, True),
+        ({}, True),
+        ({"stages": {}}, True),
+        ({"applied": {}}, True),
+        # A stage's entry with no version it read: behind.
+        ({"stages": {"known_species": {"records": 1}}}, True),
+        ({"stages": {"known_species": {"version": "2"}}}, True),
+    ],
+)
+def test_a_run_read_older_decisions_where_a_stage_it_read_moved(record, behind):
+    versions = {"known_species": 2, "series": 1, "water_ladders": 4}
+    assert read_older_decisions(record, versions) is behind
 
 
 def test_the_same_samples_give_no_reason():

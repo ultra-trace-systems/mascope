@@ -17,10 +17,13 @@ runs and the stage rows record:
 
   - ``new_samples`` and ``removed_samples``: the batch's samples against the
     pass's;
-  - ``resampled``: samples of the pass whose newest in-app run read older
-    batch decisions than the current ones. A run does not record the
-    decisions it read yet (MAS-985), so this counts the samples with an
-    in-app run completed after the pass started;
+  - ``resampled``: samples of the pass re-run since it started whose newest
+    in-app run read older batch decisions than the current ones: a stage
+    whose records it read (``batch_decisions`` in its config, MAS-985) is at
+    a newer version now (:func:`read_older_decisions`). A run that recorded
+    no stage, one from before runs kept the record, counts by its time
+    alone. A sample not re-run since the pass still reads what the pass
+    wrote for it, and is none;
   - ``library_changed``: a target collection attached, detached or edited, a
     reference list loaded or dropped, against the pass's record;
   - ``settings_changed``: the batch's assignment settings
@@ -87,6 +90,7 @@ from mascope_backend.api.new.peak_assignments.config import (
     PEAK_ASSIGNMENT_ENGINE_VERSION,
     settings_hash,
 )
+from mascope_backend.api.new.peak_assignments.row_terms import BATCH_DECISIONS_KEY
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakRun,
@@ -151,8 +155,10 @@ def sample_reasons(
 
     :param covered: The samples the pass covered.
     :param now: The batch's samples now.
-    :param resampled: The samples with an in-app run completed after the pass
-        started; a sample new since the pass is new, not resampled.
+    :param resampled: The samples re-run since the pass started whose newest
+        run read older batch decisions than the current ones
+        (:func:`_resampled`); a sample new since the pass is new, not
+        resampled.
     :return: ``new_samples``, ``removed_samples`` and ``resampled``, each
         where it holds, with its count and the first sample ids.
     """
@@ -171,6 +177,32 @@ def sample_reasons(
         for reason, ids in groups
         if ids
     ]
+
+
+def read_older_decisions(record: Any, versions: dict[str, Any]) -> bool:
+    """Whether a run read older batch decisions than the current ones: a
+    stage its record names (``BatchDecisions.record``) is at a newer version
+    now.
+
+    A record that names no stage, or no record at all (a run from before
+    runs kept it), reads as older: the time rule the status kept until runs
+    recorded what they read. A stage the record names that has no row now is
+    none newer.
+
+    :param record: The run's ``batch_decisions`` record.
+    :param versions: Stage name -> its row's version now.
+    """
+    stages = record.get("stages") if isinstance(record, dict) else None
+    if not isinstance(stages, dict) or not stages:
+        return True
+    for stage, entry in stages.items():
+        now = versions.get(stage)
+        if now is None:
+            continue
+        read = entry.get("version") if isinstance(entry, dict) else None
+        if not isinstance(read, int) or now > read:
+            return True
+    return False
 
 
 def _changed_keys(was: Any, now: Any) -> dict[str, list[str]]:
@@ -394,31 +426,52 @@ async def _newest_pass(session, sample_batch_id: str) -> Optional[BatchPeakRun]:
     )
 
 
-async def _resampled(session, sample_batch_id: str, since: datetime) -> list[str]:
-    """The batch's samples with an in-app run of their own completed since
-    ``since``: one query, whatever the batch's size. A decoy run is no run of
-    the sample's (it folds nothing)."""
-    return list(
-        (
-            await session.execute(
-                select(PeakAssignmentRun.sample_item_id)
-                .join(
-                    SampleItem,
-                    SampleItem.sample_item_id == PeakAssignmentRun.sample_item_id,
-                )
-                .where(
-                    SampleItem.sample_batch_id == sample_batch_id,
-                    PeakAssignmentRun.engine == IN_APP_ENGINE,
-                    PeakAssignmentRun.status == "completed",
-                    PeakAssignmentRun.decoy.is_(None),
-                    PeakAssignmentRun.peak_assignment_run_utc_completed > since,
-                )
-                .distinct()
+async def _resampled(
+    session, sample_batch_id: str, last_run: BatchPeakRun, rows: dict[str, Any]
+) -> list[str]:
+    """The batch's samples re-run since the last pass started whose newest
+    such run read older batch decisions than the current ones
+    (:func:`read_older_decisions`).
+
+    The candidates are the samples with an in-app run of their own completed
+    after the pass started; of each, the newest such run's record is read.
+    One query, whatever the batch's size. A decoy run is no run of the
+    sample's (it folds nothing), and an import is another engine's.
+
+    :param last_run: The last completed pass.
+    :param rows: Stage name -> its row, whose version is the current one.
+    """
+    since = last_run.batch_peak_run_utc_created
+    versions = {stage: row.version for stage, row in rows.items()}
+    rows = (
+        await session.execute(
+            select(
+                PeakAssignmentRun.sample_item_id,
+                PeakAssignmentRun.config[BATCH_DECISIONS_KEY],
             )
+            .join(
+                SampleItem,
+                SampleItem.sample_item_id == PeakAssignmentRun.sample_item_id,
+            )
+            .where(
+                SampleItem.sample_batch_id == sample_batch_id,
+                PeakAssignmentRun.engine == IN_APP_ENGINE,
+                PeakAssignmentRun.status == "completed",
+                PeakAssignmentRun.decoy.is_(None),
+                PeakAssignmentRun.peak_assignment_run_utc_completed > since,
+            )
+            .order_by(
+                PeakAssignmentRun.sample_item_id,
+                PeakAssignmentRun.peak_assignment_run_utc_completed.desc(),
+            )
+            .distinct(PeakAssignmentRun.sample_item_id)
         )
-        .scalars()
-        .all()
-    )
+    ).all()
+    return [
+        sample_item_id
+        for sample_item_id, record in rows
+        if read_older_decisions(record, versions)
+    ]
 
 
 async def _usernames(session, user_ids: Iterable[Optional[int]]) -> dict[int, str]:
@@ -462,9 +515,7 @@ async def get_batch_assignment_status(sample_batch_id: str) -> dict:
             else None
         )
         resampled = (
-            await _resampled(
-                session, sample_batch_id, last_run.batch_peak_run_utc_created
-            )
+            await _resampled(session, sample_batch_id, last_run, rows)
             if last_run is not None
             else []
         )
@@ -579,6 +630,7 @@ __all__ = [
     "engine_reason",
     "get_batch_assignment_status",
     "library_reason",
+    "read_older_decisions",
     "running_record",
     "settings_reason",
     "sample_reasons",
