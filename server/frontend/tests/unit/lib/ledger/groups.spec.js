@@ -238,10 +238,24 @@ describe('groups: Group by', () => {
     ])
   })
 
-  it('draws no section the filters leave empty, and no Ungrouped line alone', () => {
+  it('draws no section the filters leave empty, and the rows they keep Ungrouped', () => {
+    // The filters keep only the twin, which is in no series: no series section
+    // is drawn, and the twin is not dropped with them.
     const rows = BATCH_PEAKS.filter((row) => row.batch_peak_id === idOf('twin'))
+    const sections = groupSections(
+      rows,
+      batchGroupSets(BATCH_GROUPS, 'series'),
+      (r) => r.batch_peak_id
+    )
+    expect(sections.map((s) => [s.name, s.rows.map((r) => r.batch_peak_id)])).toEqual([
+      ['Ungrouped', [idOf('twin')]]
+    ])
+    expect(sections[0].ungrouped).toBe(true)
+  })
+
+  it('draws nothing where the filters keep no row', () => {
     expect(
-      groupSections(rows, batchGroupSets(BATCH_GROUPS, 'series'), (r) => r.batch_peak_id)
+      groupSections([], batchGroupSets(BATCH_GROUPS, 'series'), (r) => r.batch_peak_id)
     ).toEqual([])
   })
 

@@ -3826,6 +3826,23 @@ describe('PaneBrowserBatchPeaks groups', () => {
     expect(ids()).toEqual(['bp-down', 'bp-root', 'bp-up', 'bp-three', 'lens:gap:2'])
   })
 
+  it('gives back the sort it had before, after a sort picked under it', async () => {
+    await mountGroups()
+    const before = [wrapper.vm.sortField, wrapper.vm.sortOrder]
+    const rowsBefore = ids()
+    await openSeries()
+    wrapper.vm.sortField = 'mz'
+    wrapper.vm.sortOrder = 1
+    await wrapper.vm.$nextTick()
+    // A second lens opened over the first keeps the sort the first one found.
+    wrapper.vm.openLens(fixture.CHANNEL_GROUP)
+    await wrapper.vm.$nextTick()
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await wrapper.vm.$nextTick()
+    expect([wrapper.vm.sortField, wrapper.vm.sortOrder]).toEqual(before)
+    expect(ids()).toEqual(rowsBefore)
+  })
+
   it('closes on its x and on Escape, and the previous view comes back', async () => {
     await mountGroups()
     const before = ids()
@@ -3885,6 +3902,42 @@ describe('PaneBrowserBatchPeaks groups', () => {
     ])
   })
 
+  // The fixture's isotope lines as the read serves them: each folded under its
+  // compound by `line_owner_id`.
+  const LINED = () =>
+    PEAKS().map((row) =>
+      row.isotopologue_of ? { ...row, line_owner_id: row.isotopologue_of } : row
+    )
+
+  it('lists a member that is an isotope line as the line, not as missing', async () => {
+    // The halogen lock names the root's 13C line, which folds under the root.
+    await mountGroups({ peaks: LINED() })
+    expect(ids()).not.toContain('bp-root_line')
+    wrapper.vm.openLens(fixture.HALOGEN_GROUP)
+    await wrapper.vm.$nextTick()
+    expect(labels()).toEqual([
+      ['bp-root', '[M+NO3]-'],
+      ['bp-root_line', 'halogen line']
+    ])
+    expect(wrapper.vm.rows.some((row) => row.ledgerKind === 'absent')).toBe(false)
+    expect(ledgerOf().props('lens').title).toBe('C5H8O4 and its halogen line, 2 batch peaks')
+
+    // Unfolded, the root's family lists the line once: where the group places it.
+    ledgerOf().vm.$emit('toggle-family', wrapper.vm.rows[0])
+    await wrapper.vm.$nextTick()
+    expect(ids()).toEqual(['bp-root', 'bp-root_line'])
+  })
+
+  it("unfolds a member's family under it in the lens", async () => {
+    await mountGroups({ peaks: LINED() })
+    wrapper.vm.openLens(fixture.CHANNEL_GROUP)
+    await wrapper.vm.$nextTick()
+    const up = wrapper.vm.rows.find((row) => row.batch_peak_id === 'bp-up')
+    ledgerOf().vm.$emit('toggle-family', up)
+    await wrapper.vm.$nextTick()
+    expect(ids()).toEqual(['bp-up_other', 'bp-up', 'bp-up_line'])
+  })
+
   it("closes on another batch: a lens is the batch's it was opened on", async () => {
     await mountGroups()
     await openSeries()
@@ -3925,6 +3978,15 @@ describe('PaneBrowserBatchPeaks groups', () => {
       'bp-twin',
       'bp-up_other'
     ])
+  })
+
+  it('lists the rows the search keeps, though no group holds one of them', async () => {
+    await mountGroups()
+    wrapper.vm.view.groupBy = 'series'
+    // The 14N twin is in no series.
+    wrapper.vm.searchQuery = 'C5H9NO4'
+    await wrapper.vm.$nextTick()
+    expect(lines()).toEqual(['Ungrouped | 1 batch peak | null', 'bp-twin'])
   })
 
   it('groups by compound, and a group line folds its members', async () => {
@@ -3979,6 +4041,10 @@ describe('PaneBrowserBatchPeaks groups', () => {
       pseudoNote: 'not in this ledger',
       pseudoMz: 236
     })
+    // The batch scope counts it among the batch peaks: it is not a sample's.
+    expect(ledgerOf().props('lens').title).toBe(
+      'CH2 series from C5H8O4, through [M+NO3]-, 4 batch peaks, one step with no peak'
+    )
   })
 
   it('names a row in two series again under the second, greyed', async () => {

@@ -371,7 +371,8 @@ export function localChannelGroup(rows, { mechanismOf = () => null } = {}) {
  * the filters left. A row that is in several sets is listed under the first in
  * which it lands and named again in each later one as a reference, so every
  * row is drawn once. Sections are ordered by where their first row lands. A
- * section the filters leave empty is not drawn.
+ * section the filters leave empty is not drawn; the Ungrouped line is, alone,
+ * when the filters leave rows in no set.
  *
  * @param {Array<object>} rows - the rows, filtered and sorted
  * @param {Array<{key: string, name: string, ids: Array<string>}>} sets
@@ -406,8 +407,10 @@ export function groupSections(rows, sets, idOf) {
     }
     sections.push({ key: set.key, name: set.name, size: set.ids.length, rows: own, references })
   }
+  // Drawn also when no set kept a row: the rows the filters keep are listed
+  // whatever the grouping, never dropped with the sections they are not in.
   const rest = rows.filter((row) => !placed.has(idOf(row)))
-  if (rest.length && sections.length) {
+  if (rest.length) {
     sections.push({
       key: 'ungrouped',
       name: 'Ungrouped',

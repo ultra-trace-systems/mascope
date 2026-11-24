@@ -672,13 +672,18 @@ const rows = computed(() => {
 // chips, the search or the Show filters hide - the lens lifts them while it
 // is open - each labelled by its step or channel. A series step with no batch
 // peak is a greyed gap; a member the ledger lists no row for (the other
-// instrument type's) a greyed line. A sort picked under the lens orders the
-// members by its column, the gaps after them.
+// instrument type's) a greyed line. A member may be an isotope line - the line
+// a halogen lock names folds under its compound - and is listed as the line it
+// is. A sort picked under the lens orders the members by its column, the gaps
+// after them.
+const decoratedById = computed(
+  () => new Map(decorated.value.map((row) => [row.batch_peak_id, row]))
+)
+const lensRowOf = (member) => decoratedById.value.get(member.batch_peak_id) ?? null
 const lensRows = computed(() => {
   const group = lensGroup.value
   if (!group) return []
-  const index = new Map(parents.value.map((row) => [row.batch_peak_id, row]))
-  const entries = lensEntries(group, (member) => index.get(member.batch_peak_id) ?? null)
+  const entries = lensEntries(group, lensRowOf)
   const members = entries
     .filter((entry) => entry.entry === ENTRY_MEMBER)
     .map((entry) => ({ ...entry.row, lensLabel: entry.label }))
@@ -700,10 +705,15 @@ const lensRows = computed(() => {
           pseudoIon: entry.member.ion_formula,
           pseudoNote: 'not in this ledger'
         }
+  // An unfolded family lists its lines under its member, but not a line that
+  // is a member of its own: that one is listed where the group places it.
+  const memberIds = new Set(members.map((row) => row.batch_peak_id))
   const result = []
   const withFamily = (row) => {
     result.push(row)
-    if (familyOpen(row)) result.push(...(childrenByParent.value.get(row.batch_peak_id) ?? []))
+    if (!familyOpen(row)) return
+    const lines = childrenByParent.value.get(row.batch_peak_id) ?? []
+    result.push(...lines.filter((line) => !memberIds.has(line.batch_peak_id)))
   }
   if (lensState.value?.sorted && sortField.value) {
     sort(members, byConfidence)
@@ -726,8 +736,7 @@ watch([sortField, sortOrder], () => {
 const lens = computed(() => {
   const group = lensGroup.value
   if (!group) return null
-  const index = new Map(parents.value.map((row) => [row.batch_peak_id, row]))
-  const entries = lensEntries(group, (member) => index.get(member.batch_peak_id) ?? null)
+  const entries = lensEntries(group, lensRowOf)
   return { title: lensTitle(group, entries), column: lensColumnLabel(group), plot: true }
 })
 
