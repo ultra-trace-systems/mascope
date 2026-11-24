@@ -2386,8 +2386,9 @@ def _card_of(manifest, out, *extra):
 def _add_after_pass():
     """A run of s1 after a pass of the batch stages, newer than its control:
     the series lifts nothing but cites itself on p1, the strip reads p2 as
-    p1's line, and the known species claims p4, the reagent peak, as another
-    ion. p1i and p3 are as the control reads them."""
+    p1's line (at candidate, so its tier moved too), and the known species
+    claims p4, the reagent peak, as another ion. p1i and p3 are as the
+    control reads them."""
     decisions = {"batch_decisions": {"stages": {"series": {"records": 2}}}}
     config = {**_Client.runs["s1"][0]["config"], **decisions}
     _Client.runs["s1"].insert(
@@ -2405,6 +2406,7 @@ def _add_after_pass():
             "p2",
             peak_assignment_id="px-p2",
             role="iso_child",
+            tier="candidate",
             isotope_label="13C",
             owner_peak_assignment_id="px-p1",
         ),
@@ -2473,6 +2475,13 @@ def test_the_batch_arm_reads_the_runs_after_the_pass_beside_the_control(
 ):
     _, control = _card_of(served, tmp_path / "control")
     after_pass = _add_after_pass()
+    # A run of a sample in a batch records every stage it read, at records: 0
+    # too (MAS-985): the control read none of the batch's decisions.
+    ra1 = next(r for r in _Client.runs["s1"] if r["peak_assignment_run_id"] == "ra1")
+    ra1["config"] = {
+        **ra1["config"],
+        "batch_decisions": {"stages": {"series": {"records": 0}}},
+    }
     code, card = _card_of(
         _arm_manifest(
             tmp_path, runs={"s1": "ra1"}, batch_arm={"runs": {"s1": after_pass}}
@@ -2497,7 +2506,8 @@ def test_the_batch_arm_reads_the_runs_after_the_pass_beside_the_control(
         "peaks": 5,
         "moved": 3,
     }
-    # p2 changed role; p1 its tier alone; p4 its reading alone.
+    # p2 changed role (its tier with it, counted under role alone); p1 its
+    # tier alone; p4 its reading alone.
     assert (moves["role"], moves["tier"], moves["reading"]) == (1, 1, 2)
     assert moves["by_role"] == {"M0 -> iso_child": 1}
     assert moves["by_decision"] == {
@@ -2520,14 +2530,33 @@ def test_the_batch_arm_reads_the_runs_after_the_pass_beside_the_control(
     assert "After the batch pass" not in (tmp_path / "arm" / "card_G.md").read_text()
     own = json.loads((tmp_path / "arm" / "card_A.json").read_text())
     assert list(own["batch_arm"]["columns"]) == ["A"]
+    # With a second set on the arm, each set's file holds its own alone.
+    both = json.loads(json.dumps(card))
+    both["batch_arm"]["columns"]["G"] = both["batch_arm"]["columns"]["A"]
+    both["batch_arm"]["off"] = {"A": "x", "G": "y"}
+    files = compare_runs.card_files(both)
+    for name in ("A", "G"):
+        arm_of = json.loads(files[f"card_{name}.json"])["batch_arm"]
+        assert list(arm_of["columns"]) == [name]
+        assert list(arm_of["off"]) == [name]
 
 
 def test_a_moved_row_that_cites_nothing_or_whose_read_failed_is_counted_so(
-    served, after_pass, tmp_path
+    served, after_pass, tmp_path, monkeypatch
 ):
     _Client.details["px-p2"] = {}
     _Client.details["px-p4"] = NotFoundError("gone", status_code=404)
     _Client.ledgers[after_pass][0]["tier_reason_rules"] = ["corroborated"]
+    asked = []
+    read = compare_runs.read_provenance
+
+    def recorded(client, sample_id, ids):
+        # The moves' own detail read, not the readings' read of every row.
+        if sys._getframe(1).f_code.co_name == "batch_moves":
+            asked.extend(ids)
+        return read(client, sample_id, ids)
+
+    monkeypatch.setattr(compare_runs, "read_provenance", recorded)
     _, card = _card_of(
         _arm_manifest(
             tmp_path, runs={"s1": "ra1"}, batch_arm={"runs": {"s1": after_pass}}
@@ -2536,6 +2565,9 @@ def test_a_moved_row_that_cites_nothing_or_whose_read_failed_is_counted_so(
     )
     by = card["batch_arm"]["columns"]["A"]["moves"]["by_decision"]
     assert (by["none"], by["not_read"]) == (2, 1)
+    # Only the moved reagent and iso_child rows are read for their detail:
+    # p1, an M0 that cites nothing now, is not read and counts as none.
+    assert sorted(asked) == ["px-p2", "px-p4"]
     assert sum(by[k] for k in compare_runs.BATCH_DECISIONS) == 0
 
 

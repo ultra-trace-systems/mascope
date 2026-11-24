@@ -189,6 +189,26 @@ def test_a_refused_pass_leaves_the_arm_off(rig):
     assert _summary(rig)["sets"]["Et"]["batch"]["on_card"] is True
 
 
+def test_a_pass_that_leaves_the_batch_s_runs_leaves_the_arm_off(rig):
+    listing = rig.server.batch_runs
+
+    def gone(batch):
+        # B1's pass launched, then left the listing (a purge, a reset).
+        return [] if batch == "B1" else listing(batch)
+
+    rig.server.batch_runs = gone
+    assert rig.run("topic", batch=True) == 1
+    summary, arm, spec = _off(rig)
+    assert arm["off"] == "lost" and arm["passes"][0]["status"] == "lost"
+    assert arm["passes"][0]["run_id"] is not None
+    assert spec["batch_arm_off"] == brun.ARM_OFF["lost"]
+    assert "batch_arm" not in spec
+    # The control stands, and the other set's arm is on the card.
+    assert spec["runs"] == {s: _mascope_runs(rig, s)[0] for s in ("S1", "S2")}
+    assert summary["sets"]["Db"]["read"] == 2
+    assert summary["sets"]["Et"]["batch"]["on_card"] is True
+
+
 def test_a_sample_whose_run_after_the_pass_fails_leaves_the_arm_off(rig):
     rig.server.nth_end[("S2", 3)] = ("failed", "boom")
     assert rig.run("topic", batch=True) == 1
