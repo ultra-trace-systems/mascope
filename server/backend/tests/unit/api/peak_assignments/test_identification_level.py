@@ -22,6 +22,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     RIVALS_PAST_CAP,
 )
 from mascope_backend.api.new.peak_assignments.identification_level import (
+    ENGINE_LEVELS,
     HELD_BY_PLAUSIBILITY,
     HELD_BY_PRIOR,
     IDENTIFICATION_LEVEL,
@@ -35,6 +36,7 @@ from mascope_backend.api.new.peak_assignments.identification_level import (
     LevelContext,
     _heavy_elements,
     apply_levels,
+    engine_stated,
     hand_level,
     inherited_level,
     level_fields,
@@ -210,6 +212,32 @@ class TestTheScale:
             "5a",
             "5b",
         )
+
+    def test_no_engine_states_level_one(self):
+        """Level 1 is a person's claim in review (step 5.8f): the levels an
+        engine may state leave it out, and a record that carried it - an
+        owner's level an isotopologue copies - is refused, not written."""
+        assert ENGINE_LEVELS == LEVELS[1:]
+        assert engine_stated({"level": "4a"}) == {"level": "4a"}
+        with pytest.raises(ValueError, match="no engine path states it"):
+            engine_stated({"level": "1"})
+        with pytest.raises(ValueError, match="no engine path states it"):
+            inherited_level({"level": "1", "evidence": "", "lift": None}, "pa-1")
+
+    def test_a_rule_that_stated_level_one_would_fail_the_pass(self, monkeypatch):
+        """Through the pass and the row reading: a rule change that reached
+        level 1 is refused where the record is written, not stored."""
+        from mascope_backend.api.new.peak_assignments import identification_level
+
+        monkeypatch.setattr(
+            identification_level,
+            "_level",
+            lambda *args, **kwargs: {"level": "1", "evidence": "", "lift": None},
+        )
+        with pytest.raises(ValueError, match="no engine path states it"):
+            apply_levels([m0()])
+        with pytest.raises(ValueError, match="no engine path states it"):
+            level(m0())
 
 
 class TestFiveB:

@@ -464,26 +464,50 @@ async def test_a_reference_standard_confirmation_of_an_anchor_names_a_structure(
     assert "requires claimed_inchikey" in response.text
 
 
-async def test_a_level_one_claim_on_an_anchor_reaches_its_members(
-    editor_client, guest_client, anchors, assignment_enabled
-):
-    response = await _verify(
-        editor_client,
-        anchors["batch_id"],
+def _level_one(anchors, start, end, **extra):
+    """A level-1 claim on the assigned anchor: a standard, an independent line
+    and the window it covers."""
+    return dict(
         batch_peak_id=anchors["assigned"],
         verdict="confirmed",
         evidence_level="reference_standard",
+        independent_line="msms",
         expected_formula="C6H12O6",
         claimed_inchikey=GLUCOSE_INCHIKEY,
         claimed_name="D-glucose",
+        window_start_utc=start.isoformat(),
+        window_end_utc=end.isoformat(),
+        **extra,
+    )
+
+
+async def _acquired(async_session_factory, sample_item_id):
+    async with async_session_factory() as session:
+        return await session.scalar(
+            select(SampleFile.datetime_utc)
+            .join(SampleItem, SampleItem.sample_file_id == SampleFile.sample_file_id)
+            .where(SampleItem.sample_item_id == sample_item_id)
+        )
+
+
+async def test_a_level_one_claim_on_an_anchor_reaches_its_members(
+    editor_client, guest_client, anchors, assignment_enabled, async_session_factory
+):
+    acquired = await _acquired(async_session_factory, anchors["s1"])
+    start, end = acquired - timedelta(hours=1), acquired + timedelta(hours=1)
+    response = await _verify(
+        editor_client, anchors["batch_id"], **_level_one(anchors, start, end)
     )
     assert response.status_code == 201, response.text
     (record,) = await _verdicts(guest_client, anchors["batch_id"])
     assert record["claimed_inchikey"] == GLUCOSE_INCHIKEY
     assert record["claimed_name"] == "D-glucose"
-    assert record["level"] == 1
-    # The mapping's version beside what the human saw.
-    assert record["context"]["level_mapping_version"] == 1
+    assert (record["level"], record["level_letter"]) == (1, None)
+    assert datetime.fromisoformat(record["window_start_utc"]) == start
+    assert datetime.fromisoformat(record["window_end_utc"]) == end
+    # The mapping's version and the statement beside what the human saw.
+    assert record["context"]["level_mapping_version"] == 2
+    assert record["context"]["claim"]["independent_line"] == "msms"
     assert record["context"]["consensus_formula"] == "C6H12O6"
 
     for sample in ("s1", "s2"):
@@ -492,6 +516,7 @@ async def test_a_level_one_claim_on_an_anchor_reaches_its_members(
             GLUCOSE_INCHIKEY,
             1,
         )
+        assert reaching["outside_window"] is False
     borrowed = await _batch_verifications(guest_client, anchors["batch_id"])
     assert sorted(row["sample_item_id"] for row in borrowed) == sorted(
         [anchors["s1"], anchors["s2"]]
@@ -501,6 +526,154 @@ async def test_a_level_one_claim_on_an_anchor_reaches_its_members(
         assert row["claimed_inchikey"] == GLUCOSE_INCHIKEY
         assert row["claimed_name"] == "D-glucose"
         assert row["level"] == 1
+        assert row["outside_window"] is False
+
+
+async def test_a_level_one_batch_claim_reads_one_inside_its_window_only(
+    editor_client, guest_client, anchors, assignment_enabled, async_session_factory
+):
+    """Next week the same mass may be another isomer: a member acquired outside
+    the window keeps the verdict on the formula, names no structure and reads
+    the engine's level."""
+    acquired = await _acquired(async_session_factory, anchors["s1"])
+    async with async_session_factory() as session:
+        s2_file = await session.scalar(
+            select(SampleItem.sample_file_id).where(
+                SampleItem.sample_item_id == anchors["s2"]
+            )
+        )
+        await session.execute(
+            update(SampleFile)
+            .where(SampleFile.sample_file_id == s2_file)
+            .values(datetime_utc=acquired + timedelta(days=7))
+        )
+        await session.commit()
+    response = await _verify(
+        editor_client,
+        anchors["batch_id"],
+        **_level_one(anchors, acquired, acquired + timedelta(days=1)),
+    )
+    assert response.status_code == 201, response.text
+
+    (inside,) = await _context(guest_client, anchors["s1"])
+    (outside,) = await _context(guest_client, anchors["s2"])
+    assert (inside["level"], inside["outside_window"]) == (1, False)
+    assert (inside["claimed_inchikey"], inside["claimed_name"]) == (
+        GLUCOSE_INCHIKEY,
+        "D-glucose",
+    )
+    assert (outside["level"], outside["level_letter"]) == (None, None)
+    assert (outside["claimed_inchikey"], outside["claimed_name"]) == (None, None)
+    assert outside["outside_window"] is True
+    # The verdict on the formula, its evidence and the window still reach it.
+    assert (outside["verdict"], outside["evidence_level"]) == (
+        "confirmed",
+        "reference_standard",
+    )
+    assert outside["window_start_utc"] is not None
+    assert outside["window_end_utc"] is not None
+    by_sample = {
+        row["sample_item_id"]: row
+        for row in await _batch_verifications(guest_client, anchors["batch_id"])
+    }
+    inside_row, outside_row = by_sample[anchors["s1"]], by_sample[anchors["s2"]]
+    assert (inside_row["level"], inside_row["claimed_inchikey"]) == (
+        1,
+        GLUCOSE_INCHIKEY,
+    )
+    assert inside_row["claimed_name"] == "D-glucose"
+    assert (outside_row["level"], outside_row["level_letter"]) == (None, None)
+    assert (outside_row["claimed_inchikey"], outside_row["claimed_name"]) == (
+        None,
+        None,
+    )
+    assert outside_row["outside_window"] is True
+    assert (outside_row["verdict"], outside_row["evidence_level"]) == (
+        "confirmed",
+        "reference_standard",
+    )
+    # The batch's own read keeps the claim whole: its structure, level and window.
+    (record,) = await _verdicts(guest_client, anchors["batch_id"])
+    assert record["level"] == 1
+    assert (record["claimed_inchikey"], record["claimed_name"]) == (
+        GLUCOSE_INCHIKEY,
+        "D-glucose",
+    )
+
+
+async def test_a_batch_claim_reaches_its_members_with_its_letter(
+    editor_client, guest_client, anchors, assignment_enabled
+):
+    """A standard with no independent line on the anchor: 2b, no window, and
+    every member reads it, letter and all."""
+    response = await _verify(
+        editor_client,
+        anchors["batch_id"],
+        batch_peak_id=anchors["assigned"],
+        verdict="confirmed",
+        evidence_level="reference_standard",
+        expected_formula="C6H12O6",
+        claimed_inchikey=GLUCOSE_INCHIKEY,
+    )
+    assert response.status_code == 201, response.text
+    record = response.json()["data"][0]
+    assert (record["level"], record["level_letter"]) == (2, "b")
+    assert (record["window_start_utc"], record["window_end_utc"]) == (None, None)
+    assert record["context"]["claim"]["lift"] == "an independent line"
+    for sample in ("s1", "s2"):
+        (reaching,) = await _context(guest_client, anchors[sample])
+        assert (reaching["level"], reaching["level_letter"]) == (2, "b")
+    for row in await _batch_verifications(guest_client, anchors["batch_id"]):
+        assert (row["level"], row["level_letter"], row["outside_window"]) == (
+            2,
+            "b",
+            False,
+        )
+
+
+async def test_a_level_one_batch_claim_without_its_window_is_refused(
+    editor_client, guest_client, anchors, assignment_enabled
+):
+    body = _level_one(anchors, datetime.now(timezone.utc), datetime.now(timezone.utc))
+    del body["window_start_utc"], body["window_end_utc"]
+    response = await _verify(editor_client, anchors["batch_id"], **body)
+    assert response.status_code == 422, response.text
+    assert "requires window_start_utc" in response.text
+    assert await _verdicts(guest_client, anchors["batch_id"]) == []
+
+
+async def test_a_batch_rejection_on_a_standard_records_the_claim_it_refutes(
+    editor_client, guest_client, anchors, assignment_enabled
+):
+    now = datetime.now(timezone.utc)
+    claimed = await _verify(
+        editor_client,
+        anchors["batch_id"],
+        **_level_one(anchors, now - timedelta(days=1), now + timedelta(days=1)),
+    )
+    claim = claimed.json()["data"][0]
+    response = await _verify(
+        editor_client,
+        anchors["batch_id"],
+        batch_peak_id=anchors["assigned"],
+        verdict="rejected",
+        evidence_level="reference_standard",
+        expected_formula="C6H12O6",
+    )
+    assert response.status_code == 201, response.text
+    refuted = response.json()["data"][0]
+    assert refuted["level"] is None
+    assert (
+        refuted["context"]["refutes"]["batch_peak_verification_id"]
+        == (claim["batch_peak_verification_id"])
+    )
+    assert (
+        refuted["context"]["refutes"]["level"],
+        refuted["context"]["refutes"]["claimed_name"],
+    ) == (1, "D-glucose")
+    # The members read the engine's level again.
+    (reaching,) = await _context(guest_client, anchors["s1"])
+    assert (reaching["verdict"], reaching["level"]) == ("rejected", None)
 
 
 async def test_a_retract_takes_the_claim_back_from_the_members(
@@ -513,6 +686,7 @@ async def test_a_retract_takes_the_claim_back_from_the_members(
         batch_peak_id=anchors["assigned"],
         verdict="confirmed",
         evidence_level="msms",
+        evidence_detail="fragments",
         expected_formula="C6H12O6",
         claimed_inchikey=GLUCOSE_INCHIKEY,
     )
@@ -524,4 +698,8 @@ async def test_a_retract_takes_the_claim_back_from_the_members(
     assert await _batch_verifications(guest_client, anchors["batch_id"]) == []
     (history,) = await _verdicts(guest_client, anchors["batch_id"])
     assert history["superseded_utc"] is not None
-    assert (history["claimed_inchikey"], history["level"]) == (GLUCOSE_INCHIKEY, 2)
+    assert (history["claimed_inchikey"], history["level"], history["level_letter"]) == (
+        GLUCOSE_INCHIKEY,
+        2,
+        "b",
+    )

@@ -108,6 +108,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from mascope_backend.api.new.peak_assignments.claims import REVIEW_LEVEL
 from mascope_backend.api.new.peak_assignments.cross_channel import (
     AMBIGUITY_REASONS,
     CHANNELS_FOR_CORROBORATION,
@@ -181,6 +182,13 @@ LEVEL_COLUMN = "level"
 #: a rank inside the number, so this order sorts and nothing more.
 LEVELS = ("1", "2a", "2b", "3a", "3b", "3c", "3d", "4a", "4b", "5a", "5b")
 
+#: The levels an engine may state: every level but 1, a confirmed structure,
+#: which a person alone states in review (``claims.REVIEW_LEVEL``, step 5.8f).
+#: Every record this module writes is checked against it
+#: (:func:`engine_stated`), and the import contract refuses an
+#: ``engine_level`` outside it.
+ENGINE_LEVELS = tuple(level for level in LEVELS if level != REVIEW_LEVEL)
+
 #: The levels this step states; the rest come with the steps that read the
 #: evidence they name (5.8b to 5.8f).
 LEVEL_4A = "4a"
@@ -234,6 +242,22 @@ _LIGHTEST = {
 def is_level(value: Any) -> bool:
     """Whether a value is a level of the scale (:data:`LEVELS`)."""
     return isinstance(value, str) and value in LEVELS
+
+
+def engine_stated(record: dict) -> dict:
+    """A level record as the engine may write it: never level 1.
+
+    :param record: A record :data:`IDENTIFICATION_LEVEL` holds.
+    :return: The record.
+    :raises ValueError: On a record at level 1, which only a person's claim
+        states (``claims``); an engine path that reached it would put a
+        confirmed structure on a row nobody confirmed.
+    """
+    if record.get("level") == REVIEW_LEVEL:
+        raise ValueError(
+            "Level 1 is a person's claim in review; no engine path states it"
+        )
+    return record
 
 
 def _provenance(row: dict) -> dict:
@@ -886,7 +910,7 @@ def level_of(row: dict, own_lines: Sequence[dict], ctx: LevelContext) -> dict:
     :return: The record :data:`IDENTIFICATION_LEVEL` holds.
     """
     rivals, unlisted = shortlist(row)
-    return _level(row, own_lines, ctx, rivals, unlisted)
+    return engine_stated(_level(row, own_lines, ctx, rivals, unlisted))
 
 
 def _level(
@@ -997,12 +1021,14 @@ def inherited_level(owner_level: dict | None, owner_id: str) -> dict:
             "lift": "assign the sample again",
             "inherited_from": owner_id or None,
         }
-    return {
-        "level": owner_level.get("level"),
-        "evidence": owner_level.get("evidence"),
-        "lift": owner_level.get("lift"),
-        "inherited_from": owner_id,
-    }
+    return engine_stated(
+        {
+            "level": owner_level.get("level"),
+            "evidence": owner_level.get("evidence"),
+            "lift": owner_level.get("lift"),
+            "inherited_from": owner_id,
+        }
+    )
 
 
 def hand_level(row: dict) -> dict:
@@ -1075,7 +1101,9 @@ def apply_levels(
     for row in m0:
         row_id = str(row.get("peak_assignment_id"))
         rivals, unlisted = shortlist(row)
-        record = _level(row, lines_of.get(row_id, []), ctx, rivals, unlisted)
+        record = engine_stated(
+            _level(row, lines_of.get(row_id, []), ctx, rivals, unlisted)
+        )
         _provenance(row)[IDENTIFICATION_LEVEL] = record
         row[LEVEL_COLUMN] = record["level"]
         by_id[row_id] = record

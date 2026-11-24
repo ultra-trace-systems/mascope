@@ -81,8 +81,15 @@ CLAIM_PAUSES = (2.0, 15.0)
 #: The role the two writes need, and the switch they need on the server.
 _EDITOR = "editor on the sample, on a server with peak assignment enabled"
 
-#: Evidence that is a statement about a structure: a confirmation on it names one.
-_STRUCTURE_EVIDENCE = ("reference_standard", "msms", "orthogonal")
+#: What an MS/MS or orthogonal confirmation may say it showed, and the
+#: details whose claim names a class (3b) rather than a structure. The server
+#: holds the whole mapping; these are what :meth:`PeakAssignmentsResource.verify`
+#: checks before it sends anything.
+_EVIDENCE_DETAILS = {
+    "msms": ("library", "fragments", "loss"),
+    "orthogonal": ("separation", "data_and_list", "class", "context_list", "homologue"),
+}
+_CLASS_DETAILS = ("loss", "class")
 
 #: Default seconds between two looks at a launched run.
 DEFAULT_POLL_INTERVAL = 5.0
@@ -1046,6 +1053,8 @@ class PeakAssignmentsResource(BaseResource):
         note: str | None = None,
         claimed_inchikey: str | None = None,
         claimed_name: str | None = None,
+        evidence_detail: str | None = None,
+        independent_line: str | None = None,
     ) -> dict[str, Any]:
         """Record a person's verdict on one assignment.
 
@@ -1064,12 +1073,26 @@ class PeakAssignmentsResource(BaseResource):
         it again.
 
         A confirmation may name the structure it identifies, an InChIKey and
-        its name: an identification claim. One on a reference standard, MS/MS
-        or orthogonal evidence must, since those are statements about a
-        structure. The server fixes the identification ``level`` the verdict
-        states from its evidence: 1, 2 or 3 for those, 4 for a ``pattern``
-        confirmation, and none for a ``visual`` one, a rejection or an unsure
-        verdict, where the row's level is the engine's.
+        its name: an identification claim. The server fixes the identification
+        level the verdict states in the shared scale, ``level`` and
+        ``level_letter``, from its evidence and what that evidence showed
+        (mapping version 2):
+
+        - ``reference_standard`` (an authentic standard on this instrument
+          with the same reagent chemistry): 1 with an ``independent_line``
+          beside it, else 2b, its lift "an independent line";
+        - ``msms``: ``evidence_detail`` ``library`` 2a, ``fragments`` 2b, or
+          ``loss`` 3b, a class;
+        - ``orthogonal``: ``separation`` 2b, ``data_and_list`` 3a, ``class``
+          3b, ``context_list`` 3c, ``homologue`` 3d;
+        - ``pattern``: ``split_pinned`` 4a, ``split_open`` (or none) 4b;
+        - ``visual``, a rejection, an unsure verdict: none, and the row's
+          level is the engine's.
+
+        A claim at 1, 2 or a 3 naming a candidate names its structure; a class
+        claim (3b) names its class in ``claimed_name`` and no InChIKey. A
+        rejection on ``reference_standard`` evidence refutes the live
+        confirmation: the record names it in ``context["refutes"]``.
 
         :param sample_id: The ID of the sample.
         :type sample_id: str
@@ -1089,19 +1112,31 @@ class PeakAssignmentsResource(BaseResource):
         :param claimed_inchikey: The InChIKey of the structure a confirmation
             names. Only a confirmation names one.
         :type claimed_inchikey: str, optional
-        :param claimed_name: The structure's name, with ``claimed_inchikey``.
+        :param claimed_name: The structure's name, with ``claimed_inchikey``;
+            on a class claim, the class, alone.
         :type claimed_name: str, optional
-        :return: The verification as recorded, with the scores it snapshot
-            and the ``level`` it states.
+        :param evidence_detail: What a confirmation's evidence showed, in its
+            evidence level's words (above). Required on ``msms`` and
+            ``orthogonal``.
+        :type evidence_detail: str, optional
+        :param independent_line: Beside a reference standard: ``msms``,
+            ``separation`` or ``instrument`` (the same air on another
+            instrument), which makes the claim level 1.
+        :type independent_line: str, optional
+        :return: The verification as recorded, with the scores it snapshot,
+            the ``level`` and ``level_letter`` it states, and in ``context``
+            the statement they were fixed from (``claim``: its evidence line
+            and its lift).
         :rtype: dict[str, Any]
         :raises ValueError: If ``confirmed`` comes without an
-            ``evidence_level``, or on a reference standard, MS/MS or
-            orthogonal evidence without a ``claimed_inchikey``; nothing is
-            sent.
+            ``evidence_level``, an MS/MS or orthogonal confirmation without an
+            ``evidence_detail``, or a confirmation that states a structure
+            without a ``claimed_inchikey``; nothing is sent.
         :raises NotFoundError: If the sample has no such assignment.
-        :raises ValidationError: If the verdict or the evidence level is not
-            one the server accepts, the InChIKey is not one, or a structure
-            comes with a verdict other than ``confirmed``.
+        :raises ValidationError: If the verdict, the evidence level, the
+            detail or the line is not one the server accepts, the InChIKey is
+            not one, a structure comes with a verdict other than
+            ``confirmed``, or a class claim names one.
         :raises PermissionDeniedError: Without the editor role on the sample,
             or when the server has peak assignment switched off (403).
         :raises MascopeConnectionError: If the answer was lost.
@@ -1114,11 +1149,12 @@ class PeakAssignmentsResource(BaseResource):
                 row["peak_assignment_id"],
                 "confirmed",
                 evidence_level="reference_standard",
+                independent_line="msms",
                 claimed_inchikey="WQZGKKKJIJFFOK-GASJEMHNSA-N",
                 claimed_name="D-glucose",
             )
         """
-        # The server refuses both too; said here, they cost no request.
+        # The server refuses these too; said here, they cost no request.
         if verdict == "confirmed" and evidence_level is None:
             raise ValueError(
                 "A 'confirmed' verdict needs an evidence_level: one of "
@@ -1126,9 +1162,19 @@ class PeakAssignmentsResource(BaseResource):
             )
         if (
             verdict == "confirmed"
-            and evidence_level in _STRUCTURE_EVIDENCE
-            and claimed_inchikey is None
+            and evidence_level in _EVIDENCE_DETAILS
+            and evidence_detail is None
         ):
+            raise ValueError(
+                f"A confirmation on {evidence_level} evidence says what it showed: "
+                f"give an evidence_detail, one of "
+                f"{', '.join(_EVIDENCE_DETAILS[evidence_level])}."
+            )
+        names_structure = evidence_level == "reference_standard" or (
+            evidence_level in _EVIDENCE_DETAILS
+            and evidence_detail not in _CLASS_DETAILS
+        )
+        if verdict == "confirmed" and names_structure and claimed_inchikey is None:
             raise ValueError(
                 f"A confirmation on {evidence_level} evidence names the structure "
                 "it identifies: give its claimed_inchikey."
@@ -1145,6 +1191,10 @@ class PeakAssignmentsResource(BaseResource):
             body["claimed_inchikey"] = claimed_inchikey
         if claimed_name is not None:
             body["claimed_name"] = claimed_name
+        if evidence_detail is not None:
+            body["evidence_detail"] = evidence_detail
+        if independent_line is not None:
+            body["independent_line"] = independent_line
         try:
             data = self._write(
                 "POST",
@@ -1179,12 +1229,20 @@ class PeakAssignmentsResource(BaseResource):
                    was judged on the peak
                  - ``verdict``, ``evidence_level``, ``note``
                  - ``claimed_inchikey``, ``claimed_name``: the structure a
-                   confirmation names; null on a verdict that names none
-                 - ``level``: the identification level the verdict states,
-                   fixed when it was recorded; null where it states none
+                   confirmation names, or a class claim's class alone; null
+                   on a verdict that names none
+                 - ``level``, ``level_letter``: the identification level the
+                   verdict states, its number and the scale's letter (``2``
+                   and ``b`` for 2b), fixed when it was recorded; null where
+                   it states none, and the letter null at level 1 and on a
+                   verdict recorded under version 1 of the mapping
                  - ``context``: the version of the evidence-to-level mapping
-                   (``level_mapping_version``), on a verdict recorded since
-                   verdicts state a level
+                   (``level_mapping_version``) on a verdict recorded since
+                   verdicts state a level; since version 2 the statement the
+                   level was fixed from (``claim``: ``evidence_detail``,
+                   ``independent_line``, ``evidence``, ``lift``), and on a
+                   rejection on a reference standard the confirmation it
+                   refuted (``refutes``)
                  - ``fit_score``, ``evidence``, ``p_correct``: the
                    assignment's scores when it was judged
                  - ``verified_by``: the user's id
@@ -1306,10 +1364,17 @@ class PeakAssignmentsResource(BaseResource):
                    judged
                  - ``verdict``, ``evidence_level``, ``note``, ``context``,
                    ``verified_by``, ``verified_utc``, ``superseded_utc``
-                 - ``claimed_inchikey``, ``claimed_name``, ``level``: the
-                   structure a confirmation names and the identification
-                   level the verdict states, as :meth:`list_verifications`
-                   gives them
+                 - ``claimed_inchikey``, ``claimed_name``, ``level``,
+                   ``level_letter``: the structure a confirmation names and
+                   the identification level the verdict states, as
+                   :meth:`list_verifications` gives them; on a borrowed
+                   level-1 claim the structure and the level only where the
+                   sample was acquired inside its window
+                 - ``window_start_utc``, ``window_end_utc``, ``outside_window``:
+                   on a borrowed level-1 claim, the first and last
+                   acquisition time it covers, and whether this sample falls
+                   outside them, where its row names no structure and reads
+                   the engine's level
                  - ``fit_score``, ``evidence``, ``p_correct``: the score
                    snapshot taken when the sample's own verdict was recorded;
                    null on a borrowed one

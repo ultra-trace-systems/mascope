@@ -203,12 +203,16 @@ async def supersede_data(async_session_factory, pa_test_data):
 #: The structure a confirmation on structure evidence has to name.
 _GLUCOSE_INCHIKEY = "WQZGKKKJIJFFOK-GASJEMHNSA-N"
 
+#: What an MS/MS or orthogonal confirmation says it showed, by default.
+_DETAIL = {"msms": "fragments", "orthogonal": "separation"}
+
 
 async def _verify(client, sample_item_id, assignment_id, verdict, evidence_level):
     """POST one verdict and return the parsed response body.
 
     A confirmation on a reference standard, MS/MS or orthogonal evidence names
-    a structure, as the API requires.
+    a structure, and an MS/MS or orthogonal one says what it showed (fragments,
+    a separation), as the API requires.
     """
     body = {
         "peak_assignment_id": assignment_id,
@@ -221,6 +225,8 @@ async def _verify(client, sample_item_id, assignment_id, verdict, evidence_level
         "orthogonal",
     ):
         body["claimed_inchikey"] = _GLUCOSE_INCHIKEY
+    if verdict == "confirmed" and evidence_level in _DETAIL:
+        body["evidence_detail"] = _DETAIL[evidence_level]
     response = await client.post(
         f"/api/peak-assignments/sample/{sample_item_id}/verify", json=body
     )
@@ -526,6 +532,8 @@ async def test_a_reference_standard_confirmation_without_a_structure_is_refused(
 async def test_a_level_one_claim_reads_back_with_its_structure(
     editor_client, supersede_data, feature_enabled
 ):
+    """A standard on this instrument and an independent line: level 1, scoped
+    to this sample by the verdict's key, with what it was stated from."""
     sample_item_id = supersede_data["sample_item_id"]
     response = await _verify_body(
         editor_client,
@@ -533,6 +541,7 @@ async def test_a_level_one_claim_reads_back_with_its_structure(
         peak_assignment_id=supersede_data["m0_assignment_id"],
         verdict="confirmed",
         evidence_level="reference_standard",
+        independent_line="separation",
         claimed_inchikey=_GLUCOSE_INCHIKEY,
         claimed_name="D-glucose",
     )
@@ -540,29 +549,188 @@ async def test_a_level_one_claim_reads_back_with_its_structure(
     (record,) = await _verifications(editor_client, sample_item_id)
     assert record["claimed_inchikey"] == _GLUCOSE_INCHIKEY
     assert record["claimed_name"] == "D-glucose"
-    assert record["level"] == 1
-    assert record["context"] == {"level_mapping_version": 1}
+    assert (record["level"], record["level_letter"]) == (1, None)
+    assert record["context"]["level_mapping_version"] == 2
+    claim = record["context"]["claim"]
+    assert (claim["independent_line"], claim["lift"]) == ("separation", None)
+    assert "a separation" in claim["evidence"]
+
+
+@pytest.mark.asyncio
+async def test_a_reference_standard_with_no_independent_line_reads_2b(
+    editor_client, supersede_data, feature_enabled
+):
+    """Decided 2026-11-17: 2b, its lift the independent line."""
+    response = await _verify_body(
+        editor_client,
+        supersede_data["sample_item_id"],
+        peak_assignment_id=supersede_data["m0_assignment_id"],
+        verdict="confirmed",
+        evidence_level="reference_standard",
+        claimed_inchikey=_GLUCOSE_INCHIKEY,
+    )
+    assert response.status_code == 201, response.text
+    record = response.json()["data"][0]
+    assert (record["level"], record["level_letter"]) == (2, "b")
+    assert record["context"]["claim"]["lift"] == "an independent line"
+    assert record["context"]["claim"]["independent_line"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_lone_loss_claim_reads_3b_and_names_its_class_alone(
+    editor_client, supersede_data, feature_enabled
+):
+    response = await _verify_body(
+        editor_client,
+        supersede_data["sample_item_id"],
+        peak_assignment_id=supersede_data["m0_assignment_id"],
+        verdict="confirmed",
+        evidence_level="msms",
+        evidence_detail="loss",
+        claimed_name="a carboxylic acid",
+    )
+    assert response.status_code == 201, response.text
+    record = response.json()["data"][0]
+    assert (record["level"], record["level_letter"]) == (3, "b")
+    assert (record["claimed_inchikey"], record["claimed_name"]) == (
+        None,
+        "a carboxylic acid",
+    )
+    assert record["context"]["claim"]["evidence_detail"] == "loss"
+
+
+@pytest.mark.parametrize("detail", ["library", "fragments"])
+@pytest.mark.asyncio
+async def test_a_level_two_claim_naming_no_structure_is_still_refused(
+    editor_client, supersede_data, feature_enabled, detail
+):
+    response = await _verify_body(
+        editor_client,
+        supersede_data["sample_item_id"],
+        peak_assignment_id=supersede_data["m0_assignment_id"],
+        verdict="confirmed",
+        evidence_level="msms",
+        evidence_detail=detail,
+        claimed_name="D-glucose",
+    )
+    assert response.status_code == 422, response.text
+    assert "requires claimed_inchikey" in response.text
+    assert await _verifications(editor_client, supersede_data["sample_item_id"]) == []
 
 
 @pytest.mark.parametrize(
-    ("evidence_level", "level"), [("pattern", 4), ("visual", None)]
+    ("evidence_level", "detail", "level", "letter"),
+    [
+        ("pattern", None, 4, "b"),
+        ("pattern", "split_open", 4, "b"),
+        ("pattern", "split_pinned", 4, "a"),
+        ("visual", None, None, None),
+    ],
+    ids=["pattern, split unsaid", "split open", "split pinned", "visual"],
 )
 @pytest.mark.asyncio
 async def test_a_confirmation_naming_no_structure_states_the_formulas_level(
-    editor_client, supersede_data, feature_enabled, evidence_level, level
+    editor_client,
+    supersede_data,
+    feature_enabled,
+    evidence_level,
+    detail,
+    level,
+    letter,
 ):
-    """Four on a pattern; a visual confirmation states none of its own, and the
-    row reads the engine's level."""
+    """4a or 4b on a pattern, as the person says the split is pinned or not; a
+    visual confirmation states none of its own, and the row reads the
+    engine's level."""
+    body = {
+        "peak_assignment_id": supersede_data["m0_assignment_id"],
+        "verdict": "confirmed",
+        "evidence_level": evidence_level,
+    }
+    if detail:
+        body["evidence_detail"] = detail
+    response = await _verify_body(
+        editor_client, supersede_data["sample_item_id"], **body
+    )
+    assert response.status_code == 201, response.text
+    record = response.json()["data"][0]
+    assert (record["level"], record["level_letter"]) == (level, letter)
+    assert record["claimed_inchikey"] is None
+    assert ("claim" in record["context"]) is (level is not None)
+
+
+@pytest.mark.asyncio
+async def test_a_rejection_on_a_standard_records_the_claim_it_refutes(
+    editor_client, supersede_data, feature_enabled
+):
+    """A standard that disagrees refutes the structure: the rejection names the
+    claim it took back, and states no level, so the row reads the engine's."""
+    sample_item_id = supersede_data["sample_item_id"]
+    claimed = await _verify_body(
+        editor_client,
+        sample_item_id,
+        peak_assignment_id=supersede_data["m0_assignment_id"],
+        verdict="confirmed",
+        evidence_level="reference_standard",
+        independent_line="msms",
+        claimed_inchikey=_GLUCOSE_INCHIKEY,
+        claimed_name="D-glucose",
+    )
+    claim = claimed.json()["data"][0]
+    response = await _verify_body(
+        editor_client,
+        sample_item_id,
+        peak_assignment_id=supersede_data["m0_assignment_id"],
+        verdict="rejected",
+        evidence_level="reference_standard",
+        note="the standard elutes elsewhere",
+    )
+    assert response.status_code == 201, response.text
+    live, history = await _verifications(editor_client, sample_item_id)
+    assert live["verdict"] == "rejected"
+    assert (live["level"], live["level_letter"]) == (None, None)
+    assert live["context"]["refutes"] == {
+        "assignment_verification_id": claim["assignment_verification_id"],
+        "level": 1,
+        "level_letter": None,
+        "evidence_level": "reference_standard",
+        "claimed_inchikey": _GLUCOSE_INCHIKEY,
+        "claimed_name": "D-glucose",
+        "verified_utc": live["context"]["refutes"]["verified_utc"],
+    }
+    assert history["assignment_verification_id"] == claim["assignment_verification_id"]
+    assert history["superseded_utc"] is not None
+
+
+@pytest.mark.parametrize(
+    ("first", "evidence_level"),
+    [
+        (None, "reference_standard"),
+        ("confirmed", "visual"),
+        ("unsure", "reference_standard"),
+    ],
+    ids=["nothing live", "a visual rejection", "an unsure verdict live"],
+)
+@pytest.mark.asyncio
+async def test_only_a_standard_rejecting_a_confirmation_records_a_refutation(
+    editor_client, supersede_data, feature_enabled, first, evidence_level
+):
+    sample_item_id = supersede_data["sample_item_id"]
+    if first:
+        await _verify(
+            editor_client,
+            sample_item_id,
+            supersede_data["m0_assignment_id"],
+            first,
+            "pattern" if first == "confirmed" else None,
+        )
     body = await _verify(
         editor_client,
-        supersede_data["sample_item_id"],
+        sample_item_id,
         supersede_data["m0_assignment_id"],
-        "confirmed",
+        "rejected",
         evidence_level,
     )
-    record = body["data"][0]
-    assert record["level"] == level
-    assert record["claimed_inchikey"] is None
+    assert "refutes" not in body["data"][0]["context"]
 
 
 @pytest.mark.asyncio
@@ -590,31 +758,79 @@ async def test_a_later_verdict_supersedes_the_claim(
     assert live["superseded_utc"] is None
     assert (live["claimed_inchikey"], live["level"]) == (None, None)
     assert claim["superseded_utc"] is not None
-    assert (claim["claimed_inchikey"], claim["level"]) == (_GLUCOSE_INCHIKEY, 2)
+    assert (claim["claimed_inchikey"], claim["level"], claim["level_letter"]) == (
+        _GLUCOSE_INCHIKEY,
+        2,
+        "b",
+    )
 
 
-@pytest.mark.parametrize("claimed", [False, True], ids=["no structure", "a claim"])
+_POOLED = {
+    "no structure": {"evidence_level": "pattern"},
+    "a claim": {"evidence_level": "pattern", "claimed_inchikey": _GLUCOSE_INCHIKEY},
+    "a class claim": {
+        "evidence_level": "msms",
+        "evidence_detail": "loss",
+        "claimed_name": "a carboxylic acid",
+    },
+    "a level-1 claim": {
+        "evidence_level": "reference_standard",
+        "independent_line": "instrument",
+        "claimed_inchikey": _GLUCOSE_INCHIKEY,
+    },
+}
+
+
+@pytest.mark.parametrize("claimed", list(_POOLED), ids=list(_POOLED))
 @pytest.mark.asyncio
 async def test_a_claim_counts_in_the_label_pool_as_its_verdict_does(
     editor_client, owner_client, supersede_data, feature_enabled, claimed
 ):
     """The pool selects on the verdict and the score snapshot and ignores the
-    structure: a confirmation is one positive whether it names one or not."""
+    structure, the letter and what the evidence showed: a confirmation is one
+    positive whatever level it states."""
     body = {
         "peak_assignment_id": supersede_data["m0_assignment_id"],
         "verdict": "confirmed",
-        "evidence_level": "pattern",
+        **_POOLED[claimed],
     }
-    if claimed:
-        body["claimed_inchikey"] = _GLUCOSE_INCHIKEY
     response = await _verify_body(
         editor_client, supersede_data["sample_item_id"], **body
     )
     assert response.status_code == 201, response.text
-    assert response.json()["data"][0]["level"] == 4
 
     response = await owner_client.post(
         "/api/peak-assignments/calibration/tof/recalibrate"
     )
     assert response.status_code == 200, response.text
     assert (response.json()["n_pos"], response.json()["n_neg"]) == (1, 0)
+
+
+@pytest.mark.asyncio
+async def test_a_refutation_counts_in_the_label_pool_as_the_rejection_it_is(
+    editor_client, owner_client, supersede_data, feature_enabled
+):
+    """The pool reads the live verdict: the level-1 claim a standard refuted is
+    history, and the refutation one negative, as any rejection is."""
+    sample_item_id = supersede_data["sample_item_id"]
+    for body in (
+        {
+            "verdict": "confirmed",
+            "evidence_level": "reference_standard",
+            "independent_line": "msms",
+            "claimed_inchikey": _GLUCOSE_INCHIKEY,
+        },
+        {"verdict": "rejected", "evidence_level": "reference_standard"},
+    ):
+        response = await _verify_body(
+            editor_client,
+            sample_item_id,
+            peak_assignment_id=supersede_data["m0_assignment_id"],
+            **body,
+        )
+        assert response.status_code == 201, response.text
+    response = await owner_client.post(
+        "/api/peak-assignments/calibration/tof/recalibrate"
+    )
+    assert response.status_code == 200, response.text
+    assert (response.json()["n_pos"], response.json()["n_neg"]) == (0, 1)

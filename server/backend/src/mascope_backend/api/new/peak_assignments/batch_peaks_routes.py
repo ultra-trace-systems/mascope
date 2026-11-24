@@ -1245,11 +1245,14 @@ async def verify_batch_peak_route(
     verdict this replaces is stamped superseded in the same transaction.
 
     A confirmation may name a structure (``claimed_inchikey``, ``claimed_name``),
-    which makes it an identification claim, and a reference-standard, MS/MS or
-    orthogonal one must (422 otherwise). The record carries the level the verdict
-    states, fixed from its evidence: 1 to 3 with a structure, 4 on a pattern,
-    none on a visual confirmation or a rejection, where a reader takes the
-    engine's.
+    which makes it an identification claim. The record carries the level the
+    verdict states in the shared scale, fixed from its evidence and what that
+    evidence showed, as for a per-sample verdict. A level-1 claim names the
+    time window its standard covers (``window_start_utc``, ``window_end_utc``,
+    422 without); a member acquired outside it names no structure and reads
+    the engine's level. A
+    rejection on reference-standard evidence records the confirmation it
+    refutes.
 
     :param sample_batch_id: The unique identifier of the sample batch.
     :param body: The verdict, its evidence, the formula judged and the structure
@@ -1265,8 +1268,7 @@ async def verify_batch_peak_route(
         evidence_level=body.evidence_level,
         note=body.note,
         user_id=user.id,
-        claimed_inchikey=body.claimed_inchikey,
-        claimed_name=body.claimed_name,
+        identification=body,
     )
     return BatchPeakVerificationsResponse.model_validate(result)
 

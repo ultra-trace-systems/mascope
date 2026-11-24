@@ -2224,35 +2224,64 @@ class TestPeakAssignmentWriteContract:
         } <= set(verdicts.columns)
 
     def test_verify_records_a_claim_listed_back(self, scratch, launched_run):
-        """A confirmation that names a structure: the server fixes its level."""
+        """A confirmation that names a structure: the server fixes its level.
+
+        A reference standard with no independent line beside it, which every
+        published SDK can send: level 2b since the claims' mapping version 2,
+        its lift the line that would take it to 1.
+        """
         peak_assignments = scratch.client.peak_assignments
         _skip_unless_param(peak_assignments.verify, "claimed_inchikey")
         sample_id = launched_run.sample_id
-        assigned = launched_run.ledger[launched_run.ledger["assigned_formula"].notna()]
-        if assigned.empty:
-            pytest.skip("the run assigned no formula to verify")
-        row = assigned.iloc[0]
+        row = _assigned_row(launched_run)
 
-        claim = peak_assignments.verify(
-            sample_id,
-            row["peak_assignment_id"],
-            "confirmed",
-            evidence_level="reference_standard",
-            claimed_inchikey="WQZGKKKJIJFFOK-GASJEMHNSA-N",
-            claimed_name="contract test",
-        )
+        try:
+            claim = peak_assignments.verify(
+                sample_id,
+                row["peak_assignment_id"],
+                "confirmed",
+                evidence_level="reference_standard",
+                claimed_inchikey="WQZGKKKJIJFFOK-GASJEMHNSA-N",
+                claimed_name="contract test",
+            )
+        finally:
+            # Leave the peak unconfirmed whatever the claim reads, as the test
+            # above does: the batch's verdict filters are read on the same
+            # scratch copy.
+            peak_assignments.verify(sample_id, row["peak_assignment_id"], "unsure")
 
-        assert claim["level"] == 1
-        # Leave the peak unconfirmed, as the test above does: the batch's
-        # verdict filters are read on the same scratch copy.
-        peak_assignments.verify(sample_id, row["peak_assignment_id"], "unsure")
+        assert (claim["level"], claim["level_letter"]) == (2, "b")
+        assert claim["context"]["claim"]["lift"] == "an independent line"
         verdicts = peak_assignments.list_verifications(sample_id)
         listed = verdicts.set_index("assignment_verification_id").loc[
             claim["assignment_verification_id"]
         ]
         assert listed["claimed_inchikey"] == "WQZGKKKJIJFFOK-GASJEMHNSA-N"
         assert listed["claimed_name"] == "contract test"
-        assert listed["level"] == 1
+        assert (listed["level"], listed["level_letter"]) == (2, "b")
+
+    def test_verify_records_a_level_one_claim(self, scratch, launched_run):
+        """A standard with an independent line beside it is level 1, which a
+        person alone states."""
+        peak_assignments = scratch.client.peak_assignments
+        _skip_unless_param(peak_assignments.verify, "independent_line")
+        sample_id = launched_run.sample_id
+        row = _assigned_row(launched_run)
+
+        try:
+            claim = peak_assignments.verify(
+                sample_id,
+                row["peak_assignment_id"],
+                "confirmed",
+                evidence_level="reference_standard",
+                independent_line="separation",
+                claimed_inchikey="WQZGKKKJIJFFOK-GASJEMHNSA-N",
+            )
+        finally:
+            peak_assignments.verify(sample_id, row["peak_assignment_id"], "unsure")
+
+        assert (claim["level"], claim["level_letter"]) == (1, None)
+        assert claim["context"]["claim"]["independent_line"] == "separation"
 
 
 @requires_stack
@@ -2613,6 +2642,14 @@ def _assert_series_are_the_members(client, batch_id: str):
     expected = members.set_index(key)["intensity"].sort_index()
     assert series.set_index(key)["intensity"].sort_index().equals(expected)
     return series
+
+
+def _assigned_row(launched_run):
+    """A row of the launched run that commits a formula, else skip."""
+    assigned = launched_run.ledger[launched_run.ledger["assigned_formula"].notna()]
+    if assigned.empty:
+        pytest.skip("the run assigned no formula to verify")
+    return assigned.iloc[0]
 
 
 def _skip_unless_attr(obj, name: str) -> None:

@@ -7,9 +7,10 @@ next (``verification_queue.rank_queue``).
 
 from datetime import datetime as dt
 from datetime import timezone
+from typing import Any
 
 from fastapi import status
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.orm import aliased
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
@@ -26,7 +27,13 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     mz_from_delta,
     resolve_candidate,
 )
-from mascope_backend.api.new.peak_assignments.claims import claim_level, mapping_context
+from mascope_backend.api.new.peak_assignments.claim_records import (
+    claim_columns,
+    claim_fields,
+    for_sample,
+    stated_by,
+    supersede_live,
+)
 from mascope_backend.api.new.peak_assignments.config import IN_APP_ENGINE
 from mascope_backend.api.new.peak_assignments.fold_view import (
     fold_id_target,
@@ -111,8 +118,7 @@ async def create_verification(
     evidence_level: str | None = None,
     note: str | None = None,
     user_id: int | None = None,
-    claimed_inchikey: str | None = None,
-    claimed_name: str | None = None,
+    identification: Any = None,
 ) -> dict:
     """Record a user's verdict on an assignment, snapshotting its score.
 
@@ -134,13 +140,14 @@ async def create_verification(
         requires it for 'confirmed'.
     :param note: Optional free-text note.
     :param user_id: The verifying user (attribution).
-    :param claimed_inchikey: The structure a confirmation names, if any: an
-        identification claim (``claims``). The schema applies its rules.
-    :param claimed_name: The name given with it.
+    :param identification: The identification claim the body carries
+        (``claim_schemas.ClaimFields``: the structure, what the evidence
+        showed, a standard's line), whose rules the schema applies; a level-1
+        claim here is scoped to its sample.
     :return: Status envelope with the created verification record, with the
-        level the verdict states fixed on it.
+        level the verdict states fixed on it (``claim_records.claim_columns``).
     """
-    level = claim_level(verdict, evidence_level, claimed_inchikey)
+    stated = stated_by(verdict, evidence_level, identification)
     sample = await fetch_sample(sample_item_id)
     async with async_session() as session:
         if is_fold_id(peak_assignment_id):
@@ -193,9 +200,10 @@ async def create_verification(
         now = dt.now(timezone.utc)
         # IS NOT DISTINCT FROM, not ==: both identity halves are nullable, and a plain equality
         # never matches a NULL, which would leave the old verdict live beside the new one.
-        await session.execute(
-            update(AssignmentVerification)
-            .where(
+        refutes = await supersede_live(
+            session,
+            AssignmentVerification,
+            (
                 AssignmentVerification.sample_item_id == sample_item_id,
                 AssignmentVerification.sample_peak_id == assignment.sample_peak_id,
                 AssignmentVerification.assigned_formula.is_not_distinct_from(
@@ -205,8 +213,10 @@ async def create_verification(
                     assignment.ionization_mechanism_id
                 ),
                 AssignmentVerification.superseded_utc.is_(None),
-            )
-            .values(superseded_utc=now)
+            ),
+            verdict=verdict,
+            evidence_level=evidence_level,
+            now=now,
         )
         provenance = assignment.provenance or {}
         verification = AssignmentVerification(
@@ -223,10 +233,7 @@ async def create_verification(
             evidence=provenance.get("evidence"),
             p_correct=provenance.get("p_correct"),
             note=note,
-            context=mapping_context(),
-            claimed_inchikey=claimed_inchikey,
-            claimed_name=claimed_name,
-            level=level,
+            **claim_columns(identification, stated, refutes),
             verified_by=user_id,
             verified_utc=now,
         )
@@ -299,9 +306,11 @@ async def get_scope_verifications(
     the peak's own claim (formula, mechanism) is the one judged, so a dissenting
     sample stays out from under a verdict about another formula; it is listed
     ``borrowed``, and only where the sample has no current verdict of its own on
-    that claim. The precedence is settled on the whole record before the filters
-    apply, so a filter never lets a borrowed verdict through in place of the
-    sample's own one.
+    that claim. A borrowed level-1 claim's structure and level reach it only
+    inside its window (``claim_records.for_sample``); outside, the row names no
+    structure and reads the engine's level. The precedence is settled on the
+    whole record before the filters apply, so a filter never lets a borrowed
+    verdict through in place of the sample's own one.
 
     Each row carries the sample's filename and acquisition time and the peak's
     m/z. Superseded per-sample verdicts are listed with ``include_superseded``;
@@ -444,29 +453,27 @@ async def get_scope_verifications(
             continue
         if (sample_item_id, sample_peak_id, *claim) in judged:
             continue
-        rows.append(
-            {
-                "sample_item_id": sample_item_id,
-                "sample_peak_id": sample_peak_id,
-                "sample_peak_mz": mz_from_delta(anchor.mz, mz_delta_ppm),
-                "assigned_formula": record.assigned_formula,
-                "ionization_mechanism_id": record.ionization_mechanism_id,
-                "verdict": record.verdict,
-                "evidence_level": record.evidence_level,
-                "claimed_inchikey": record.claimed_inchikey,
-                "claimed_name": record.claimed_name,
-                "level": record.level,
-                "note": record.note,
-                "context": record.context,
-                "verified_by": record.verified_by,
-                "verified_utc": record.verified_utc,
-                "superseded_utc": None,
-                "borrowed": True,
-                "batch_peak_verification_id": record.batch_peak_verification_id,
-                "batch_peak_id": record.batch_peak_id,
-                "stale": is_stale(record.to_dict(), claim_of(anchor)),
-            }
-        )
+        sample = sample_rows.get(sample_item_id)
+        row = {
+            "sample_item_id": sample_item_id,
+            "sample_peak_id": sample_peak_id,
+            "sample_peak_mz": mz_from_delta(anchor.mz, mz_delta_ppm),
+            "assigned_formula": record.assigned_formula,
+            "ionization_mechanism_id": record.ionization_mechanism_id,
+            "verdict": record.verdict,
+            "evidence_level": record.evidence_level,
+            **claim_fields(record),
+            "note": record.note,
+            "context": record.context,
+            "verified_by": record.verified_by,
+            "verified_utc": record.verified_utc,
+            "superseded_utc": None,
+            "borrowed": True,
+            "batch_peak_verification_id": record.batch_peak_verification_id,
+            "batch_peak_id": record.batch_peak_id,
+            "stale": is_stale(record.to_dict(), claim_of(anchor)),
+        }
+        rows.append(for_sample(row, sample.datetime_utc if sample else None))
 
     if since is not None and since.tzinfo is None:
         since = since.replace(tzinfo=timezone.utc)

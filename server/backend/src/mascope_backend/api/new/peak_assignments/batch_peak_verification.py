@@ -41,11 +41,17 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
     NotFoundException,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks import continuity_stale
-from mascope_backend.api.new.peak_assignments.claims import claim_level, mapping_context
+from mascope_backend.api.new.peak_assignments.claim_records import (
+    claim_columns,
+    for_sample,
+    stated_by,
+    supersede_live,
+)
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,
     BatchPeakVerification,
+    Sample,
     async_session,
 )
 from mascope_backend.db.id import gen_id
@@ -185,8 +191,7 @@ async def verify_batch_peak(
     evidence_level: Optional[str] = None,
     note: Optional[str] = None,
     user_id: Optional[int] = None,
-    claimed_inchikey: Optional[str] = None,
-    claimed_name: Optional[str] = None,
+    identification: Any = None,
 ) -> dict:
     """Record a verdict on a batch peak's species claim.
 
@@ -206,13 +211,13 @@ async def verify_batch_peak(
         'confirmed'.
     :param note: Optional free-text note.
     :param user_id: The judging user (attribution).
-    :param claimed_inchikey: The structure a confirmation names, if any: an
-        identification claim (``claims``). The schema applies its rules.
-    :param claimed_name: The name given with it.
+    :param identification: The identification claim the body carries
+        (``claim_schemas.ClaimFields``, with a level-1 claim's window), whose
+        rules the schema applies.
     :return: Status envelope with the created record, current claim attached,
         with the level the verdict states fixed on it.
     """
-    level = claim_level(verdict, evidence_level, claimed_inchikey)
+    stated = stated_by(verdict, evidence_level, identification)
     async with async_session() as session:
         anchor = await session.get(BatchPeak, batch_peak_id)
         if anchor is None or anchor.sample_batch_id != sample_batch_id:
@@ -229,20 +234,22 @@ async def verify_batch_peak(
                 batch_peak_id, expected_formula, anchor.consensus_formula
             )
         claim = claim_of(anchor)
-        context = mapping_context(context_snapshot(anchor))
         await _lock_anchor(session, batch_peak_id)
         now = dt.now(timezone.utc)
-        await session.execute(
-            update(BatchPeakVerification)
-            .where(
+        refutes = await supersede_live(
+            session,
+            BatchPeakVerification,
+            (
                 BatchPeakVerification.batch_peak_id == batch_peak_id,
                 BatchPeakVerification.assigned_formula == claim.formula,
                 BatchPeakVerification.ionization_mechanism_id.is_not_distinct_from(
                     claim.ionization_mechanism_id
                 ),
                 BatchPeakVerification.superseded_utc.is_(None),
-            )
-            .values(superseded_utc=now)
+            ),
+            verdict=verdict,
+            evidence_level=evidence_level,
+            now=now,
         )
         verification = BatchPeakVerification(
             batch_peak_verification_id=gen_id(32),
@@ -252,11 +259,8 @@ async def verify_batch_peak(
             ionization_mechanism_id=claim.ionization_mechanism_id,
             verdict=verdict,
             evidence_level=evidence_level,
-            claimed_inchikey=claimed_inchikey,
-            claimed_name=claimed_name,
-            level=level,
+            **claim_columns(identification, stated, refutes, context_snapshot(anchor)),
             note=note,
-            context=context,
             verified_by=user_id,
             verified_utc=now,
         )
@@ -383,10 +387,19 @@ async def get_anchor_context(sample_item_id: str) -> dict:
     iff the row's own claim (formula, mechanism) is the one judged, which keeps a
     dissenting sample out from under a verdict about another formula.
 
+    A level-1 claim's structure and level reach the sample only where the
+    sample was acquired inside the claim's window (``claims.level_reaches``).
+    Outside it the record is served with no structure, no level and
+    ``outside_window`` set: the verdict still reaches the row, and the row
+    reads the engine's level.
+
     :param sample_item_id: The sample whose peaks to look up.
     :return: Status envelope with the records, ``sample_peak_id`` on each.
     """
     async with async_session() as session:
+        acquired = await session.scalar(
+            select(Sample.datetime_utc).where(Sample.sample_item_id == sample_item_id)
+        )
         rows = (
             await session.execute(
                 select(
@@ -412,7 +425,10 @@ async def get_anchor_context(sample_item_id: str) -> dict:
             )
         ).all()
         data = [
-            {"sample_peak_id": peak_id, **with_current_claim(v.to_dict(), claim_of(bp))}
+            {
+                "sample_peak_id": peak_id,
+                **for_sample(with_current_claim(v.to_dict(), claim_of(bp)), acquired),
+            }
             for peak_id, v, bp in rows
         ]
     return {

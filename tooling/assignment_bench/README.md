@@ -676,9 +676,16 @@ and `review --record` posts what a person made of them
 4. A person opens each peak in the app and fills `verdict` (`confirmed`,
    `rejected`, `unsure`), `evidence_level` (`reference_standard`, `msms`,
    `orthogonal`, `pattern`, `visual`), and a `note` if they like. A
-   confirmation on a reference standard, MS/MS or an orthogonal technique
-   names its structure in `claimed_inchikey` (and `claimed_name`), as the
-   verify route asks. Rows left without a verdict are skipped.
+   confirmation on MS/MS or an orthogonal technique says what it showed in
+   `evidence_detail` (`library`, `fragments` or `loss`; `separation`,
+   `data_and_list`, `class`, `context_list` or `homologue`), a pattern may
+   (`split_pinned` or `split_open`), and a reference standard may name its
+   `independent_line` (`msms`, `separation`, `instrument`), which makes it
+   level 1. A confirmation on a reference standard, MS/MS or an orthogonal
+   technique names its structure in `claimed_inchikey` (and `claimed_name`),
+   but for a class claim (`loss`, `class`), which names its class in
+   `claimed_name` alone, as the verify route asks. Rows left without a
+   verdict are skipped.
 5. **`review --record <sheet> [--recalibrate] [--wait]`** checks every
    filled row against the verify route's rules first. One problem, and
    nothing is posted. Otherwise it checks out and migrates the build the

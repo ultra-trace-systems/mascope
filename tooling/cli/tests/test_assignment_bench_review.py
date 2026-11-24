@@ -204,6 +204,7 @@ def test_a_filled_row_is_checked_before_anything_is_posted():
                 "peak_assignment_id": "a1",
                 "verdict": "Confirmed",
                 "evidence_level": "msms",
+                "evidence_detail": " Fragments",
                 "claimed_inchikey": " BDAGIHXWWSANSR-UHFFFAOYSA-N ",
                 "claimed_name": "formic acid",
             },
@@ -241,6 +242,45 @@ def test_a_filled_row_is_checked_before_anything_is_posted():
                 "evidence_level": "pattern",
                 "claimed_name": "formic acid",
             },
+            # version 2 of the claims' mapping: what the evidence showed
+            {
+                "sample_item_id": "s1",
+                "peak_assignment_id": "a10",
+                "verdict": "confirmed",
+                "evidence_level": "msms",
+                "evidence_detail": "loss",
+                "claimed_name": "a carboxylic acid",
+            },
+            {
+                "sample_item_id": "s1",
+                "peak_assignment_id": "a11",
+                "verdict": "confirmed",
+                "evidence_level": "msms",
+                "evidence_detail": "loss",
+                "claimed_inchikey": "BDAGIHXWWSANSR-UHFFFAOYSA-N",
+            },
+            {
+                "sample_item_id": "s1",
+                "peak_assignment_id": "a12",
+                "verdict": "confirmed",
+                "evidence_level": "pattern",
+                "independent_line": "msms",
+            },
+            {
+                "sample_item_id": "s1",
+                "peak_assignment_id": "a13",
+                "verdict": "confirmed",
+                "evidence_level": "reference_standard",
+                "independent_line": "separation",
+                "claimed_inchikey": "BDAGIHXWWSANSR-UHFFFAOYSA-N",
+            },
+            {
+                "sample_item_id": "s1",
+                "peak_assignment_id": "a14",
+                "verdict": "confirmed",
+                "evidence_level": "pattern",
+                "evidence_detail": "loss",
+            },
         ]
     )
     filled = review.read_filled(text)
@@ -256,15 +296,26 @@ def test_a_filled_row_is_checked_before_anything_is_posted():
     ] == [
         ("a1", "confirmed", "msms", "BDAGIHXWWSANSR-UHFFFAOYSA-N", "formic acid"),
         ("a6", "rejected", None, None, None),
+        ("a10", "confirmed", "msms", None, "a carboxylic acid"),
+        ("a13", "confirmed", "reference_standard", "BDAGIHXWWSANSR-UHFFFAOYSA-N", None),
+    ]
+    assert [(r["evidence_detail"], r["independent_line"]) for r in filled.rows] == [
+        ("fragments", None),
+        (None, None),
+        ("loss", None),
+        (None, "separation"),
     ]
     assert filled.problems == [
         "line 4: a confirmation needs an evidence level",
         "line 5: verdict 'maybe' is none of confirmed, rejected, unsure",
         "line 6: evidence level 'hunch' is none of reference_standard, msms, "
         "orthogonal, pattern, visual",
-        "line 8: a confirmation on orthogonal names its structure in claimed_inchikey",
+        "line 8: a confirmation on orthogonal says what it showed in evidence_detail",
         "line 9: only a confirmation names a structure",
         "line 10: claimed_name goes with claimed_inchikey",
+        "line 12: a class claim names its class in claimed_name, no claimed_inchikey",
+        "line 13: independent_line goes with a confirmation on reference_standard",
+        "line 15: evidence detail 'loss' on pattern is none of split_pinned, split_open",
     ]
     with pytest.raises(review.ReviewError, match="not a review sheet"):
         review.read_filled("a,b\n1,2\n")
@@ -293,6 +344,7 @@ def test_record_posts_each_verdict_and_refits_each_class_once(tmp_path):
                 "profile": "BR",
                 "verdict": "confirmed",
                 "evidence_level": "msms",
+                "evidence_detail": "library",
                 "claimed_inchikey": "BDAGIHXWWSANSR-UHFFFAOYSA-N",
                 "note": " lobe ",
             },
@@ -327,6 +379,7 @@ def test_record_posts_each_verdict_and_refits_each_class_once(tmp_path):
                 "verdict": "confirmed",
                 "evidence_level": "msms",
                 "note": "lobe",
+                "evidence_detail": "library",
                 "claimed_inchikey": "BDAGIHXWWSANSR-UHFFFAOYSA-N",
             },
         ),

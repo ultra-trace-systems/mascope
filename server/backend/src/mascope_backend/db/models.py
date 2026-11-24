@@ -3920,16 +3920,27 @@ def _claim_checks() -> tuple:
 
     A claim is a confirmed verdict that names a structure
     (``docs/dev/identification_claims.md`` sections 5.1 and 5.2): a level 1 to
-    3 is a statement about a structure, so it names one; only a confirmation
-    names one; and the name is an InChIKey's shape, as a target compound's is.
-    The rule that a reference-standard, MS/MS or orthogonal confirmation names
-    a structure is the request layer's alone: verdicts recorded before the
-    claim columns existed carry those evidence levels with none.
+    3 is a statement about a structure, so it names one - all but a class
+    claim (3b), which names a class in ``claimed_name`` and no InChIKey; the
+    letter beside the level is one the scale has for its number; only a
+    confirmation names a structure; and the name is an InChIKey's shape, as a
+    target compound's is. The rule that a reference-standard, MS/MS or
+    orthogonal confirmation states a level is the request layer's alone:
+    verdicts recorded before the claim columns existed carry those evidence
+    levels with none.
     """
     return (
         CheckConstraint("level IS NULL OR level BETWEEN 1 AND 5", name="level_valid"),
         CheckConstraint(
-            "level IS NULL OR level > 3 OR claimed_inchikey IS NOT NULL",
+            "level_letter IS NULL "
+            "OR (level = 2 AND level_letter IN ('a', 'b')) "
+            "OR (level = 3 AND level_letter IN ('a', 'b', 'c', 'd')) "
+            "OR (level IN (4, 5) AND level_letter IN ('a', 'b'))",
+            name="level_letter_valid",
+        ),
+        CheckConstraint(
+            "level IS NULL OR level > 3 OR claimed_inchikey IS NOT NULL "
+            "OR (level = 3 AND level_letter = 'b')",
             name="structure_level_names_structure",
         ),
         CheckConstraint(
@@ -3939,6 +3950,25 @@ def _claim_checks() -> tuple:
         CheckConstraint(
             "claimed_inchikey IS NULL OR claimed_inchikey ~ '^[A-Z]{14}-[A-Z]{10}-[A-Z]$'",
             name="claimed_inchikey_shape",
+        ),
+    )
+
+
+def _window_checks() -> tuple:
+    """The CHECKs a batch-peak claim's time window keeps: both ends or none, the
+    first not after the last, and only on a level-1 claim, the one level a
+    window scopes (``docs/dev/identification_claims.md`` section 5.4)."""
+    return (
+        CheckConstraint(
+            "(window_start_utc IS NULL) = (window_end_utc IS NULL)",
+            name="window_complete",
+        ),
+        CheckConstraint(
+            "window_start_utc IS NULL OR window_start_utc <= window_end_utc",
+            name="window_ordered",
+        ),
+        CheckConstraint(
+            "window_start_utc IS NULL OR level = 1", name="window_scopes_level_one"
         ),
     )
 
@@ -3988,13 +4018,22 @@ class BatchPeakVerification(Base):
     note: Mapped[Optional[str]] = mapped_column(Text)
     context: Mapped[Optional[dict]] = mapped_column(JSON)
     # The identification claim (``docs/dev/identification_claims.md`` section
-    # 5): the structure a confirmation names, and the level it states, fixed
+    # 5): the structure a confirmation names (a class's name alone at 3b), and
+    # the level it states, its number and the scale's letter beside it, fixed
     # when it is made with the mapping's version in ``context``. Null on a
     # verdict that names no structure; ``level`` null where the verdict states
-    # no level of its own and a reader takes the engine's.
+    # no level of its own and a reader takes the engine's; ``level_letter``
+    # null at level 1 and on a claim made under version 1 of the mapping.
     claimed_inchikey: Mapped[Optional[str]] = mapped_column(String(27), index=True)
     claimed_name: Mapped[Optional[str]] = mapped_column(Text)
     level: Mapped[Optional[int]] = mapped_column(SmallInteger)
+    level_letter: Mapped[Optional[str]] = mapped_column(String(1))
+    # A level-1 claim's scope (step 5.8f): the first and last acquisition time
+    # its standard covers. A member acquired outside it names no structure and
+    # reads the engine's level; the verdict still reaches it. Null on every
+    # other claim.
+    window_start_utc: Mapped[Optional[dt]] = mapped_column(TIMESTAMP(timezone=True))
+    window_end_utc: Mapped[Optional[dt]] = mapped_column(TIMESTAMP(timezone=True))
     verified_by: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("user.id", ondelete="SET NULL"), nullable=True, index=True
     )
@@ -4015,6 +4054,7 @@ class BatchPeakVerification(Base):
             name="evidence_level_valid",
         ),
         *_claim_checks(),
+        *_window_checks(),
         # One live verdict per claim at an anchor; NULLS NOT DISTINCT so a null
         # mechanism is one claim, not infinitely many - as on the per-sample table.
         Index(
@@ -4091,13 +4131,16 @@ class AssignmentVerification(Base):
     note: Mapped[Optional[str]] = mapped_column(Text)
     context: Mapped[Optional[dict]] = mapped_column(JSON)
     # The identification claim (``docs/dev/identification_claims.md`` section
-    # 5): the structure a confirmation names, and the level it states, fixed
+    # 5): the structure a confirmation names (a class's name alone at 3b), and
+    # the level it states, its number and the scale's letter beside it, fixed
     # when it is made with the mapping's version in ``context``. Null on a
     # verdict that names no structure; ``level`` null where the verdict states
-    # no level of its own and a reader takes the engine's.
+    # no level of its own and a reader takes the engine's; ``level_letter``
+    # null at level 1 and on a claim made under version 1 of the mapping.
     claimed_inchikey: Mapped[Optional[str]] = mapped_column(String(27), index=True)
     claimed_name: Mapped[Optional[str]] = mapped_column(Text)
     level: Mapped[Optional[int]] = mapped_column(SmallInteger)
+    level_letter: Mapped[Optional[str]] = mapped_column(String(1))
     verified_by: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("user.id", ondelete="SET NULL"), nullable=True, index=True
     )

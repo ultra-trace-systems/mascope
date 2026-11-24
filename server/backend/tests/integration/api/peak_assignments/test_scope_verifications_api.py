@@ -185,6 +185,8 @@ async def scope(async_session_factory, pa_test_data, editor_client, assignment_e
                 "verdict": verdict,
                 "evidence_level": evidence_level,
                 "claimed_inchikey": claimed_inchikey,
+                # What an MS/MS confirmation showed, which the claim states.
+                "evidence_detail": "fragments" if evidence_level == "msms" else None,
             },
         )
         assert response.status_code == 201, response.text
