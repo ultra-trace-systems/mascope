@@ -204,6 +204,14 @@ SHAPED_IDS = {
     "[M+2H]2+": "sysAdd2HPos2",
     "[M-2H]2-": "sysLoss2HNeg2",
     "[M-H-H2O]-": "sysLossHH2ONeg",
+    # Two waters are not hydrogen peroxide, lost, added or removed.
+    "[M+H-(H2O)2]+": "sysAddHLs2H2OPos",
+    "[M+H-H2O2]+": "sysAddHLsH2O2Pos",
+    "[M+(H2O)2H]+": "sysAddH2Ox2HPos",
+    "[M+H2O2H]+": "sysAddH2O2HPos",
+    "[M+(H2OH)2]+": "sysAdd2H2OHPos",
+    "[M-H-(H2O)2]-": "sysLoss2H2OHNeg",
+    "[M-H-H2O2]-": "sysLossHH2O2Neg",
 }
 
 
@@ -217,7 +225,8 @@ def test_the_id_says_the_molecule_count_the_loss_and_the_charge(notation, fixed_
 
 def test_no_shape_takes_another_mechanism_s_id():
     """``[M+H-H2O]+`` and ``[2M+H]+`` used to be seeded as ``sysAddHPos``,
-    the id of ``[M+H]+``."""
+    the id of ``[M+H]+``, and ``[M+H-(H2O)2]+`` as ``sysAddHLsH2O2Pos``, the
+    id of ``[M+H-H2O2]+``."""
     from mascope_backend.ionization_catalogue import _fixed_mechanism_id
     from mascope_tools.composition.mechanism_notation import parse_mechanism
 
@@ -225,6 +234,27 @@ def test_no_shape_takes_another_mechanism_s_id():
     ids = [_fixed_mechanism_id(parse_mechanism(notation)) for notation in notations]
 
     assert len(ids) == len(set(ids))
+
+
+@pytest.mark.parametrize(
+    ("term", "spelled"),
+    [
+        ("H2O", "H2O"),
+        ("(CH4N2O)H", "CH4N2OH"),
+        ("(H2O)2", "2H2O"),
+        ("(H2O)12", "12H2O"),
+        ("(H2O)2H", "H2Ox2H"),
+        ("C(CH3)4", "CCH3x4"),
+        # Two groups are not one group alone, whatever the term's ends.
+        ("(CH3)2(CO)2", "CH3x2COx2"),
+        ("((CH3)2CO)2", "2CH3x2CO"),
+        ("(C(CH3)3)2H", "CCH3x3x2H"),
+    ],
+)
+def test_a_group_s_multiplier_stands_apart_from_its_formula(term, spelled):
+    from mascope_backend.ionization_catalogue import _id_term
+
+    assert _id_term(term) == spelled
 
 
 @pytest.mark.parametrize("notation", sorted(SHAPED_IDS))

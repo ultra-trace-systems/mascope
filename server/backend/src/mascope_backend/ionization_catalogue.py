@@ -295,21 +295,76 @@ def _fixed_mechanism_id(parts: "MechanismParts") -> str:
     - the size of a charge above one, after the polarity: ``[M+2H]2+`` is
       ``sysAdd2HPos2``.
 
+    A group's multiplier is kept apart from the formula it multiplies, so
+    that two waters never read as hydrogen peroxide (:func:`_id_term`):
+    ``[M+H-(H2O)2]+`` is ``sysAddHLs2H2OPos`` and ``[M+H-H2O2]+``
+    ``sysAddHLsH2O2Pos``.
+
     :param parts: The mechanism, read.
     :return: The id, at most the column's 16 characters for every shipped
         mechanism (pinned by the catalogue's tests).
     """
     moiety = (
-        "E" if parts.electron_transfer else "".join(parts.removed_terms or parts.terms)
+        "E"
+        if parts.electron_transfer
+        else "".join(_id_term(term) for term in parts.removed_terms or parts.terms)
     )
     if parts.addition and parts.neutral_loss:
-        moiety += "Ls" + "".join(parts.loss_terms)
+        moiety += "Ls" + "".join(_id_term(term) for term in parts.loss_terms)
     moiety = re.sub(r"[^A-Za-z0-9]", "", moiety.replace("^", "Lab"))
     count = f"{parts.multimer}M" if parts.multimer > 1 else ""
     operation = "Add" if parts.addition else "Loss"
     polarity = "Pos" if parts.charge > 0 else "Neg"
     size = str(abs(parts.charge)) if abs(parts.charge) > 1 else ""
     return f"sys{count}{operation}{moiety}{polarity}{size}"
+
+
+def _id_term(term: str) -> str:
+    """A term as an id spells it: each group's multiplier apart from its
+    formula, which the id's letters and digits would otherwise run together.
+
+    A term that is one group alone takes its count in front, as a chemist
+    writes it and as ``[M+2H]2+``'s ``2H`` reads already: ``(H2O)2`` is
+    ``2H2O``. That is as short as the group's formula and count can be, so
+    ``[M+H-(H2O)2]+`` fits the column. A group inside a term takes an ``x``
+    before its count, a letter no element symbol holds: ``(H2O)2H`` is
+    ``H2Ox2H``, apart from both ``H2O2H`` and ``(H2OH)2``'s ``2H2OH``. A
+    group without a count, and a term without a group, read as before.
+
+    :param term: One of the mechanism's terms, as written.
+    :return: The term with its groups spelled, the brackets still in.
+    """
+    whole = _GROUP.fullmatch(term)
+    if whole is not None and _closing(term, 0) == whole.end(1):
+        return whole.group(2) + _id_term(whole.group(1))
+    spelled = []
+    position = 0
+    while position < len(term):
+        if term[position] != "(":
+            spelled.append(term[position])
+            position += 1
+            continue
+        close = _closing(term, position)
+        count = re.match(r"[0-9]*", term[close + 1 :]).group()
+        spelled.append(_id_term(term[position + 1 : close]))
+        spelled.append(f"x{count}" if count else "")
+        position = close + 1 + len(count)
+    return "".join(spelled)
+
+
+#: A term that may be one group alone: what it holds and its count.
+_GROUP = re.compile(r"\((.+)\)([0-9]+)")
+
+
+def _closing(term: str, opening: int) -> int:
+    """Where the bracket opening at ``opening`` closes, or the term's end
+    when it never does (the parser refuses such a term before an id)."""
+    depth = 0
+    for position in range(opening, len(term)):
+        depth += {"(": 1, ")": -1}.get(term[position], 0)
+        if depth == 0:
+            return position
+    return len(term)
 
 
 @lru_cache(maxsize=1)
