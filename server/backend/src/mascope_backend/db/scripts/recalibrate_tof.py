@@ -65,7 +65,10 @@ the middle of. The lock goes with the process, so one that was killed leaves
 nothing to clear. ``mascope prod db script run`` starts the script through
 ``docker exec`` with no terminal, which passes no signal on: Ctrl+C, or the
 terminal going away, ends the command but not the script, which goes on in
-the backend container. ``STOP`` is what ends a run. A dry run takes no lock.
+the backend container. ``STOP`` is what ends a run, and it is removed before
+the next one starts: a run started while it is there refits nothing. A
+rollback does not heed it between files and is waited out. A dry run takes no
+lock.
 
 **An apply cut off** - a restart, the script killed, a fault part-way - leaves an
 ``apply`` event with no outcome. A run and a rollback first close each one by
@@ -400,6 +403,38 @@ def _try_lock(handle) -> bool:
     return True
 
 
+def _held_message(directory: str, holder: str) -> str:
+    """The refusal: who holds the ledger, and how to start again after it.
+
+    ``STOP`` ends a run, and must be gone before the next one starts: a run
+    started while it is there refits nothing. A rollback does not heed it
+    between files, so it is waited out. The lock file names the holder's
+    action first; when it cannot be read, both ways are given.
+    """
+    action = holder.split(",", 1)[0].strip() if holder else ""
+    run_way = (
+        "To end the run, create the file STOP in that directory. Once it has "
+        "ended, remove STOP, then start this again with --skip-backup: a run "
+        "started while STOP is there refits nothing."
+    )
+    rollback_way = (
+        "A rollback does not heed STOP: it ends by itself once its files are "
+        "done. Wait for it to end, then start this again."
+    )
+    ways = {RUN: [run_way], ROLLBACK: [rollback_way]}.get(
+        action, [run_way, rollback_way]
+    )
+    return " ".join(
+        [
+            f"Another run or rollback holds the ledger in {directory}"
+            + (f" ({holder})" if holder else "")
+            + ". One goes on after the terminal that started it was "
+            "interrupted or closed.",
+            *ways,
+        ]
+    )
+
+
 @contextmanager
 def hold_ledger(directory: str, action: str) -> Iterator[None]:
     """The ledger's directory to this run or rollback alone, until it ends.
@@ -419,13 +454,7 @@ def hold_ledger(directory: str, action: str) -> Iterator[None]:
                 holder = handle.read().strip()
             except OSError:
                 holder = ""
-            raise LedgerHeld(
-                f"Another run or rollback holds the ledger in {directory}"
-                + (f" ({holder})" if holder else "")
-                + ". One goes on after the terminal that started it was "
-                "interrupted or closed: create the file STOP in that "
-                "directory to end a run, and start this once it has ended."
-            )
+            raise LedgerHeld(_held_message(directory, holder))
         handle.seek(0)
         handle.truncate()
         handle.write(f"{action}, process {os.getpid()}, since {_utc_now()}\n")
@@ -2142,6 +2171,12 @@ async def _run_files(config: Config, writable: bool) -> Report:
     report = Report(action=config.action, instrument=config.instrument)
     log = runtime.logger.info
 
+    if writable and ledger.stop_requested():
+        runtime.logger.warning(
+            f"The file {STOP_FILE} is in {config.ledger_dir}: this run will "
+            "match what an earlier one left and stop before its first file. "
+            f"Remove {STOP_FILE} and start it again to refit."
+        )
     if writable:
         # What a stopped run left goes first: its open applies closed, then
         # what it left unmatched matched
