@@ -136,7 +136,11 @@ Two related concepts describe how neutral molecules become the ions you measure:
 
 Because an ionization mode names its calibrant and diagnostic collections,
 changing a mode's collections flags the affected batches for **re-calibration**
-or **re-matching**. A batch already flagged for re-calibration keeps that flag
+or **re-matching**. An analysis batch you put together is flagged only when the
+edit changes what its results are computed from: the mode's mechanisms flag it
+for re-matching, and its calibrant collection for re-calibration. A change of
+the diagnostic collection alone flags only the daily acquisition batches, since
+an analysis batch is matched against the collections you gave it. A batch already flagged for re-calibration keeps that flag
 when a later edit of the mode or of a target collection asks only for a
 re-match: the re-calibration ends in a re-match, so it covers both. Ionization
 modes are shared reference data; editors and above can manage them.
@@ -152,7 +156,8 @@ re-match, and a file reprocessed into its daily batch, also swap the
 collections the earlier version gave the batch for the new version's, so the
 batch is matched against them; a collection you attached to the batch
 yourself stays, and an analysis batch you put together keeps all of its
-collections. A sample you re-match, re-calibrate or assign on its own also
+collections. Its samples still move onto the new version when you re-match or
+re-calibrate it. A sample you re-match, re-calibrate or assign on its own also
 moves onto the new version, but it is matched against the collections its
 batch still holds: the batch stays flagged, and its re-match brings the
 collections and the rest of its samples current. A sample you give a mode by

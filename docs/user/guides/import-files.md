@@ -183,7 +183,10 @@ uncalibrated.
     re-calibration, and changing the mechanisms or diagnostic collection flags
     them for re-matching. The re-match swaps the collections the mode gave
     each daily batch for its new ones, and keeps any collection added under
-    **Edit batch targets**. An analysis batch keeps its collections.
+    **Edit batch targets**. An analysis batch keeps its collections, and only
+    a change of the mechanisms or the calibrant collection flags it; its
+    samples move onto the mode's new version when you re-match or
+    re-calibrate it.
 
 ### What the shipped chemistries calibrate on
 

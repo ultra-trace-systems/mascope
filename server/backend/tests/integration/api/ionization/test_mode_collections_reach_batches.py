@@ -452,13 +452,33 @@ async def test_an_analysis_batch_keeps_its_collections_through_a_rematch(
     admin_client, async_session_factory, world, batch, monkeypatch
 ):
     """A person put an analysis batch together, its collections included: the
-    rematch an edit of its mode flags matches it against them as they are."""
+    rematch an edit of its mode flags matches it against them as they are, and
+    moves its samples onto the mode's current version.
+
+    The edit changes the mechanisms, which an analysis batch's results are
+    computed from, so it is flagged; and the diagnostic collection, which the
+    batch keeps as a person gave it."""
+    other_mech = gen_id()
     async with async_session_factory() as session:
         (
             await session.get(SampleBatch, batch["batch_id"])
         ).sample_batch_type = "ANALYSIS"
+        session.add(
+            IonizationMechanism(
+                ionization_mechanism_id=other_mech,
+                ionization_mechanism_polarity="+",
+                ionization_mechanism=f"[M+Na]+ (batch collections {other_mech})",
+            )
+        )
         await session.commit()
-    await _edit(admin_client, world, batch, diagnostic_collection_id=world["diag_b"])
+    new_id = await _edit(
+        admin_client,
+        world,
+        batch,
+        ionization_mechanism_ids=[world["mech"], other_mech],
+        diagnostic_collection_id=world["diag_b"],
+    )
+    assert await _status(async_session_factory, batch["batch_id"]) == "rematch"
 
     isotope_keys = {world[f"iso_{key}"]: key for key in _COLLECTIONS}
     matched: set[str] = set()
@@ -479,6 +499,9 @@ async def test_an_analysis_batch_keeps_its_collections_through_a_rematch(
         async_session_factory, world, batch["batch_id"]
     ) == _with_person(batch, {"cal_a", "diag_a"})
     assert matched == _with_person(batch, {"cal_a", "diag_a"})
+    async with async_session_factory() as session:
+        item = await session.get(SampleItem, batch["item_id"])
+        assert item.ionization_mode_id == new_id
 
 
 # --- a per-sample rematch -------------------------------------------------------

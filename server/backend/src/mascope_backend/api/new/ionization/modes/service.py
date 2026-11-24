@@ -284,7 +284,8 @@ async def update_ionization_mode(
     - Check for conflicts with existing acquisition batches.
     - Block updates if any affected batch is currently processing.
     - Flag affected batches: "recalibrate" if the calibration collection changed,
-      otherwise "rematch" if mechanisms or the diagnostic collection changed.
+      otherwise "rematch" if mechanisms or the diagnostic collection changed. A
+      change of the diagnostic collection alone flags acquisition batches only.
     - Mint the next version, or update the fields in place.
     - Commit the changes and return the mode as it now stands.
 
@@ -466,6 +467,23 @@ async def update_ionization_mode(
                     "as one or more affected batches are currently processing."
                 )
 
+        # An edit of the diagnostic collection alone makes only acquisition
+        # batches stale: they take the mode's collections, while an analysis
+        # batch is matched against the collections a person gave it, which a
+        # mode edit never changes. Its samples still move onto the current
+        # version when a person rematches or recalibrates it.
+        rematch_batch_ids = affected_batch_ids
+        if affected_batch_ids and not (mechanisms_changed or calibration_changed):
+            acquisition_ids_result = await session.execute(
+                select(SampleBatch.sample_batch_id).where(
+                    and_(
+                        SampleBatch.sample_batch_id.in_(affected_batch_ids),
+                        SampleBatch.sample_batch_type == "ACQUISITION",
+                    )
+                )
+            )
+            rematch_batch_ids = list(acquisition_ids_result.scalars().all())
+
         # Check affected acquisition batches for name changes
         named = [ionization_mode.ionization_mode_name]
         if update_data.get("ionization_mode_name") is not None:
@@ -545,7 +563,9 @@ async def update_ionization_mode(
     # collection change requires a re-fit of m/z calibration to take effect
     # (which itself ends in a rematch), so it gets the stronger "recalibrate"
     # signal. Mechanism or diagnostic collection changes only need a rematch,
-    # which leaves a batch an earlier edit flagged "recalibrate" as it is.
+    # which leaves a batch an earlier edit flagged "recalibrate" as it is. A
+    # change of the diagnostic collection alone flags acquisition batches only
+    # (rematch_batch_ids, above).
     if affected_batch_ids:
         if calibration_changed:
             await update_sample_batch_status(
@@ -553,9 +573,9 @@ async def update_ionization_mode(
                 status="recalibrate",
                 independent_transaction=True,
             )
-        elif mechanisms_changed or diagnostic_changed:
+        elif (mechanisms_changed or diagnostic_changed) and rematch_batch_ids:
             await update_sample_batch_status(
-                sample_batch_ids=affected_batch_ids,
+                sample_batch_ids=rematch_batch_ids,
                 status="rematch",
                 independent_transaction=True,
                 never_lower=True,
