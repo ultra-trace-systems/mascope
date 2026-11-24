@@ -117,13 +117,14 @@ its own on it. A verdict a later one replaced is not listed.
 | `assigned_formula`, `ionization_mechanism_id` | The claim judged |
 | `verdict`, `evidence_level`, `note`, `verified_by`, `verified_utc` | The verdict, the evidence it rests on, the note, the user's id and when it was recorded |
 | `superseded_utc` | Empty: only current verdicts are listed |
-| `context` | On a batch-level verdict, the batch peak's consensus as the user saw it; on a verdict recorded since verdicts state a level, the version of the evidence-to-level mapping (`level_mapping_version`). As JSON |
+| `context` | On a batch-level verdict, the batch peak's consensus as the user saw it; on a verdict recorded since verdicts state a level, the version of the evidence-to-level mapping (`level_mapping_version`); since version 2, the statement the level was fixed from (`claim`: what the evidence showed, the independent line, the evidence line and the lift), and on a rejection on a reference standard the confirmation it refuted (`refutes`). As JSON |
 | `fit_score`, `evidence`, `p_correct` | The assignment's score when the sample's own verdict was recorded; empty on a borrowed one |
 | `borrowed` | Whether the verdict is a batch-level one reaching the sample |
 | `assignment_verification_id`, `peak_assignment_id`, `peak_assignment_run_id` | The records behind the sample's own verdict |
 | `batch_peak_verification_id`, `batch_peak_id`, `stale` | The records behind a borrowed verdict; `stale` when the batch peak's consensus has since left the formula judged |
-| `claimed_inchikey`, `claimed_name` | The structure a confirmation names, its [identification claim](../how-it-works/peak-assignment.md#naming-the-structure); empty where it names none |
-| `level` | The identification level the verdict states, fixed when it was recorded: 1 to 3 on a reference standard, MS/MS or orthogonal evidence, 4 on the isotope/adduct pattern; empty where it states none |
+| `claimed_inchikey`, `claimed_name` | The structure a confirmation names, its [identification claim](../how-it-works/peak-assignment.md#naming-the-structure), or a class claim's class, by name alone; empty where it names none, and on a borrowed level-1 verdict for a sample acquired outside its window |
+| `level`, `level_letter` | The identification level the verdict states, fixed when it was recorded: its number, 1 to 4, and the scale's letter beside it (`2` and `b` for 2b). The letter is empty at level 1 and on a claim made before the letters. Empty where the verdict states none, and on a borrowed level-1 verdict for a sample acquired outside its window |
+| `window_start_utc`, `window_end_utc`, `outside_window` | On a borrowed level-1 verdict: the first and last acquisition time it covers, and whether this sample was acquired outside them, where the row names no structure and reads the engine's level |
 
 Times are in UTC and written without a zone, which is all Excel stores.
 

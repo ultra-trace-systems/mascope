@@ -1246,15 +1246,18 @@ document cites it.
    **The engine's identification level** (step 5.8, MAS-73). A batch row also
    takes `engine_level`, the level the engine stated in the scale both engines
    share (decision 38 of the plan; `assignment_confidence.md`, "P4 design: the
-   identification level"): `5a`, `5b`, `4a`, `4b`, `3a` to `3d`, `2a`, `2b` or
-   `1`, and anything else is a 422 naming the accepted values, with its two
+   identification level"): `5a`, `5b`, `4a`, `4b`, `3a` to `3d`, `2a` or `2b`,
+   and anything else is a 422 naming the accepted values, with its two
    lines, `engine_evidence` and `engine_lift` (free text, 1024 characters,
    shown as the engine wrote them). They go with
    `engine_tier` and `engine_claim` - written, withheld and cleared by the same
    rules, stored on `batch_peak` and `batch_peak_run_anchor`, and
    served on the ledger read and as an anchor column of the member rows - so a
    reference row and a Mascope row read in one vocabulary rather than
-   translated. Nothing ranks or filters on it server-side.
+   translated. Nothing ranks or filters on it server-side. Level 1 is refused
+   there too (step 5.8f, MAS-943): it is a confirmed structure, a person's
+   claim in review (`identification_claims.md` section 5.4), which no engine
+   states, so an `engine_level` of `1` is a 422 that says so.
 2. **Ionization mechanisms: how far client-side resolution goes.** *Resolved:
    keep the floor.* `import_run` resolves an adduct by exact-string match
    against `mascope.ionization.list()` and sends `ionization_mechanism_id` null

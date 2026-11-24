@@ -861,7 +861,7 @@ In practice:
 - **It is per instrument.** The same raw evidence means different things on an Orbitrap
   (sub-ppm, high resolution) than on a lower-resolution TOF, so each instrument class has
   its own curve. The label data comes from **confident identifications** — most strongly,
-  compounds confirmed by a **reference standard** (a Level‑1 identification,
+  compounds confirmed by a **reference standard** (the basis of a Level‑1 identification,
   [Schymanski et al. 2014][sch14]) — versus near-mass decoys. This is why calibration is
   tied to your **reference dataset**, and why you can, in principle, **calibrate your own
   instrument** by running known standards.
@@ -1356,7 +1356,7 @@ not a rank inside the number: 3c is not weaker than 3a, it rests on something el
 | 4a | The neutral formula, the split pinned | every rival excluded; the split settled |
 | 3a to 3d | A tentative candidate: data and list agree, one functional group, a context list, a homologue series | coming: context, ionization, co-variation |
 | 2a, 2b | A probable structure: a library spectrum, diagnostic evidence | coming: MS/MS |
-| 1 | A confirmed structure | a person, in review, only |
+| 1 | A confirmed structure | a person, in review, only: a reference standard and an independent line ([Naming the structure](#naming-the-structure)) |
 
 **How a level is read.** Each committed row is asked, in order:
 
@@ -1802,8 +1802,9 @@ pin the compound on that batch peak instead.
 --8<-- "_help/assignment-verification.md"
 
 The evidence levels follow the field's identification-confidence ladder
-([Schymanski et al. 2014][sch14]): a reference standard is a Level-1 identification,
-and each weaker level is worth correspondingly less as a label. Verdicts deliberately
+([Schymanski et al. 2014][sch14]): a reference standard, with an independent line beside
+it, is a Level-1 identification, and each weaker level is worth correspondingly less as a
+label. Verdicts deliberately
 capture the *evidence* behind a judgment rather than echoing the model's own score,
 so the labelled record stays informative for recalibration.
 
@@ -1869,33 +1870,60 @@ A list's key that is not an InChIKey's shape, such as `N/A` or a bare first bloc
 offered: the server would refuse it. Changing a verdict starts from the structure it
 names, so a new note or evidence level keeps the claim unless you pick another.
 
-Evidence from a reference standard, MS/MS or an orthogonal technique is a statement
-about a structure, so confirming on it needs one. The form picks the first candidate for
-you, and *Confirm* waits until a structure is chosen. On the isotope/adduct pattern or a
-visual check naming one is optional, and none is picked; an empty *Unlisted* key there
-names none.
+Once you pick the evidence level, the form asks what that evidence showed, and that
+decides the level the confirmation states. The level speaks the scale of the
+[identification level](#identification-level): a number after [Schymanski et al.
+2014][sch14], and a letter for the kind of evidence behind it.
 
-The confirmation states an identification level, after [Schymanski et al. 2014][sch14]:
-
-| Evidence | Structure | Level |
+| Evidence | What the form asks | Level |
 |---|---|---|
-| Reference standard | required | 1: confirmed structure |
-| MS/MS | required | 2: probable structure |
-| Orthogonal | required | 3: tentative candidate |
-| Isotope/adduct pattern | optional | 4: unequivocal formula |
-| Visual | optional | none of its own |
+| Reference standard: an authentic standard on this instrument, with the same reagent chemistry | **Independent line** beside it: MS/MS, a separation, or another instrument | 1: confirmed structure. With no line, 2b, and what would lift it is "an independent line" |
+| MS/MS | **What it showed**: a library spectrum match, two or more fragments that fit one structure, or one loss | 2a, 2b, or 3b: a class |
+| Orthogonal | **What it showed**: a separation that leaves one structure, the data and a list agree, a class, a context list, or a homologue series | 2b, 3a, 3b, 3c or 3d |
+| Isotope/adduct pattern | **What it showed**: which molecule and reagent make the ion is open, or pinned | 4b, or 4a. Open unless you say pinned |
+| Visual | nothing | none of its own |
+
+A level of 1, of 2, or of 3 naming a candidate is a statement about a structure, so
+confirming on it needs one. The form picks the first candidate for you, and *Confirm*
+waits until a structure is chosen. A **class** claim, 3b from one MS/MS loss or from
+orthogonal evidence for a class, names a class rather than a structure: the form asks
+for the class by name, such as *a carboxylic acid*, and takes no InChIKey. On the
+isotope/adduct pattern or a visual check naming a structure is optional, and none is
+picked; an empty *Unlisted* key there names none. MS/MS and orthogonal evidence must
+say what they showed before *Confirm* is offered.
+
+Level 1 is the only level that says *is*, not *consistent with*, and only a person
+states it, never the engine or an import. It is scoped, because next week the same mass
+may be another isomer:
+
+- a verdict on a sample is scoped to that sample;
+- a batch-level verdict at level 1 names a **time window**: the first and last
+  acquisition time the standard covers. The form starts from the batch's first and last
+  acquisition, for you to narrow. A sample acquired outside the window keeps the
+  verdict on the formula, but not the structure: its row names none and reads the
+  level the engine gives it, and the badge's hover says why.
+
+A standard that disagrees is a result too. Reject the row with **Reference standard** as
+the evidence, or in the inspector tick **A reference standard disagrees** in the
+*Reject* dialog: the rejection records the confirmation it refuted, its level and its
+structure, and the row reads the engine's level again.
 
 The level is fixed when you confirm, so your statement reads the same later. A structure
 named on a pattern or a visual check is kept, but it raises nothing: that evidence is
 about the formula. A rejection or an unsure verdict states no level, and neither does a
 visual confirmation; the row then reads the level the engine gives it. The verdict badge
-shows the level and the structure's name; hover it for the evidence and the InChIKey.
+shows the level, its letter, and the structure's or the class's name. Hover it for the
+evidence, the InChIKey, what earned the level, what would lift it, and a level-1 batch
+claim's window.
 
 A claim is part of its verdict. A later verdict on the same peak replaces it, and a
 retracted batch-level verdict takes its claim off every sample it covered. Verdicts
 recorded before claims existed keep their evidence level, name no structure and read as
-level 4. Naming a structure changes nothing in the labelled record that confidence
-calibration is fit on: a confirmation counts once, with or without one.
+level 4. A claim made before the letters (version 1 of the mapping, when a reference
+standard alone stated 1 and any MS/MS 2) keeps its level, with no letter. Naming a
+structure, or a level, changes nothing in the labelled record that confidence
+calibration is fit on: a confirmation counts once, whatever level it states, and a
+refutation counts as the rejection it is.
 
 ### Batch-level verdicts
 
