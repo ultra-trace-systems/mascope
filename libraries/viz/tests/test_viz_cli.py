@@ -933,6 +933,22 @@ def test_run_changes_of_one_moment_to_different_readings_stay_apart():
     ]
 
 
+def test_run_changes_of_one_moment_in_two_batches_stay_apart():
+    # The same file uploaded into two batches starts both at one moment.
+    at = "2026-06-02T00:00:00+00:00"
+    change = {"at": at, "before": "run A", "after": "run B"}
+    shown = _mixed(
+        [
+            {**change, "sample_batch_id": "b2", "polarity": "+"},
+            {**change, "sample_batch_id": "b3", "polarity": "-"},
+        ]
+    )
+    assert shown == [
+        f'    {at} (batch b2, polarity +): "run A" -> "run B"',
+        f'    {at} (batch b3, polarity -): "run A" -> "run B"',
+    ]
+
+
 def test_merged_run_changes_name_their_polarities_plus_first():
     at = "2026-06-02T00:00:00+00:00"
     change = {"at": at, "sample_batch_id": "b2", "before": "A", "after": "B"}
