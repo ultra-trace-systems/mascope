@@ -112,11 +112,21 @@ const stubs = {
 // served defaults, as a caller seeds it.
 let bound
 
+// The tooltip a control carries, kept on its element where a test can read it.
+const tooltip = {
+  mounted(el, { value }) {
+    el.dataset.tooltip = typeof value === 'string' ? value : (value?.value ?? '')
+  },
+  updated(el, { value }) {
+    el.dataset.tooltip = typeof value === 'string' ? value : (value?.value ?? '')
+  }
+}
+
 async function mountForm(props = {}) {
   bound = props.model ?? reactive({ ...SERVED })
   const wrapper = mount(PeakAssignConfigForm, {
     props: { ...props, model: bound },
-    global: { stubs }
+    global: { stubs, directives: { tooltip } }
   })
   await flushPromises()
   return wrapper
@@ -124,6 +134,10 @@ async function mountForm(props = {}) {
 
 const resetButton = (wrapper) =>
   wrapper.findAll('button').find((b) => b.text() === 'Reset to defaults')
+const gridButton = (wrapper) =>
+  wrapper.findAll('button').find((b) => b.text() === 'Use profile grid')
+const gridReason = (wrapper) =>
+  wrapper.find('[data-testid="profile-grid"]').attributes('data-tooltip')
 
 beforeEach(() => {
   localStorage.clear()
@@ -602,5 +616,101 @@ describe('PeakAssignConfigForm bound to a model', () => {
     expect(wrapper.find('input.text').attributes('disabled')).toBeDefined()
     expect(wrapper.find('.toggle').attributes('disabled')).toBeDefined()
     expect(resetButton(wrapper)).toBeUndefined()
+  })
+})
+
+// The profile's grid as a value to start from (MAS-859): a user who wants the
+// default grid plus one element should not have to type the whole of it.
+describe('PeakAssignConfigForm profile grid', () => {
+  const GRID = 'C1-40 H0-80 N0-3 O0-18 S0-1 Cl0-2 Br0-2'
+  // A launch whose range is left to the profile, as a batch saved none.
+  const unset = () => reactive({ ...SERVED, formula_ranges: null })
+
+  it('fills the field with the shared grid and commits it', async () => {
+    previewAnswer = [resolution()]
+    const wrapper = await mountForm({ sampleItemId: 'si-1', model: unset() })
+    expect(gridButton(wrapper).attributes('disabled')).toBeUndefined()
+
+    await gridButton(wrapper).trigger('click')
+
+    expect(wrapper.find('input.text').element.value).toBe(GRID)
+    expect(bound.formula_ranges).toBe(GRID)
+  })
+
+  it("fills a batch's grid where every sample shares it", async () => {
+    previewAnswer = [
+      resolution({ samples: 3 }),
+      resolution({ context: 'none', context_label: 'None', samples: 2 })
+    ]
+    const wrapper = await mountForm({
+      sampleBatchId: 'sb-1',
+      hidden: ['run_untargeted'],
+      model: unset()
+    })
+
+    await gridButton(wrapper).trigger('click')
+    expect(bound.formula_ranges).toBe(GRID)
+  })
+
+  it("is disabled, and says why, where the samples' grids differ", async () => {
+    previewAnswer = [
+      resolution({ samples: 3 }),
+      resolution({ element_ranges: 'C0-40 H0-80 N0-5 O0-20', samples: 1 })
+    ]
+    const wrapper = await mountForm({ sampleBatchId: 'sb-1', hidden: ['run_untargeted'] })
+
+    expect(gridButton(wrapper).attributes('disabled')).toBeDefined()
+    expect(gridReason(wrapper)).toBe("The samples' chemistry profiles give different grids.")
+  })
+
+  it('is disabled, and says why, while the profile is not read', async () => {
+    previewAnswer = () => Promise.reject(new Error('offline'))
+    const failed = await mountForm({ sampleItemId: 'si-1' })
+    expect(gridButton(failed).attributes('disabled')).toBeDefined()
+    expect(gridReason(failed)).toBe('The chemistry profile is not read yet.')
+
+    const unasked = await mountForm()
+    expect(gridButton(unasked).attributes('disabled')).toBeDefined()
+    expect(gridReason(unasked)).toBe('The chemistry profile is not read yet.')
+  })
+
+  it('is disabled, and says why, while the untargeted stage is off', async () => {
+    previewAnswer = [resolution()]
+    const wrapper = await mountForm({
+      sampleItemId: 'si-1',
+      model: reactive({ ...SERVED, formula_ranges: null, run_untargeted: false })
+    })
+
+    expect(gridButton(wrapper).attributes('disabled')).toBeDefined()
+    expect(gridReason(wrapper)).toBe('Turn on Untargeted search to set a formula range.')
+  })
+
+  it('leaves an untouched empty field sending no range', async () => {
+    previewAnswer = [resolution()]
+    const wrapper = await mountForm({ sampleItemId: 'si-1', model: unset() })
+
+    expect(wrapper.vm.commit()).toBe(true)
+    expect(bound.formula_ranges).toBeNull()
+  })
+
+  it('sends no range again once the filled field is emptied', async () => {
+    previewAnswer = [resolution()]
+    const wrapper = await mountForm({ sampleItemId: 'si-1', model: unset() })
+    await gridButton(wrapper).trigger('click')
+    expect(bound.formula_ranges).toBe(GRID)
+
+    const field = wrapper.find('input.text')
+    await field.setValue('')
+    await field.trigger('blur')
+
+    expect(bound.formula_ranges).toBeNull()
+  })
+
+  it('offers no button on a read-only form', async () => {
+    previewAnswer = [resolution()]
+    const wrapper = await mountForm({ sampleItemId: 'si-1', readonly: true })
+
+    expect(gridButton(wrapper)).toBeUndefined()
+    expect(wrapper.find('[data-testid="profile-grid"]').exists()).toBe(false)
   })
 })

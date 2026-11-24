@@ -245,6 +245,22 @@ const mzPrecisionPlaceholder = computed(() =>
 )
 const formulaRangePlaceholder = computed(() => resolved.value?.element_ranges ?? FROM_PROFILE)
 
+// The profile's grid, offered as a value to start from, as the launcher's form
+// offers it: a click writes it into the field and commits it as a typed range
+// is, and from then on it is the user's to edit. Emptied again, the field goes
+// back to the profile's grid.
+const profileGrid = computed(() => resolved.value?.element_ranges ?? null)
+const profileGridReason = computed(() =>
+  profileGrid.value
+    ? "Use profile grid: fill the field with the chemistry profile's grid, to edit it"
+    : 'Use profile grid: the chemistry profile is not read yet'
+)
+function useProfileGrid() {
+  if (!profileGrid.value) return
+  formulaRangeModel.value = profileGrid.value
+  updateFormulaRange()
+}
+
 // The reset control clears exactly the two fields this pane shows, and none it
 // does not.
 const RESETTABLE = ['mz_precision_ppm', 'formula_ranges']
@@ -722,7 +738,8 @@ watch(
             ranges &mdash; e.g. <code>C0-80 H0-160 [15N]0-1</code>, isotopes in
             brackets. Narrowing the ranges makes the search faster and keeps
             chemically irrelevant candidates out. Left empty, it is the grid of
-            the sample's chemistry profile.
+            the sample's chemistry profile. <b>Use profile grid</b>, the button
+            beside the field, fills it with that grid, for you to edit.
             </p>
           `)
         "
@@ -742,6 +759,18 @@ watch(
         />
         <label for="formulaRange">formula range</label>
       </FloatLabel>
+      <!-- A disabled button takes no hover, so the reason sits on its wrapper. -->
+      <span v-tooltip.bottom="profileGridReason" data-testid="profile-grid">
+        <Button
+          icon="pi ph ph-grid-four"
+          size="small"
+          text
+          severity="secondary"
+          aria-label="Use profile grid"
+          :disabled="!profileGrid"
+          @click="useProfileGrid"
+        />
+      </span>
       <FloatLabel
         style="min-width: 100px; max-width: 200px"
         :pt="
