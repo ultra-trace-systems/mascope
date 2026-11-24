@@ -23,6 +23,7 @@ from stage_stubs import stub_seeded_scorer  # the tests root, on sys.path
 
 from mascope_backend.api.new.peak_assignments import (
     batch_peaks_controller,
+    batch_search_records,
     batch_untargeted,
     judging_loop,
     model_readers,
@@ -36,6 +37,7 @@ from mascope_backend.api.new.peak_assignments.batch_curation import (
     release_batch_peak_curation,
     run_batch_peak_curation,
 )
+from mascope_backend.api.new.peak_assignments.batch_library import chemistry_read
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     PERSISTENCE_KEY,
     TIER_REASONS_KEY,
@@ -53,6 +55,9 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     complete_run,
     start_run,
 )
+from mascope_backend.api.new.peak_assignments.batch_search_records import (
+    SEARCHED_EMPTY_KEY,
+)
 from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     run_batch_untargeted_search,
     search_outcome,
@@ -69,6 +74,7 @@ from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,
     IonizationMechanism,
+    IonizationMode,
     PeakAssignment,
     PeakAssignmentRun,
     SampleBatch,
@@ -1003,8 +1009,11 @@ async def test_a_batch_with_nothing_unassigned_searches_nothing(
     batch_id = folded_batch["batch_id"]
     first = await run_batch_untargeted_search(batch_id, PeakAssignmentConfig())
     assert first["anchors_annotated"] == 2
-    # A second pass finds one anchor still unassigned (250) and nothing for it.
-    second = await run_batch_untargeted_search(batch_id, PeakAssignmentConfig())
+    # A second pass under other settings finds one anchor still unassigned
+    # (250), searches it again and finds nothing for it.
+    second = await run_batch_untargeted_search(
+        batch_id, PeakAssignmentConfig(candidate_threshold=0.5)
+    )
     assert second["anchors_searched"] == 1
     assert second["anchors_annotated"] == 0
 
@@ -2002,3 +2011,529 @@ async def test_a_runs_own_row_on_the_peak_reads_the_admission(
         "tier_reasons": None,
         "consensus_tier": None,
     }
+
+
+# --- a batch peak the last search found nothing for (MAS-1189) ---------------
+#
+# The first search finds glucose and its line in S1 and nothing for the 250
+# peak, which S1 represents. A second search under the same settings, library,
+# chemistry, engine version and Mascope version, on the same representative, leaves it out, and
+# S1 - which then represents nothing - is not searched. Each test below breaks
+# one of those and sees the anchor searched again.
+
+
+async def _searched_once(async_session_factory, folded_batch, config=None):
+    """The first search, and the 250 anchor it found nothing for."""
+    counts = await run_batch_untargeted_search(
+        folded_batch["batch_id"], config or PeakAssignmentConfig()
+    )
+    assert counts["anchors_searched_before"] == 0
+    bare = (await _anchors_by_mz(async_session_factory, folded_batch["batch_id"]))[250]
+    return counts, bare
+
+
+async def _set_member(session_factory, anchor_id, sample_item_id, **fields):
+    async with session_factory() as session:
+        member = await session.get(BatchPeakOccurrence, (anchor_id, sample_item_id))
+        for name, value in fields.items():
+            setattr(member, name, value)
+        await session.commit()
+
+
+async def test_a_peak_searched_in_vain_is_not_searched_again(
+    async_session_factory, folded_batch, stubbed_engine
+):
+    batch_id, samples = folded_batch["batch_id"], folded_batch["samples"]
+    _, bare = await _searched_once(async_session_factory, folded_batch)
+    record = bare.provenance[SEARCHED_EMPTY_KEY]
+    assert record["representative"]["sample_item_id"] == samples["S1"]
+    assert record["representative"]["sample_peak_id"] == "p3"
+    assert record["representative"]["intensity"] == pytest.approx(300.0)
+    assert record["persistent"] is False
+    # The anchors it found something for carry no such record.
+    anchors = await _anchors_by_mz(async_session_factory, batch_id)
+    assert SEARCHED_EMPTY_KEY not in anchors[181].provenance
+    assert SEARCHED_EMPTY_KEY not in anchors[182].provenance
+
+    again = await run_batch_untargeted_search(batch_id, PeakAssignmentConfig())
+
+    assert again["anchors_searched"] == 0
+    assert again["anchors_searched_before"] == 1
+    assert again["samples_searched"] == 0
+    assert len(stubbed_engine["search"]) == 1
+    # The record stands through the consensus the search recomputed.
+    bare = (await _anchors_by_mz(async_session_factory, batch_id))[250]
+    assert bare.provenance[SEARCHED_EMPTY_KEY] == record
+    assert bare.consensus_tier == "unassigned"
+    outcome = search_outcome(again, batch_id)
+    assert outcome["status"] == "success"
+    assert (
+        "1 unassigned batch peak the last search found nothing for was not "
+        "searched again" in outcome["message"]
+    )
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["settings", "library", "chemistry", "engine version", "Mascope version"],
+)
+async def test_a_peak_is_searched_again_when_what_the_search_reads_changes(
+    async_session_factory, folded_batch, stubbed_engine, monkeypatch, change
+):
+    batch_id = folded_batch["batch_id"]
+    _, first = await _searched_once(async_session_factory, folded_batch)
+    config = PeakAssignmentConfig()
+    if change == "settings":
+        config = PeakAssignmentConfig(candidate_threshold=0.5)
+    elif change == "library":
+        read = batch_untargeted.library_read
+
+        async def library(session, sample_batch_id):
+            return {
+                **await read(session, sample_batch_id),
+                "target_collections": {"c": "d"},
+            }
+
+        monkeypatch.setattr(batch_untargeted, "library_read", library)
+    elif change == "chemistry":
+        monkeypatch.setattr(
+            batch_untargeted, "chemistry_read", _async_value("another chemistry")
+        )
+    elif change == "engine version":
+        monkeypatch.setattr(
+            batch_search_records, "PEAK_ASSIGNMENT_ENGINE_VERSION", "99.0.0"
+        )
+    else:
+        # An upgrade: the deployed version, as GET /api/version reads it.
+        monkeypatch.setattr(
+            batch_search_records, "runtime", SimpleNamespace(version="99.0.0")
+        )
+
+    again = await run_batch_untargeted_search(batch_id, config)
+
+    assert again["anchors_searched_before"] == 0
+    assert again["samples_searched"] == 1
+    assert len(stubbed_engine["search"]) == 2
+    # Found nothing again: the record names this search's key now, which
+    # the next search under it leaves the peak out on.
+    bare = (await _anchors_by_mz(async_session_factory, batch_id))[250]
+    key = bare.provenance[SEARCHED_EMPTY_KEY]["key"]
+    assert key != first.provenance[SEARCHED_EMPTY_KEY]["key"]
+    third = await run_batch_untargeted_search(batch_id, config)
+    assert third["anchors_searched_before"] == 1
+
+
+async def test_a_member_of_an_anchor_the_anchors_read_missed_is_searched(
+    async_session_factory, folded_batch, stubbed_engine, monkeypatch
+):
+    """The anchors and the members are two reads: a fold that commits
+    between them can give a member of an anchor the first read did not
+    return. That member is searched, as one with no record, and the search
+    does not fail."""
+    batch_id = folded_batch["batch_id"]
+    _, bare = await _searched_once(async_session_factory, folded_batch)
+    read = batch_untargeted._unassigned_anchors_and_members
+
+    async def racing(session, sample_batch_id):
+        anchors, members = await read(session, sample_batch_id)
+        anchors.pop(bare.batch_peak_id)
+        # The first read saw another anchor, one the fold has assigned since:
+        # the search goes on past its early return.
+        anchors["assigned since"] = SimpleNamespace(provenance=None)
+        return anchors, members
+
+    monkeypatch.setattr(batch_untargeted, "_unassigned_anchors_and_members", racing)
+
+    again = await run_batch_untargeted_search(batch_id, PeakAssignmentConfig())
+
+    assert again["anchors_searched_before"] == 0
+    assert again["samples_searched"] == 1
+    assert len(stubbed_engine["search"]) == 2
+
+
+def _async_value(value):
+    async def read(*_args, **_kwargs):
+        return value
+
+    return read
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["a new run of its sample", "another peak", "another height", "a brighter member"],
+)
+async def test_a_peak_is_searched_again_when_its_representative_changes(
+    async_session_factory, folded_batch, stubbed_engine, change
+):
+    batch_id, samples = folded_batch["batch_id"], folded_batch["samples"]
+    _, bare = await _searched_once(async_session_factory, folded_batch)
+    if change == "a new run of its sample":
+        # A sample's new run folds its peaks again, each member then naming
+        # the new run's row. Left running, so the sample is read at the
+        # measurement it was read at before.
+        async with async_session_factory() as session:
+            run = PeakAssignmentRun(
+                peak_assignment_run_id=gen_id(),
+                sample_item_id=samples["S1"],
+                status="running",
+                engine=IN_APP_ENGINE,
+                engine_version="0.1.0-test",
+                peak_assignment_run_utc_created=datetime.now(timezone.utc),
+            )
+            session.add(run)
+            await session.flush()
+            row_id = gen_id(32)
+            session.add(
+                PeakAssignment(
+                    peak_assignment_id=row_id,
+                    peak_assignment_run_id=run.peak_assignment_run_id,
+                    sample_item_id=samples["S1"],
+                    sample_peak_id="p3",
+                    sample_peak_mz=250.1,
+                    sample_peak_intensity=300.0,
+                    role="unassigned",
+                    tier="unassigned",
+                )
+            )
+            await session.commit()
+        await _set_member(
+            async_session_factory,
+            bare.batch_peak_id,
+            samples["S1"],
+            peak_assignment_id=row_id,
+        )
+        searched_in = "S1"
+    elif change == "another peak":
+        # The sample's peaks detected again, under other ids.
+        await _set_member(
+            async_session_factory,
+            bare.batch_peak_id,
+            samples["S1"],
+            sample_peak_id="q3",
+        )
+        searched_in = "S1"
+    elif change == "another height":
+        await _set_member(
+            async_session_factory, bare.batch_peak_id, samples["S1"], intensity=310.0
+        )
+        searched_in = "S1"
+    else:
+        # A member brighter than S1's: the anchor's representative moves.
+        await _set_member(
+            async_session_factory, bare.batch_peak_id, samples["S2"], intensity=900.0
+        )
+        searched_in = "S2"
+
+    again = await run_batch_untargeted_search(batch_id, PeakAssignmentConfig())
+
+    assert again["anchors_searched_before"] == 0
+    assert again["samples_searched"] == 1
+    if change != "another peak":  # the stubbed spectrum has no peak q3
+        assert len(stubbed_engine["search"]) == 2
+        assert stubbed_engine["search"][-1] == [250.1]
+    bare = (await _anchors_by_mz(async_session_factory, batch_id))[250]
+    representative = bare.provenance[SEARCHED_EMPTY_KEY]["representative"]
+    assert representative["sample_item_id"] == samples[searched_in]
+
+
+async def test_a_dimmer_member_folded_in_searches_nothing_again(
+    async_session_factory, folded_batch, stubbed_engine
+):
+    """What a fold-in brings most anchors: a member that is not the
+    brightest, which the search does not read."""
+    batch_id, samples = folded_batch["batch_id"], folded_batch["samples"]
+    async with async_session_factory() as session:
+        anchors = await _anchors_by_mz(async_session_factory, batch_id)
+        dimmer = await session.get(
+            BatchPeakOccurrence, (anchors[250].batch_peak_id, samples["S2"])
+        )
+        await session.delete(dimmer)
+        await session.commit()
+    await _searched_once(async_session_factory, folded_batch)
+    await fold_sample_into_batch_peaks(
+        samples["S2"],
+        rows=_unassigned_rows(samples["S2"], _PEAKS["S2"]),
+        persisted=False,
+    )
+    bare = (await _anchors_by_mz(async_session_factory, batch_id))[250]
+    assert bare.n_present == 2
+
+    again = await run_batch_untargeted_search(batch_id, PeakAssignmentConfig())
+
+    assert again["anchors_searched_before"] == 1
+    assert again["samples_searched"] == 0
+    assert len(stubbed_engine["search"]) == 1
+
+
+async def test_a_peak_is_searched_again_when_its_persistence_changes(
+    async_session_factory, folded_batch, stubbed_engine, monkeypatch
+):
+    batch_id = folded_batch["batch_id"]
+    _, bare = await _searched_once(async_session_factory, folded_batch)
+    split = 0.5
+    monkeypatch.setattr(
+        batch_untargeted,
+        "persistent_anchors",
+        lambda counts, spectra: (
+            {bare.batch_peak_id: batch_untargeted.Occurrence(10, 12, split)},
+            {},
+        ),
+    )
+
+    again = await run_batch_untargeted_search(batch_id, PeakAssignmentConfig())
+
+    assert again["anchors_searched_before"] == 0
+    assert again["samples_searched"] == 1
+    bare = (await _anchors_by_mz(async_session_factory, batch_id))[250]
+    assert bare.provenance[SEARCHED_EMPTY_KEY]["persistent"] is True
+
+
+async def test_a_capped_search_leaves_nothing_out_and_records_nothing(
+    async_session_factory, folded_batch, stubbed_engine
+):
+    """Which peaks a capped search takes depends on every other
+    representative of its sample, so none is left out under a cap."""
+    batch_id = folded_batch["batch_id"]
+    capped = PeakAssignmentConfig(max_untargeted_peaks=10)
+    _, bare = await _searched_once(async_session_factory, folded_batch, capped)
+    assert SEARCHED_EMPTY_KEY not in bare.provenance
+
+    _, _ = await _searched_once(async_session_factory, folded_batch)
+    again = await run_batch_untargeted_search(batch_id, capped)
+
+    assert again["anchors_searched_before"] == 0
+    assert again["samples_searched"] == 1
+    # It writes and takes off no record: the uncapped search's stands for the
+    # next uncapped search.
+    third = await run_batch_untargeted_search(batch_id, PeakAssignmentConfig())
+    assert third["anchors_searched_before"] == 1
+
+
+async def test_a_sample_the_cap_cut_short_vouches_for_nothing(
+    async_session_factory, folded_batch, stubbed_engine, monkeypatch
+):
+    search = batch_untargeted._search_sample
+
+    async def cut_short(*args, **kwargs):
+        rows, _, admitted = await search(*args, **kwargs)
+        return rows, 1, admitted
+
+    monkeypatch.setattr(batch_untargeted, "_search_sample", cut_short)
+    _, bare = await _searched_once(async_session_factory, folded_batch)
+
+    assert SEARCHED_EMPTY_KEY not in bare.provenance
+
+
+async def test_a_sample_whose_search_failed_vouches_for_nothing(
+    async_session_factory, folded_batch, stubbed_engine, monkeypatch
+):
+    batch_id = folded_batch["batch_id"]
+
+    def unreadable(sample):
+        raise FileNotFoundError("the peak file has moved")
+
+    _stand_in(monkeypatch, "load_sample_peaks", unreadable)
+    counts = await run_batch_untargeted_search(batch_id, PeakAssignmentConfig())
+    assert counts["samples_failed"] == 1
+    bare = (await _anchors_by_mz(async_session_factory, batch_id))[250]
+    assert SEARCHED_EMPTY_KEY not in (bare.provenance or {})
+
+
+async def test_a_reading_taken_and_released_takes_the_record_with_it(
+    async_session_factory, folded_batch, stubbed_engine, monkeypatch
+):
+    """The record is about an anchor that reads nothing: a reading it takes
+    since - a pin here - takes it off, and the release does not put it back."""
+    batch_id, samples = folded_batch["batch_id"], folded_batch["samples"]
+    _, bare = await _searched_once(async_session_factory, folded_batch)
+    async with async_session_factory() as session:
+        anchor = await session.get(BatchPeak, bare.batch_peak_id)
+        registry = list(anchor.candidates or [])
+        index = candidate_index(registry, "C12H11NO3", "C12H12NO3+", "mech-h")
+        anchor.candidates = registry
+        await session.commit()
+    _stub_engine(
+        monkeypatch,
+        samples,
+        _PEAKS,
+        lambda targets: _canned_matches(),
+        {"C12H11NO3": ("ion-250", 0.84, ["p3"])},
+    )
+    await run_batch_peak_curation(
+        batch_id, bare.batch_peak_id, index, None, PeakAssignmentConfig()
+    )
+    pinned = (await _anchors_by_mz(async_session_factory, batch_id))[250]
+    assert pinned.consensus_tier != "unassigned"
+    assert SEARCHED_EMPTY_KEY not in pinned.provenance
+
+    await release_batch_peak_curation(batch_id, bare.batch_peak_id)
+    released = (await _anchors_by_mz(async_session_factory, batch_id))[250]
+    assert released.consensus_tier == "unassigned"
+    assert SEARCHED_EMPTY_KEY not in released.provenance
+    again = await run_batch_untargeted_search(batch_id, PeakAssignmentConfig())
+    assert again["anchors_searched_before"] == 0
+    assert again["samples_searched"] == 1
+
+
+async def test_a_sample_whose_search_again_failed_vouches_for_nothing(
+    async_session_factory, pa_test_data, monkeypatch
+):
+    """Its first search stands for the readings, not for what it found
+    nothing for: searched again, it might have read it."""
+    peaks = {
+        "S1": _SPLIT_PEAKS["S1"],
+        "S2": [*_SPLIT_PEAKS["S2"], ("p4", 300.2, 500.0)],
+    }
+    batch = await _fold_batch(async_session_factory, pa_test_data, peaks)
+    _stub_engine(
+        monkeypatch,
+        batch["samples"],
+        peaks,
+        _split_matches,
+        {
+            "C6H12O6": ("ion-glc", 0.81, ["p1", "p2"]),
+            "C9H10O3": ("ion-c9", 0.7, ["p3"]),
+            "C8H11N3": ("ion-c8", 0.3, ["p2", "p3"]),
+        },
+    )
+    search = batch_untargeted._search_sample
+    searched: list[str] = []
+
+    async def failing_again(sample_item_id, *args, **kwargs):
+        if sample_item_id in searched:
+            raise FileNotFoundError("the peak file has moved")
+        searched.append(sample_item_id)
+        return await search(sample_item_id, *args, **kwargs)
+
+    monkeypatch.setattr(batch_untargeted, "_search_sample", failing_again)
+    counts = await run_batch_untargeted_search(
+        batch["batch_id"], PeakAssignmentConfig()
+    )
+
+    assert counts["samples_researched"] == 0
+    anchors = await _anchors_by_mz(async_session_factory, batch["batch_id"])
+    assert anchors[300].consensus_tier == "unassigned"
+    assert SEARCHED_EMPTY_KEY not in (anchors[300].provenance or {})
+
+
+def _persistence_matches_reading_nothing_faint(targets):
+    return _persistence_matches([mz for mz in targets if mz != _FAINT])
+
+
+async def test_a_persistent_peak_left_out_keeps_its_admission_on_the_record(
+    async_session_factory, pa_test_data, monkeypatch
+):
+    """A faint peak persistence alone admitted, searched and found nothing
+    for: left out of the next search, it takes the persistence record that
+    search would have written."""
+    batch = await _fold_batch(async_session_factory, pa_test_data, _PERSISTENCE_PEAKS)
+    batch["calls"] = calls = _stub_engine(
+        monkeypatch,
+        batch["samples"],
+        _PERSISTENCE_PEAKS,
+        _persistence_matches_reading_nothing_faint,
+        {"C6H12O6": ("ion-glc", 0.81, ["p1", "p2"])},
+    )
+    first, first_run = await _search_persistence(batch)
+    assert first["anchors_admitted_by_persistence"] == 1
+    faint = (await _anchors_by_mz(async_session_factory, batch["batch_id"]))[150]
+    assert faint.consensus_tier == "unassigned"
+    assert faint.provenance[PERSISTENCE_KEY]["batch_peak_run_id"] == first_run
+    assert faint.provenance[PERSISTENCE_KEY]["formula"] is None
+    assert faint.provenance[SEARCHED_EMPTY_KEY]["by_persistence"] is True
+    searches = len(calls["search"])
+
+    second, second_run = await _search_persistence(batch)
+
+    assert second["anchors_searched_before"] >= 1
+    assert not any(_FAINT in targets for targets in calls["search"][searches:])
+    faint = (await _anchors_by_mz(async_session_factory, batch["batch_id"]))[150]
+    record = faint.provenance[PERSISTENCE_KEY]
+    assert record["batch_peak_run_id"] == second_run
+    assert (record["n_present"], record["n_samples"]) == (11, 12)
+    assert record["formula"] is None
+    # A peak admitted on its height and left out takes no record.
+    assert PERSISTENCE_KEY not in (
+        (await _anchors_by_mz(async_session_factory, batch["batch_id"]))[201].provenance
+        or {}
+    )
+
+
+async def test_the_chemistry_reads_every_mechanism_and_the_batch_s_modes(
+    async_session_factory, folded_batch
+):
+    batch_id, samples = folded_batch["batch_id"], folded_batch["samples"]
+    async with async_session_factory() as session:
+        before = await chemistry_read(session, batch_id)
+        assert await chemistry_read(session, batch_id) == before
+    mechanism_id, mode_id = gen_id(), gen_id()
+    async with async_session_factory() as session:
+        session.add(
+            IonizationMechanism(
+                ionization_mechanism_id=mechanism_id,
+                ionization_mechanism_polarity="+",
+                ionization_mechanism="K+ (chemistry test)",
+            )
+        )
+        await session.commit()
+    try:
+        async with async_session_factory() as session:
+            with_mechanism = await chemistry_read(session, batch_id)
+        assert with_mechanism != before
+        # A mode one of the batch's samples is in, and the mechanisms it names.
+        async with async_session_factory() as session:
+            session.add(
+                IonizationMode(
+                    ionization_mode_id=mode_id,
+                    ionization_mode_name=f"Chemistry test {mode_id}",
+                    ionization_mode_polarity="+",
+                    ionization_mechanism_ids=["mech-h"],
+                )
+            )
+            await session.flush()
+            sample = await session.get(SampleItem, samples["S1"])
+            sample.ionization_mode_id = mode_id
+            await session.commit()
+        async with async_session_factory() as session:
+            with_mode = await chemistry_read(session, batch_id)
+            mode = await session.get(IonizationMode, mode_id)
+            mode.ionization_mechanism_ids = ["mech-h", mechanism_id]
+            await session.commit()
+        async with async_session_factory() as session:
+            with_mechanisms = await chemistry_read(session, batch_id)
+        assert len({with_mechanism, with_mode, with_mechanisms}) == 3
+    finally:
+        async with async_session_factory() as session:
+            sample = await session.get(SampleItem, samples["S1"])
+            sample.ionization_mode_id = None
+            await session.flush()
+            for model, key in (
+                (IonizationMode, mode_id),
+                (IonizationMechanism, mechanism_id),
+            ):
+                row = await session.get(model, key)
+                if row is not None:
+                    await session.delete(row)
+                    await session.flush()
+            await session.commit()
+
+
+async def test_a_reading_that_could_not_be_written_is_searched_again(
+    async_session_factory, folded_batch, stubbed_engine, monkeypatch
+):
+    """The search found glucose but could not write it: the anchor still
+    reads nothing, and it was no search in vain."""
+    batch_id = folded_batch["batch_id"]
+
+    async def failing(*args, **kwargs):
+        raise RuntimeError("the write failed")
+
+    monkeypatch.setattr(batch_untargeted, "_apply_search_rows", failing)
+    monkeypatch.setattr(batch_untargeted, "_propagate_to_sample", failing)
+    counts = await run_batch_untargeted_search(batch_id, PeakAssignmentConfig())
+    assert counts["anchors_annotated"] == 2
+    anchors = await _anchors_by_mz(async_session_factory, batch_id)
+    assert anchors[181].consensus_tier == "unassigned"
+    assert SEARCHED_EMPTY_KEY not in (anchors[181].provenance or {})
+    # The 250 peak, which no row read, takes its record all the same.
+    assert SEARCHED_EMPTY_KEY in anchors[250].provenance
