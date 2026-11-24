@@ -32,6 +32,7 @@ from mascope_match.params import (
 from mascope_signal.runtime import runtime
 from mascope_thermo.thermo import NoScansFoundError
 from mascope_tools.alignment.utils import (
+    SIGNAL_TO_NOISE_THRESHOLD,
     below_local_floor,
     flag_exception_peaks,
     flag_satellite_peaks,
@@ -66,7 +67,6 @@ def _get_executor() -> ProcessPoolExecutor:
 
 # Define the delta m/z around unit masses for peak detection
 DMZ = 0.5
-SIGNAL_TO_NOISE_THRESHOLD = 3
 #: The half-width, in peak widths (FWHM), of the core of a fitted TOF peak
 #: that is cut out of the baseline its signal-to-noise is measured on. Wider
 #: than the peak itself, since a TOF peak's wings run beyond a Gaussian's.

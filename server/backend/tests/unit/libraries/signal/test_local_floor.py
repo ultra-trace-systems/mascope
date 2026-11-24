@@ -149,6 +149,15 @@ def test_the_detector_uses_the_rule_the_thermo_parity_test_judges():
     assert m_peak.below_local_floor is m_utils.below_local_floor
 
 
+def test_the_detector_uses_the_threshold_the_thermo_parity_test_counts_by():
+    """The parity test counts the peaks at or above the weak flag's S:N
+    threshold. It imports the threshold from ``mascope_tools`` for the same
+    reason as the floor, so the detector has to read it from there too."""
+    import mascope_tools.alignment.utils as m_utils
+
+    assert m_peak.SIGNAL_TO_NOISE_THRESHOLD == m_utils.SIGNAL_TO_NOISE_THRESHOLD
+
+
 # -- through the detector ------------------------------------------------------------
 
 NEG = "FTMS - p NSI Full ms [40.0000-600.0000]"
