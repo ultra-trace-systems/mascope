@@ -1509,7 +1509,10 @@ async def _rematch_claimed_batch(
         # Its samples are matched under the current versions of their
         # ionization modes, which an edit that flagged the batch has replaced,
         # and against the collections those versions name: the batch holds
-        # its own copy of the earlier ones, which matching reads.
+        # its own copy of the earlier ones, which matching reads. An analysis
+        # batch's samples move too, while its collections stay: they are the
+        # ones a person gave it, and bring_batch_collections_current leaves
+        # them as they are.
         await move_to_current_versions(sample_batch_ids=[sample_batch_id])
         await bring_batch_collections_current(sample_batch_id)
 

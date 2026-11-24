@@ -9,9 +9,10 @@ Covers the editable-ionization-mode changes:
   cleared back to null.
 - Affected batches (those containing samples using the mode) are flagged:
   ``recalibrate`` when the calibration collection changes, otherwise
-  ``rematch`` when mechanisms or the diagnostic collection change. A
-  ``rematch`` edit leaves a batch an earlier edit flagged ``recalibrate`` as
-  it is.
+  ``rematch`` when mechanisms or the diagnostic collection change. A change
+  of the diagnostic collection alone flags acquisition batches only: an
+  analysis batch keeps the collections a person gave it. A ``rematch`` edit
+  leaves a batch an earlier edit flagged ``recalibrate`` as it is.
 - A named collection must be readable by the caller, but only when the request
   *changes* it: the client echoes the mode's current bindings on every save,
   so checking those by value would make a mode bound to a workspace-scoped
@@ -389,18 +390,114 @@ async def test_admin_change_calibration_flags_recalibrate(
     )
 
 
+@pytest_asyncio.fixture
+async def acquisition_batch_id(
+    async_session_factory, ion_dataset, ion_sample_file, mode_ctx
+):
+    """An acquisition batch beside ``mode_ctx``'s analysis batch, holding a
+    sample of the same mode."""
+    batch_id = gen_id()
+    async with async_session_factory() as session:
+        session.add(
+            SampleBatch(
+                sample_batch_id=batch_id,
+                dataset_id=ion_dataset,
+                sample_batch_name=f"Acquisition Batch {batch_id}",
+                sample_batch_type="ACQUISITION",
+                sample_batch_utc_created=_NOW,
+            )
+        )
+        session.add(
+            SampleItem(
+                sample_item_id=gen_id(),
+                sample_batch_id=batch_id,
+                sample_file_id=ion_sample_file,
+                sample_item_name="Acquisition Item",
+                sample_item_type="ACQUISITION",
+                sample_item_attributes={},
+                polarity="+",
+                tic=1000.0,
+                t0=0.0,
+                t1=60.0,
+                ionization_mode_id=mode_ctx["mode_id"],
+                sample_item_utc_created=_NOW,
+            )
+        )
+        await session.commit()
+    return batch_id
+
+
 @pytest.mark.asyncio
 async def test_admin_change_diagnostic_flags_rematch(
-    admin_client, async_session_factory, mode_ctx
+    admin_client, async_session_factory, mode_ctx, acquisition_batch_id
 ):
-    """Changing the diagnostic collection succeeds and flags 'rematch'."""
+    """Changing the diagnostic collection alone flags the acquisition batches.
+
+    An acquisition batch takes its mode's collections, so the edit makes it
+    stale. An analysis batch is matched against the collections a person gave
+    it, which a mode edit never changes, so nothing of it is stale and its
+    status stays as it was.
+    """
+    assert await _batch_status(async_session_factory, mode_ctx["batch_id"]) == "ready"
     resp = await admin_client.patch(
         f"/api/ionization/modes/{mode_ctx['mode_id']}",
         json=_body(mode_ctx, diagnostic_collection_id=mode_ctx["diag_b"]),
     )
     assert resp.status_code == 200
     assert resp.json()["data"]["diagnostic_collection_id"] == mode_ctx["diag_b"]
-    assert await _batch_status(async_session_factory, mode_ctx["batch_id"]) == "rematch"
+    assert await _batch_status(async_session_factory, acquisition_batch_id) == (
+        "rematch"
+    )
+    assert await _batch_status(async_session_factory, mode_ctx["batch_id"]) == "ready"
+
+
+@pytest.mark.asyncio
+async def test_a_diagnostic_edit_of_analysis_batches_alone_flags_nothing(
+    admin_client, async_session_factory, mode_ctx
+):
+    """With no acquisition batch among the affected ones, a diagnostic-only
+    edit flags no batch at all."""
+    resp = await admin_client.patch(
+        f"/api/ionization/modes/{mode_ctx['mode_id']}",
+        json=_body(mode_ctx, diagnostic_collection_id=mode_ctx["diag_b"]),
+    )
+    assert resp.status_code == 200
+    assert await _batch_status(async_session_factory, mode_ctx["batch_id"]) == "ready"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("edit", "flag"),
+    [
+        ("mechanisms", "rematch"),
+        ("calibrant", "recalibrate"),
+        ("calibrant and diagnostic", "recalibrate"),
+    ],
+)
+async def test_an_edit_of_what_results_are_computed_from_flags_every_batch(
+    admin_client, async_session_factory, mode_ctx, acquisition_batch_id, edit, flag
+):
+    """An edit of the mechanisms or the calibrant collection makes every batch
+    of the mode stale, an analysis batch included: a rematch reads the mode's
+    mechanisms, and calibration reads the calibrant collection off the
+    sample's mode, not off the batch."""
+    overrides = {
+        "mechanisms": {
+            "ionization_mechanism_ids": [mode_ctx["mech_a"], mode_ctx["mech_b"]]
+        },
+        "calibrant": {"calibration_collection_id": mode_ctx["cal_b"]},
+        "calibrant and diagnostic": {
+            "calibration_collection_id": mode_ctx["cal_b"],
+            "diagnostic_collection_id": mode_ctx["diag_b"],
+        },
+    }[edit]
+    resp = await admin_client.patch(
+        f"/api/ionization/modes/{mode_ctx['mode_id']}",
+        json=_body(mode_ctx, **overrides),
+    )
+    assert resp.status_code == 200
+    assert await _batch_status(async_session_factory, acquisition_batch_id) == flag
+    assert await _batch_status(async_session_factory, mode_ctx["batch_id"]) == flag
 
 
 @pytest.mark.asyncio
@@ -424,21 +521,21 @@ async def test_admin_change_mechanisms_flags_rematch(
     ["mechanisms", "diagnostic"],
 )
 async def test_rematch_edit_keeps_a_pending_recalibrate(
-    admin_client, async_session_factory, mode_ctx, second_edit
+    admin_client, async_session_factory, mode_ctx, acquisition_batch_id, second_edit
 ):
     """A rematch edit after a calibration edit leaves the batch at 'recalibrate'.
 
     The recalibration the first edit asked for ends in a rematch, so it covers
-    the second edit; lowering the flag would drop the m/z re-fit.
+    the second edit; lowering the flag would drop the m/z re-fit. The
+    acquisition batch is the one a diagnostic-only edit flags.
     """
     resp = await admin_client.patch(
         f"/api/ionization/modes/{mode_ctx['mode_id']}",
         json=_body(mode_ctx, calibration_collection_id=mode_ctx["cal_b"]),
     )
     assert resp.status_code == 200
-    assert await _batch_status(async_session_factory, mode_ctx["batch_id"]) == (
-        "recalibrate"
-    )
+    for batch_id in (mode_ctx["batch_id"], acquisition_batch_id):
+        assert await _batch_status(async_session_factory, batch_id) == "recalibrate"
 
     # The calibration change minted a new version: edit that one.
     current = resp.json()["data"]
@@ -453,9 +550,8 @@ async def test_rematch_edit_keeps_a_pending_recalibrate(
         json=_body(ctx, **overrides),
     )
     assert resp.status_code == 200
-    assert await _batch_status(async_session_factory, mode_ctx["batch_id"]) == (
-        "recalibrate"
-    )
+    for batch_id in (mode_ctx["batch_id"], acquisition_batch_id):
+        assert await _batch_status(async_session_factory, batch_id) == "recalibrate"
 
 
 @pytest.mark.asyncio
