@@ -611,8 +611,9 @@ async def windows(async_session_factory, pa_sample_view, batch):
     files of their own, all at 10 microscans.
 
     Of file ``F``, on its stream ``s`` (windows in seconds): ``A`` ``[0, 600]``,
-    ``A copy`` the same, ``B`` ``[600, 1200]``, ``C`` ``[300, 900]``, ``whole``
-    with no window; ``filter`` ``[0, 600]`` on another stream of ``F``;
+    ``A copy`` the same, ``B`` ``[610, 1200]``, apart from ``A``, ``D``
+    ``[1200, 1800]``, touching ``B``, ``C`` ``[300, 900]``, ``whole`` with no
+    window; ``filter`` ``[0, 600]`` on another stream of ``F``;
     ``composite`` ``[0, 300]`` on the composite ``s`` is a segment of;
     ``positive`` ``[0, 600]`` at the other polarity, naming no stream. ``G0``
     to ``G6``, files of their own, start 30, 60, ... 210 minutes after ``F``.
@@ -684,7 +685,8 @@ async def windows(async_session_factory, pa_sample_view, batch):
         await session.flush()
         add_item("A", file_id, stream.stream_id, 0.0, 600.0)
         add_item("A copy", file_id, stream.stream_id, 0.0, 600.0)
-        add_item("B", file_id, stream.stream_id, 600.0, 1200.0)
+        add_item("B", file_id, stream.stream_id, 610.0, 1200.0)
+        add_item("D", file_id, stream.stream_id, 1200.0, 1800.0)
         add_item("C", file_id, stream.stream_id, 300.0, 900.0)
         add_item("whole", file_id, stream.stream_id)
         add_item("filter", file_id, other.stream_id, 0.0, 600.0)
@@ -715,13 +717,16 @@ GS = [f"G{index}" for index in range(7)]
     [
         # A copy shares every scan, either way round; an overlapping window,
         # the whole file and the composite A's stream is a segment of share
-        # some.
+        # some. A window that touches another shares the scan at their bound:
+        # D and B at 1200 s, the composite and C at 300 s. B, ten seconds
+        # after A's end, shares none with A.
         ("A", {"A copy", "C", "whole", "composite"}),
         ("A copy", {"A", "C", "whole", "composite"}),
-        ("C", {"A", "A copy", "B", "whole"}),
-        ("B", {"C", "whole"}),
-        ("whole", {"A", "A copy", "B", "C", "composite"}),
-        ("composite", {"A", "A copy", "whole"}),
+        ("C", {"A", "A copy", "B", "whole", "composite"}),
+        ("B", {"C", "D", "whole"}),
+        ("D", {"B", "whole"}),
+        ("whole", {"A", "A copy", "B", "C", "D", "composite"}),
+        ("composite", {"A", "A copy", "C", "whole"}),
     ],
 )
 async def test_a_sample_of_the_file_that_shares_its_scans_is_no_neighbour(
@@ -740,8 +745,8 @@ async def test_a_window_is_placed_by_its_own_start(windows):
 
     names = await _candidate_names(windows, sample)
 
-    # B starts 10 minutes into F; A, its copy, filter, composite and positive
-    # at F's start, and G0 20 minutes after B.
+    # B starts 610 s into F; A, its copy, filter, composite and positive at
+    # F's start, and G0 about 20 minutes after B. D, touching B, is left out.
     assert names[:5] == sorted(
         ["A", "A copy", "filter", "composite", "positive"],
         key=lambda n: windows.samples[n],
@@ -765,9 +770,9 @@ async def test_a_sample_its_batch_does_not_hold_spans_its_polarity(windows):
 
     names = await _candidate_names(windows, outsider)
 
-    # B and composite only touch its window; positive is of the other
-    # polarity.
-    assert set(names) == {"B", "composite", "positive", *GS}
+    # Composite and filter touch or overlap its window, which names no
+    # stream; B and D start after its end; positive is of the other polarity.
+    assert set(names) == {"B", "D", "positive", *GS}
 
 
 async def test_a_thin_window_pools_its_file_s_other_windows_each_as_one(windows):
@@ -783,27 +788,54 @@ async def test_a_thin_window_pools_its_file_s_other_windows_each_as_one(windows)
 
     files = fit.record()["pool"]["files"]
     # Six read where more than six are there: filter at A's own start, B ten
-    # minutes on, then G0 to G3. The composite, at no settings of its own,
-    # would take no place even if it shared no scans.
+    # minutes on, D twenty, then G0 to G2. The composite, at no settings of
+    # its own, would take no place even if it shared no scans.
     assert [names[entry["sample_item_id"]] for entry in files] == [
         "filter",
         "B",
+        "D",
         "G0",
         "G1",
         "G2",
-        "G3",
     ]
-    assert [names[item_id] for item_id in read] == ["filter", "B", *GS[:4]]
+    assert [names[item_id] for item_id in read] == ["filter", "B", "D", *GS[:3]]
     assert [entry.get("same_file", False) for entry in files] == [
         True,
         True,
-        False,
+        True,
         False,
         False,
         False,
     ]
     assert fit.fit.pooled_files == 7
     assert again.record() == fit.record()
+
+
+@pytest.mark.parametrize(
+    ("one", "other", "pooled"),
+    [
+        # Ten seconds apart: other scans of the file, each the other's
+        # neighbour once.
+        ("A", "B", True),
+        # Touching at 1200 s: both read the scan there, so neither pools the
+        # other.
+        ("B", "D", False),
+    ],
+)
+async def test_two_windows_pool_each_other_only_with_a_gap(windows, one, other, pooled):
+    names = {item_id: name for name, item_id in windows.samples.items()}
+    lines_of = {
+        item_id: EnvelopeLines(np.full(5, 15.0), np.full(5, 0.6))
+        for item_id in windows.samples.values()
+    }
+
+    for reading, neighbour in ((one, other), (other, one)):
+        fit = await _fit(windows.samples[reading], _reader(lines_of))
+
+        files = [
+            names[entry["sample_item_id"]] for entry in fit.record()["pool"]["files"]
+        ]
+        assert files.count(neighbour) == (1 if pooled else 0)
 
 
 async def test_a_copy_pools_neither_its_source_nor_what_overlaps_it(windows):

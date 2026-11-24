@@ -678,7 +678,9 @@ measurement is the same whichever files of the batch were run first, or at the s
 time. A blank, or a file with no peak list, takes no place among the six. Nor does a
 sample that reads some of the same scans, such as a copy of the file in its batch, though
 another time window of the same file, one that shares no scans with it, counts as one of
-the six. Measuring them
+the six. A window includes the scans at its start and its end, so two windows that touch,
+one ending at the time the next starts, both read the scan there and are not each
+other's neighbours. Measuring them
 adds about a minute to a thin file's run, though thin files run at the same time share
 the measurements they have in common. The run records which files it pooled, the lines
 each gave and the time they span. On a TOF the run measures one offset and one

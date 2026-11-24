@@ -2853,6 +2853,12 @@ A window does not get its own peak detection. It takes the stream's peak list
 and sums the per-peak timeseries inside [t0, t1], which is how
 `extract_peaks` already aggregates an explicit window.
 
+Two windows of one stream that share a bound, one ending where the next
+starts, both read a scan at that time under the part contract (3.2), so they
+are not each other's envelope neighbours in peak assignment
+(`envelope_fit.share_scans`, MAS-1158); a recipe that wants them to be cuts
+between scans.
+
 For that to be complete, a file that a recipe splits gets **all** its peak
 timeseries computed at ingest, not lazily. Today a windowed aggregate leaves
 out, with a warning, every peak whose timeseries was never computed.
