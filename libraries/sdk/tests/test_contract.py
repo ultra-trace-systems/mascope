@@ -1409,8 +1409,7 @@ class TestSeriesContract:
     members, the files listing against the files the batches' samples name.
     """
 
-    def test_ion_series_is_the_peaks_heights_summed_per_sample_and_ion(self, mascope):
-        import numpy as np
+    def test_ion_series_holds_the_peaks_heights_per_sample_and_ion(self, mascope):
         import pandas as pd
 
         _skip_unless_attr(mascope.batches, "ion_series")
@@ -1446,8 +1445,13 @@ class TestSeriesContract:
         # Every matched peak's pair is a series row. A pair matched with no
         # peak (category 0) is a row of intensity 0, and no peak row.
         assert set(heights.index) <= set(intensity.index)
+        # A pair's sum holds the heights its peaks show, and more where a
+        # line on its mass misses its isotope ratio by under 100 %: that line
+        # keeps its intensity in the ion's sum but is no match, so the peak
+        # list does not give it to the ion (#2943).
         both = pd.concat([heights.rename("height"), intensity], axis=1).fillna(0.0)
-        np.testing.assert_allclose(both["intensity"], both["height"], rtol=1e-9)
+        over = both[both["height"] > both["intensity"] * (1 + 1e-9)]
+        assert over.empty, f"peaks above their pair's sum:\n{over.head()}"
 
     def test_batch_peak_series_are_the_ledgers_members(self, mascope):
         _skip_unless_attr(mascope.batch_peaks, "series")
@@ -2680,16 +2684,22 @@ def _sample_with_completed_run(mascope) -> str:
 
 def _first_dataset_and_batches(mascope):
     """
-    ``(dataset row, its batches)`` of the first demo dataset that has any.
+    ``(dataset row, its batches)`` of the first demo dataset that has any,
+    both by name.
 
-    Dataset ordering is not part of the contract, and the workspace can carry
-    empty datasets (e.g. auto-created acquisition pools), so scan rather than
-    trust ``iloc[0]``.
+    The workspace can carry empty datasets (e.g. auto-created acquisition
+    pools), so scan rather than trust ``iloc[0]``. By name, because the
+    server lists datasets and batches in no set order: a demo bundle rebuilt
+    from its raw files draws new IDs, and with them which batch a listing
+    gives first, and some demo batches hold a single sample. On the demo
+    this is the 2025 dataset and its bromide batch first.
     """
-    for _, dataset in mascope.datasets.list().iterrows():
+    datasets = mascope.datasets.list().sort_values("dataset_name", kind="stable")
+    for _, dataset in datasets.iterrows():
         batches = mascope.batches.list(dataset["dataset_id"])
         if batches is not None and not batches.empty:
-            return dataset, batches
+            batches = batches.sort_values("sample_batch_name", kind="stable")
+            return dataset, batches.reset_index(drop=True)
     raise AssertionError("demo stack has no dataset with batches")
 
 

@@ -73,8 +73,10 @@ def client():
 
 @pytest.fixture(scope="module")
 def dataset(client) -> pd.Series:
-    """The demo's first dataset that has batches."""
-    for row in client.datasets.list().itertuples():
+    """The demo's first dataset by name that has batches: the server lists in
+    no set order, and a rebuilt demo bundle's new IDs change which is first."""
+    datasets = client.datasets.list().sort_values("dataset_name", kind="stable")
+    for row in datasets.itertuples():
         batches = client.batches.list(row.dataset_id)
         if batches is not None and not batches.empty:
             return pd.Series(row._asdict())
