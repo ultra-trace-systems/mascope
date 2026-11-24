@@ -2574,6 +2574,24 @@ It writes no per-sample runs: the results appear in the batch ledger and in each
 sample's view, marked as untargeted. An assignment run on a sample still takes
 precedence for that sample.
 
+**A batch peak the search found nothing for is not searched again.** The search
+remembers each batch peak it searched and found nothing for, and the next search leaves
+it out while nothing it read for that peak has changed: the search's settings, your
+target library and the loaded reference lists, the ionization mechanisms and modes, the
+engine version and the Mascope version the server reports (so an upgrade searches every
+batch peak again, except on a deployment that tracks `latest`, whose version reads the
+same before and after), and the peak it searched on - the same peak of the same sample, from
+the same run, at the same height. Whether the peak recurs across the batch (*A faint
+peak that recurs is searched too*, below) must not have changed either. Any of these
+changed, the batch peak is searched again. So is a batch peak a sample folded in since
+gives a brighter peak: the search then runs on that one. A new peak that is not the
+brightest changes nothing the search reads. A sample left with nothing to search is not
+searched at all, which after a fold-in is most of the batch. Under a peak cap (the
+**Max untargeted peaks** setting) nothing is left out, since which peaks a capped search
+takes depends on all the others. The search's message counts the batch peaks it left
+out. A batch peak that takes a reading by any other way, a pin say, loses the record,
+also once the pin is released.
+
 **The search judges as an assignment run does.** Each sample's search takes the same
 steps, in the same order, as an assignment run of that sample: it reads the sample's
 chemistry, sets aside the peaks the source made (its reagent lines and the detector's

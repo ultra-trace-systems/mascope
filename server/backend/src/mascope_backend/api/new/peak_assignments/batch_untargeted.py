@@ -37,6 +37,9 @@ match pass per sample), so every member carries a fit of its own and the
 sample's derived view agrees with the batch. A member whose peak the seeded
 envelope does not reach stays unassigned rather than inheriting a number.
 
+An anchor the last search found nothing for is not searched again while
+nothing that search read of it has changed (``batch_search_records``).
+
 Nothing here writes a per-sample run: results live on the members and, through
 the consensus, on the anchors. An explicit run on a sample still supersedes
 them for that sample. Design: ``docs/dev/peak_assignment_batch_primary.md``,
@@ -55,10 +58,13 @@ from sqlalchemy import func, or_, select
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.lib.api_features import api_controller_background_task
+from mascope_backend.api.new.peak_assignments.batch_library import (
+    chemistry_read,
+    library_read,
+)
 from mascope_backend.api.new.peak_assignments.batch_lock import _acquire_batch_fold_lock
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     MARK_SEARCH,
-    PERSISTENCE_KEY,
     REASON_PERSISTENCE_ONLY,
     ROLE_ISO_CHILD,
     ROLE_UNASSIGNED,
@@ -78,6 +84,13 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     ACTION_SEARCH,
     in_batch_run,
     touch_ledger,
+)
+from mascope_backend.api.new.peak_assignments.batch_search_records import (
+    search_key,
+    searched_before_note,
+    searched_empty_record_of,
+    searched_in_vain,
+    write_search_records,
 )
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import (
@@ -695,48 +708,6 @@ async def _occurrence_table(
     )
 
 
-async def _mark_persistence(
-    sample_batch_id: str, searched: Iterable[str], records: dict[str, dict]
-) -> None:
-    """Write each searched anchor's persistence record, under the fold lock.
-
-    An anchor persistence alone admitted takes its record; every other anchor
-    this search searched loses any it carried, since this search admitted it
-    on its height or not at all. An anchor the search did not reach - one that
-    reads something already - keeps what it has: its record is the admission
-    its reading was elected on.
-
-    :param searched: Every anchor this search searched.
-    :param records: Anchor id -> its record, for the ones persistence alone
-        admitted.
-    """
-    ids = sorted(set(searched))
-    if not ids:
-        return
-    async with async_session() as session:
-        await _acquire_batch_fold_lock(session, sample_batch_id)
-        anchors = (
-            (
-                await session.execute(
-                    select(BatchPeak).where(BatchPeak.batch_peak_id.in_(ids))
-                )
-            )
-            .scalars()
-            .all()
-        )
-        for anchor in anchors:
-            provenance = dict(anchor.provenance or {})
-            record = records.get(anchor.batch_peak_id)
-            if record is None and PERSISTENCE_KEY not in provenance:
-                continue
-            if record is None:
-                provenance.pop(PERSISTENCE_KEY, None)
-            else:
-                provenance[PERSISTENCE_KEY] = record
-            anchor.provenance = provenance
-        await session.commit()
-
-
 async def _held_by_persistence(sample_batch_id: str, anchor_ids: set[str]) -> int:
     """How many of ``anchor_ids`` the persistence rule holds at candidate:
     their reading is the one elected on persistence alone, nothing
@@ -1200,6 +1171,60 @@ def _takes_the_member(
     return held is None or evidence >= held
 
 
+def _new_counts(
+    n_searched: int,
+    n_searched_before: int,
+    again: dict[str, "Annotation"],
+    splits: dict[tuple, Optional[float]],
+) -> dict:
+    """The counts a search reports (:func:`run_batch_untargeted_search`),
+    before it searches."""
+    return {
+        "anchors_searched": n_searched,
+        # Unassigned batch peaks the last search searched and found nothing
+        # for, left out because nothing that search read of them has changed.
+        "anchors_searched_before": n_searched_before,
+        # Batch peaks the search assigned before whose reading is measured
+        # again on the members that read nothing yet.
+        "anchors_measured_again": sum(
+            1 for annotation in again.values() if annotation.role == ROLE_M0
+        ),
+        # Anchors the cap kept out of the search. Zero unless a caller set
+        # `max_untargeted_peaks` or a sample carries more representatives than
+        # the ceiling; reported because a blank anchor means something different
+        # when nothing looked at it.
+        "anchors_unsearched": 0,
+        # Anchors searched because their peak is persistent, which the floor or
+        # the cap would have left out, and how many of their readings the
+        # persistence rule holds at candidate after the pass.
+        "anchors_admitted_by_persistence": 0,
+        "anchors_held_by_persistence": 0,
+        # Each partition's split of its occurrence distribution, None where it
+        # has none (too few spectra, or no two shares apart).
+        "persistence_splits": [
+            {
+                "ionization_mode_id": mode,
+                "intensity_variable": unit,
+                "split": None if split is None else round(split, 4),
+            }
+            for (mode, unit), split in sorted(
+                splits.items(), key=lambda item: (str(item[0][0]), str(item[0][1]))
+            )
+        ],
+        "anchors_annotated": 0,
+        "members_propagated": 0,
+        "samples_searched": 0,
+        # Samples searched a second time after the merge dropped one of their
+        # representatives' standalone readings (`merge_search_rows`).
+        "samples_researched": 0,
+        # Anchors a sample's own search read on their own and that took the
+        # isotopologue reading another sample's search gave them instead.
+        "isotopologues_carried": 0,
+        "samples_rescored": 0,
+        "samples_failed": 0,
+    }
+
+
 def _progress(
     sample_batch_id: str,
     item_index: int,
@@ -1246,6 +1271,10 @@ async def run_batch_untargeted_search(
     the consensus - and with it the batch ledger and every derived Sample
     view - reflects the new members.
 
+    An anchor the last search found nothing for is left out while nothing
+    that search read of it has changed (:func:`searched_in_vain`), never
+    under a cap; a sample left with no representative is not searched.
+
     Before any search the batch's occurrence table is read
     (:func:`_occurrence_table`): which anchors are persistent, so each
     sample's search takes their representatives however faint. An anchor
@@ -1269,52 +1298,44 @@ async def run_batch_untargeted_search(
         again, again_samples = await _readings_to_measure_again(
             session, sample_batch_id
         )
-    counts = {
-        "anchors_searched": len(anchors),
-        # Batch peaks the search assigned before whose reading is measured
-        # again on the members that read nothing yet.
-        "anchors_measured_again": sum(
-            1 for annotation in again.values() if annotation.role == ROLE_M0
-        ),
-        # Anchors the cap kept out of the search. Zero unless a caller set
-        # `max_untargeted_peaks` or a sample carries more representatives than
-        # the ceiling; reported because a blank anchor means something different
-        # when nothing looked at it.
-        "anchors_unsearched": 0,
-        # Anchors searched because their peak is persistent, which the floor or
-        # the cap would have left out, and how many of their readings the
-        # persistence rule holds at candidate after the pass.
-        "anchors_admitted_by_persistence": 0,
-        "anchors_held_by_persistence": 0,
-        # Each partition's split of its occurrence distribution, None where it
-        # has none (too few spectra, or no two shares apart).
-        "persistence_splits": [
-            {
-                "ionization_mode_id": mode,
-                "intensity_variable": unit,
-                "split": None if split is None else round(split, 4),
-            }
-            for (mode, unit), split in sorted(
-                splits.items(), key=lambda item: (str(item[0][0]), str(item[0][1]))
+        key = (
+            search_key(
+                config,
+                await library_read(session, sample_batch_id),
+                await chemistry_read(session, sample_batch_id),
             )
-        ],
-        "anchors_annotated": 0,
-        "members_propagated": 0,
-        "samples_searched": 0,
-        # Samples searched a second time after the merge dropped one of their
-        # representatives' standalone readings (`merge_search_rows`).
-        "samples_researched": 0,
-        # Anchors a sample's own search read on their own and that took the
-        # isotopologue reading another sample's search gave them instead.
-        "isotopologues_carried": 0,
-        "samples_rescored": 0,
-        "samples_failed": 0,
+            if anchors and config.max_untargeted_peaks is None
+            else None
+        )
+    representatives = choose_representatives(members)
+    # The anchors the last search found nothing for, which this one would
+    # read as that one did: left out.
+    searched_before = {
+        anchor_id: member
+        for anchor_id, member in representatives.items()
+        if searched_in_vain(
+            # .get: the anchors and the members are two reads, and a fold
+            # that commits between them can give a member of an anchor the
+            # first did not return. No record reads as one to search.
+            searched_empty_record_of(anchors.get(anchor_id)),
+            key,
+            member,
+            anchor_id in persistent,
+        )
     }
+    counts = _new_counts(
+        len(anchors) - len(searched_before), len(searched_before), again, splits
+    )
     if not anchors and not again:
         return counts
 
-    representatives = choose_representatives(members)
-    by_sample = group_by_sample(representatives)
+    by_sample = group_by_sample(
+        {
+            anchor_id: member
+            for anchor_id, member in representatives.items()
+            if anchor_id not in searched_before
+        }
+    )
     # The representatives of persistent anchors, per sample: the peaks its
     # search takes however faint.
     persistent_peaks = {
@@ -1364,6 +1385,9 @@ async def run_batch_untargeted_search(
     admitted_by_sample: dict[str, set[str]] = {}
     marked: set[str] = set()
     withheld: dict[str, set[str]] = defaultdict(set)
+    # Samples whose search again failed: their first search stands, and
+    # vouches for nothing it found nothing for.
+    research_failed: set[str] = set()
     walked_the_batch = False
     try:
         for sample_item_id, sample_representatives in by_sample.items():
@@ -1427,6 +1451,7 @@ async def run_batch_untargeted_search(
                     )
                     counts["samples_researched"] += 1
                 except Exception:  # noqa: BLE001 - the first search's rows stand
+                    research_failed.add(sample_item_id)
                     # The sample's first search stands. The merge still drops
                     # the readings it would have withheld, and the lines those
                     # claimed, so nothing that contradicts the carried reading
@@ -1441,25 +1466,21 @@ async def run_batch_untargeted_search(
         # Marked before anything else is written: the consensus pass below
         # reads the record, also after a stop, and a member written without
         # it would read as a reading the search elected on its height.
-        records = {
-            member.batch_peak_id: persistent[member.batch_peak_id].record(
-                merge.annotations.get(member.batch_peak_id), batch_peak_run_id
-            )
-            for sample_item_id, peaks in admitted_by_sample.items()
-            for member in by_sample[sample_item_id]
-            if member.sample_peak_id in peaks
-        }
-        await _mark_persistence(
+        marked, counts["anchors_admitted_by_persistence"] = await write_search_records(
             sample_batch_id,
-            (
-                member.batch_peak_id
-                for sample_item_id in rows_by_sample
-                for member in by_sample[sample_item_id]
+            key=key,
+            persistent=persistent,
+            searched_before={a: anchors[a] for a in searched_before},
+            by_sample={s: by_sample[s] for s in rows_by_sample},
+            read=set(search_readings(rows_by_sample, members)),
+            annotations=merge.annotations,
+            admitted_by_sample=admitted_by_sample,
+            vouched=lambda sample_item_id: (
+                not unsearched_by_sample.get(sample_item_id)
+                and sample_item_id not in research_failed
             ),
-            records,
+            batch_peak_run_id=batch_peak_run_id,
         )
-        marked = set(records)
-        counts["anchors_admitted_by_persistence"] = len(marked)
         counts["isotopologues_carried"] = len(
             {
                 (sample_item_id, peak)
@@ -1536,7 +1557,12 @@ async def run_batch_untargeted_search(
 def search_outcome(counts: dict, sample_batch_id: str) -> dict:
     """The controller result the background-task decorator reports from."""
     notification_data = {"sample_batch_id": sample_batch_id}
-    if not counts["anchors_searched"] and not counts.get("anchors_measured_again"):
+    before = counts.get("anchors_searched_before", 0)
+    if (
+        not counts["anchors_searched"]
+        and not counts.get("anchors_measured_again")
+        and not before
+    ):
         return {
             "status": "partial",
             "message": (
@@ -1574,6 +1600,7 @@ def search_outcome(counts: dict, sample_batch_id: str) -> dict:
         if measured_again
         else ""
     )
+    searched_before = searched_before_note(before)
     # Said because it is the one place a sample's own reading of a peak was
     # overruled, and a user comparing a sample with the batch will see it.
     carried = counts.get("isotopologues_carried", 0)
@@ -1617,7 +1644,8 @@ def search_outcome(counts: dict, sample_batch_id: str) -> dict:
             f"{counts['anchors_annotated']} assigned a composition, and "
             f"{counts['members_propagated']} member peak"
             f"{'s' if counts['members_propagated'] != 1 else ''} in other samples "
-            f"measured against it.{again}{lines}{persistence}{skipped}"
+            f"measured against it.{searched_before}{again}{lines}{persistence}"
+            f"{skipped}"
             f"{unsearched}"
         ),
         "data": counts,

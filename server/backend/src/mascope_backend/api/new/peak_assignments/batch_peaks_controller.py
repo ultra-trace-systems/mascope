@@ -25,7 +25,7 @@ import json
 import statistics
 from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Any, Iterable
+from typing import Any, Iterable, Optional
 
 from sqlalchemy import select, update
 
@@ -87,6 +87,10 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     ensure_current_run,
     touch_ledger,
 )
+from mascope_backend.api.new.peak_assignments.batch_search_records import (
+    SEARCHED_EMPTY_KEY,
+    searched_empty_record_of,
+)
 from mascope_backend.api.new.peak_assignments.batch_staleness import (
     REASON_CONSENSUS,
     REASON_FOLD,
@@ -100,6 +104,7 @@ from mascope_backend.api.new.peak_assignments.monoisotopic import (
     is_monoisotopic_formula,
     labelled_isotopes,
 )
+from mascope_backend.api.new.peak_assignments.tiers import TIER_UNASSIGNED
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,
@@ -663,6 +668,40 @@ async def _recompute_consensus(
             )
 
 
+def _consensus_of(
+    bp: BatchPeak,
+    members: list,
+    persistence: Optional[dict],
+    diagnostic_isotopologues: Optional[dict],
+    merged_isotopologue_of: Optional[dict],
+) -> Consensus:
+    """The anchor's consensus, every record it carries read with its stale
+    mark and kept (``batch_peaks.compute_consensus``), and the record of a
+    search that found nothing for it while it still reads nothing: true of
+    it then, and of no reading it takes later
+    (``batch_search_records.SEARCHED_EMPTY_KEY``)."""
+    consensus = compute_consensus(
+        members,
+        batch_peak_id=bp.batch_peak_id,
+        manual=manual_pin_of(bp),
+        series=series_record_of(bp, stale=True),
+        co_variation=co_variation_record_of(bp, stale=True),
+        diagnostic_isotopologues=diagnostic_isotopologues,
+        stamped_isotopologue_of=stamped_isotopologue_of_record(bp, stale=True),
+        merged_isotopologue_of=merged_isotopologue_of,
+        merged_isotopologues=merged_isotopologues_record(bp, stale=True),
+        batch_checks=batch_checks_record_of(bp, stale=True),
+        known_species=known_species_record_of(bp, stale=True),
+        persistence=persistence,
+        flat_series=flat_series_record_of(bp, stale=True),
+        water_ladder=water_ladder_record_of(bp, stale=True),
+    )
+    searched_empty = searched_empty_record_of(bp)
+    if searched_empty is not None and consensus.consensus_tier == TIER_UNASSIGNED:
+        consensus.provenance[SEARCHED_EMPTY_KEY] = searched_empty
+    return consensus
+
+
 async def _recompute_consensus_chunk(
     session, id_list: list[str], now: datetime
 ) -> set[str]:
@@ -784,21 +823,8 @@ async def _recompute_consensus_chunk(
                 released[merged_isotopologue_of["batch_peak_id"]].add(bp.batch_peak_id)
             await session.delete(bp)
             continue
-        consensus = compute_consensus(
-            members,
-            batch_peak_id=bp.batch_peak_id,
-            manual=manual_pin_of(bp),
-            series=series_record_of(bp, stale=True),
-            co_variation=co_variation_record_of(bp, stale=True),
-            diagnostic_isotopologues=diagnostic_isotopologues,
-            stamped_isotopologue_of=stamped_isotopologue_of_record(bp, stale=True),
-            merged_isotopologue_of=merged_isotopologue_of,
-            merged_isotopologues=merged_isotopologues_record(bp, stale=True),
-            batch_checks=batch_checks_record_of(bp, stale=True),
-            known_species=known_species_record_of(bp, stale=True),
-            persistence=persistence,
-            flat_series=flat_series_record_of(bp, stale=True),
-            water_ladder=water_ladder_record_of(bp, stale=True),
+        consensus = _consensus_of(
+            bp, members, persistence, diagnostic_isotopologues, merged_isotopologue_of
         )
         newly = went_stale(bp.provenance, consensus.provenance)
         if newly:

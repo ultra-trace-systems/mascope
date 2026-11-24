@@ -101,8 +101,6 @@ and ``docs/dev/assignment_quality_plan.md``, milestone 7 (MAS-983).
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -134,6 +132,7 @@ from mascope_backend.api.new.peak_assignments.batch_isotopologues import (
 from mascope_backend.api.new.peak_assignments.batch_known_species import (
     decide_batch_known_species,
 )
+from mascope_backend.api.new.peak_assignments.batch_library import _iso, library_read
 from mascope_backend.api.new.peak_assignments.batch_lock import _acquire_batch_fold_lock
 from mascope_backend.api.new.peak_assignments.batch_merged_isotopologues import (
     strip_batch_isotopologue_rows,
@@ -210,13 +209,8 @@ from mascope_backend.db import (
     BatchPeak,
     BatchPeakRun,
     BatchPeakStage,
-    ReferenceSource,
     Sample,
     SampleBatch,
-    TargetCollectionInSampleBatch,
-    TargetCompound,
-    TargetCompoundInTargetCollection,
-    TargetIon,
     async_session,
 )
 from mascope_backend.db.id import gen_id
@@ -779,10 +773,6 @@ async def stop_stage(
         )
 
 
-def _iso(value: Optional[datetime]) -> Optional[str]:
-    return value.isoformat() if value is not None else None
-
-
 def standing_entries(rows: dict[str, Any]) -> list[dict]:
     """Where each stage stands, in order, as the ledger serves it.
 
@@ -1122,82 +1112,6 @@ def fold_reasons(
         if last_pass.get("engine_version") not in (None, engine_version):
             reasons.append(FOLD_ENGINE_CHANGED)
     return reasons
-
-
-def _digest(rows: Iterable[tuple]) -> str:
-    text = json.dumps(
-        sorted([["" if v is None else str(v) for v in row] for row in rows])
-    )
-    return hashlib.sha256(text.encode()).hexdigest()[:16]
-
-
-async def library_read(session, sample_batch_id: str) -> dict:
-    """What a fold of the batch reads besides the samples: each target
-    collection the batch names, as a digest of its compounds and their ions
-    (a collection keeps no modification time), and each active reference
-    list, by its load.
-
-    Plain JSON values, so a pass's record compares equal to a read of the
-    same library.
-    """
-    rows = (
-        await session.execute(
-            select(
-                TargetCollectionInSampleBatch.target_collection_id,
-                TargetCompound.target_compound_id,
-                TargetCompound.target_compound_formula,
-                TargetIon.target_ion_id,
-                TargetIon.target_ion_formula,
-                TargetIon.ionization_mechanism_id,
-            )
-            .select_from(TargetCollectionInSampleBatch)
-            .outerjoin(
-                TargetCompoundInTargetCollection,
-                TargetCompoundInTargetCollection.target_collection_id
-                == TargetCollectionInSampleBatch.target_collection_id,
-            )
-            .outerjoin(
-                TargetCompound,
-                TargetCompound.target_compound_id
-                == TargetCompoundInTargetCollection.target_compound_id,
-            )
-            .outerjoin(
-                TargetIon,
-                TargetIon.target_compound_id == TargetCompound.target_compound_id,
-            )
-            .where(TargetCollectionInSampleBatch.sample_batch_id == sample_batch_id)
-        )
-    ).all()
-    by_collection: dict[str, list[tuple]] = {}
-    for row in rows:
-        by_collection.setdefault(row.target_collection_id, []).append(tuple(row[1:]))
-    sources = (
-        await session.execute(
-            select(
-                ReferenceSource.reference_source_id,
-                ReferenceSource.name,
-                ReferenceSource.version,
-                ReferenceSource.ingested_at,
-            ).where(
-                ReferenceSource.is_active.is_(True),
-                ReferenceSource.kind == "compound",
-            )
-        )
-    ).all()
-    return {
-        "target_collections": {
-            collection: _digest(members)
-            for collection, members in sorted(by_collection.items())
-        },
-        "reference_lists": {
-            str(source.reference_source_id): {
-                "name": source.name,
-                "version": source.version,
-                "ingested_at": _iso(source.ingested_at),
-            }
-            for source in sources
-        },
-    }
 
 
 def is_pass_summary(summary: Any) -> bool:
