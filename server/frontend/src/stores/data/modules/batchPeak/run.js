@@ -87,6 +87,29 @@ export function runStateWords(run) {
 }
 
 /**
+ * Whether Run history can open a run: the current one is the live ledger, and
+ * an earlier one has a ledger of its own only once it was snapshotted. A
+ * failed, cancelled or running run never is (`batch_runs.start_run` snapshots
+ * only the run that is current as the next starts), and the read of such a run
+ * answers with no rows, which would show as "that run left nothing".
+ */
+export function runOpenable(run) {
+  return Boolean(run && (run.current || run.snapshot_utc))
+}
+
+/** Why a run cannot be opened, in Run history's words; null when it can. */
+export function runClosedReason(run) {
+  if (!run || runOpenable(run)) return null
+  // The status word runStateWords shows beside it, without the running ellipsis.
+  const state = runStatusLabel(run.status) || 'This run'
+  const head = state.charAt(0).toUpperCase() + state.slice(1)
+  if (run.status === 'failed') return `${head}: it left the ledger as the run before it.`
+  if (run.status === 'cancelled') return `${head}: what it wrote stands in the current ledger.`
+  if (run.status === 'running') return `${head}: it has not finished, so it has no ledger yet.`
+  return `${head}: no snapshot of its ledger was kept.`
+}
+
+/**
  * A batch's runs: its ledger's history, one record per batch-level operation
  * that rewrote it (a rebuild, an untargeted search with its parameters, an
  * import), or the folds that built it. Exactly one is current - the run whose
