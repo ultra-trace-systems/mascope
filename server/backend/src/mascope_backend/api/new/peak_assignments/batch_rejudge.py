@@ -310,6 +310,7 @@ async def rejudge_samples(
     *,
     kept: Optional[KeptMeasurement] = None,
     progress: Optional[Callable[[float], Awaitable[None]]] = None,
+    after: Optional[Callable[[str], Awaitable[None]]] = None,
 ) -> dict:
     """Judge each sample again (:func:`rejudge_sample`); a sample that cannot
     be read is counted and skipped, as the stages skip one.
@@ -318,6 +319,8 @@ async def rejudge_samples(
     :param kept: What the pass measured of its samples' readings.
     :param progress: Told how far through the samples the judging is, a
         share, before each sample and after the last.
+    :param after: Told each sample judged, right after its judging
+        (``batch_judged.SeriesJudging.judged``).
     :return: The counts, with ``samples_judged`` and ``samples_failed``.
     """
     counts: Counter = Counter()
@@ -341,6 +344,9 @@ async def rejudge_samples(
                 f"failed: {exc}"
             )
             counts["samples_failed"] += 1
+        else:
+            if after is not None:
+                await after(sample_item_id)
     if progress is not None and order:
         await progress(1.0)
     return dict(counts)

@@ -359,7 +359,9 @@ As built (`batch_stages.py`):
   `provenance.batch_written_before`, but for a row assigned by hand since.
 - After a rewriting stage, every sample it wrote in is judged again through the stage
   list (`batch_rejudge.py`), and after the series every sample whose member a series
-  record corroborates.
+  record corroborates, less those whose members and decisions read as right after their
+  last series judging (`batch_judged.py`, MAS-1188: each pass records that state per
+  sample in its summary's series entry).
 - What that costs (MAS-1073, measured on a copy of the demo dataset with four samples of
   the uronium batch folded, about 1,230 readings a sample): a judging took 11 to 15 s
   whatever it judged, 3 to 270 members. Of a typical 11.5 s, the score stage took 3 s

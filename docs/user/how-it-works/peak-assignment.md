@@ -2213,6 +2213,14 @@ completed pass leaves every stage current.
   judging reads none of them again. It reads the lists again only where it judges a
   reading through a channel the earlier judgings did not, and it reads everything
   again if the sample's peaks changed.
+  After the series, a pass judges again only the samples that moved since their last
+  judging there. A judging reads the sample's members and the batch's decisions about
+  them: the series records, the stripped lines, the known species and the water-ladder
+  rungs. It also reads the settings and the engine's version. A sample that reads all of
+  these as it did right after its last judging would come out the same, so it is left as
+  it is, and the stage's result line counts it. The sample a stage wrote in, one that
+  arrived, one run again, and every sample after a change of settings or engine is
+  judged.
 - **Records are kept, marked stale.** When a batch peak's reading moves off what a stage's
   record was made for, the record is kept, marked stale, and served by no reader. The stage
   that wrote it reads it again when it runs, and a reading that comes back finds it

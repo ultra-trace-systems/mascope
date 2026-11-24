@@ -123,6 +123,7 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
     CodedHTTPException,
 )
 from mascope_backend.api.lib.utils import handle_reloads
+from mascope_backend.api.new.peak_assignments import batch_judged
 from mascope_backend.api.new.peak_assignments.batch_checks import read_batch_checks
 from mascope_backend.api.new.peak_assignments.batch_coherence import (
     read_batch_co_variation,
@@ -1046,8 +1047,14 @@ async def judge_again(
         BatchStage.KNOWN_SPECIES: species_restored,
     }.get(stage)
     named = restored_in(outcomes)
+    judging = None
     if extra is not None:
-        for sample, anchors in (await extra(call.sample_batch_id, version)).items():
+        found = await extra(call.sample_batch_id, version)
+        if stage is BatchStage.SERIES:  # those that moved since (MAS-1188)
+            judging, found = await batch_judged.SeriesJudging.narrow(
+                call.sample_batch_id, call.config, set(samples) | set(named), found
+            )
+        for sample, anchors in found.items():
             named.setdefault(sample, set()).update(anchors)
     for sample, anchors in named.items():
         samples[sample] = samples.get(sample, frozenset()) | frozenset(anchors)
@@ -1057,12 +1064,14 @@ async def judge_again(
         call.config or PeakAssignmentConfig(),
         kept=call.kept,
         progress=progress,
+        after=judging.judged if judging is not None else None,
     )
-    return {
+    judged = {
         "status": "partial" if counts.get("samples_failed") else "success",
         "message": judged_message(counts),
         "data": counts,
     }
+    return batch_judged.outcome_of(judging, judged)
 
 
 # --- folding first ----------------------------------------------------------------
@@ -1338,6 +1347,7 @@ class PassRecord:
         entry["status"] = ENTRY_DONE
         entry["utc_ended"] = _iso(_now())
         entry["outcomes"] = [r for r in map(_outcome_record, outcomes) if r]
+        entry.update(batch_judged.states_of(outcomes))
         self.running = None
 
     def _unfinished(self) -> list[str]:

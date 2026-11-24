@@ -1216,3 +1216,255 @@ async def test_a_pass_keeps_one_measurement_across_its_stages(
 
     await _run(folded["batch_id"], from_stage="series")
     assert judgings["judged"][-1][1] is not judgings["judged"][0][1]
+
+
+# --- the series stage judges only what moved (MAS-1188) ----------------------------
+
+
+@pytest.fixture
+def series_judgings(folded, stand_ins, monkeypatch, async_session_factory):
+    """The series stage writes the same record on the glucose anchor, which
+    both samples' members read, on every pass; each sample's judging stood in
+    for by a recorder (a hook per sample runs inside it, and one that raises
+    fails it). The pass's own record keeping runs as it is."""
+    from collections import Counter
+
+    batch_id = folded["batch_id"]
+    record = {"formula": "C6H12O6", "unit": "CH2", "depth": 1}
+
+    async def writes(call):
+        async with async_session_factory() as session:
+            anchor = (
+                await session.execute(
+                    select(BatchPeak).where(
+                        BatchPeak.sample_batch_id == batch_id,
+                        BatchPeak.consensus_formula == "C6H12O6",
+                    )
+                )
+            ).scalar_one()
+            anchor.provenance = {
+                **(anchor.provenance or {}),
+                "series": {**record, "batch_peak_run_id": call.batch_peak_run_id},
+            }
+            await session.commit()
+
+    stand_ins["hooks"]["series"] = writes
+    judged: list[tuple[str, str]] = []
+    hooks: dict[str, object] = {}
+
+    async def rejudge(sample_batch_id, sample_item_id, config, **kwargs):
+        run = await _newest_run(async_session_factory, batch_id)
+        stage = run.summary["progress"]["stage"]
+        judged.append((stage, sample_item_id))
+        hook = hooks.get(sample_item_id)
+        if hook is not None and stage == "series":
+            await hook()
+        return Counter(samples_judged=1)
+
+    monkeypatch.setattr(batch_rejudge, "rejudge_sample", rejudge)
+
+    def series_judged() -> set[str]:
+        out = {sample for stage, sample in judged if stage == "series"}
+        judged.clear()
+        return out
+
+    return {
+        "record": record,
+        "hooks": hooks,
+        "judged": series_judged,
+        "stand_ins": stand_ins,
+    }
+
+
+async def _series_entry(async_session_factory, batch_id) -> dict:
+    run = await _newest_run(async_session_factory, batch_id)
+    return next(s for s in run.summary["stages"] if s["stage"] == "series")
+
+
+async def _set_member(async_session_factory, sample_item_id, **values):
+    from sqlalchemy import update
+
+    from mascope_backend.db import BatchPeakOccurrence
+
+    async with async_session_factory() as session:
+        await session.execute(
+            update(BatchPeakOccurrence)
+            .where(BatchPeakOccurrence.sample_item_id == sample_item_id)
+            .values(**values)
+        )
+        await session.commit()
+
+
+async def test_a_series_pass_leaves_the_samples_that_read_as_after_its_last(
+    folded, series_judgings, async_session_factory
+):
+    """The first pass judges both samples the record corroborates and records
+    the state each was left in; the next, whose detection writes the same
+    record again, judges neither and says so."""
+    batch_id = folded["batch_id"]
+    both = {folded["s1"], folded["s2"]}
+    await _run(batch_id, "series")
+    assert series_judgings["judged"]() == both
+    entry = await _series_entry(async_session_factory, batch_id)
+    assert set(entry["judged_states"]) == both
+    judging = entry["outcomes"][-1]
+    assert "samples_left" not in judging["data"]
+    # The states stay out of the outcome a notification carries.
+    assert "judged_states" not in judging
+
+    await _run(batch_id, "series")
+    assert series_judgings["judged"]() == set()
+    entry = await _series_entry(async_session_factory, batch_id)
+    judging = entry["outcomes"][-1]
+    assert judging["data"]["samples_left"] == 2
+    assert "2 samples read as they did after their last judging" in (judging["message"])
+    # Carried on: a third pass leaves them too.
+    assert set(entry["judged_states"]) == both
+    await _run(batch_id, "series")
+    assert series_judgings["judged"]() == set()
+
+
+async def test_a_changed_series_record_judges_its_samples_again(
+    folded, series_judgings
+):
+    batch_id = folded["batch_id"]
+    await _run(batch_id, "series")
+    series_judgings["judged"]()
+    # What only names the series in a row's reasons moves no judging.
+    series_judgings["record"]["depth"] = 2
+    await _run(batch_id, "series")
+    assert series_judgings["judged"]() == set()
+    series_judgings["record"]["has_anchor"] = True
+    await _run(batch_id, "series")
+    assert series_judgings["judged"]() == {folded["s1"], folded["s2"]}
+
+
+async def test_a_sample_whose_members_moved_is_judged_again_alone(
+    folded, series_judgings, async_session_factory
+):
+    """A sample's own fold (here its members' tier moved) is judged again;
+    the other, as it was, is left."""
+    batch_id = folded["batch_id"]
+    await _run(batch_id, "series")
+    series_judgings["judged"]()
+    await _set_member(async_session_factory, folded["s1"], fit_score=0.5)
+    await _run(batch_id, "series")
+    assert series_judgings["judged"]() == {folded["s1"]}
+
+
+async def test_other_settings_judge_every_sample_again(
+    folded, series_judgings, async_session_factory
+):
+    batch_id = folded["batch_id"]
+    await _run(batch_id, "series")
+    series_judgings["judged"]()
+    await assign_batch(
+        sample_batch_id=batch_id,
+        from_stage="series",
+        process_id="pass-2",
+        config=PeakAssignmentConfig(max_alternatives=7),
+    )
+    assert series_judgings["judged"]() == {folded["s1"], folded["s2"]}
+
+
+async def test_a_sample_whose_judging_failed_is_judged_again(
+    folded, series_judgings, async_session_factory
+):
+    batch_id = folded["batch_id"]
+
+    async def fails():
+        raise RuntimeError("unreadable")
+
+    series_judgings["hooks"][folded["s1"]] = fails
+    await _run(batch_id, "series")
+    series_judgings["judged"]()
+    entry = await _series_entry(async_session_factory, batch_id)
+    assert set(entry["judged_states"]) == {folded["s2"]}
+    del series_judgings["hooks"][folded["s1"]]
+    await _run(batch_id, "series")
+    assert series_judgings["judged"]() == {folded["s1"]}
+
+
+async def test_a_sample_the_series_stage_wrote_in_is_judged_however_it_reads(
+    folded, series_judgings, async_session_factory
+):
+    """A member the stage rewrote carries its mark of this version: that
+    sample is judged on every pass, as every rewriting stage judges what it
+    wrote, whatever its state."""
+    from sqlalchemy import update
+
+    from mascope_backend.api.new.peak_assignments.batch_peaks import STAGE_VERSION
+    from mascope_backend.db import BatchPeakOccurrence
+
+    batch_id = folded["batch_id"]
+    writes_record = series_judgings["stand_ins"]["hooks"]["series"]
+
+    async def writes(call):
+        await writes_record(call)
+        async with async_session_factory() as session:
+            await session.execute(
+                update(BatchPeakOccurrence)
+                .where(BatchPeakOccurrence.sample_item_id == folded["s2"])
+                .values(
+                    batch_written={"stage": "series", "version": STAGE_VERSION.get()}
+                )
+            )
+            await session.commit()
+
+    series_judgings["stand_ins"]["hooks"]["series"] = writes
+    await _run(batch_id, "series")
+    series_judgings["judged"]()
+    await _run(batch_id, "series")
+    assert series_judgings["judged"]() == {folded["s2"]}
+    # The one it wrote in is judged, not left: one left, the other.
+    entry = await _series_entry(async_session_factory, batch_id)
+    assert entry["outcomes"][-1]["data"]["samples_left"] == 1
+
+
+async def test_a_judging_records_the_state_it_left_and_not_one_whose_decisions_moved(
+    folded, series_judgings, async_session_factory
+):
+    """The state recorded is the one right after the sample's judging, its
+    new tiers in it: a tier the judging moved does not make the next pass
+    judge it again. A decision that moved under the judging (its consensus
+    recompute moved a batch peak's reading) records none, and the next pass
+    judges the sample again."""
+    from mascope_backend.db import BatchPeakOccurrence
+
+    batch_id = folded["batch_id"]
+    s1, s2 = folded["s1"], folded["s2"]
+
+    async def moves_a_tier():
+        await _set_member(async_session_factory, s2, tier=3)
+
+    async def moves_a_reading():
+        async with async_session_factory() as session:
+            own = select(BatchPeakOccurrence.batch_peak_id).where(
+                BatchPeakOccurrence.sample_item_id == s1
+            )
+            anchors = (
+                (
+                    await session.execute(
+                        select(BatchPeak).where(
+                            BatchPeak.batch_peak_id.in_(own),
+                            BatchPeak.consensus_formula.is_(None),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert anchors, "S1 has a batch peak of its own without a reading"
+            for anchor in anchors:
+                anchor.consensus_formula = "C2H6O"
+            await session.commit()
+
+    series_judgings["hooks"][s1] = moves_a_reading
+    series_judgings["hooks"][s2] = moves_a_tier
+    await _run(batch_id, "series")
+    series_judgings["judged"]()
+    entry = await _series_entry(async_session_factory, batch_id)
+    assert set(entry["judged_states"]) == {s2}
+    series_judgings["hooks"].clear()
+    await _run(batch_id, "series")
+    assert series_judgings["judged"]() == {s1}
