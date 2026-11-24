@@ -35,6 +35,8 @@ const {
   listedAs,
   targetAs,
   engineTierTooltip,
+  engineLevel,
+  engineLevelTooltip,
   identificationLevel,
   verification,
   verifiable,
@@ -195,7 +197,7 @@ const provisional = TIERING_PROVISIONAL
     </div>
     <!-- One row of chips: this server's tier, the producing engine's beside
          it where the run was imported, the identification level and the
-         verdict. It wraps in a narrow column. -->
+         engine's level beside it, and the verdict. It wraps in a narrow column. -->
     <div class="insp-tiers chips" data-testid="chips">
       <BaseTierTag
         :tier="focusedAssignment.tier"
@@ -221,6 +223,15 @@ const provisional = TIERING_PROVISIONAL
         :level="identificationLevel.level"
         :role="focusedAssignment.role"
         :tooltip="identificationLevel.tooltip"
+      />
+      <!-- The producing engine's own level, beside the run's as its tier is
+           beside the tier. An imported row has no level of this server's, so
+           this is the only level chip it shows. -->
+      <BaseLevelTag
+        v-if="engineLevel"
+        class="engine-level"
+        :level="engineLevel"
+        :tooltip="engineLevelTooltip"
       />
       <BaseVerdictBadge
         v-if="verification && verifiable"

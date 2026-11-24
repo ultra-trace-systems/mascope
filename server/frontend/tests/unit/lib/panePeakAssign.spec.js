@@ -4832,6 +4832,56 @@ describe("PanePeakAssign the engine's own tier", () => {
   })
 })
 
+// An imported row's engine level sits beside the run's own level, as its
+// engine tier beside the tier; an in-app row has none and shows no such chip.
+describe("PanePeakAssign the engine's own level", () => {
+  const chip = (wrapper) => wrapper.find('[data-testid="chips"] .level-tag.engine-level')
+
+  it("shows an imported row's engine level as a chip of its own", async () => {
+    focusedAssignment = {
+      ...assignment({ formula: 'C6H12O6', tier: 'candidate' }),
+      engine_tier: 'candidate',
+      engine_level: '4b',
+      level: null
+    }
+    const wrapper = await mountPane()
+
+    expect(chip(wrapper).attributes('data-level')).toBe('4b')
+    // The row has no level of this server's, so it is the only level chip.
+    expect(wrapper.findAll('[data-testid="chips"] .level-tag')).toHaveLength(1)
+    expect(wrapper.vm.engineLevelTooltip).toContain(
+      'Engine level: 4b, as the engine that made this run stated it'
+    )
+    expect(wrapper.vm.engineLevelTooltip).toContain('Mascope states no level of its own')
+  })
+
+  it("compares it with the run's own level where the row has one", async () => {
+    focusedAssignment = {
+      ...assignment({ formula: 'C6H12O6', tier: 'candidate' }),
+      engine_level: '5a',
+      level: '4a'
+    }
+    const wrapper = await mountPane()
+
+    expect(wrapper.findAll('[data-testid="chips"] .level-tag')).toHaveLength(2)
+    expect(wrapper.vm.engineLevelTooltip).toContain("Mascope's level for this row is 4a")
+  })
+
+  it('shows none where the engine stated none, or a value off the scale', async () => {
+    for (const engine_level of [null, '6']) {
+      focusedAssignment = {
+        ...assignment({ formula: 'C6H12O6', tier: 'candidate' }),
+        engine_level,
+        level: '4a'
+      }
+      const wrapper = await mountPane()
+
+      expect(chip(wrapper).exists()).toBe(false)
+      expect(wrapper.vm.engineLevelTooltip).toBeNull()
+    }
+  })
+})
+
 // The card answers before it explains (docs/dev/assignment_ledger_and_card.md,
 // section 4.1): the answer, why its tier, four measurements, folded sections
 // and a verdict bar pinned at its foot.

@@ -260,8 +260,9 @@ A fourth, `identification_level`, is reserved for the same reason (step 5.8 of
 the assignment quality plan): the ledger serves its `evidence` and `lift` as the
 row's `level_evidence` and `level_lift`, the in-app engine's statement of what a
 reader may say of the row. An imported row's `level` column stays null, and an
-engine that states a level of its own sends it on the batch import's
-`engine_level` (below), where it is read beside Mascope's rather than as it.
+engine that states a level of its own sends it as `engine_level`, on the
+per-sample row or on the batch import's (below), where it is read beside
+Mascope's rather than as it.
 
 Two further keys are **overwritten rather than stripped**, and they are the two
 factors of one product. `_provenance_scalars` reads `evidence`: it is the number
@@ -1258,6 +1259,21 @@ document cites it.
    there too (step 5.8f, MAS-943): it is a confirmed structure, a person's
    claim in review (`identification_claims.md` section 5.4), which no engine
    states, so an `engine_level` of `1` is a 422 that says so.
+
+   **The per-sample import's level** (MAS-956, GitHub #3284). The per-sample
+   row (`ImportAssignmentRow`) takes the same `engine_level`, typed as the
+   same scale and refusing `1` as the batch row does, stored on
+   `peak_assignment.engine_level` beside `engine_tier`
+   and served on the ledger and detail reads. The row's own `level` stays the
+   in-app engine's statement and an import leaves it null. A hand edit treats
+   it as `engine_tier`: archived with the winner it judged, cleared on a new
+   formula and on a demoted isotopologue, restored by the undo. `import_run`
+   sends it, checked against the scale, and a frame read with `get()` sends
+   its `level` as `engine_level` where it states none, as its `tier` goes as
+   `engine_tier`; `level_evidence` and `level_lift` are left out without a
+   warning, as the server computes them. The per-sample row takes no
+   `engine_evidence` or `engine_lift`. The inspector shows it as a second
+   level chip.
 2. **Ionization mechanisms: how far client-side resolution goes.** *Resolved:
    keep the floor.* `import_run` resolves an adduct by exact-string match
    against `mascope.ionization.list()` and sends `ionization_mechanism_id` null

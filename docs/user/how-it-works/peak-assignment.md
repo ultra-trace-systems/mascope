@@ -1453,9 +1453,16 @@ window aside, and its hover says what the members' runs stated. A claim recorded
 the scale's letters shows its number alone, *3* rather than *3a*, and its hover says
 why: no letter is guessed for it.
 
+A run imported per sample can state its engine's own level for each row, as
+`engine_level` beside its `engine_tier`. The inspector shows it as a second level chip,
+whose hover names it as the engine's and says how it stands against Mascope's level.
+Mascope states no level of its own for an imported row, so on such a row it is the only
+level chip. The engine's level moves no tier. It goes with its formula through a hand
+edit as the engine's tier does: a new formula clears it, and an undo puts it back.
+
 The ledger export (`level`, `level_evidence`, `level_lift` on each member row, beside the
 batch peak's `engine_level`), the SDK's ledger frames and the API carry the same three
-fields. The run records the version of the rules that read its facts into a level with its
+fields; the sample ledger's rows also carry their own `engine_level`. The run records the version of the rules that read its facts into a level with its
 configuration, because a level, like a tier, is only comparable between two runs
 together with the rules that stated it.
 
