@@ -33,6 +33,8 @@ const {
   memberPeak,
   isOwnMember,
   focusMember,
+  showGroupInLedger,
+  plotGroup,
   corroboration,
   corroborationLabel,
   corroborationTooltip,
@@ -201,6 +203,34 @@ const memberTooltip = (member) =>
                 </button>
               </li>
             </ul>
+            <!-- The group's rows together in the ledger, and its batch peaks
+                 in the batch chart. -->
+            <div
+              v-if="!item.viaM0 && groupOf(item.reason)"
+              class="group-actions"
+              data-testid="group-actions"
+            >
+              <button
+                type="button"
+                class="group-action"
+                data-testid="group-show"
+                v-tooltip.top="'Narrow the ledger to these rows, in their order'"
+                @click="showGroupInLedger(groupOf(item.reason))"
+              >
+                <span class="pi ph ph-funnel-simple" aria-hidden="true" />Show in the ledger
+              </button>
+              <button
+                type="button"
+                class="group-action"
+                data-testid="group-plot"
+                v-tooltip.top="
+                  'Plot these batch peaks in the batch chart, in place of what it plots'
+                "
+                @click="plotGroup(groupOf(item.reason))"
+              >
+                <span class="pi ph ph-chart-line" aria-hidden="true" />Plot them
+              </button>
+            </div>
           </li>
         </template>
       </ul>
@@ -441,6 +471,29 @@ button.reason-neighbour:focus-visible,
 }
 .member-label {
   min-width: 4.5rem;
+}
+/* Show in the ledger and Plot them, under the group's members. */
+.group-actions {
+  display: flex;
+  gap: 0.4rem;
+  margin-left: 0.9rem;
+}
+.group-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0 0.3rem;
+  border: none;
+  border-radius: 0.25rem;
+  background: none;
+  color: var(--p-primary-color);
+  font: inherit;
+  font-size: var(--card-text-sm);
+  cursor: pointer;
+}
+.group-action:hover,
+.group-action:focus-visible {
+  background: var(--p-content-hover-background);
 }
 .member-mz {
   font-family: var(--font-mono);

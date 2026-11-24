@@ -41,6 +41,11 @@ export const useBatchPeakLedger = defineStore('app.data.batchPeak', () => {
   // names its batch here - which, while another batch loads, is not the
   // focused one. A record event writes a list of its own, of the same batch.
   const batchOfRows = new WeakMap()
+  // The groups each loaded list was read with (`batch_groups`): the rows each
+  // of the batch's readings spans, over the whole batch whatever the read
+  // filters (docs/dev/assignment_ledger_and_card.md, section 3.5). Kept
+  // beside the list it came with, so the groups shown are always the rows'.
+  const groupsOfRows = new WeakMap()
 
   const data = useData(
     name,
@@ -49,13 +54,17 @@ export const useBatchPeakLedger = defineStore('app.data.batchPeak', () => {
       // min_n_present=1: the ledger lists every batch peak so any (even
       // event-specific, low-prevalence) species is selectable; the selection is
       // what limits the plot, and the selection is capped rather than the list.
-      const rows = await api.http.get(`/batch-peaks/batch/${sample_batch_id}`, {
+      // Read whole rather than through the `read` handler, which keeps only
+      // the envelope's `data` and would drop the groups served beside it.
+      const response = await api.http.get(`/batch-peaks/batch/${sample_batch_id}`, {
         // An earlier run reads off its snapshot; the live ledger names no run.
         params: { min_n_present: 1, ...(batch_peak_run_id ? { batch_peak_run_id } : {}) },
-        use: 'read',
         type: 'load_batch_peak_ledger'
       })
-      if (rows && typeof rows === 'object') batchOfRows.set(rows, sample_batch_id)
+      const body = response?.data ?? {}
+      const rows = Array.isArray(body.data) ? body.data : []
+      batchOfRows.set(rows, sample_batch_id)
+      groupsOfRows.set(rows, Array.isArray(body.batch_groups) ? body.batch_groups : [])
       return rows
     },
     {
@@ -99,10 +108,19 @@ export const useBatchPeakLedger = defineStore('app.data.batchPeak', () => {
   })
   /** The batch whose rows the ledger holds, which may lag the focused one. */
   const rowsBatch = ref(null)
+  /**
+   * The batch's groups, read with the rows the ledger holds: a series, the
+   * channels of one neutral, a co-variation record's partners, a batch
+   * check's pair (`batch_groups`). A list a record event writes keeps the
+   * groups of the read it updates.
+   */
+  const groups = ref([])
   watch(
     data.list,
     (list) => {
       if (batchOfRows.has(list)) rowsBatch.value = batchOfRows.get(list)
+      if (groupsOfRows.has(list)) groups.value = groupsOfRows.get(list)
+      else if (!list.length) groups.value = []
     },
     { flush: 'sync' }
   )
@@ -155,5 +173,5 @@ export const useBatchPeakLedger = defineStore('app.data.batchPeak', () => {
   // a link out of the list back to top level. That resolution lives in the pane
   // (PaneBrowserBatchPeaks.vue), which is also what renders the rows the chips
   // filter, so the count and the rows it promises come from one rule.
-  return { ...data, instrumentTypes, instrumentType, inPartition, showInstrument }
+  return { ...data, groups, instrumentTypes, instrumentType, inPartition, showInstrument }
 })

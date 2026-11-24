@@ -54,13 +54,15 @@ export const BADGE_FILTER_KINDS = Object.freeze([
 ])
 
 /**
- * Group by, per scope. Grouping by compound is the sample scope's channel
- * grouping. The batch's groups, by compound and by series, come with the
- * groups step (MAS-1069); until then the batch scope has none to offer.
+ * Group by, per scope (docs/dev/assignment_ledger_and_card.md, section 3.5).
+ * The sample scope groups by compound, from its own rows. The batch scope
+ * groups by the groups the batch-peaks read serves: by compound (the
+ * channels of one neutral) and by series. Grouping by series needs every
+ * row's groups at once, so it is the batch scope's alone.
  */
 export const GROUP_BY_OPTIONS = Object.freeze({
   sample: Object.freeze(['none', 'compound']),
-  batch: Object.freeze(['none'])
+  batch: Object.freeze(['none', 'compound', 'series'])
 })
 
 /**

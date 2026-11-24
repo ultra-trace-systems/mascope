@@ -2,10 +2,17 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { reactive } from 'vue'
 
+// `get` answers with the rows a read serves; the mock wraps them in the
+// envelope the read sends, with the groups served beside them.
 const get = vi.fn()
+let servedGroups = []
+const envelope = async (answer) => {
+  const rows = await answer
+  return { data: { data: rows, batch_groups: servedGroups } }
+}
 vi.mock('@/api', () => ({
   api: {
-    http: { get: (...args) => get(...args), post: vi.fn() },
+    http: { get: (...args) => envelope(get(...args)), post: vi.fn() },
     socket: { on: vi.fn(), off: vi.fn(), addSubscription: vi.fn(), removeSubscription: vi.fn() }
   }
 }))
@@ -31,6 +38,7 @@ beforeEach(async () => {
   vi.clearAllMocks()
   vi.resetModules()
   runState.viewingId = null
+  servedGroups = []
   batchState = reactive({ focusedId: 'sb-1' })
   get.mockResolvedValue([])
   ;({ useBatchPeakLedger } = await import('@/stores/data/modules/batchPeak/ledger'))
@@ -55,6 +63,56 @@ describe('batchPeak ledger store and the run it reads', () => {
       '/batch-peaks/batch/sb-1',
       expect.objectContaining({ params: { min_n_present: 1, batch_peak_run_id: 'r-old' } })
     )
+  })
+})
+
+describe('batchPeak ledger store: the groups served beside the rows', () => {
+  const GROUP = {
+    group_id: 'channels:C6H10O4',
+    kind: 'channels',
+    members: [{ batch_peak_id: 'bp-1' }, { batch_peak_id: 'bp-2' }]
+  }
+
+  it("keeps the read's batch_groups with the rows it came with", async () => {
+    servedGroups = [GROUP]
+    get.mockResolvedValue([{ batch_peak_id: 'bp-1' }, { batch_peak_id: 'bp-2' }])
+    const store = useBatchPeakLedger()
+    await store.load('test')
+    expect(store.list.map((bp) => bp.batch_peak_id)).toEqual(['bp-1', 'bp-2'])
+    expect(store.groups).toEqual([GROUP])
+  })
+
+  it('keeps the groups when a record event patches the rows, and drops them with the rows', async () => {
+    servedGroups = [GROUP]
+    get.mockResolvedValue([{ batch_peak_id: 'bp-1' }, { batch_peak_id: 'bp-2' }])
+    const store = useBatchPeakLedger()
+    await store.load('test')
+    const [, onUpdated] = api.socket.on.mock.calls.find(([event]) => event === 'batch_peak_updated')
+    onUpdated({
+      event_id: 'e-1',
+      operation: 'updated',
+      record_id: 'bp-1',
+      record: { formula: 'C2H4O2' },
+      changed_fields: ['formula']
+    })
+    expect(store.groups).toEqual([GROUP])
+
+    servedGroups = []
+    get.mockResolvedValue([])
+    await store.load('test')
+    expect(store.groups).toEqual([])
+  })
+
+  it('drops the groups with the rows when no batch is focused', async () => {
+    servedGroups = [GROUP]
+    get.mockResolvedValue([{ batch_peak_id: 'bp-1' }, { batch_peak_id: 'bp-2' }])
+    const store = useBatchPeakLedger()
+    await store.load('test')
+    expect(store.groups).toEqual([GROUP])
+    batchState.focusedId = null
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(store.list).toEqual([])
+    expect(store.groups).toEqual([])
   })
 })
 

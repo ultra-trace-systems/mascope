@@ -214,4 +214,43 @@ test.describe('the assignment ledger', () => {
     await expect(search).toHaveValue('C')
     await expect(chip(chipName)).toHaveAttribute('aria-pressed', 'true')
   })
+
+  // The rows a reading spans (section 3.5): a series badge opens the series
+  // lens, the ledger narrowed to the series' batch peaks in step order, each
+  // labelled by its step, and Escape gives the ledger back. Needs a batch the
+  // series detection has read.
+  test('opens the series lens from a series badge, and Escape closes it', async ({ page, api }) => {
+    const target = await findAssignedSample(api)
+    test.skip(!target, 'No demo sample has a completed assignment run')
+
+    // The batch serves its series as groups once its series stage has run.
+    const read = await api.get(`/batch-peaks/batch/${target.batch.sample_batch_id}?min_n_present=1`)
+    const servesSeries = (read?.batch_groups ?? []).some((group) => group.kind === 'series')
+    test.skip(!servesSeries, "The demo batch's series stage has not run: it serves no series")
+
+    // Wide enough that the ledger keeps its Across the batch column, which a
+    // narrow ledger drops first.
+    await page.setViewportSize({ width: 2700, height: 1200 })
+    await openLedger(page, target)
+    const count = page.getByTestId('ledger-count')
+    await expect(count).toHaveText(/^[\d,]+ batch peaks?$/, { timeout: 30_000 })
+    // Show > Carrying the badge: the series, so a badge is in the first rows.
+    await page.getByRole('button', { name: 'Show', exact: true }).click()
+    await page.locator('.badge-filter [data-value="series"]').click()
+    await page.keyboard.press('Escape')
+
+    await page.getByTestId('lens-series').first().click()
+
+    const bar = page.getByTestId('lens-bar')
+    await expect(bar).toBeVisible()
+    await expect(page.getByTestId('lens-title')).toHaveText(/series from .*\d+ batch peaks?/)
+    await expect(page.locator('.ledger thead th').filter({ hasText: /^Step$/ })).toHaveCount(1)
+    const steps = await page.getByTestId('lens-label').allInnerTexts()
+    expect(steps.length).toBeGreaterThan(1)
+    for (const step of steps) expect(step.trim()).toMatch(/^(root|[+\u2212]\d+ \S+)$/)
+
+    await page.keyboard.press('Escape')
+    await expect(bar).toHaveCount(0)
+    await expect(count).toHaveText(/^[\d,]+ batch peaks?$/)
+  })
 })

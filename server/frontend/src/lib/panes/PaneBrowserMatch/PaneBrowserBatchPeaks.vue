@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { reactive, ref, computed, watch } from 'vue'
 
 import Button from 'primevue/button'
 import Column from 'primevue/column'
@@ -33,14 +33,28 @@ import {
   AssignmentLedger,
   BADGE_FILTER_KINDS,
   BATCH_SEARCH_PPM,
+  ENTRY_GAP,
+  ENTRY_MEMBER,
+  GROUP_CHANNELS,
+  GROUP_CHECK_PAIR,
+  GROUP_CO_VARIATION,
+  GROUP_SERIES,
   LedgerMenuChoice,
   LedgerVerdictPopover,
   LedgerViewToggle,
+  batchGroupSets,
   batchLineLabel,
   batchLineName,
+  groupFor,
+  groupSections,
+  groupsByMember,
+  lensColumnLabel,
+  lensEntries,
+  lensTitle,
   ledgerTierChips,
   useFamilyFold,
   useLedgerFilters,
+  useLedgerLensStore,
   useLedgerSort,
   useLedgerView,
   useRowPopover,
@@ -53,6 +67,7 @@ import { INSTRUMENT_TYPE_LABELS } from '@/lib/batchChart'
 import { MAX_SELECTED_BATCH_PEAKS } from '@/stores/data/modules/batchPeak/ledger'
 
 import { useBatchAssign } from './stores/batchAssign.js'
+import { useBatchChartSelection } from './stores/batchChartSelection.js'
 import BatchPeakContinuityPopover from './BatchPeakContinuityPopover.vue'
 
 /**
@@ -272,6 +287,69 @@ const engineLevelTooltip = (row) => {
     .join('\n')
 }
 
+// --- The batch's groups -------------------------------------------------------------
+
+// The rows each of the batch's readings spans, as the batch-peaks read serves
+// them (`batch_groups`): a series, the channels of one neutral, a
+// co-variation record's partners, a batch check's pair. One derivation on the
+// server, so the ledger, its lens and the card count the same members; this
+// pane only orders and labels them (lib/ledger/groups.js).
+const groups = computed(() => ledger.value.groups ?? [])
+const groupsIndex = computed(() => groupsByMember(groups.value))
+const groupsOfRow = (row) => groupsIndex.value.get(row.batch_peak_id) ?? []
+
+// The Ion cell's xN pill: the neutral is seen through N channels of the batch,
+// counted on the served channel group, so the pill and the lens it opens
+// count the same batch peaks.
+const channelGroupOf = (row) => groupsOfRow(row).find((group) => group.kind === GROUP_CHANNELS)
+const channelPillTooltip = (row) => {
+  const group = channelGroupOf(row)
+  const ions = (group?.members ?? []).map(
+    (member) => member.mechanism || member.ion_formula || 'another channel'
+  )
+  return (
+    `The batch reads ${group?.formula ?? 'this neutral'} through ${ions.length} channels: ` +
+    `${ions.join(', ')}. Click to see them together`
+  )
+}
+
+// The badge kinds that name other rows, and the group each opens.
+const BADGE_GROUP_KINDS = Object.freeze({
+  series: GROUP_SERIES,
+  coVariation: GROUP_CO_VARIATION,
+  facts: GROUP_CHECK_PAIR
+})
+const badgeGroup = (row, readingId) => {
+  const kind = BADGE_GROUP_KINDS[readingId]
+  if (!kind) return null
+  return groupFor(groups.value, row.batch_peak_id, kind, row.series ?? null)
+}
+
+// The lens: the ledger narrowed to one group's rows, in the group's order,
+// opened from a badge or the pill. Held in a store, so it survives the swap
+// to a sample and back, and shown only while the batch it was opened on is
+// the one listed.
+const lenses = useLedgerLensStore()
+const lensState = computed(() => {
+  const state = lenses.lenses.batch
+  return state && state.batchId === app.data.batch.focusedId ? state : null
+})
+// The group as the newest read serves it, where it still does.
+const lensGroup = computed(() => {
+  const state = lensState.value
+  if (!state) return null
+  return groups.value.find((group) => group.group_id === state.group.group_id) ?? state.group
+})
+function openLens(group) {
+  if (!group) return
+  lenses.open('batch', group, { batchId: app.data.batch.focusedId })
+}
+const closeLens = () => lenses.close('batch')
+// The group's batch peaks into the batch chart, in place of what it plots.
+const chart = useBatchChartSelection()
+const plotLens = () =>
+  chart.plotGroup((lensGroup.value?.members ?? []).map((member) => member.batch_peak_id))
+
 // --- The batch's readings ---------------------------------------------------------
 
 // Each offered only where some batch peak shown carries one, and each a
@@ -477,6 +555,33 @@ const { activeTiers, toggleTier, filters, verdictFilter, searchQuery, passes } =
   tolerancePpm: BATCH_SEARCH_PPM
 })
 
+// Show > Group by: none, compound (the channels of one neutral) or series, as
+// the batch serves them. Collapsible group lines over their members; the
+// rows in no group under an Ungrouped line at the end.
+const GROUP_BY = [
+  { value: 'none', label: 'None' },
+  {
+    value: 'compound',
+    label: 'Compound',
+    tooltip: 'One group line per neutral the batch reads through several channels'
+  },
+  {
+    value: 'series',
+    label: 'Series',
+    tooltip: 'One group line per homologous series, over its batch peaks'
+  }
+]
+// The group lines the reader folded, by key. Kept while the grouping stays.
+const collapsed = reactive(new Set())
+watch(
+  () => view.groupBy,
+  () => collapsed.clear()
+)
+const toggleGroupLine = (line) => {
+  if (collapsed.has(line.groupKey)) collapsed.delete(line.groupKey)
+  else collapsed.add(line.groupKey)
+}
+
 // The verdict filter's choices (single-select), as the sample scope's.
 const VERDICT_FILTERS = [
   { value: 'all', label: 'All verdicts' },
@@ -494,6 +599,8 @@ const VERDICT_FILTERS = [
 // anchor's own vote: an isotopologue can carry one its parent does not, so that
 // filter keeps a parent whose family holds a blend.
 const rows = computed(() => {
+  // The lens lists its group, whatever the filters below would keep.
+  if (lensGroup.value) return lensRows.value
   const disagreeing = onlyDisagreements.value && hasEngineTiers.value
   const stripped = onlyStripped.value && hasStrips.value
   const blended = onlyBlends.value && hasBlends.value
@@ -513,11 +620,115 @@ const rows = computed(() => {
   sort(visible, byConfidence)
 
   const result = []
-  for (const parent of visible) {
+  const withFamily = (parent) => {
     result.push(parent)
     if (familyOpen(parent)) result.push(...(childrenByParent.value.get(parent.batch_peak_id) ?? []))
   }
+  const sets = view.groupBy === 'none' ? [] : batchGroupSets(groups.value, view.groupBy)
+  if (!sets.length) {
+    visible.forEach(withFamily)
+    return result
+  }
+  // Group by: a group line over its members, each member with its lines.
+  const index = byId.value
+  for (const section of groupSections(visible, sets, (row) => row.batch_peak_id)) {
+    const set = sets.find((entry) => entry.key === section.key)
+    const best = (set?.ids ?? section.rows.map((row) => row.batch_peak_id))
+      .map((id) => index.get(id))
+      .filter(Boolean)
+      .sort(
+        (a, b) =>
+          bucketRank(a.consensus_tier, a.consensus_role) -
+          bucketRank(b.consensus_tier, b.consensus_role)
+      )[0]
+    const isCollapsed = collapsed.has(section.key)
+    result.push({
+      batch_peak_id: `group:${section.key}`,
+      ledgerKind: 'group',
+      groupKey: section.key,
+      groupName: section.name,
+      groupCount: `${section.size} batch peak${section.size === 1 ? '' : 's'}`,
+      groupTier: section.ungrouped ? null : (best?.consensus_tier ?? null),
+      groupRole: section.ungrouped ? null : (best?.consensus_role ?? null),
+      collapsed: isCollapsed
+    })
+    if (isCollapsed) continue
+    section.rows.forEach(withFamily)
+    for (const { row, under } of section.references) {
+      result.push({
+        batch_peak_id: `reference:${section.key}:${row.batch_peak_id}`,
+        ledgerKind: 'reference',
+        pseudoMz: row.mz,
+        pseudoFormula: formulaOf(row),
+        pseudoIon: row.consensus_ion_formula,
+        pseudoNote: `listed under ${under}`
+      })
+    }
+  }
   return result
+})
+
+// Under the lens: the group's rows in the group's order, whatever the tier
+// chips, the search or the Show filters hide - the lens lifts them while it
+// is open - each labelled by its step or channel. A series step with no batch
+// peak is a greyed gap; a member the ledger lists no row for (the other
+// instrument type's) a greyed line. A sort picked under the lens orders the
+// members by its column, the gaps after them.
+const lensRows = computed(() => {
+  const group = lensGroup.value
+  if (!group) return []
+  const index = new Map(parents.value.map((row) => [row.batch_peak_id, row]))
+  const entries = lensEntries(group, (member) => index.get(member.batch_peak_id) ?? null)
+  const members = entries
+    .filter((entry) => entry.entry === ENTRY_MEMBER)
+    .map((entry) => ({ ...entry.row, lensLabel: entry.label }))
+  const pseudo = (entry) =>
+    entry.entry === ENTRY_GAP
+      ? {
+          batch_peak_id: `lens:${entry.key}`,
+          ledgerKind: 'gap',
+          lensLabel: entry.label,
+          pseudoFormula: entry.formula,
+          pseudoNote: 'no batch peak'
+        }
+      : {
+          batch_peak_id: `lens:${entry.key}`,
+          ledgerKind: 'absent',
+          lensLabel: entry.label,
+          pseudoMz: entry.member.mz,
+          pseudoFormula: entry.member.formula,
+          pseudoIon: entry.member.ion_formula,
+          pseudoNote: 'not in this ledger'
+        }
+  const result = []
+  const withFamily = (row) => {
+    result.push(row)
+    if (familyOpen(row)) result.push(...(childrenByParent.value.get(row.batch_peak_id) ?? []))
+  }
+  if (lensState.value?.sorted && sortField.value) {
+    sort(members, byConfidence)
+    members.forEach(withFamily)
+    result.push(...entries.filter((entry) => entry.entry !== ENTRY_MEMBER).map(pseudo))
+    return result
+  }
+  let next = 0
+  for (const entry of entries) {
+    if (entry.entry === ENTRY_MEMBER) withFamily(members[next++])
+    else result.push(pseudo(entry))
+  }
+  return result
+})
+// A sort picked under the lens is the reader's: the members follow it.
+watch([sortField, sortOrder], () => {
+  if (lensGroup.value) lenses.sortedUnder('batch')
+})
+// The lens bar's line and its label column.
+const lens = computed(() => {
+  const group = lensGroup.value
+  if (!group) return null
+  const index = new Map(parents.value.map((row) => [row.batch_peak_id, row]))
+  const entries = lensEntries(group, (member) => index.get(member.batch_peak_id) ?? null)
+  return { title: lensTitle(group, entries), column: lensColumnLabel(group), plot: true }
 })
 
 // --- Popovers -------------------------------------------------------------------
@@ -555,7 +766,9 @@ const selectionAtCapacity = ref(false)
 // isotopologue lines. A line is its family's species, and a sub-row carries no
 // box (docs/dev/assignment_ledger_and_card.md, section 3.3): the family's row
 // is what plots it.
-const isLine = (row) => Boolean(row?.parentId)
+// A group line, a gap or another row that stands for no batch peak is no row
+// to select either.
+const isLine = (row) => Boolean(row?.parentId || row?.ledgerKind)
 const selectableRows = () => rows.value.filter((row) => !isLine(row))
 
 /**
@@ -844,8 +1057,8 @@ watch(
     engineViewTooltip="The chips count and filter by the importing engine's own tier. The tier column and the sort stay on the consensus."
     :viewMenuTooltip="
       hasEngineTiers
-        ? 'Show: isotopologue lines, roles, the batch\'s flags, the engine\'s tiers, the verdict filter'
-        : 'Show: isotopologue lines, roles, the batch\'s flags, the verdict filter'
+        ? 'Show: isotopologue lines, roles, the batch\'s flags, the engine\'s tiers, the verdict filter, Group by'
+        : 'Show: isotopologue lines, roles, the batch\'s flags, the verdict filter, Group by'
     "
     :viewMenuPt="
       app.ui.help.top(
@@ -906,6 +1119,13 @@ watch(
         drop it. <b>Verdict</b> narrows the table to one batch-level verdict.
         </p>
         <p>
+        <b>Group by</b> sets the rows under collapsible group lines, by
+        compound (the channels of one neutral) or by series, the rows in no
+        group under <b>Ungrouped</b>. A series, co-variation or batch facts
+        badge, or the &times;N pill beside an ion, shows the rows it is about
+        together until &times; or Escape closes the lens.
+        </p>
+        <p>
         Every choice here, the search and the tier chips are kept for this
         ledger: they hold when you open a sample and come back, and after a
         reload. <b>Export ledger (CSV)</b> and <b>Write listed names in
@@ -942,10 +1162,14 @@ watch(
         { doc: app.ui.help.docUrl('how-it-works/peak-assignment/#batch-peaks') }
       )
     "
+    :lens="lens"
     @toggle-tier="toggleTier"
     @open-verdict="openVerdict"
     @open-mz="openBrightest"
     @toggle-family="toggleFamily"
+    @toggle-group="toggleGroupLine"
+    @close-lens="closeLens"
+    @plot-lens="plotLens"
   >
     <template #above-strip>
       <!-- A launch that was refused or failed reports itself here rather than in
@@ -1067,6 +1291,13 @@ watch(
         ariaLabel="Filter by batch-level verdict"
         :options="VERDICT_FILTERS"
       />
+      <LedgerMenuChoice
+        v-model="view.groupBy"
+        class="group-by"
+        label="Group by"
+        ariaLabel="Group the rows by"
+        :options="GROUP_BY"
+      />
     </template>
 
     <template #overflow>
@@ -1158,6 +1389,23 @@ watch(
       />
     </template>
 
+    <!-- The ion the batch peak is, and the xN pill where the batch reads its
+         neutral through N channels: it opens the channels together. -->
+    <template #ion="{ data }">
+      <span class="ion">{{ data.consensus_ion_formula ?? '' }}</span>
+      <button
+        v-if="channelGroupOf(data)"
+        type="button"
+        class="channel-pill"
+        data-testid="channel-pill"
+        :aria-label="`See the ${channelGroupOf(data).members.length} channels of ${channelGroupOf(data).formula ?? data.consensus_formula} together`"
+        v-tooltip.top="channelPillTooltip(data)"
+        @click.stop="openLens(channelGroupOf(data))"
+      >
+        &times;{{ channelGroupOf(data).members.length }}
+      </button>
+    </template>
+
     <!-- No number beside this one: a batch peak's consensus tier is a
          weighted vote over its members' tiers, not a threshold on any single
          quantity. The role is the chip on an anchor a source role accounts
@@ -1197,7 +1445,7 @@ watch(
           <span v-tooltip.top="HEADER_TOOLTIPS.samples">Samples</span>
         </template>
         <template #body="{ data }">
-          <span v-if="!data.parentId" class="samples" data-testid="samples">{{
+          <span v-if="!data.parentId && !data.ledgerKind" class="samples" data-testid="samples">{{
             samplesLabel(data)
           }}</span>
         </template>
@@ -1224,7 +1472,7 @@ watch(
           >
         </template>
         <template #body="{ data }">
-          <span v-if="!data.parentId" class="across" data-testid="across">
+          <span v-if="!data.parentId && !data.ledgerKind" class="across" data-testid="across">
             <template v-for="reading in acrossShown(data)" :key="reading.id">
               <!-- Ratio stability opens the pairs behind its grade. -->
               <button
@@ -1234,6 +1482,23 @@ watch(
                 data-testid="continuity"
                 :aria-label="`Ratio stability: open the pairs behind the grade`"
                 @click.stop="openContinuity($event, data)"
+              >
+                <BaseEvidenceBadge
+                  :mark="reading.id"
+                  :record="reading.record"
+                  :data-testid="`mark-${reading.id}`"
+                />
+              </button>
+              <!-- A badge whose reading names other rows - a series, a
+                   co-variation pair, a batch check's pair - opens them
+                   together. -->
+              <button
+                v-else-if="badgeGroup(data, reading.id)"
+                type="button"
+                class="badge-button"
+                :data-testid="`lens-${reading.id}`"
+                :aria-label="`${markOf(reading.id).label}: see its rows together`"
+                @click.stop="openLens(badgeGroup(data, reading.id))"
               >
                 <BaseEvidenceBadge
                   :mark="reading.id"
@@ -1329,9 +1594,34 @@ watch(
   border-color: var(--p-primary-color);
 }
 /* A line is its family's species and carries no box: the family's row
-   plots it. */
-:deep(tr.ledger-line .p-checkbox) {
+   plots it. Nor does a row that stands for no batch peak. */
+:deep(tr.ledger-line .p-checkbox),
+:deep(tr.ledger-pseudo .p-checkbox) {
   visibility: hidden;
+}
+.ion {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+}
+/* The xN pill: how many channels of the batch read the neutral. */
+.channel-pill {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 0.35rem;
+  padding: 0 0.3rem;
+  border: 1px solid var(--p-content-border-color);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--p-text-muted-color);
+  font: inherit;
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.channel-pill:hover {
+  color: var(--p-text-color);
+  background: var(--p-content-hover-background);
 }
 
 .samples {
