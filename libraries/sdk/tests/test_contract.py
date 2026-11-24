@@ -2509,6 +2509,60 @@ class TestPeakAssignmentImportContract:
         assert provenance["engine_provenance"] == {"p_correct": 0.42}
         assert not {"p_correct", "calibration", "corroboration"} & set(provenance)
 
+    def test_an_engine_level_reads_back_beside_the_engine_tier(
+        self, scratch, scratch_matched
+    ):
+        import pandas as pd
+
+        from mascope_sdk.resources import _assignment_import
+
+        peak_assignments = scratch.client.peak_assignments
+        _skip_unless_attr(peak_assignments, "import_run")
+        if "engine_level" not in _assignment_import.ROW_COLUMNS:
+            pytest.skip("installed mascope_sdk predates import_run's engine_level")
+        from mascope_sdk import PermissionDeniedError
+
+        batch_id, _ = scratch_matched
+        sample_id = scratch.client.samples._list_by_id(batch_id).iloc[-1][
+            "sample_item_id"
+        ]
+        sample = scratch.client.samples.get(sample_id)
+        intensity = "height" if sample["instrument_type"] == "orbi" else "area"
+        peaks = scratch.client.samples.get_peaks(sample_id, matches=False)
+        top = peaks.nlargest(1, intensity).iloc[0]
+        frame = pd.DataFrame(
+            [
+                {
+                    "sample_peak_id": top["peak_id"],
+                    "sample_peak_mz": top["mz"],
+                    "sample_peak_intensity": top[intensity],
+                    "role": "M0",
+                    "assigned_formula": "C6H12O6",
+                    "source": "untargeted",
+                    "fit_score": 0.9,
+                    "engine_tier": "candidate",
+                    "engine_level": "4b",
+                }
+            ]
+        )
+
+        try:
+            run_id = peak_assignments.import_run(
+                sample_id,
+                frame,
+                engine="sdk-contract",
+                engine_version="1.0",
+                tier_bands={"assigned": 0.75, "candidate": 0.45},
+                calibration={"method": "none"},
+            )
+        except PermissionDeniedError as e:
+            pytest.skip(f"peak assignment is switched off on the stack: {e.message}")
+
+        ledger = peak_assignments.get(sample_id, run_id=run_id)
+        (row,) = ledger.to_dict("records")
+        assert (row["engine_tier"], row["engine_level"]) == ("candidate", "4b")
+        assert pd.isna(row["level"])
+
 
 def _signed_in(email: str, password: str):
     """A session signed in as *email*, for what a token may not do."""

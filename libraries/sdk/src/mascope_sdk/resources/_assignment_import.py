@@ -43,6 +43,7 @@ ROW_COLUMNS = (
     "abundance_error",
     "tier",
     "engine_tier",
+    "engine_level",
     "target_compound_id",
     "target_ion_id",
     "owner_sample_peak_id",
@@ -98,12 +99,19 @@ READ_ONLY_COLUMNS = frozenset(
         "mass_gate_corroborated",
         "envelope_absent_lines",
         "peak_unseparated",
+        "level_evidence",
+        "level_lift",
     }
 )
 
 ROLES = ("M0", "iso_child", "reagent", "artifact", "unassigned")
 SOURCES = ("database", "untargeted", "manual", "reagent", "artifact")
 TIERS = ("assigned", "candidate", "below_assignability", "unassigned")
+
+#: The identification level's scale, as the server types ``engine_level``,
+#: without level 1: a confirmed structure is a person's claim in review, which
+#: no engine states, and the server refuses it.
+LEVELS = ("2a", "2b", "3a", "3b", "3c", "3d", "4a", "4b", "5a", "5b")
 
 #: Tier spellings the server still reads, and the one it reads them as.
 LEGACY_TIERS = {"identified": "assigned"}
@@ -314,8 +322,8 @@ def _owner_references(frame: pd.DataFrame) -> None:
     frame["owner_sample_peak_id"] = owners.astype(object).where(named, None)
 
 
-def _exported_tiers(frame: pd.DataFrame) -> None:
-    """Send an exported ledger's tiers as its engine's own.
+def _exported_verdicts(frame: pd.DataFrame) -> None:
+    """Send an exported ledger's tiers and levels as its engine's own.
 
     The server reads each imported row's ``tier`` off its evidence and
     refuses any other, and the run a frame read with ``peak_assignments.get``
@@ -324,12 +332,19 @@ def _exported_tiers(frame: pd.DataFrame) -> None:
     ``tier`` is not sent, and the server derives it again. Where the frame
     states no ``engine_tier`` at all, it is an in-app run's, whose engine
     tier is its ``tier``, and that goes as ``engine_tier``.
+
+    The identification level goes the same way. The row's ``level`` is the
+    server's own statement and an import cannot set it, so where the frame
+    states no ``engine_level`` its ``level`` goes as ``engine_level``.
     """
-    if EXPORTED_MARK not in frame.columns or "tier" not in frame.columns:
+    if EXPORTED_MARK not in frame.columns:
         return
-    if "engine_tier" not in frame.columns or frame["engine_tier"].isna().all():
-        frame["engine_tier"] = frame["tier"]
-    del frame["tier"]
+    for own, engine in (("tier", "engine_tier"), ("level", "engine_level")):
+        if own not in frame.columns:
+            continue
+        if engine not in frame.columns or frame[engine].isna().all():
+            frame[engine] = frame[own]
+        del frame[own]
 
 
 def _check_numbers(frame: pd.DataFrame) -> None:
@@ -363,6 +378,7 @@ def _check_vocabulary(frame: pd.DataFrame) -> None:
         ("source", SOURCES),
         ("tier", TIERS),
         ("engine_tier", TIERS),
+        ("engine_level", LEVELS),
     ):
         if column not in frame.columns:
             continue
@@ -489,7 +505,7 @@ def prepare_rows(
         )
     work = frame.copy()
     _owner_references(work)
-    _exported_tiers(work)
+    _exported_verdicts(work)
     _resolve_adducts(work, mechanisms)
 
     unknown = [
