@@ -9,6 +9,7 @@ reads over a real ledger are the integration suites' (the water ladder's,
 the known species', the strip's).
 """
 
+from collections import Counter
 from copy import deepcopy
 from dataclasses import replace
 from types import SimpleNamespace
@@ -1390,6 +1391,27 @@ class TestTheSourceIonsClaimedOnTheRows:
         assert (claimed, stage_a) == ([ION], [other])
         assert _claim(hits=(ION, LINE))[0] == [ION, LINE]
 
+    def test_an_ions_line_is_left_on_a_peak_another_claim_took(self):
+        # The artifact pass took the line's peak: one row on a peak.
+        claimed, _, _, outcomes, _ = _claim(hits=(ION, LINE), claimed_peak_ids={"x"})
+
+        assert claimed == [ION]
+        assert outcomes == {"p": batch_decisions.SOURCE_CLAIMED}
+
+    def test_a_decoy_arm_keeps_a_peak_its_own_claims_took(self):
+        # A control's claim kept the peak out of its artifact pass; the arm's
+        # artifact pass took it.
+        claimed, _, _, outcomes, _ = _claim(
+            hits=(ION, LINE), control=frozenset({"p"}), claimed_peak_ids={"p"}
+        )
+        assert claimed == []
+        assert outcomes == {"p": KEPT_CLAIMED_OTHERWISE}
+
+        claimed, _, _, _, _ = _claim(
+            hits=(ION, LINE), control=frozenset({"p", "x"}), claimed_peak_ids={"x"}
+        )
+        assert claimed == [ION]
+
     def test_a_decoy_arm_claims_what_its_control_claimed(self):
         target = _row("p", "C3H12N6O3", source="database", target_compound_id="tc")
         claimed, stage_a, _, outcomes, _ = _claim([target], control=frozenset({"p"}))
@@ -1467,6 +1489,30 @@ class TestTheRunClaimsThemInItsElectStage:
         assert ctx.batch_applied["source"] == {
             batch_decisions.SOURCE_KEPT_BY_CONTROL: 1
         }
+
+    @pytest.mark.parametrize(
+        "path, control",
+        [(pipeline.RUN, None), (pipeline.DECOY, frozenset({"p", "x"}))],
+        ids=["run", "decoy"],
+    )
+    @pytest.mark.asyncio
+    async def test_a_peak_the_artifact_pass_took_holds_one_row(self, path, control):
+        ctx = _context()
+        ctx.path = path
+        if control is not None:
+            ctx.decoy_plan = SimpleNamespace(control_source_claims=control)
+        ctx.artifact_peak_ids = {"x"}
+        ctx.artifact_rows = [_row("x", "C9H12N2O2", role="artifact")]
+        ctx.batch_source = self._found(ION, LINE)
+        with patch.object(
+            pipeline.stage_a_pass, "_record_same_ion_readings", return_value=0
+        ):
+            await pipeline.elect(ctx)
+
+        on_peaks = Counter(
+            row["sample_peak_id"] for row in ctx.reagent_rows + ctx.artifact_rows
+        )
+        assert on_peaks == Counter({"p": 1, "x": 1})
 
     @pytest.mark.parametrize(
         "path, deferred",

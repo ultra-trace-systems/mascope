@@ -804,6 +804,32 @@ def run_reading(
     )
 
 
+def _source_kept(
+    ion: ReagentHit,
+    one: Optional[BatchSpecies],
+    reading: known_species.PeakReading,
+    *,
+    control: Optional[bool],
+) -> Optional[str]:
+    """Why a run keeps its reading of a source ion's peak, or None where it
+    claims the peak (:func:`claim_source_ions`).
+
+    :param control: A decoy arm's: whether its control claimed the peak.
+        None for every other pass.
+    """
+    if control is None:
+        return known_species.claim_keeps(
+            reading,
+            owns_line=Species(KIND_LIBRARY, ion.cluster.formula).can_have,
+            keep_listed=one is not None and one.reason == REASON_BATCH_WATER_LADDER,
+        )
+    # The arm's own artifact pass can take a peak its control's claim kept
+    # from the control's: one row on a peak, either way.
+    if reading.claimed_otherwise:
+        return KEPT_CLAIMED_OTHERWISE
+    return None if control else SOURCE_KEPT_BY_CONTROL
+
+
 def claim_source_ions(
     stage_a: list[dict],
     stage_b: list[dict],
@@ -827,7 +853,7 @@ def claim_source_ions(
     batch's claim keeps in a file, so the next fold agrees with it. Where the
     ion is claimed, the run's rows on its peak and the lines they own are
     displaced, and so are its own lines; an ion's line is claimed with it on
-    a peak no other reading of the run holds.
+    a peak no other reading of the run holds and no other claim took.
 
     :param stage_a: Stage A's rows.
     :param stage_b: The search's rows.
@@ -837,7 +863,8 @@ def claim_source_ions(
     :param claimed_peak_ids: The peaks the claim stage took.
     :param control: A decoy arm's: the peaks its control claimed on the
         batch's word. The arm claims those and no other, whatever its own
-        rows read (:data:`SOURCE_KEPT_BY_CONTROL`). None for every other pass.
+        rows read (:data:`SOURCE_KEPT_BY_CONTROL`), but for a peak its own
+        claims took (``KEPT_CLAIMED_OTHERWISE``). None for every other pass.
     :return: The hits claimed, Stage A's and the search's rows left, what
         became of each ion by its peak (:data:`SOURCE_CLAIMED` or why it was
         kept), and the run's reading each claim displaced, by its peak.
@@ -861,17 +888,12 @@ def claim_source_ions(
     for ion in (hit for hit in hits if not hit.is_isotopologue):
         peak_id = str(peak_ids[ion.index])
         here = on_peak.get(peak_id, [])
-        one = decided.get(ion.cluster.formula)
-        if control is not None:
-            kept = None if peak_id in control else SOURCE_KEPT_BY_CONTROL
-        else:
-            kept = known_species.claim_keeps(
-                run_reading(
-                    here, lines_of=lines_of, claimed=peak_id in claimed_peak_ids
-                ),
-                owns_line=Species(KIND_LIBRARY, ion.cluster.formula).can_have,
-                keep_listed=one is not None and one.reason == REASON_BATCH_WATER_LADDER,
-            )
+        kept = _source_kept(
+            ion,
+            decided.get(ion.cluster.formula),
+            run_reading(here, lines_of=lines_of, claimed=peak_id in claimed_peak_ids),
+            control=None if control is None else peak_id in control,
+        )
         outcomes[peak_id] = kept or SOURCE_CLAIMED
         if kept is not None:
             continue
@@ -890,10 +912,11 @@ def claim_source_ions(
             readings[peak_id] = m0
         claimed.append(ion)
         for line in ion_lines.get(ion.index, []):
+            line_peak = str(peak_ids[line.index])
+            if line_peak in claimed_peak_ids:
+                continue
             others = [
-                row
-                for row in on_peak.get(str(peak_ids[line.index]), [])
-                if id(row) not in displaced
+                row for row in on_peak.get(line_peak, []) if id(row) not in displaced
             ]
             if not others:
                 claimed.append(line)
