@@ -128,7 +128,10 @@ def test_mixture_ratio_is_one_where_the_channels_are_all_chance():
 
 
 def test_mixture_ratio_is_one_or_lower_where_the_null_dominates():
-    rng = np.random.default_rng(4)
+    # Seed 4 drew 1,597 of its 6,000 chance pairs under the null's quartile,
+    # 2.9 standard errors over 1,500, and the anti-correlation guard rightly
+    # reads that as an excess; this seed is an ordinary draw.
+    rng = np.random.default_rng(5)
     null = _null(rng, 20000)
     channel = np.concatenate([_null(rng, 6000), _true(rng, 4000)])
     ratios, pi = mixture_lr(channel, null)
@@ -269,10 +272,26 @@ def test_anti_correlated_true_pairs_hide_from_the_share_and_are_shown():
     assert not anti_excess_shown(without, null)
 
 
+def test_positive_true_pairs_do_not_dilute_the_anti_correlated_excess():
+    # Round 1's probe: 6,000 chance pairs, 3,000 true at r = 0.9 and 900 at
+    # r = -0.9. Fewer than a quarter of all channel pairs lie under the
+    # quartile, but more than a quarter of the chance pairings' 6,000 + 900:
+    # the guard reads the share-scaled reference, not a quarter of all.
+    rng = np.random.default_rng(5)
+    null = _null(rng, 20000)
+    channel = np.concatenate([_null(rng, 6000), np.full(3000, 0.9), _anti(900)])
+    quartile = np.quantile(null, ANTI_QUANTILE)
+    assert np.mean(channel < quartile) < 0.25
+    assert anti_excess_shown(channel, null)
+    ratios, _ = mixture_lr(channel, null)
+    assert ratios.tolist() == [1.0] * BINS
+
+
 def test_the_anti_correlated_excess_is_read_under_the_nulls_lower_quartile():
     null = np.linspace(-0.5, 0.5, 1001)
-    # A quarter of the null lies under -0.25. 40 channel pairs of 100 there
-    # stand clear of a quarter; 40 between -0.25 and the median do not count.
+    # A quarter of the null lies under -0.25, a half under 0. Of the 40
+    # channel pairs under the median, all 40 under the quartile stand clear
+    # of a half; 40 between -0.25 and the median do not count.
     under = np.concatenate([np.full(40, -0.3), np.full(60, 0.9)])
     between = np.concatenate([np.full(40, -0.1), np.full(60, 0.9)])
     assert ANTI_QUANTILE == 0.25
@@ -280,16 +299,27 @@ def test_the_anti_correlated_excess_is_read_under_the_nulls_lower_quartile():
     assert not anti_excess_shown(between, null)
     # Read under the null's tenth percentile, -0.4, no channel pair lies there.
     assert not anti_excess_shown(under, null, quantile=0.1)
+    # There a fifth of the null's pairs under the median lie; 16 of 40
+    # channel pairs stand clear of a fifth, though not of a half.
+    tenth = np.concatenate([np.full(16, -0.45), np.full(24, -0.1), np.full(60, 0.9)])
+    assert anti_excess_shown(tenth, null, quantile=0.1)
+    assert not anti_excess_shown(tenth, null)
+    # A pair on the null's median is not under it.
+    on_median = np.concatenate([np.full(20, -0.3), np.full(20, 0.0), np.full(60, 0.9)])
+    assert anti_excess_shown(on_median, null)
     assert not anti_excess_shown([], null)
     assert not anti_excess_shown(under, [])
 
 
 def test_the_anti_correlated_excess_counts_the_nulls_error():
-    # Many channel pairs, three in ten under the quartile of a null of 41
-    # decoys: the channel share is sharp, but the null's own share of a
-    # quarter is not, and it does not stand clear of it.
+    # Many channel pairs, six in ten of those under the median also under
+    # the quartile, against a null of 41 decoys: the channel ratio is sharp,
+    # but the null's own ratio of a half (10 of 20) is not, and it does not
+    # stand clear of it.
     null = np.linspace(-0.5, 0.5, 41)
-    channel = np.concatenate([np.full(3000, -0.45), np.full(7000, 0.9)])
+    channel = np.concatenate(
+        [np.full(1800, -0.45), np.full(1200, -0.1), np.full(7000, 0.9)]
+    )
     assert not anti_excess_shown(channel, null)
     assert anti_excess_shown(channel, np.linspace(-0.5, 0.5, 4001))
 
@@ -305,9 +335,9 @@ def test_chance_pairs_show_an_anti_correlated_excess_at_most_one_draw_in_twenty(
     assert shown / draws <= 0.06
 
 
-def _anti_mixture(rng, null_n=20000):
+def _anti_mixture(rng, anti=260, null_n=20000):
     null = _null(rng, null_n)
-    channel = np.concatenate([_null(rng, 600), _true(rng, 600), _anti(260)])
+    channel = np.concatenate([_null(rng, 600), _true(rng, 600), _anti(anti)])
     return channel, null
 
 
@@ -325,7 +355,8 @@ def test_an_anti_correlated_excess_gives_no_ratio():
 
 def test_the_anti_correlated_guard_reads_the_mixtures_z():
     rng = np.random.default_rng(43)
-    channel, null = _anti_mixture(rng)
+    channel, null = _anti_mixture(rng, anti=40)
+    assert anti_excess_shown(channel, null)
     # Asked for more standard errors than the anti-correlated excess stands
     # clear by, but fewer than the true share does: the ratio is read.
     assert not anti_excess_shown(channel, null, z=3.5)

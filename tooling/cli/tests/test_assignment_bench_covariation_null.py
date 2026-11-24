@@ -340,7 +340,17 @@ def _batch(index, chemistry, pairs):
     return cn.BatchReading(index, chemistry, "orbi", 100, pairs)
 
 
-def test_it_clears_on_two_reagents_only_where_two_chemistries_clear():
+def _no_anti_guard(monkeypatch):
+    # These cases read the reagent rule on made-up batches of 150 pairs. The
+    # anti-correlation guard shows an excess on about one such batch of
+    # chance pairs in 25, as it is built to, which would void a stratum the
+    # case needs cleared; it is pinned in its own tests.
+    monkeypatch.setattr(lr, "anti_excess_shown", lambda *_, **__: False)
+    monkeypatch.setattr(cn, "anti_excess_shown", lambda *_, **__: False)
+
+
+def test_it_clears_on_two_reagents_only_where_two_chemistries_clear(monkeypatch):
+    _no_anti_guard(monkeypatch)
     rng = np.random.default_rng(13)
     one = _batch(1, "uronium", _stratum_pairs(rng, 150, 0.4))
     other = _batch(2, "15N-nitrate", _stratum_pairs(rng, 150, 0.4))
@@ -368,6 +378,8 @@ def test_it_clears_on_two_reagents_only_where_two_chemistries_clear():
         (["uronium", "uronium"], None),
         (["uronium", cn.CHEMISTRY_NONE], None),
         (["uronium", "a label not in the table"], None),
+        # An unmapped label that sorts after a mapped one: the second is empty.
+        (["bromide", "xenon"], None),
         (["uronium"], None),
         ([], None),
     ],
@@ -394,6 +406,7 @@ def test_every_chemistry_the_script_reads_has_its_reagents():
 
 
 def test_two_labels_of_one_reagent_do_not_clear_on_two_reagents(monkeypatch):
+    _no_anti_guard(monkeypatch)
     rng = np.random.default_rng(13)
     plus = _batch(1, "charge transfer (+)", _stratum_pairs(rng, 150, 0.4))
     minus = _batch(2, "charge transfer (-)", _stratum_pairs(rng, 150, 0.4))

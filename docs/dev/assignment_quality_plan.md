@@ -3121,22 +3121,26 @@ who edits chemistry and stays last.
   - *The null share's blind spot.* Storey's share counts every channel pair
     under the null's median as chance, so anti-correlated true pairs
     (decision 35's radical-anion channels) raise the ratio at high r. They
-    show as an excess of channel pairs under the null's lower quartile;
-    where it stands 1.645 errors clear (`anti_excess_shown`), the mixture's
-    ratio is 1 throughout, as where no excess is shown. On the testbed the
-    channel pairs are thinner there than chance in every pooled stratum
-    (17, 13, 16 and 6 % against 25 %), and the guard holds nowhere. The
-    isotope pairs, one species, give the share's other error: 7 of 384 lie
-    under the null's median (0, 1, 3 and 3 per stratum) and none under its
-    quartile, a ratio high by a fifth at most. The script reports both per
-    chemistry and stratum.
+    show as an excess of channel pairs under the null's lower quartile over
+    a quarter of the chance pairings, `(1 - pi) / 4` of all channel pairs:
+    read among the pairs under the median, over the null's own half. Where
+    it stands 1.645 errors clear (`anti_excess_shown`), the mixture's ratio
+    is 1 throughout, as where no excess is shown. On the testbed a half or
+    fewer of the channel pairs under the median lie under the quartile in
+    every pooled stratum (46, 33, 44 and 28 %), and the guard holds
+    nowhere; 15N-nitrate over 50 to 199 comes closest (25 of 39, not clear
+    of a half). The isotope pairs, one species, give the share's other
+    error: 7 of 384 lie under the null's median (0, 1, 3 and 3 per stratum)
+    and none under its quartile, a ratio high by 22 % at most (1 of 11 over
+    20 to 49 spectra). The script reports both per chemistry and stratum.
   - *Two reagents.* `clears_on_two_reagents` asks for two clearing
     chemistries that share no reagent (`REAGENTS` in the script): the two
     polarities of charge transfer are one, and 15N-nitrate, nitrate and
     nitrate+bromide all read with the nitrate ion.
   - *The table* is version 2: version 1 read again by the same script on
-    the same copy, its bins of 0 now 0.1, every other number, bar and
-    resample count as before. Still provisional.
+    the same copy, its bins of 0 now 0.1, every other number and bar as
+    before; two resample counts move where the guard now shows an excess
+    in a resample (the log). Still provisional.
 - **Not done here.** The record gains no ratio, and 5.8d's lifts stay
   unweighed. What would let the bar clear is a reading, not a lower bar:
   a second chemistry's long batches (the copy's bromide and nitrate

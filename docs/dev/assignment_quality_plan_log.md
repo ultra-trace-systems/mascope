@@ -5193,9 +5193,13 @@ Three points of 4.21's review (#3485), settled before 5.8d reads the ratio.
 The same read as above, on the same copy, with the branch's script and fit:
 `MASCOPE_ENV=testbed uv run python tooling/assignment_bench/covariation_null.py`
 with its defaults. Run twice: the same JSON byte for byte (sha256
-`e2233d11...`). Every count, share, bar and resample count of the tables
-above is unchanged; the ratio rows differ only where they read under 0.1
-(the mixture rows' 0, the isotope rows' 0, 0.06 and 0.08).
+`90aa0865...`, after review round 1's change to the anti-correlation
+guard below). Every count, share and bar of the tables above is
+unchanged, and so is every resample count but two: 15N-nitrate's over 50
+to 199 reads 24 of 200 (38 above), every batch's over 50 to 199 197 (198),
+resamples where the guard now shows an excess. The ratio rows differ only
+where they read under 0.1 (the mixture rows' 0, the isotope rows' 0, 0.06
+and 0.08).
 
 - **No ratio of nought.** `mixture_lr` and `ratio_lr` floor every bin at
   `LR_FLOOR`, 0.1, the bar's mirror. Version 1 read 0 in the first six to
@@ -5215,14 +5219,25 @@ above is unchanged; the ratio rows differ only where they read under 0.1
   20 to 49 (1 of 11), 1.15 over 50 to 199 (3 of 46), 1.02 over 200 or more
   (3 of 326). Anti-correlated true pairs would show as an excess of channel
   pairs under the null's lower quartile, where chance puts a quarter of
-  its pairings. There are fewer than a quarter in every pooled stratum
-  (6 of 36, 10 of 78, 42 of 261, 42 of 748) and in every chemistry's but
-  15N-nitrate's 50 to 199 (25 of 86, 29 %, not clear of a quarter). So the
-  blind spot does not bite on this copy. `mixture_lr` now gives a ratio of
-  1 throughout where the excess stands 1.645 errors clear of the null's
-  share (`anti_excess_shown`, the channel share's error off its exact
-  one-sided bound, as `null_share_error` reads it), and the script reports
-  the counts per chemistry and stratum:
+  its pairings: `(1 - pi) / 4` of all channel pairs, not a quarter of
+  them, which the positive true pairs dilute. The same reference read
+  among the channel pairs under the median is the null's own half,
+  whatever `pi` is. Of the channel pairs under the median, those under the
+  quartile are a half or fewer in every pooled stratum (6 of 13, 10 of 30,
+  42 of 96, 42 of 151) and in every chemistry's but two: uronium's 10 to 19
+  (3 of 5) and 15N-nitrate's 50 to 199 (25 of 39, 64 %, its exact
+  one-sided lower bound 0.50, not clear of a half). So the blind spot does
+  not bite on this copy, though 15N-nitrate over 50 to 199 is the row to
+  watch. `mixture_lr` now gives a ratio of 1 throughout where that share
+  stands 1.645 errors clear of the null's (`anti_excess_shown`, the channel
+  share's error off its exact one-sided bound, as `null_share_error` reads
+  it, and the null's binomial error), and the script reports the counts
+  per chemistry and stratum. Round 1 of the review found the first form
+  of the guard read a quarter of all channel pairs, which shows an excess
+  only where anti-correlated pairs pass a third of the positive ones; on
+  made-up pairs, 6,000 chance, 3,000 at r 0.9 and 900 at r -0.9, it stayed
+  silent with `pi` read 0.195 against a positive share of 0.30, and the
+  share-scaled form shows it:
 
 | chemistry | stratum | null median / quartile | channel under median | channel under quartile | isotope under median | isotope under quartile | anti-correlated excess |
 |---|---|---|---|---|---|---|---|
