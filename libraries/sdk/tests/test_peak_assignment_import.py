@@ -996,6 +996,7 @@ class TestMissingValues:
             "ionization_mechanism_id",
             "source",
             "engine_tier",
+            "engine_level",
             "alternatives",
             "provenance",
         ],
@@ -1066,6 +1067,9 @@ class TestVocabularies:
             ("source", "library"),
             ("tier", "confident"),
             ("engine_tier", "maybe"),
+            ("engine_level", "6"),
+            ("engine_level", "4c"),
+            ("engine_level", "1"),
         ],
     )
     def test_a_value_outside_the_vocabulary_is_refused(
@@ -1095,6 +1099,12 @@ class TestVocabularies:
     )
     def test_every_source_the_server_reads_goes(self, resource, route, source):
         publish(resource, frame(source=[source] * 3))
+
+    def test_an_engine_level_of_the_scale_goes_as_it_is(self, resource, route):
+        publish(resource, frame(engine_level=["4b", None, "5a"]))
+
+        sent = [r["engine_level"] for r in route.posts[0]["rows"]]
+        assert sent == ["4b", None, "5a"]
 
 
 class TestOwners:
@@ -1199,6 +1209,10 @@ class TestAnExportedLedger:
         rows["mass_gate_corroborated"] = [True, None, None, None, None]
         rows["envelope_absent_lines"] = [0, None, None, None, None]
         rows["peak_unseparated"] = [False, None, None, None, None]
+        rows["level"] = ["4a", "4a", "5a", None, None]
+        rows["level_evidence"] = ["the neutral formula", None, None, None, None]
+        rows["level_lift"] = [None, None, "a test of the rival", None, None]
+        rows["engine_level"] = None
         for column, values in changes.items():
             rows[column] = values
         return rows
@@ -1257,6 +1271,29 @@ class TestAnExportedLedger:
             None,
             None,
         ]
+
+    @pytest.mark.parametrize("stated", [True, False], ids=["null", "no column"])
+    def test_its_level_goes_as_the_engine_level(self, resource, route, stated):
+        rows = self.exported()
+        if not stated:
+            rows = rows.drop(columns=["engine_level"])
+
+        publish(resource, rows)
+
+        sent = route.posts[0]["rows"]
+        assert all("level" not in row for row in sent)
+        assert [row["engine_level"] for row in sent] == ["4a", "4a", "5a", None, None]
+
+    def test_an_imported_runs_engine_level_is_kept(self, resource, route):
+        # A run an engine published, read back: its rows state no level of
+        # this server's, and their engine levels are the engine's own.
+        publish(
+            resource,
+            self.exported(level=None, engine_level=["4b", None, "5a", None, None]),
+        )
+
+        sent = route.posts[0]["rows"]
+        assert [row["engine_level"] for row in sent] == ["4b", None, "5a", None, None]
 
     def test_a_frame_not_read_keeps_its_tier(self, resource, route):
         publish(resource, frame(1, tier=["candidate"], engine_tier=[None]))

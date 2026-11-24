@@ -51,7 +51,9 @@ run_id = mascope.peak_assignments.import_run(
   lists under exactly that notation, else null.
 - A frame read with `get()` imports as it is. Its `tier` goes as
   `engine_tier`, where the frame has none, and the server derives the tier
-  again. Its owner links go from `iso_child` rows only.
+  again. Its `level` goes as `engine_level` the same way, since a row's own
+  level is the server's to state. Its owner links go from `iso_child` rows
+  only.
 - The first request and the last are sent once. If an answer is lost, the
   error says where the run would show. A request that meets the sample's
   claim (below) waits and goes again.
@@ -102,6 +104,7 @@ owns: it mints `peak_assignment_id`, `peak_assignment_run_id` and
 | `fit_score`, `mz_error_ppm`, `abundance_error` | The engine's measurement. `fit_score` is stored and served exactly as supplied |
 | `tier` | Optional, and better omitted (below) |
 | `engine_tier` | Optional: the tier the engine itself concluded, where its own rules put the peak somewhere the bands would not. Stored as supplied, checked only against the tier vocabulary, and read by nothing that ranks |
+| `engine_level` | Optional: the identification level the engine itself stated, in the scale Mascope's levels use: `5a`, `5b`, `4a`, `4b`, `3a` to `3d`, `2a` or `2b`; anything else is a 422, `1` included, since level 1 is a confirmed structure, a person's claim in review. Stored as supplied, read by nothing that ranks, and served beside the row's own `level`, which an import never sets |
 | `target_compound_id`, `target_ion_id` | For a `database` row, the library compound and ion it names; a supplied id must exist |
 | `owner_sample_peak_id` | For an `iso_child` row, the `sample_peak_id` of its owner row in this import. Resolved to the owner's assignment id when the import finalizes; an owner that is not in the import is a 422. The link is one level deep: an `iso_child` cannot own a row |
 | `alternatives`, `provenance` | The inspector's detail: the alternatives the engine considered, and its scoring provenance, subject to the reserved keys below |
@@ -123,8 +126,10 @@ An engine whose own rules demote a peak below what its evidence alone earns
 keeps that verdict in `engine_tier`. The API's `tier_disagrees` filter
 returns the rows where the two differ, and the ledger's **Engine tier** view
 option counts its tier chips in the engine's words; nothing ranks on
-`engine_tier`. A batch-level import takes the same field, and a free-text
-`engine_claim` beside it
+`engine_tier`. Its identification level goes in `engine_level` beside it,
+read back by `get()` and shown in the peak inspector next to Mascope's level.
+A batch-level import takes the same fields, and a free-text `engine_claim`
+beside them
 ([Importing an engine's batch result](../how-it-works/peak-assignment.md#importing-an-engines-batch-result)).
 
 ### Ionization mechanisms

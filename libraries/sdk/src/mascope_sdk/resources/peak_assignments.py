@@ -539,6 +539,11 @@ class PeakAssignmentsResource(BaseResource):
                    is missing. The facts and the rivals behind all three,
                    each rival with the test that excluded it or ``open``, are
                    ``provenance.identification_level`` in :meth:`detail`.
+                 - ``engine_level``: the identification level the engine
+                   that produced the row stated, in the same scale, as an
+                   import sent it beside its ``engine_tier``. Null on an
+                   in-app row, whose level is ``level``, and wherever the
+                   engine stated none. It moves no tier.
                  - ``target_compound_id``, ``target_ion_id`` (set for
                    database-sourced assignments)
                  - ``owner_peak_assignment_id`` (for isotope children, the
@@ -1491,21 +1496,26 @@ class PeakAssignmentsResource(BaseResource):
         ``sample_peak_tof``, ``assigned_formula``, ``ion_formula``,
         ``ionization_mechanism_id``, ``isotope_label``, ``isotope_formula``,
         ``source``, ``fit_score``, ``mz_error_ppm``, ``abundance_error``,
-        ``tier``, ``engine_tier``, ``target_compound_id``, ``target_ion_id``,
-        ``owner_sample_peak_id``, ``alternatives`` and ``provenance``. A
+        ``tier``, ``engine_tier``, ``engine_level``, ``target_compound_id``,
+        ``target_ion_id``, ``owner_sample_peak_id``, ``alternatives`` and
+        ``provenance``. A
         frame read with :meth:`get` is one: the columns the server computes
         or looks up itself are left out, its ``owner_peak_assignment_id``
         links are sent as ``owner_sample_peak_id`` from ``iso_child`` rows
         (a reagent's isotope lines go without theirs), and its ``tier`` goes
         as ``engine_tier`` where the frame states none, as the server
-        derives the tier again. Any other column is left out, with a
-        warning.
+        derives the tier again. Its ``level`` goes as ``engine_level`` the
+        same way, as the row's own level is the server's to state. Any other
+        column is left out, with a warning.
 
         What is checked here, so that a refusal costs no upload:
 
         - ``role``, ``source``, ``tier`` and ``engine_tier`` hold values of
-          their vocabularies (``identified`` is read as ``assigned``), and
-          ``fit_score`` lies in 0 to 1.
+          their vocabularies (``identified`` is read as ``assigned``),
+          ``engine_level`` a level of the scale (``5a``, ``5b``, ``4a``,
+          ``4b``, ``3a`` to ``3d``, ``2a`` or ``2b``; ``1`` is refused, as
+          level 1 is a person's claim in review), and ``fit_score`` lies in 0
+          to 1.
         - Each peak has one row, and an ``owner_sample_peak_id`` names
           another row of the frame, from an ``iso_child`` row, and not
           another ``iso_child``.
