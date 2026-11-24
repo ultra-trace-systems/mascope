@@ -888,9 +888,9 @@ def _averaged_centroid_readings(monkeypatch, path) -> dict | None:
 
 
 def _resolution_bounded(thermo_sn: np.ndarray, flagged: np.ndarray) -> np.ndarray:
-    """Which matched peaks the resolution bound applies to: those at Thermo
-    S:N 3 or over that peak detection does not flag as a side lobe or a
-    satellite."""
+    """Which matched peaks the resolution bound applies to: those whose Thermo
+    S:N is at or over peak detection's weak-peak threshold and that peak
+    detection does not flag as a side lobe or a satellite."""
     return (thermo_sn >= SIGNAL_TO_NOISE_THRESHOLD) & ~flagged
 
 
@@ -1000,10 +1000,10 @@ def _averaged_centroid_failures(readings: dict) -> list[str]:
     # (GitHub #2780) and its width next to nothing. Capped at twice what the
     # scan gives, the largest ratio on the 165 demo raws is 2.8, against
     # 1,261 before. Judged on the peaks whose width peak detection uses: at
-    # Thermo S:N 3 or over and neither a side lobe nor a satellite. Beside
-    # those, Thermo's re-centroid of a weak or flagged peak can come out at
-    # 0.14-0.43 of the scan's typical resolution, while OpenTFRaw's stays
-    # within the #2780 cap.
+    # or over its weak-peak threshold on Thermo's S:N and neither a side lobe
+    # nor a satellite. Beside those, Thermo's re-centroid of a weak or flagged
+    # peak can come out at 0.14-0.43 of the scan's typical resolution, while
+    # OpenTFRaw's stays within the #2780 cap.
     bounded = matched & _resolution_bounded(nearest_sn, readings["flagged"])
     ratio = orr[bounded] / nearest_res[bounded]
     ratio = ratio[np.isfinite(ratio) & (ratio > 0)]
@@ -1013,21 +1013,25 @@ def _averaged_centroid_failures(readings: dict) -> list[str]:
         )
 
     # Averaged S:N must track Thermo well enough that peak detection's weak-peak
-    # filter (S:N >= 3) keeps/drops the same peaks. Thermo reads S:N off the
-    # noise-reduced averaged profile (~sqrt(N) lower noise); the backend scales
-    # the pooled per-scan S:N by n/sqrt(N) to match. Without it the count above
-    # the threshold runs ~sqrt(N) low and near-threshold peaks vanish. Counted
-    # over the peaks above the local floor on each side, as peak detection
-    # keeps them: beside one dominant ion Thermo's averaged noise runs up to
-    # 1.5 times the per-scan noise over sqrt(N), and the weak centroids under
-    # the floor there cross the threshold under OpenTFRaw only. Asserted where
-    # there are enough peaks to be statistically meaningful.
+    # filter (S:N >= SIGNAL_TO_NOISE_THRESHOLD) keeps/drops the same peaks.
+    # Thermo reads S:N off the noise-reduced averaged profile (~sqrt(N) lower
+    # noise); the backend scales the pooled per-scan S:N by n/sqrt(N) to match.
+    # Without it the count above the threshold runs ~sqrt(N) low and
+    # near-threshold peaks vanish. Counted over the peaks above the local floor
+    # on each side, as peak detection keeps them: beside one dominant ion
+    # Thermo's averaged noise runs up to 1.5 times the per-scan noise over
+    # sqrt(N), and the weak centroids under the floor there cross the threshold
+    # under OpenTFRaw only. Asserted where there are enough peaks to be
+    # statistically meaningful.
     t_pass = int(
         ((tsn >= SIGNAL_TO_NOISE_THRESHOLD) & ~below_local_floor(tm, ti)).sum()
     )
     o_pass = int(((osn >= SIGNAL_TO_NOISE_THRESHOLD) & kept_o).sum())
     if t_pass >= 20 and not 0.7 * t_pass <= o_pass <= 1.4 * t_pass:
-        failures.append(f"{o_pass} averaged centroids above S:N 3 vs Thermo {t_pass}")
+        failures.append(
+            f"{o_pass} averaged centroids at S:N {SIGNAL_TO_NOISE_THRESHOLD} or over"
+            f" vs Thermo {t_pass}"
+        )
     return failures
 
 
