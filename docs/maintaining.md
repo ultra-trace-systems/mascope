@@ -2956,7 +2956,11 @@ is what undoes a run (step 3).
   go on. Another started meanwhile refuses, with a message naming the one
   that holds it; the file `lock` in the ledger's directory says the same.
   So a run left going after a Ctrl+C is never joined by a second one: end it
-  with `STOP`, and start again once it has ended. The lock goes with the
+  with `STOP`, and once it has ended, remove `STOP` and start again with
+  `--skip-backup`. A run started while `STOP` is still there refits nothing:
+  it matches what the earlier run left and stops before its first file, and
+  says so as it starts. A rollback does not heed `STOP` between files: it
+  ends by itself once its files are done, so wait for it. The lock goes with the
   process, so a run that was killed leaves nothing to clear. A dry run takes
   no lock, and can read beside a run.
 - **Cut off.** A run ended any other way - the backend container restarted,

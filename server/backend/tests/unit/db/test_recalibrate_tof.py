@@ -512,6 +512,42 @@ def test_a_run_holds_the_ledger_alone_until_it_ends(tmp_path):
         pass
 
 
+def _refusal(directory, holder_action):
+    with script.hold_ledger(directory, holder_action):
+        with pytest.raises(script.LedgerHeld) as held:
+            with script.hold_ledger(directory, "run"):
+                pytest.fail("held twice")
+    return str(held.value)
+
+
+def test_a_refusal_by_a_run_says_to_remove_stop_before_starting_again(tmp_path):
+    """A run started while ``STOP`` is still there refits nothing, after a
+    full pre-script dump unless it is given ``--skip-backup``."""
+    message = _refusal(str(tmp_path / "ledger"), script.RUN)
+
+    assert "create the file STOP" in message
+    assert "remove STOP, then start this again with --skip-backup" in message
+    assert "rollback does not heed STOP" not in message
+
+
+def test_a_refusal_by_a_rollback_says_to_wait_it_out(tmp_path):
+    """A rollback does not check ``STOP`` between its files."""
+    message = _refusal(str(tmp_path / "ledger"), script.ROLLBACK)
+
+    assert "(rollback, process " in message
+    assert "A rollback does not heed STOP" in message
+    assert "Wait for it to end, then start this again." in message
+    assert "create the file STOP" not in message
+
+
+def test_a_refusal_by_a_holder_it_cannot_name_gives_both_ways():
+    message = script._held_message("/ledger", "")
+
+    assert "holds the ledger in /ledger. One goes on" in message
+    assert "remove STOP, then start this again" in message
+    assert "A rollback does not heed STOP" in message
+
+
 #: A process that holds a lock on the file it is given until it is killed
 _HOLD = """
 import fcntl, sys, time
@@ -1785,6 +1821,35 @@ async def test_a_stop_file_ends_the_run_at_the_next_file(tmp_path):
     assert report.counts["stopped"] == 1
     # The batch it stopped in is matched before it ends
     assert settle.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_a_run_started_with_stop_there_says_so(tmp_path, monkeypatch):
+    candidates = [_candidate(sample_file_id=name) for name in "ab"]
+    (tmp_path / "ledger").mkdir()
+    (tmp_path / "ledger" / script.STOP_FILE).touch()
+    logger = MagicMock()
+    monkeypatch.setattr(script, "runtime", SimpleNamespace(logger=logger))
+
+    report, done, settle = await _runner(tmp_path, candidates)
+
+    assert done == [] and report.counts["stopped"] == 1
+    (warned,) = logger.warning.call_args_list
+    assert "this run will match what an earlier one left" in warned.args[0]
+    assert "Remove STOP and start it again" in warned.args[0]
+    # It still closes and matches what the earlier run left
+    settle.reconcile.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_run_without_stop_does_not_warn(tmp_path, monkeypatch):
+    logger = MagicMock()
+    monkeypatch.setattr(script, "runtime", SimpleNamespace(logger=logger))
+
+    report, done, _ = await _runner(tmp_path, [_candidate(sample_file_id="a")])
+
+    assert done == [("a", 1)]
+    logger.warning.assert_not_called()
 
 
 @pytest.mark.asyncio
