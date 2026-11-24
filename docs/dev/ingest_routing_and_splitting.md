@@ -2567,9 +2567,9 @@ read, and site E's job did not start.
   rule: a nitrate call on a TOF needs its anchors' summed area at 100,
   about 1.5 decades from each side. It keeps every source measured and
   drops every ambient call. It is not unit-free: it holds while TOF areas
-  are read in the same units on every reader. Sites B and E were measured
-  later (below); the floor holds where they could say, which is a check,
-  not a gate.
+  are read in the same units on every reader. Site B was measured later,
+  and site E had nothing to measure (below); the floor holds at site B,
+  which is a check, not a gate.
 
 **The floor at sites B and E** (MAS-814, 2026-11-24): a fourth read-only
 job re-read every negative TOF spectrum of the audit at sites B and E with
@@ -2580,7 +2580,7 @@ the polarity is bound to.
 
 | Site, TOF | Bound to | Polarities | Anchors' area, log10: min, p5, p50, p95, max | Under 100 | Nitrate calls v1 / v2 / v3 |
 |---|---|---|---|---|---|
-| A, three TOFs (MAS-639) | ambient-ion mode, called nitrate | of 232 on one TOF | -0.14 to 0.54 (NO3- alone) | all | 47 / 195 / 0 |
+| A, one TOF (MAS-639) | ambient-ion mode, called nitrate | of 232 | -0.14 to 0.54 (NO3- alone) | all | 47 / 195 / 0 |
 | A, three TOFs (MAS-639) | nitrate source | 832, and 3 of the corpus | 3.32 to 4.11 (NO3- alone) | none | |
 | B, TOF 1 | nitrate mode | 885 | 3.56, 3.86, 4.20, 4.27, 4.27 | 0 | 885 / 885 / 885 |
 | B, TOF 2 | nitrate mode | 814 | 3.90, 3.99, 4.85, 5.01, 5.05 | 0 | 686 / 688 / 688 |
@@ -2597,9 +2597,11 @@ the polarity is bound to.
 - **Site B cannot test the other side.** The site has four ambient-ion
   modes, but no TOF polarity of the audit is bound to one: every one is
   bound to a nitrate mode.
-- **TOF 2 leaves 126 nitrate-mode polarities uncalled** under every
-  version. All have their anchors, at or above the floor, so the floor is
-  not why: no fingerprint dominates their spectrum (`none`, #3586).
+- **TOF 2 leaves 126 nitrate-mode polarities uncalled** under versions 2
+  and 3; version 1 leaves 128, and the job does not say whether they are
+  the same ones. All have their anchors, at or above the floor, so the
+  floor is not why: under version 3 no fingerprint dominates their
+  spectrum (`none`, #3586).
 - **Site E has nothing to read.** Its audit holds no negative TOF polarity,
   and its filestore is closed to the job's user. The floor is not measured
   there.
