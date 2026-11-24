@@ -7,7 +7,43 @@ vi.mock('@/stores', () => ({ useApp: () => app }))
 // The structure picker is stubbed below: it shows what the form hands it and
 // answers with the claim a test sets here (BaseClaimStructure.spec.js covers it).
 const claimStub = vi.hoisted(() => ({ claimed_inchikey: null, claimed_name: null, ready: true }))
+// What the evidence showed is stubbed the same way: by default an MS/MS or
+// orthogonal confirmation says it showed fragments or a separation (a 2b), and a
+// standard names no independent line (BaseClaimEvidence.spec.js covers it).
+const evidenceStub = vi.hoisted(() => ({
+  details: { msms: 'fragments', orthogonal: 'separation' },
+  line: null,
+  ready: true,
+  problem: null
+}))
+const windowStub = vi.hoisted(() => ({
+  window_start_utc: '2026-11-01T08:00:00.000Z',
+  window_end_utc: '2026-11-08T08:00:00.999Z',
+  ready: true,
+  problem: null
+}))
 vi.mock('@/lib/base', () => ({
+  BaseClaimEvidence: {
+    props: ['modelValue', 'evidence', 'initial'],
+    emits: ['update:modelValue'],
+    mounted() {
+      this.$emit('update:modelValue', {
+        evidence_detail: evidenceStub.details[this.evidence] ?? null,
+        independent_line: this.evidence === 'reference_standard' ? evidenceStub.line : null,
+        ready: evidenceStub.ready,
+        problem: evidenceStub.problem
+      })
+    },
+    template: '<div class="claim-evidence" :data-evidence="evidence" />'
+  },
+  BaseClaimWindow: {
+    props: ['modelValue', 'initial', 'range'],
+    emits: ['update:modelValue'],
+    mounted() {
+      this.$emit('update:modelValue', { ...windowStub })
+    },
+    template: '<div class="claim-window" :data-range="JSON.stringify(range)" />'
+  },
   BaseClaimStructure: {
     props: ['modelValue', 'candidates', 'evidence', 'initial'],
     emits: ['update:modelValue'],
@@ -104,6 +140,13 @@ beforeEach(() => {
   ledgerLoad.mockReset()
   verify.mockResolvedValue(RECORD)
   retract.mockResolvedValue({})
+  Object.assign(evidenceStub, {
+    details: { msms: 'fragments', orthogonal: 'separation' },
+    line: null,
+    ready: true,
+    problem: null
+  })
+  Object.assign(windowStub, { ready: true, problem: null })
   Object.assign(claimStub, {
     claimed_inchikey: null,
     claimed_name: null,
@@ -128,6 +171,7 @@ describe('LedgerVerdictPopover, batch scope', () => {
     const confirm = button(wrapper, 'Confirm')
     expect(confirm.attributes('disabled')).toBeDefined()
     await wrapper.find('select.evidence').setValue('pattern')
+    await flushPromises()
     expect(confirm.attributes('disabled')).toBeUndefined()
     await wrapper.find('input.note').setValue('seen twice')
     await confirm.trigger('click')
@@ -150,6 +194,7 @@ describe('LedgerVerdictPopover, batch scope', () => {
     Object.assign(claimStub, { claimed_inchikey: GLUCOSE, claimed_name: 'D-glucose' })
     const wrapper = mountPopover({ row })
     await wrapper.find('select.evidence').setValue('msms')
+    await flushPromises()
     expect(JSON.parse(wrapper.find('.claim-structure').attributes('data-candidates'))).toEqual([
       { inchikey: GLUCOSE, name: 'D-glucose', label: 'sugars' }
     ])
@@ -162,7 +207,8 @@ describe('LedgerVerdictPopover, batch scope', () => {
       note: null,
       expected_formula: 'C6H12O6',
       claimed_inchikey: GLUCOSE,
-      claimed_name: 'D-glucose'
+      claimed_name: 'D-glucose',
+      evidence_detail: 'fragments'
     })
   })
 
@@ -180,6 +226,7 @@ describe('LedgerVerdictPopover, batch scope', () => {
     }
     const wrapper = mountPopover({ row })
     await wrapper.find('select.evidence').setValue('msms')
+    await flushPromises()
     expect(JSON.parse(wrapper.find('.claim-structure').attributes('data-candidates'))).toEqual([
       { inchikey: GLUCOSE, name: 'glucose', label: 'target' }
     ])
@@ -189,14 +236,17 @@ describe('LedgerVerdictPopover, batch scope', () => {
     claimStub.ready = false
     const wrapper = mountPopover()
     await wrapper.find('select.evidence').setValue('orthogonal')
+    await flushPromises()
     expect(button(wrapper, 'Confirm').attributes('disabled')).toBeDefined()
   })
 
-  it('starts a changed confirmation from the structure it names, unless it is stale', () => {
+  it('starts a changed confirmation from the structure it names, unless it is stale', async () => {
     const record = { ...RECORD, claimed_inchikey: GLUCOSE, claimed_name: 'D-glucose' }
     const live = mountPopover({ record })
+    await flushPromises()
     expect(live.find('.claim-structure').attributes('data-initial')).toBe(GLUCOSE)
     const stale = mountPopover({ record, stale: true })
+    await flushPromises()
     expect(stale.find('.claim-structure').attributes('data-initial')).toBe('')
   })
 
@@ -204,8 +254,130 @@ describe('LedgerVerdictPopover, batch scope', () => {
     Object.assign(claimStub, { ready: false, problem: 'Not an InChIKey' })
     const wrapper = mountPopover()
     await wrapper.find('select.evidence').setValue('visual')
+    await flushPromises()
     expect(button(wrapper, 'Confirm').attributes('data-tooltip')).toBe('Not an InChIKey')
   })
+
+  it('scopes a level-1 claim to a window, starting from the batch acquisitions', async () => {
+    evidenceStub.line = 'msms'
+    Object.assign(claimStub, { claimed_inchikey: GLUCOSE, claimed_name: 'D-glucose' })
+    const wrapper = mountPopover()
+    app.data.sample = {
+      list: [{ datetime_utc: '2026-11-02T08:00:00Z' }, { datetime_utc: '2026-11-01T08:00:00Z' }]
+    }
+    await wrapper.find('select.evidence').setValue('reference_standard')
+    await flushPromises()
+    expect(JSON.parse(wrapper.find('.claim-window').attributes('data-range'))).toEqual({
+      first: '2026-11-01T08:00:00Z',
+      last: '2026-11-02T08:00:00Z'
+    })
+    await button(wrapper, 'Confirm').trigger('click')
+    await flushPromises()
+    expect(verify).toHaveBeenCalledWith({
+      batch_peak_id: 'bp-1',
+      verdict: 'confirmed',
+      evidence_level: 'reference_standard',
+      note: null,
+      expected_formula: 'C6H12O6',
+      claimed_inchikey: GLUCOSE,
+      claimed_name: 'D-glucose',
+      independent_line: 'msms',
+      window_start_utc: '2026-11-01T08:00:00.000Z',
+      window_end_utc: '2026-11-08T08:00:00.999Z'
+    })
+  })
+
+  it('will not confirm a level-1 claim while its window is not given', async () => {
+    evidenceStub.line = 'separation'
+    Object.assign(windowStub, { ready: false, problem: 'Give the first and last' })
+    const wrapper = mountPopover()
+    await wrapper.find('select.evidence').setValue('reference_standard')
+    await flushPromises()
+    expect(button(wrapper, 'Confirm').attributes('disabled')).toBeDefined()
+    expect(button(wrapper, 'Confirm').attributes('data-tooltip')).toBe('Give the first and last')
+  })
+
+  it('names no window below level 1', async () => {
+    Object.assign(claimStub, { claimed_inchikey: GLUCOSE, claimed_name: 'D-glucose' })
+    const wrapper = mountPopover()
+    await wrapper.find('select.evidence').setValue('reference_standard')
+    await flushPromises()
+    expect(wrapper.find('.claim-window').exists()).toBe(false)
+    await button(wrapper, 'Confirm').trigger('click')
+    await flushPromises()
+    expect(verify.mock.calls[0][0]).not.toHaveProperty('window_start_utc')
+    expect(verify.mock.calls[0][0]).not.toHaveProperty('independent_line')
+  })
+
+  it('records a class claim by its name alone, with what the evidence showed', async () => {
+    evidenceStub.details.msms = 'loss'
+    Object.assign(claimStub, { claimed_inchikey: null, claimed_name: 'a carboxylic acid' })
+    const wrapper = mountPopover()
+    await wrapper.find('select.evidence').setValue('msms')
+    await flushPromises()
+    await button(wrapper, 'Confirm').trigger('click')
+    await flushPromises()
+    expect(verify).toHaveBeenCalledWith({
+      batch_peak_id: 'bp-1',
+      verdict: 'confirmed',
+      evidence_level: 'msms',
+      note: null,
+      expected_formula: 'C6H12O6',
+      claimed_name: 'a carboxylic acid',
+      evidence_detail: 'loss'
+    })
+  })
+
+  it('will not confirm until the evidence says what it showed, and asks no structure yet', async () => {
+    Object.assign(evidenceStub, {
+      details: {},
+      ready: false,
+      problem: 'Say what the MS/MS showed'
+    })
+    const wrapper = mountPopover()
+    await wrapper.find('select.evidence').setValue('msms')
+    await flushPromises()
+    expect(wrapper.find('.claim-structure').exists()).toBe(false)
+    expect(button(wrapper, 'Confirm').attributes('disabled')).toBeDefined()
+    expect(button(wrapper, 'Confirm').attributes('data-tooltip')).toBe('Say what the MS/MS showed')
+  })
+
+  it('says a rejection on a standard refutes the live confirmation, and sends its basis', async () => {
+    const wrapper = mountPopover({ record: { ...RECORD, verdict: 'confirmed' } })
+    expect(wrapper.text()).not.toContain('refutes the confirmation')
+    await wrapper.find('select.evidence').setValue('reference_standard')
+    await flushPromises()
+    expect(wrapper.text()).toContain('Rejecting on a reference standard refutes the confirmation')
+    await button(wrapper, 'Reject').trigger('click')
+    await flushPromises()
+    const sent = verify.mock.calls[0][0]
+    expect(sent).toMatchObject({ verdict: 'rejected', evidence_level: 'reference_standard' })
+    // What the evidence showed and the line are a confirmation's alone.
+    expect(sent).not.toHaveProperty('independent_line')
+    expect(sent).not.toHaveProperty('evidence_detail')
+  })
+
+  it.each([
+    ['a live confirmation', { verdict: 'confirmed' }, false, true],
+    ['a stale confirmation', { verdict: 'confirmed' }, true, false],
+    ['an unsure verdict', { verdict: 'unsure' }, false, false],
+    ['a rejection', { verdict: 'rejected' }, false, false]
+  ])(
+    'promises a refutation on %s only where the server records one',
+    async (_, verdict, stale, hint) => {
+      const wrapper = mountPopover({
+        record: { ...RECORD, ...verdict },
+        stale,
+        row: stale ? { ...ROW, consensus_formula: 'C7H14O7' } : ROW
+      })
+      await wrapper.find('select.evidence').setValue('reference_standard')
+      await flushPromises()
+      expect(wrapper.text().includes('refutes the confirmation')).toBe(hint)
+      expect(button(wrapper, 'Reject').attributes('data-tooltip')).toBe(
+        hint ? 'A standard that disagrees: refutes the confirmation' : ''
+      )
+    }
+  )
 
   it('rejects without evidence, still naming the formula', async () => {
     const wrapper = mountPopover()

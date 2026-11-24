@@ -1,33 +1,134 @@
 import { describe, it, expect } from 'vitest'
 
-import { claimCandidates, claimLevel, levelLabel, needsStructure } from '@/lib/verification'
+import {
+  EVIDENCE_DETAILS,
+  acquisitionRange,
+  claimCandidates,
+  claimOf,
+  claimStatement,
+  fromLocalInput,
+  isClassClaim,
+  levelLabel,
+  needsStructure,
+  toLocalInput,
+  windowText
+} from '@/lib/verification'
 
 const GLUCOSE = 'WQZGKKKJIJFFOK-GASJEMHNSA-N'
 const FRUCTOSE = 'RFSUNEUAIZKAJO-ARQDHWQXSA-N'
 
-describe('claimLevel', () => {
-  it('reads the level the server fixes from the evidence', () => {
-    expect(claimLevel('reference_standard')).toBe(1)
-    expect(claimLevel('msms')).toBe(2)
-    expect(claimLevel('orthogonal')).toBe(3)
-    expect(claimLevel('pattern')).toBe(4)
+const label = (...args) => claimStatement(...args)?.label ?? null
+
+describe('claimStatement', () => {
+  it('reads the level the server fixes, under mapping version 2', () => {
+    expect(label('reference_standard', null, 'msms')).toBe('1')
+    expect(label('reference_standard')).toBe('2b')
+    expect(label('msms', 'library')).toBe('2a')
+    expect(label('msms', 'fragments')).toBe('2b')
+    expect(label('msms', 'loss')).toBe('3b')
+    expect(label('orthogonal', 'separation')).toBe('2b')
+    expect(label('orthogonal', 'data_and_list')).toBe('3a')
+    expect(label('orthogonal', 'class')).toBe('3b')
+    expect(label('orthogonal', 'context_list')).toBe('3c')
+    expect(label('orthogonal', 'homologue')).toBe('3d')
+    expect(label('pattern', 'split_pinned')).toBe('4a')
+    expect(label('pattern', 'split_open')).toBe('4b')
   })
 
-  it('states none on a visual look, or with no evidence', () => {
-    expect(claimLevel('visual')).toBeNull()
-    expect(claimLevel(null)).toBeNull()
+  it('reads a pattern that says nothing of the split as open', () => {
+    expect(label('pattern')).toBe('4b')
   })
 
-  it('labels a level, and nothing for none', () => {
+  it('gives a standard with no independent line its lift', () => {
+    expect(claimStatement('reference_standard').lift).toBe('an independent line')
+    expect(claimStatement('reference_standard', null, 'separation').lift).toBeNull()
+  })
+
+  it('states none on a visual look, or before MS/MS says what it showed', () => {
+    expect(claimStatement('visual')).toBeNull()
+    expect(claimStatement(null)).toBeNull()
+    expect(claimStatement('msms')).toBeNull()
+    expect(claimStatement('orthogonal', 'split_open')).toBeNull()
+  })
+
+  it('mirrors the server: every detail the vocabulary offers has a level', () => {
+    for (const [evidence, details] of Object.entries(EVIDENCE_DETAILS)) {
+      for (const detail of details) expect(label(evidence, detail.value)).toMatch(/^[1-4][a-d]?$/)
+    }
+  })
+
+  it('labels a level with its letter, a version-1 level without, and nothing for none', () => {
+    expect(levelLabel(2, 'b')).toBe('Level 2b')
     expect(levelLabel(2)).toBe('Level 2')
+    expect(levelLabel(1, null)).toBe('Level 1')
     expect(levelLabel(null)).toBeNull()
   })
 })
 
-describe('needsStructure', () => {
-  it('is the evidence that is a statement about a structure', () => {
-    expect(['reference_standard', 'msms', 'orthogonal'].every(needsStructure)).toBe(true)
-    expect(['pattern', 'visual', null].some(needsStructure)).toBe(false)
+describe('needsStructure and isClassClaim', () => {
+  it('is the statements about a structure', () => {
+    expect(needsStructure('reference_standard')).toBe(true)
+    expect(needsStructure('msms', 'library')).toBe(true)
+    expect(needsStructure('orthogonal', 'context_list')).toBe(true)
+    expect(needsStructure('msms', 'loss')).toBe(false)
+    expect(['pattern', 'visual', null].some((evidence) => needsStructure(evidence))).toBe(false)
+  })
+
+  it('is a class claim on one loss or orthogonal class evidence', () => {
+    expect(isClassClaim('msms', 'loss')).toBe(true)
+    expect(isClassClaim('orthogonal', 'class')).toBe(true)
+    expect(isClassClaim('msms', 'fragments')).toBe(false)
+    expect(isClassClaim('pattern')).toBe(false)
+  })
+})
+
+describe('a recorded claim', () => {
+  it('reads the statement its context keeps', () => {
+    const claim = { evidence_detail: 'loss', independent_line: null, evidence: 'x', lift: 'y' }
+    expect(claimOf({ context: { level_mapping_version: 2, claim } })).toBe(claim)
+    expect(claimOf({ context: { level_mapping_version: 1 } })).toBeNull()
+    expect(claimOf(null)).toBeNull()
+  })
+
+  it('says a window, or nothing without one', () => {
+    expect(windowText({ window_start_utc: null })).toBeNull()
+    const text = windowText({
+      window_start_utc: '2026-11-01T08:00:00Z',
+      window_end_utc: '2026-11-08T08:00:00Z'
+    })
+    expect(text).toMatch(/^from .+ to .+$/)
+  })
+})
+
+describe('the window inputs', () => {
+  it('round-trips a time through the local input, to the second', () => {
+    const iso = '2026-11-01T08:00:30.000Z'
+    expect(fromLocalInput(toLocalInput(iso))).toBe(iso)
+  })
+
+  it('takes the last second of a window whole', () => {
+    expect(fromLocalInput(toLocalInput('2026-11-01T08:00:30.000Z'), { end: true })).toBe(
+      '2026-11-01T08:00:30.999Z'
+    )
+  })
+
+  it('reads nothing from nothing', () => {
+    expect(toLocalInput(null)).toBe('')
+    expect(toLocalInput('not a time')).toBe('')
+    expect(fromLocalInput('')).toBeNull()
+  })
+
+  it('starts from the batch samples first and last acquisition', () => {
+    expect(
+      acquisitionRange([
+        { datetime_utc: '2026-11-03T08:00:00Z' },
+        { datetime_utc: '2026-11-01T08:00:00Z' },
+        { datetime_utc: null },
+        { datetime_utc: '2026-11-02T08:00:00Z' }
+      ])
+    ).toEqual({ first: '2026-11-01T08:00:00Z', last: '2026-11-03T08:00:00Z' })
+    expect(acquisitionRange([])).toBeNull()
+    expect(acquisitionRange(undefined)).toBeNull()
   })
 })
 

@@ -4,11 +4,22 @@ import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
 
-import { BaseClaimStructure, BaseVerdictBadge } from '@/lib/base'
+import {
+  BaseClaimEvidence,
+  BaseClaimStructure,
+  BaseClaimWindow,
+  BaseVerdictBadge
+} from '@/lib/base'
 import { num } from '@/lib/formatters'
 import { canEditWorkspace } from '@/lib/permissions'
 import { ledgerListing, targetOf } from '@/lib/referenceListings'
-import { EVIDENCE_LEVELS, VERDICT_META, claimCandidates } from '@/lib/verification'
+import {
+  EVIDENCE_LEVELS,
+  VERDICT_META,
+  acquisitionRange,
+  claimCandidates,
+  claimStatement
+} from '@/lib/verification'
 import { useApp } from '@/stores'
 
 /**
@@ -29,8 +40,13 @@ import { useApp } from '@/stores'
  *   the consensus has since left - says so, and Retract withdraws a verdict.
  *
  * A confirmation may name the structure it identifies, from the compound the
- * row's reference listing names or an InChIKey of the user's own; one on a
- * reference standard, MS/MS or orthogonal evidence must (BaseClaimStructure).
+ * row's reference listing names or an InChIKey of the user's own; one that
+ * states level 1, 2 or a 3 naming a candidate must, and a class claim (3b)
+ * names its class (BaseClaimStructure). What the evidence showed decides the
+ * level (BaseClaimEvidence). A level-1 claim on a batch peak names the time
+ * window its standard covers (BaseClaimWindow). A rejection on a reference
+ * standard refutes the live confirmation, which the server records; not a
+ * stale one, which the Reject does not reach.
  */
 const props = defineProps({
   /** Which ledger the row is from. */
@@ -82,7 +98,40 @@ const candidates = computed(() =>
   })
 )
 const claim = ref(null)
-const canConfirm = computed(() => Boolean(evidenceLevel.value) && claim.value?.ready !== false)
+// What the evidence showed, and the statement it makes.
+const shown = ref(null)
+const statement = computed(() =>
+  claimStatement(evidenceLevel.value, shown.value?.evidence_detail, shown.value?.independent_line)
+)
+// A level-1 claim on a batch peak is scoped to the window its standard covers.
+const scoped = computed(() => batch.value && statement.value?.level === 1)
+const claimWindow = ref(null)
+const range = computed(() => acquisitionRange(app.data.sample?.list))
+// The structure picker waits for the statement it asks about; a visual look
+// states none and still may name one.
+const asksStructure = computed(
+  () =>
+    Boolean(evidenceLevel.value) && (evidenceLevel.value === 'visual' || Boolean(statement.value))
+)
+const confirmProblem = computed(() => {
+  if (!evidenceLevel.value) return 'Pick an evidence level to confirm'
+  if (shown.value?.ready === false) return shown.value.problem || 'Say what the evidence showed'
+  if (asksStructure.value && claim.value?.ready === false)
+    return claim.value.problem || 'Name the structure this evidence identifies'
+  if (scoped.value && claimWindow.value?.ready === false)
+    return claimWindow.value.problem || 'Give the window the standard covers'
+  return ''
+})
+const canConfirm = computed(() => !confirmProblem.value)
+// A standard that disagrees refutes the live confirmation. A stale one is about
+// a formula the consensus has left: a Reject names the formula the row claims
+// now, so the server refutes nothing and the stale verdict stays as it is.
+const refutes = computed(
+  () =>
+    evidenceLevel.value === 'reference_standard' &&
+    props.record?.verdict === 'confirmed' &&
+    !props.stale
+)
 const submitting = ref(false)
 const pendingVerdict = ref(null) // which button is mid-submit
 const denied = ref(false) // 403: not an editor in this workspace
@@ -119,12 +168,24 @@ const NOTHING_TO_JUDGE = {
 
 function payload(verdict) {
   const confirm = verdict === 'confirmed'
+  const named = confirm && asksStructure.value ? claim.value : null
   const common = {
     verdict,
     evidence_level: evidenceLevel.value || null,
     note: note.value?.trim() || null,
-    ...(confirm && claim.value?.claimed_inchikey
-      ? { claimed_inchikey: claim.value.claimed_inchikey, claimed_name: claim.value.claimed_name }
+    ...(named?.claimed_inchikey ? { claimed_inchikey: named.claimed_inchikey } : {}),
+    ...(named?.claimed_name ? { claimed_name: named.claimed_name } : {}),
+    ...(confirm && shown.value?.evidence_detail
+      ? { evidence_detail: shown.value.evidence_detail }
+      : {}),
+    ...(confirm && shown.value?.independent_line
+      ? { independent_line: shown.value.independent_line }
+      : {}),
+    ...(confirm && scoped.value
+      ? {
+          window_start_utc: claimWindow.value?.window_start_utc,
+          window_end_utc: claimWindow.value?.window_end_utc
+        }
       : {})
   }
   return batch.value
@@ -219,13 +280,7 @@ async function retract() {
           severity="success"
           :disabled="submitting || !canConfirm"
           :loading="submitting && pendingVerdict === 'confirmed'"
-          v-tooltip.top="
-            !evidenceLevel
-              ? 'Pick an evidence level to confirm'
-              : !canConfirm
-                ? claim?.problem || ''
-                : ''
-          "
+          v-tooltip.top="confirmProblem"
           @click="submit('confirmed')"
         />
         <Button
@@ -235,6 +290,7 @@ async function retract() {
           severity="danger"
           :disabled="submitting"
           :loading="submitting && pendingVerdict === 'rejected'"
+          v-tooltip.top="refutes ? 'A standard that disagrees: refutes the confirmation' : ''"
           @click="submit('rejected')"
         />
         <Button
@@ -257,16 +313,36 @@ async function retract() {
         showClear
         fluid
       />
+      <BaseClaimEvidence
+        v-if="evidenceLevel"
+        :key="`${rowId}-${evidenceLevel}`"
+        v-model="shown"
+        :evidence="evidenceLevel"
+        :initial="stale ? null : record"
+      />
       <!-- A stale verdict's structure is one of a formula the consensus has
            moved off, so a change starts from none. -->
       <BaseClaimStructure
-        v-if="evidenceLevel"
+        v-if="asksStructure"
         :key="rowId"
         v-model="claim"
         :candidates="candidates"
         :evidence="evidenceLevel"
+        :detail="shown?.evidence_detail ?? null"
+        :line="shown?.independent_line ?? null"
         :initial="stale ? null : record"
       />
+      <BaseClaimWindow
+        v-if="scoped"
+        :key="`${rowId}-window`"
+        v-model="claimWindow"
+        :initial="stale ? null : record"
+        :range="range"
+      />
+      <p v-if="refutes" class="hint">
+        Rejecting on a reference standard refutes the confirmation: the record names the claim it
+        took back, and the row reads the engine's level again.
+      </p>
       <InputText v-model="note" placeholder="Note (optional)" size="small" fluid />
       <div v-if="batch && record" class="retract">
         <Button

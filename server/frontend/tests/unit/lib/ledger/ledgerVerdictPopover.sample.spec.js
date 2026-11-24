@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 
 const verify = vi.fn(() => Promise.resolve({}))
 let app
@@ -7,7 +7,43 @@ vi.mock('@/stores', () => ({ useApp: () => app }))
 // The structure picker is stubbed below: it shows what the form hands it and
 // answers with the claim a test sets here (BaseClaimStructure.spec.js covers it).
 const claimStub = vi.hoisted(() => ({ claimed_inchikey: null, claimed_name: null, ready: true }))
+// What the evidence showed is stubbed the same way: by default an MS/MS or
+// orthogonal confirmation says it showed fragments or a separation (a 2b), and a
+// standard names no independent line (BaseClaimEvidence.spec.js covers it).
+const evidenceStub = vi.hoisted(() => ({
+  details: { msms: 'fragments', orthogonal: 'separation' },
+  line: null,
+  ready: true,
+  problem: null
+}))
+const windowStub = vi.hoisted(() => ({
+  window_start_utc: '2026-11-01T08:00:00.000Z',
+  window_end_utc: '2026-11-08T08:00:00.999Z',
+  ready: true,
+  problem: null
+}))
 vi.mock('@/lib/base', () => ({
+  BaseClaimEvidence: {
+    props: ['modelValue', 'evidence', 'initial'],
+    emits: ['update:modelValue'],
+    mounted() {
+      this.$emit('update:modelValue', {
+        evidence_detail: evidenceStub.details[this.evidence] ?? null,
+        independent_line: this.evidence === 'reference_standard' ? evidenceStub.line : null,
+        ready: evidenceStub.ready,
+        problem: evidenceStub.problem
+      })
+    },
+    template: '<div class="claim-evidence" :data-evidence="evidence" />'
+  },
+  BaseClaimWindow: {
+    props: ['modelValue', 'initial', 'range'],
+    emits: ['update:modelValue'],
+    mounted() {
+      this.$emit('update:modelValue', { ...windowStub })
+    },
+    template: '<div class="claim-window" :data-range="JSON.stringify(range)" />'
+  },
   BaseClaimStructure: {
     props: ['modelValue', 'candidates', 'evidence', 'initial'],
     emits: ['update:modelValue'],
@@ -102,6 +138,13 @@ function mountPopover(props) {
 beforeEach(() => {
   vi.clearAllMocks()
   app = makeApp()
+  Object.assign(evidenceStub, {
+    details: { msms: 'fragments', orthogonal: 'separation' },
+    line: null,
+    ready: true,
+    problem: null
+  })
+  Object.assign(windowStub, { ready: true, problem: null })
   Object.assign(claimStub, {
     claimed_inchikey: null,
     claimed_name: null,
@@ -156,6 +199,7 @@ describe('LedgerVerdictPopover, sample scope', () => {
     }
     const wrapper = mountPopover({ row, record: null, overlay: null })
     await wrapper.find('.evidence').setValue('reference_standard')
+    await flushPromises()
     expect(JSON.parse(wrapper.find('.claim-structure').attributes('data-candidates'))).toEqual([
       { inchikey: GLUCOSE, name: 'glucose', label: 'target' },
       { inchikey: FRUCTOSE, name: 'fructose', label: 'sugars' }
@@ -167,6 +211,7 @@ describe('LedgerVerdictPopover, sample scope', () => {
     const confirm = wrapper.find('button:nth-of-type(1)')
     expect(confirm.attributes('disabled')).toBeDefined()
     await wrapper.find('.evidence').setValue('msms')
+    await flushPromises()
     expect(wrapper.find('button:nth-of-type(1)').attributes('disabled')).toBeUndefined()
     await wrapper.find('button:nth-of-type(1)').trigger('click')
     expect(verify).toHaveBeenCalledWith(
@@ -179,6 +224,7 @@ describe('LedgerVerdictPopover, sample scope', () => {
     expect(wrapper.find('.claim-structure').exists()).toBe(false)
     Object.assign(claimStub, { claimed_inchikey: GLUCOSE, claimed_name: 'D-glucose' })
     await wrapper.find('.evidence').setValue('reference_standard')
+    await flushPromises()
 
     const picker = wrapper.find('.claim-structure')
     expect(JSON.parse(picker.attributes('data-candidates'))).toEqual([
@@ -200,6 +246,7 @@ describe('LedgerVerdictPopover, sample scope', () => {
     claimStub.ready = false
     const wrapper = mountPopover({ row: LISTED, record: null, overlay: null })
     await wrapper.find('.evidence').setValue('msms')
+    await flushPromises()
     expect(wrapper.find('button:nth-of-type(1)').attributes('disabled')).toBeDefined()
     await wrapper.find('button:nth-of-type(1)').trigger('click')
     expect(verify).not.toHaveBeenCalled()
@@ -213,6 +260,7 @@ describe('LedgerVerdictPopover, sample scope', () => {
       claimed_name: 'D-glucose'
     }
     const wrapper = mountPopover({ row: LISTED, record, overlay: null })
+    await flushPromises()
     expect(wrapper.find('.claim-structure').attributes('data-initial')).toBe(GLUCOSE)
   })
 
@@ -220,6 +268,7 @@ describe('LedgerVerdictPopover, sample scope', () => {
     Object.assign(claimStub, { ready: false, problem: 'Not an InChIKey' })
     const wrapper = mountPopover({ row: LISTED, record: null, overlay: null })
     await wrapper.find('.evidence').setValue('pattern')
+    await flushPromises()
     expect(wrapper.find('button:nth-of-type(1)').attributes('data-tooltip')).toBe('Not an InChIKey')
   })
 
@@ -227,8 +276,28 @@ describe('LedgerVerdictPopover, sample scope', () => {
     Object.assign(claimStub, { claimed_inchikey: GLUCOSE, claimed_name: 'D-glucose' })
     const wrapper = mountPopover({ row: LISTED, record: null, overlay: null })
     await wrapper.find('.evidence').setValue('msms')
+    await flushPromises()
     await wrapper.find('button:nth-of-type(2)').trigger('click') // Reject
     expect(verify.mock.calls[0][0]).not.toHaveProperty('claimed_inchikey')
+  })
+
+  it('scopes a level-1 claim to its sample by its key, naming no window', async () => {
+    evidenceStub.line = 'instrument'
+    Object.assign(claimStub, { claimed_inchikey: GLUCOSE, claimed_name: 'D-glucose' })
+    const wrapper = mountPopover({ row: LISTED, record: null, overlay: null })
+    await wrapper.find('.evidence').setValue('reference_standard')
+    await flushPromises()
+    expect(wrapper.find('.claim-window').exists()).toBe(false)
+    await wrapper.find('button:nth-of-type(1)').trigger('click')
+    await flushPromises()
+    const sent = verify.mock.calls[0][0]
+    expect(sent).toMatchObject({
+      verdict: 'confirmed',
+      evidence_level: 'reference_standard',
+      independent_line: 'instrument',
+      claimed_inchikey: GLUCOSE
+    })
+    expect(sent).not.toHaveProperty('window_start_utc')
   })
 
   it('shows the batch-level verdict reaching the row as inherited, with the form still open', () => {

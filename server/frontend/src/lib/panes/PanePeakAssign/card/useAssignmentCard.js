@@ -15,7 +15,7 @@ import { persistenceHold, persistenceHoldNote } from '@/lib/batchPersistence'
 import { ROLE_BUCKETS, bucketRank, tierName } from '@/lib/tiers'
 import { isLevel, isOpenRival, levelMeta, unlistedRivalsLine } from '@/lib/levels'
 import { sourceLabel } from '@/lib/assignmentSources'
-import { EVIDENCE_LEVELS, VERDICT_META, claimCandidates } from '@/lib/verification'
+import { EVIDENCE_LEVELS, VERDICT_META, claimCandidates, claimStatement } from '@/lib/verification'
 import { useBatchPeakJump } from '@/lib/panes/PaneBrowserMatch/stores/batchPeakJump.js'
 import { useBatchChartSelection } from '@/lib/panes/PaneBrowserMatch/stores/batchChartSelection.js'
 import { useLedgerLensStore } from '@/lib/ledger/useLedgerLens.js'
@@ -259,7 +259,30 @@ export function useAssignmentCard({ showSearch }) {
     claimCandidates({ target: targetAs.value, identities: listedAs.value?.identities })
   )
   const claim = ref(null)
-  const canConfirm = computed(() => Boolean(evidenceLevel.value) && claim.value?.ready !== false)
+  // What the evidence showed (BaseClaimEvidence), which decides the level the
+  // confirmation states: a structure is asked for once that statement is made,
+  // or on a visual look, which states none and still may name one.
+  const shown = ref(null)
+  const statement = computed(() =>
+    claimStatement(evidenceLevel.value, shown.value?.evidence_detail, shown.value?.independent_line)
+  )
+  const asksStructure = computed(
+    () =>
+      Boolean(evidenceLevel.value) && (evidenceLevel.value === 'visual' || Boolean(statement.value))
+  )
+  const confirmProblem = computed(() => {
+    if (!evidenceLevel.value) return 'Pick an evidence level to confirm'
+    if (shown.value?.ready === false) return shown.value.problem || 'Say what the evidence showed'
+    if (asksStructure.value && claim.value?.ready === false)
+      return claim.value.problem || 'Name the structure this evidence identifies'
+    return ''
+  })
+  const canConfirm = computed(() => !confirmProblem.value)
+  // A rejection may say a reference standard disagreed: on a live confirmation
+  // the server records it as the refutation of that claim, and the row reads
+  // the engine's level again.
+  const standardDisagrees = ref(false)
+  const canRefute = computed(() => verification.value?.verdict === 'confirmed')
 
   // Show the verdict buttons when there is no verdict yet, or the user chose to
   // change it.
@@ -340,20 +363,25 @@ export function useAssignmentCard({ showSearch }) {
     submitting.value = true
     pendingVerdict.value = verdict
     try {
+      const named = confirm && asksStructure.value ? claim.value : null
+      const refuting = verdict === 'rejected' && canRefute.value && standardDisagrees.value
       await app.data.peakAssignment.verification.verify({
         peak_assignment_id: verifyTarget.value.peak_assignment_id,
         verdict,
-        evidence_level: confirm ? evidenceLevel.value : null,
+        evidence_level: confirm ? evidenceLevel.value : refuting ? 'reference_standard' : null,
         note: note.value?.trim() || null,
-        ...(confirm && claim.value?.claimed_inchikey
-          ? {
-              claimed_inchikey: claim.value.claimed_inchikey,
-              claimed_name: claim.value.claimed_name
-            }
+        ...(named?.claimed_inchikey ? { claimed_inchikey: named.claimed_inchikey } : {}),
+        ...(named?.claimed_name ? { claimed_name: named.claimed_name } : {}),
+        ...(confirm && shown.value?.evidence_detail
+          ? { evidence_detail: shown.value.evidence_detail }
+          : {}),
+        ...(confirm && shown.value?.independent_line
+          ? { independent_line: shown.value.independent_line }
           : {})
       })
       editing.value = false
       note.value = ''
+      standardDisagrees.value = false
       return true
     } catch (error) {
       // The http layer already toasts; only 403 changes the UI (hide the control).
@@ -385,6 +413,7 @@ export function useAssignmentCard({ showSearch }) {
       editing.value = false
       evidenceLevel.value = null
       note.value = ''
+      standardDisagrees.value = false
       // An open dialog judges the compound it was opened on, and no other.
       verdictDialog.value?.hide()
     }
@@ -1810,6 +1839,11 @@ export function useAssignmentCard({ showSearch }) {
     denied,
     claimOptions,
     claim,
+    shown,
+    asksStructure,
+    confirmProblem,
+    standardDisagrees,
+    canRefute,
     canConfirm,
     showVerifyForm,
     startEdit,

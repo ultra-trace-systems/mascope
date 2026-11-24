@@ -1,10 +1,11 @@
 <script setup>
 import Button from 'primevue/button'
+import Checkbox from 'primevue/checkbox'
 import InputText from 'primevue/inputtext'
 import Popover from 'primevue/popover'
 import RadioButton from 'primevue/radiobutton'
 
-import { BaseClaimStructure, BaseVerdictBadge } from '@/lib/base'
+import { BaseClaimEvidence, BaseClaimStructure, BaseVerdictBadge } from '@/lib/base'
 import { EVIDENCE_LEVELS, VERDICT_META } from '@/lib/verification'
 import CardFindFormulas from './CardFindFormulas.vue'
 import { useCard } from './useCard.js'
@@ -38,6 +39,7 @@ const {
   pendingVerdict,
   openVerdict,
   verdictDialog,
+  dialogVerdict,
   dialogMeta,
   dialogId,
   confirming,
@@ -46,6 +48,11 @@ const {
   verifyTarget,
   claim,
   claimOptions,
+  shown,
+  asksStructure,
+  confirmProblem,
+  standardDisagrees,
+  canRefute,
   note,
   submitDialog,
   canConfirm
@@ -180,14 +187,35 @@ const {
               <label :for="`${dialogId}-${level.value}`">{{ level.label }}</label>
             </div>
           </div>
-          <BaseClaimStructure
+          <BaseClaimEvidence
             v-if="confirming && evidenceLevel"
+            :key="`${verifyTarget?.peak_assignment_id}-${evidenceLevel}`"
+            v-model="shown"
+            :evidence="evidenceLevel"
+            :initial="verification"
+          />
+          <BaseClaimStructure
+            v-if="confirming && asksStructure"
             :key="verifyTarget?.peak_assignment_id"
             v-model="claim"
             :candidates="claimOptions"
             :evidence="evidenceLevel"
+            :detail="shown?.evidence_detail ?? null"
+            :line="shown?.independent_line ?? null"
             :initial="verification"
           />
+          <div v-if="dialogVerdict === 'rejected' && canRefute" class="dialog-refute">
+            <Checkbox
+              v-model="standardDisagrees"
+              binary
+              :inputId="`${dialogId}-refute`"
+              data-testid="verdict-refute"
+            />
+            <label :for="`${dialogId}-refute`"
+              >A reference standard disagrees: it refutes the confirmation, and the row reads the
+              engine's level again</label
+            >
+          </div>
           <InputText
             v-model="note"
             placeholder="Note (optional)"
@@ -211,6 +239,7 @@ const {
               size="small"
               :severity="dialogMeta.severity"
               data-testid="verdict-submit"
+              v-tooltip.top="confirming ? confirmProblem : ''"
               :disabled="submitting || (confirming && !canConfirm)"
               :loading="submitting"
               @click="submitDialog"
@@ -315,6 +344,15 @@ const {
   gap: 0.5rem;
 }
 .dialog-level label {
+  cursor: pointer;
+}
+.dialog-refute {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  font-size: var(--card-text-sm);
+}
+.dialog-refute label {
   cursor: pointer;
 }
 .dialog-actions {

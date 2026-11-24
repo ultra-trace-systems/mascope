@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import Tag from 'primevue/tag'
 
 import { useApp } from '@/stores'
-import { VERDICT_META, evidenceLabel, levelLabel } from '@/lib/verification'
+import { VERDICT_META, claimOf, evidenceLabel, levelLabel, windowText } from '@/lib/verification'
 
 /**
  * A verification verdict, as a tag or - compact - as a bare icon. With no
@@ -18,9 +18,15 @@ import { VERDICT_META, evidenceLabel, levelLabel } from '@/lib/verification'
  * that disagrees with the owned one shown; the tooltip gets a line for it.
  *
  * A confirmation that names a structure (an identification claim) shows the
- * level it states in place of the evidence it follows from, and the
- * structure's name; the tooltip has the evidence and the InChIKey. A verdict
- * that states no level shows none: the row's level is the engine's.
+ * level it states in place of the evidence it follows from, the number and the
+ * scale's letter (`Level 2b`; a claim made under version 1 of the mapping has
+ * no letter), and the structure's name, or at 3b the class's; the tooltip has
+ * the evidence, the InChIKey, what earned the level and what would lift it,
+ * and a level-1 batch claim's window. A verdict that states no level shows
+ * none: the row's level is the engine's. A batch claim reaching a sample its
+ * window leaves out comes with no structure and no level (`outside_window`),
+ * and the tooltip says why. A rejection on a reference standard that refuted a confirmation
+ * says which claim it refuted.
  */
 const props = defineProps({
   record: {
@@ -43,19 +49,31 @@ const props = defineProps({
 
 const app = useApp()
 const meta = computed(() => (props.record ? VERDICT_META[props.record.verdict] : null))
+// The confirmation a rejection on a reference standard refuted, if any.
+const refuted = computed(() => {
+  const refutes = props.record?.context?.refutes
+  return refutes && typeof refutes === 'object' ? refutes : null
+})
 const label = computed(() => {
   if (!meta.value) return ''
   const ev = evidenceLabel(props.record.evidence_level)
   // A level stands for the evidence it follows from, which the tooltip names.
-  const level = levelLabel(props.record.level)
+  const level = levelLabel(props.record.level, props.record.level_letter)
   const parts = [meta.value.label]
   if (level) parts.push(level)
   else if (props.record.verdict === 'confirmed' && ev) parts.push(ev)
-  const structure = shortStructure(props.record)
+  else if (refuted.value) {
+    const was = levelLabel(refuted.value.level, refuted.value.level_letter)
+    parts.push(was ? `refutes ${was}` : 'refutes')
+  }
+  const structure = shortStructure(refuted.value ?? props.record)
   if (structure) parts.push(structure)
   if (props.inherited) parts.push('batch')
   return parts.join(' · ')
 })
+// A class claim (3b) names a class, by name alone.
+const isClass = (record) =>
+  record?.level === 3 && record?.level_letter === 'b' && !record?.claimed_inchikey
 // The structure a claim names, short enough for a pill: a long name cut, and a
 // bare InChIKey by its first block, the skeleton's. The tooltip has both whole.
 const NAME_CHARS = 24
@@ -88,9 +106,32 @@ const tooltip = computed(() => {
     parts.push(
       `Structure: ${record.claimed_name ? `${record.claimed_name} (${record.claimed_inchikey})` : record.claimed_inchikey}`
     )
+  } else if (isClass(record) && record.claimed_name) {
+    parts.push(`Class: ${record.claimed_name}`)
   }
+  const claim = claimOf(record)
   if (Number.isInteger(record.level)) {
-    parts.push(`${levelLabel(record.level)}, stated when the verdict was recorded`)
+    parts.push(
+      `${levelLabel(record.level, record.level_letter)}, stated when the verdict was recorded`
+    )
+    if (claim?.evidence) parts.push(`Why: ${claim.evidence}`)
+    if (claim?.lift) parts.push(`Would lift it: ${claim.lift}`)
+  }
+  const span = windowText(record)
+  if (span) parts.push(`Level 1 for the samples acquired ${span}`)
+  if (record.outside_window) {
+    parts.push(
+      "This sample was acquired outside the claim's window: it keeps the verdict on the formula, names no structure and reads the engine's level"
+    )
+  }
+  if (refuted.value) {
+    const was = levelLabel(refuted.value.level, refuted.value.level_letter)
+    const what = refuted.value.claimed_name ?? refuted.value.claimed_inchikey
+    parts.push(
+      `A reference standard disagreed: refutes the confirmation${was ? ` at ${was}` : ''}${
+        what ? `, ${what}` : ''
+      }. The row reads the engine's level again`
+    )
   }
   if (record.note) parts.push(`Note: ${record.note}`)
   if (props.inherited) {

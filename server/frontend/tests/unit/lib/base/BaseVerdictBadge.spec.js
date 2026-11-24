@@ -129,6 +129,98 @@ describe('BaseVerdictBadge', () => {
     expect(tag.attributes('data-tooltip')).not.toContain('Level')
   })
 
+  it('shows the letter beside the level, with what earned it and what would lift it', () => {
+    const claim = {
+      ...RECORD,
+      evidence_level: 'reference_standard',
+      claimed_inchikey: 'WQZGKKKJIJFFOK-GASJEMHNSA-N',
+      claimed_name: 'D-glucose',
+      level: 2,
+      level_letter: 'b',
+      context: {
+        level_mapping_version: 2,
+        claim: {
+          evidence_detail: null,
+          independent_line: null,
+          evidence: 'an authentic standard on this instrument; no independent line',
+          lift: 'an independent line'
+        }
+      }
+    }
+    const tag = mountBadge({ record: claim }).find('.tag')
+    expect(tag.text()).toBe('Confirmed · Level 2b · D-glucose')
+    const tip = tag.attributes('data-tooltip')
+    expect(tip).toContain('Level 2b, stated when the verdict was recorded')
+    expect(tip).toContain('Why: an authentic standard on this instrument; no independent line')
+    expect(tip).toContain('Would lift it: an independent line')
+  })
+
+  it('names a class claim by its class', () => {
+    const claim = {
+      ...RECORD,
+      claimed_inchikey: null,
+      claimed_name: 'a carboxylic acid',
+      level: 3,
+      level_letter: 'b'
+    }
+    const tag = mountBadge({ record: claim }).find('.tag')
+    expect(tag.text()).toBe('Confirmed · Level 3b · a carboxylic acid')
+    expect(tag.attributes('data-tooltip')).toContain('Class: a carboxylic acid')
+    expect(tag.attributes('data-tooltip')).not.toContain('Structure:')
+  })
+
+  it("says a level-1 batch claim's window, and why a sample outside it shows no level", () => {
+    const claim = {
+      ...RECORD,
+      evidence_level: 'reference_standard',
+      claimed_inchikey: 'WQZGKKKJIJFFOK-GASJEMHNSA-N',
+      level: 1,
+      window_start_utc: '2026-11-01T08:00:00Z',
+      window_end_utc: '2026-11-08T08:00:00Z'
+    }
+    const inside = mountBadge({ record: claim, inherited: true }).find('.tag')
+    expect(inside.text()).toContain('Level 1')
+    expect(inside.attributes('data-tooltip')).toMatch(
+      /Level 1 for the samples acquired from .+ to /
+    )
+
+    // As the server serves it outside the window: no structure and no level.
+    const outside = mountBadge({
+      record: {
+        ...claim,
+        claimed_inchikey: null,
+        claimed_name: null,
+        level: null,
+        outside_window: true
+      },
+      inherited: true
+    }).find('.tag')
+    expect(outside.text()).not.toContain('Level')
+    expect(outside.text()).not.toContain('WQZGKKKJIJFFOK')
+    expect(outside.attributes('data-tooltip')).not.toContain('Structure:')
+    expect(outside.attributes('data-tooltip')).toContain(
+      "acquired outside the claim's window: it keeps the verdict on the formula, names no structure and reads the engine's level"
+    )
+  })
+
+  it('says which claim a rejection on a standard refuted', () => {
+    const rejection = {
+      ...RECORD,
+      verdict: 'rejected',
+      evidence_level: 'reference_standard',
+      level: null,
+      context: {
+        level_mapping_version: 2,
+        refutes: { level: 1, level_letter: null, claimed_name: 'D-glucose' }
+      }
+    }
+    const tag = mountBadge({ record: rejection }).find('.tag')
+    expect(tag.text()).toBe('Rejected · refutes Level 1 · D-glucose')
+    expect(tag.attributes('data-tooltip')).toContain(
+      "A reference standard disagreed: refutes the confirmation at Level 1, D-glucose. The row reads the engine's level again"
+    )
+  })
+
   it('renders nothing without a record', () => {
     const wrapper = mountBadge({ record: null, compact: true })
     expect(wrapper.find('.verdict-icon').exists()).toBe(false)
