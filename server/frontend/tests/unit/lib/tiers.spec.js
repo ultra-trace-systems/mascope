@@ -6,6 +6,7 @@ import {
   TIERS,
   TIER_META,
   TIER_RANK,
+  bucketName,
   countTiers,
   engineBucketOf,
   isTier,
@@ -193,5 +194,16 @@ describe('engineBucketOf', () => {
 
   it('does not take an unknown engine tier for a tier', () => {
     expect(engineBucketOf('constructor', 'assigned', null)).toBe(ENGINE_UNSTATED)
+  })
+})
+
+describe('bucketName', () => {
+  it('names the role where one accounts for the row, else the tier in words', () => {
+    expect(bucketName('unassigned', 'reagent')).toBe('reagent')
+    expect(bucketName('unassigned', 'artifact')).toBe('artifact')
+    expect(bucketName('below_assignability', null)).toBe('below assignability')
+    // A role that is not a bucket of its own leaves the tier to name the row.
+    expect(bucketName('assigned', 'iso_child')).toBe('assigned')
+    expect(bucketName('nonsense', null)).toBe('unassigned')
   })
 })

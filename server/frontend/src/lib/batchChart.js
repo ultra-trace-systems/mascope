@@ -20,14 +20,21 @@ export const MAX_SELECTED_BATCH_PEAKS = 300
 export const INSTRUMENT_TYPE_LABELS = { orbi: 'Orbitrap', tof: 'TOF' }
 
 /**
- * What the batch chart calls a batch peak: its consensus formula, or its m/z
- * when the ledger has no formula for it. The chart's legend and the filter chip
- * for the ledger's selection both read it, so the two name a species alike. A
- * probable blend (`blend`, see lib/batchBlend.js) is named by both its
- * formulas, the consensus first: the trace is the two compounds' sum.
+ * What the batch chart calls a batch peak: its consensus formula, else the ion
+ * of the role that accounts for it, else its m/z. The chart's legend and the
+ * filter chip for the ledger's selection both read it, so the two name a
+ * species alike. A reagent or artifact anchor (`consensus_role`) has no
+ * consensus formula, and is named by its ion (`consensus_ion_formula`), as the
+ * Batch peaks ledger's formula column names it. A probable blend (`blend`, see
+ * lib/batchBlend.js) is named by both its formulas, the consensus first: the
+ * trace is the two compounds' sum.
  */
 export function batchPeakLabel(record) {
   const blend = record.blend?.formulas
   if (Array.isArray(blend) && blend.length === 2) return `${blend[0]} + ${blend[1]}`
-  return record.consensus_formula || `m/z ${Number(record.mz).toFixed(4)}`
+  return (
+    record.consensus_formula ||
+    (record.consensus_role ? record.consensus_ion_formula : null) ||
+    `m/z ${Number(record.mz).toFixed(4)}`
+  )
 }

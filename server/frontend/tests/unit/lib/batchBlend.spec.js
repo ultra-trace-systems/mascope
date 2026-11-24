@@ -102,4 +102,16 @@ describe('batchPeakLabel', () => {
     )
     expect(batchPeakLabel({ consensus_formula: null, mz: 177.07706 })).toBe('m/z 177.0771')
   })
+
+  it('names a reagent or artifact anchor by its ion, as the ledger does', () => {
+    const anchor = { consensus_formula: null, mz: 78.9183, consensus_ion_formula: 'Br-' }
+    expect(batchPeakLabel({ ...anchor, consensus_role: 'reagent' })).toBe('Br-')
+    expect(batchPeakLabel({ ...anchor, consensus_role: 'artifact' })).toBe('Br-')
+    // The ion names the peak only where a role accounts for it.
+    expect(batchPeakLabel({ ...anchor, consensus_role: null })).toBe('m/z 78.9183')
+    // A consensus formula still comes first.
+    expect(
+      batchPeakLabel({ ...anchor, consensus_formula: 'CH3Br', consensus_role: 'reagent' })
+    ).toBe('CH3Br')
+  })
 })

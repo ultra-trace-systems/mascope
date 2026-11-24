@@ -204,6 +204,18 @@ export const tierMeta = (tier) => TIER_META[tierBucket(tier)]
 export const tierName = (tier) => tierMeta(tier).name
 
 /**
+ * What a hover names a row as in words: its role where one accounts for it
+ * ('reagent', 'artifact'), else its tier's full name. The same choice
+ * `bucketOf` makes for the chip and the tier filter, so a hover never calls
+ * "unassigned" a peak whose chip says what made it.
+ *
+ * @param {string} tier the tier as stored on the record
+ * @param {string|null} role the role, or null
+ * @returns {string} e.g. 'reagent' or 'below assignability'
+ */
+export const bucketName = (tier, role) => (ROLE_BUCKETS.includes(role) ? role : tierName(tier))
+
+/**
  * Histogram of tiers over `records`, one bucket per tier and always all of
  * them.
  *

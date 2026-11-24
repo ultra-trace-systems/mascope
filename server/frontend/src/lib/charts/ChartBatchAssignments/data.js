@@ -6,7 +6,7 @@ import { beautifySnakeCase } from '@/lib/utils'
 import { useApp } from '@/stores'
 import { batchPeakLabel } from '@/lib/batchChart'
 import { blendOf, blendSummary } from '@/lib/batchBlend'
-import { tierName } from '@/lib/tiers'
+import { bucketName } from '@/lib/tiers'
 import { MAX_SELECTED_BATCH_PEAKS } from '@/stores/data/modules/batchPeak/ledger'
 import { glasbey } from '../colors.js'
 
@@ -45,6 +45,7 @@ export const useChartAssignmentsData = defineStore('chart.batch.assignments', ()
   /**
    * Per-batch-peak series records from the API.
    * Shape: { batch_peak_id, mz, consensus_formula, consensus_tier, n_present,
+   *   consensus_role, consensus_ion_formula,
    *   support_fraction, is_ambiguous,
    *   peak_series: { sample_item_ids: [], sample_peak_ids: [], intensities: [],
    *     tiers: [] } }
@@ -346,7 +347,7 @@ export const useChartAssignmentsData = defineStore('chart.batch.assignments', ()
           <br>
           <b>${traceName}</b>
           <br>
-          Tier: ${tierName(record.consensus_tier)}${record.n_present ? ` · ${record.n_present} samples` : ''}
+          Tier: ${bucketName(record.consensus_tier, record.consensus_role)}${record.n_present ? ` · ${record.n_present} samples` : ''}
           <br>${blendLine(record)}
           <b>%{text}</b>
           <br>

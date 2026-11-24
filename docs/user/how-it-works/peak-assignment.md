@@ -3203,7 +3203,9 @@ as a compound's isotopologues do. A few samples reading the ion as a neutral - a
 file the claim missed, or a sample assigned by an older engine - do not outvote the rest,
 and a tie stays with the formula. The untargeted search leaves these peaks alone, as a
 run does. A batch ledger folded before the ledger learned this reads its reagent peaks
-as unassigned until its samples are folded again (*Re-assign from scratch*).
+as unassigned until its samples are folded again (*Re-assign from scratch*). The batch
+chart names such a peak alike: its trace by the ion, its hover by the chip's word
+(*reagent*, *artifact*) where the tier would say unassigned.
 
 A batch that holds files of both instrument types keeps a ledger of each. An
 Orbitrap's intensities are peak heights and a TOF's are peak areas, so the two

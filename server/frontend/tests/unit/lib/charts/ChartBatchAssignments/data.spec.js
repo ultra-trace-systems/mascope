@@ -139,6 +139,32 @@ describe('chart.batch.assignments data store (selection-driven)', () => {
     expect(peak.hovertemplate).not.toContain('below_assignability')
   })
 
+  it('names a reagent or artifact anchor by its role and its ion, as the ledger does', async () => {
+    const series = { sample_item_ids: ['s1'], intensities: [5], tiers: ['unassigned'] }
+    const anchor = {
+      mz: 78.9183,
+      consensus_formula: null,
+      consensus_tier: 'unassigned',
+      consensus_ion_formula: 'Br-'
+    }
+    api.http.post.mockResolvedValue([
+      peakRecord('bp1', series, { ...anchor, consensus_role: 'reagent' }),
+      peakRecord('bp2', series, { ...anchor, consensus_role: 'artifact' }),
+      peakRecord('bp3', series, { ...anchor, consensus_role: null })
+    ])
+    mockApp.data.batchPeak.selectedIds = ['bp1', 'bp2', 'bp3']
+    await flushAsync()
+
+    const [reagent, artifact, unclaimed] = store.traces
+    expect(reagent.name).toBe('Br- · 78.9183')
+    expect(reagent.hovertemplate).toContain('Tier: reagent · 1 samples')
+    expect(reagent.hovertemplate).not.toContain('unassigned')
+    expect(artifact.hovertemplate).toContain('Tier: artifact · 1 samples')
+    // No role accounts for it: the tier names it, and its m/z the trace.
+    expect(unclaimed.name).toBe('m/z 78.9183 · 78.9183')
+    expect(unclaimed.hovertemplate).toContain('Tier: unassigned · 1 samples')
+  })
+
   it('names a probable blend by both formulas and says so on hover', async () => {
     const series = { sample_item_ids: ['s1'], intensities: [5], tiers: ['assigned'] }
     api.http.post.mockResolvedValue([
