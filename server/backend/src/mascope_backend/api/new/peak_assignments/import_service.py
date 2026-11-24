@@ -427,8 +427,9 @@ def _row_values(row, run_id: str, sample_item_id: str, bands: dict) -> dict:
     Three fields are handled by three different rules, and stating them together
     is what keeps a later reader from "fixing" the inconsistency: ``provenance``
     loses the keys the server presents as its own judgement, ``tier`` is the
-    server's (supplied and checked, or derived here), and ``engine_tier`` is
-    taken verbatim - a value this server neither owns nor derives, only records.
+    server's (supplied and checked, or derived here), and ``engine_tier`` and
+    ``engine_level`` are taken verbatim - values this server neither owns nor
+    derives, only records.
 
     :param row: The validated payload row.
     :param run_id: The run being assembled.
@@ -484,6 +485,7 @@ def _row_values(row, run_id: str, sample_item_id: str, bands: dict) -> dict:
         "abundance_error": row.abundance_error,
         "tier": _resolved_tier(row, bands),
         "engine_tier": row.engine_tier,
+        "engine_level": row.engine_level,
         "target_compound_id": row.target_compound_id,
         "target_ion_id": row.target_ion_id,
         "owner_peak_assignment_id": None,

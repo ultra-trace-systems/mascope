@@ -82,6 +82,7 @@ from mascope_backend.api.new.peak_assignments.fold_view import (
 from mascope_backend.api.new.peak_assignments.identification_level import (
     IDENTIFICATION_LEVEL,
     inherited_level,
+    is_level,
 )
 from mascope_backend.api.new.peak_assignments.model_readers import (
     provenance_with_calibration,
@@ -183,6 +184,22 @@ def _clean(mapping: dict) -> dict:
     return {key: value for key, value in mapping.items() if value is not None}
 
 
+def _engine_verdict(entry: dict) -> tuple[str | None, str | None]:
+    """The producing engine's tier and level an archived winner carries.
+
+    Unrecognised values are dropped, as a tier restore drops them: a snapshot
+    is client-shaped data once it has been through an export, and a bad value
+    must not reach a column the filters read. An entry with neither, an
+    engine's own alternative, gives two Nones.
+
+    :param entry: An alternatives entry, as :func:`_previous_winner` wrote it.
+    :return: ``(engine_tier, engine_level)``.
+    """
+    tier = normalize_tier(entry.get("engine_tier"))
+    level = entry.get("engine_level")
+    return (tier if tier in TIERS else None, level if is_level(level) else None)
+
+
 def _previous_winner(assignment: PeakAssignment) -> dict | None:
     """Snapshot the row's current winner in the shape of an alternative.
 
@@ -230,6 +247,8 @@ def _previous_winner(assignment: PeakAssignment) -> dict | None:
             # disagreeing about a formula that engine never saw - and it would
             # do so on exactly the rows someone looked at hardest.
             "engine_tier": assignment.engine_tier,
+            # The engine's level is the same kind of verdict and goes with it.
+            "engine_level": assignment.engine_level,
             "source": assignment.source,
             # The engine's own reading of this winner, kept with it rather than
             # on the curated row: it describes an arbitration that is no longer
@@ -663,6 +682,7 @@ def _demote(
     # Archived with the formula it judged (see `_previous_winner`); a verdict
     # about a displaced winner is not a verdict about an unassigned peak.
     child.engine_tier = None
+    child.engine_level = None
     # An unassigned peak commits no formula, so it states no level; its old
     # one is in the archived provenance.
     child.level = None
@@ -772,12 +792,8 @@ async def _restore(
     )
     child.role = ROLE_ISO_CHILD
     child.tier = tier
-    # Restored with the winner it judged. Unrecognised values are dropped the
-    # way the `tier` restore above drops them: a snapshot is client-shaped data
-    # once it has been through an export, and a bad tier must not reach a column
-    # every filter and roll-up reads.
-    restored_engine_tier = normalize_tier(previous.get("engine_tier"))
-    child.engine_tier = restored_engine_tier if restored_engine_tier in TIERS else None
+    # The engine's tier and level, restored with the winner they judged.
+    child.engine_tier, child.engine_level = _engine_verdict(previous)
     child.source = source if source in _ENGINE_SOURCES else None
     child.assigned_formula = state.get("assigned_formula")
     child.ion_formula = state.get("ion_formula")
@@ -1153,14 +1169,14 @@ async def curate_assignment(
                 assignment, body.alternative_index, body.expected_formula
             )
             # Read before `_validated_candidate` narrows `chosen` to the fields
-            # that may reach a column - `engine_tier` is not one of them, so it
+            # that may reach a column - the engine's tier and level are not, so they
             # would be gone by then. Only an entry :func:`_previous_winner`
             # archived carries one, which is exactly the entry that should put
             # it back: a verdict the engine formed about that winner, promoted
             # back with the winner it was about. An engine's own close
             # alternative carries none, and rightly - the engine tiered its
             # winner, not the runner-up.
-            promoted_engine_tier = normalize_tier(chosen.get("engine_tier"))
+            promoted_verdict = _engine_verdict(chosen)
             scored_by = SCORED_BY_ALTERNATIVE
             # The promoted entry leaves the list; the displaced winner takes a
             # place at its head, so the row's candidate set is conserved.
@@ -1182,7 +1198,7 @@ async def curate_assignment(
                     "abundance_error": body.abundance_error,
                 }
             )
-            promoted_engine_tier = None
+            promoted_verdict = (None, None)
             scored_by = SCORED_BY_SEARCH
             remaining = list(assignment.alternatives or [])
 
@@ -1358,9 +1374,8 @@ async def curate_assignment(
         #   `_previous_winner` archived it with the winner, which is where the
         #   promote above reads it back from.
         if not same_compound:
-            assignment.engine_tier = (
-                promoted_engine_tier if promoted_engine_tier in TIERS else None
-            )
+            # The engine's level goes with its tier, by the same three cases.
+            assignment.engine_tier, assignment.engine_level = promoted_verdict
         # The curated row stands for its formula on its own: the run arbitrated
         # a family for the composition it replaced, not for this one, so there
         # is no owner here that was ever competed for.

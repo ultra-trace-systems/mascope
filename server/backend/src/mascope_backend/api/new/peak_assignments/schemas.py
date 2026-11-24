@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Annotated, Literal
 
 from pydantic import (
+    AfterValidator,
     AliasChoices,
     BaseModel,
     BeforeValidator,
@@ -17,9 +18,9 @@ from mascope_backend.api.new.peak_assignments.claim_schemas import (
     ClaimFields,
     as_utc,
     refuse_bad_claim,
+    refuse_engine_level_one,
 )
 from mascope_backend.api.new.peak_assignments.claims import (
-    REVIEW_LEVEL,
     statement,
     window_problem,
 )
@@ -75,6 +76,8 @@ AssignmentSource = Literal["database", "untargeted", "manual", "reagent", "artif
 IdentificationLevel = Literal[
     "1", "2a", "2b", "3a", "3b", "3c", "3d", "4a", "4b", "5a", "5b"
 ]
+# An import's engine_level: the scale without level 1, a person's claim.
+EngineLevel = Annotated[IdentificationLevel, AfterValidator(refuse_engine_level_one)]
 
 # A run holds one row per detected peak, so an unbounded read serializes tens
 # of megabytes through Pydantic on the event loop. Clients page instead; the
@@ -193,6 +196,11 @@ class PeakAssignmentRecord(BaseModel):
     #: engines disagree about how much confidence the evidence supports - which
     #: is what makes an imported run worth reading beside an in-app one.
     engine_tier: str | None = None
+    #: The identification level the producing engine itself stated, in the
+    #: shared scale, when it said so: an imported run's, beside its
+    #: ``engine_tier``. Absent on in-app rows, whose level is ``level``, and on
+    #: a row derived from the batch ledger.
+    engine_level: str | None = None
     target_compound_id: str | None = None
     target_ion_id: str | None = None
     owner_peak_assignment_id: str | None = None
@@ -914,6 +922,17 @@ class ImportAssignmentRow(BaseModel):
             "not agreement."
         ),
     )
+    engine_level: EngineLevel | None = Field(
+        None,
+        description=(
+            "Optional: the identification level THIS ENGINE stated for the "
+            "row, in the scale both engines share (`5a`, `5b`, `4a`, `4b`, "
+            "`3a` to `3d`, `2a`, `2b`); anything else is refused, `1` "
+            "included: level 1 is a person's claim in review. Stored as "
+            "supplied beside `engine_tier` and read by no roll-up; the row's "
+            "own `level` stays this server's and an import never sets it."
+        ),
+    )
     target_compound_id: str | None = Field(
         None,
         max_length=16,
@@ -1527,7 +1546,7 @@ class BatchImportRow(BaseModel):
             "`engine_tier` for a reader. Free text; nothing reads it."
         ),
     )
-    engine_level: IdentificationLevel | None = Field(
+    engine_level: EngineLevel | None = Field(
         None,
         description=(
             "Optional: the identification level THIS ENGINE stated for the "
@@ -1558,18 +1577,6 @@ class BatchImportRow(BaseModel):
             "shown as the engine wrote it."
         ),
     )
-
-    @field_validator("engine_level")
-    @classmethod
-    def _no_engine_states_one(cls, value):
-        # Level 1 is a confirmed structure, which a person assigns in review
-        # (an identification claim, claims.py) and no engine states.
-        if value == REVIEW_LEVEL:
-            raise ValueError(
-                f"engine_level '{value}' is refused: level 1 is a confirmed "
-                "structure, assigned in review by a person, never by an engine"
-            )
-        return value
 
 
 class ImportBatchRunBody(BaseModel):

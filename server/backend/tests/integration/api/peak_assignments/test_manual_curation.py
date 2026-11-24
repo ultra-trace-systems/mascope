@@ -145,6 +145,9 @@ async def curated_run(async_session_factory, pa_test_data):
                 # `engine_tier` exists to record, on the row every curation test
                 # here edits.
                 engine_tier="candidate",
+                # ...and stated its own identification level, which follows the
+                # formula through a hand edit as the engine's tier does.
+                engine_level="4b",
                 alternatives=[_alternative(mechanism_id)],
                 provenance={
                     "plausibility": 0.9,
@@ -174,6 +177,7 @@ async def curated_run(async_session_factory, pa_test_data):
                 fit_score=0.88,
                 tier="assigned",
                 engine_tier="below_assignability",
+                engine_level="5a",
                 owner_peak_assignment_id=m0_id,
                 # An isotopologue carries provenance of its own, and no column
                 # holds it - so a restore that only put the columns back would
@@ -2045,10 +2049,12 @@ class TestTheEnginesOwnTierSurvivesExactlyItsOwnFormula:
 
         row = await _row(async_session_factory, curated_run["m0_id"])
         assert row.engine_tier is None
+        assert row.engine_level is None
         # Not lost - archived on the winner it was a verdict about, which is
         # where the undo below reads it back from.
         assert row.alternatives[0]["assigned_formula"] == "C6H12O6"
         assert row.alternatives[0]["engine_tier"] == "candidate"
+        assert row.alternatives[0]["engine_level"] == "4b"
 
     @pytest.mark.asyncio
     async def test_the_undo_puts_it_back(
@@ -2080,6 +2086,7 @@ class TestTheEnginesOwnTierSurvivesExactlyItsOwnFormula:
         row = await _row(async_session_factory, curated_run["m0_id"])
         assert row.assigned_formula == "C6H12O6"
         assert row.engine_tier == "candidate"
+        assert row.engine_level == "4b"
 
     @pytest.mark.asyncio
     async def test_re_committing_the_same_composition_leaves_it_standing(
@@ -2105,6 +2112,7 @@ class TestTheEnginesOwnTierSurvivesExactlyItsOwnFormula:
         row = await _row(async_session_factory, curated_run["m0_id"])
         assert row.assigned_formula == "C6H12O6"
         assert row.engine_tier == "candidate"
+        assert row.engine_level == "4b"
 
     @pytest.mark.asyncio
     async def test_an_engine_alternative_promoted_carries_no_verdict(
@@ -2125,6 +2133,7 @@ class TestTheEnginesOwnTierSurvivesExactlyItsOwnFormula:
         row = await _row(async_session_factory, curated_run["m0_id"])
         assert row.assigned_formula != "C6H12O6"
         assert row.engine_tier is None
+        assert row.engine_level is None
 
     @pytest.mark.asyncio
     async def test_a_demoted_isotopologue_loses_it_and_gets_it_back(
@@ -2142,6 +2151,7 @@ class TestTheEnginesOwnTierSurvivesExactlyItsOwnFormula:
         )
         demoted = await _row(async_session_factory, curated_run["child_id"])
         assert demoted.engine_tier is None
+        assert demoted.engine_level is None
 
         await editor_client.patch(
             _url(curated_run, curated_run["m0_id"]),
@@ -2155,6 +2165,7 @@ class TestTheEnginesOwnTierSurvivesExactlyItsOwnFormula:
         restored = await _row(async_session_factory, curated_run["child_id"])
         assert restored.role == "iso_child"
         assert restored.engine_tier == "below_assignability"
+        assert restored.engine_level == "5a"
 
 
 # ---------------------------------------------------------------------------
