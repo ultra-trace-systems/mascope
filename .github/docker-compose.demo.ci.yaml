@@ -28,7 +28,9 @@
 # sample ingested on this stack is also assigned as it arrives, as on a
 # deployment that has opted in. The frontend reads `peak_assignment` under
 # [meta] from its own runtime, not this variable, so the UI the e2e specs
-# drive is the demo's, without the assignment views.
+# drive is the demo's, without the assignment views. The e2e job runs the
+# specs of those views a second time with the frontend recreated under
+# .github/docker-compose.demo.assignment.yaml, which switches them on.
 # Every workflow that starts the stack with this file gets the switch.
 #
 # Not for end users: docker-compose.demo.yaml on its own is the demo, and its

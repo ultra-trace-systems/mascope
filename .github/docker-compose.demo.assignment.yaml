@@ -1,0 +1,31 @@
+# CI-only override, laid over docker-compose.demo.yaml and
+# .github/docker-compose.demo.ci.yaml: the frontend with the assignment views
+# switched on.
+#
+#   MASCOPE_E2E_FRONTEND_RUNTIME=$(uv run python .github/scripts/frontend_runtime.py meta.peak_assignment=true) \
+#   docker compose -f docker-compose.demo.yaml -f .github/docker-compose.demo.ci.yaml \
+#     -f .github/docker-compose.demo.assignment.yaml up -d --no-deps --force-recreate frontend
+#
+# The CI override switches peak assignment on in the backend and the file
+# converter only, so the UI the e2e suite drives is the demo's, without the
+# assignment views, as customers run it until the switch. Two specs need the
+# views (tests/e2e/inspector-card.spec.js and batch-assign.spec.js), and skip
+# without them. The e2e job runs them a second time, after the whole suite:
+# it recreates the frontend container alone with this file added, and the
+# rest of the stack, its data included, stays as the first run left it.
+#
+# The frontend reads the switch, `peak_assignment` under [meta], from the
+# runtime its container publishes at start: server/frontend/docker-entrypoint.sh
+# writes MASCOPE_RUNTIME, when it is set, as /runtime-config.js, which wins
+# over the copy baked into the bundle. The value has to be a whole runtime,
+# every [meta] key the app reads, so the step does not write it by hand: it
+# takes the one the image was built with from the CLI's own build code
+# (.github/scripts/frontend_runtime.py, which says how) and sets that one key.
+# Unset, the variable stops compose with an error rather than publish nothing.
+#
+# Nothing else starts with this file: the six workflows that start the stack
+# with the CI override get what they got before.
+services:
+  frontend:
+    environment:
+      MASCOPE_RUNTIME: ${MASCOPE_E2E_FRONTEND_RUNTIME:?the runtime the frontend publishes, from .github/scripts/frontend_runtime.py}
