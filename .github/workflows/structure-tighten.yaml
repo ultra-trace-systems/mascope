@@ -53,14 +53,24 @@ jobs:
             exit 0
           fi
           git diff -- tooling/structure_baseline.json
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git switch -c "$BRANCH"
-          git commit -q -m "chore(structure): tighten the baseline to develop's readings" \
-            -- tooling/structure_baseline.json
-          if ! git push --force origin "$BRANCH"; then
-            echo "::warning::could not push $BRANCH; run 'structure.py tighten' by hand (diff above)"
-            exit 0
+          # A push made with this token starts no checks, and it drops the
+          # checks a person's reopen started. So leave the branch alone while
+          # it holds this baseline: a branch behind develop is fine, the merge
+          # queue tests it on the current develop. The checkout is shallow,
+          # so fetch the branch by name; when it is missing, it differs.
+          if git fetch -q --depth=1 origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" 2>/dev/null \
+            && git diff --quiet "origin/$BRANCH" -- tooling/structure_baseline.json; then
+            echo "$BRANCH already holds this baseline; not pushing it again"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git switch -c "$BRANCH"
+            git commit -q -m "chore(structure): tighten the baseline to develop's readings" \
+              -- tooling/structure_baseline.json
+            if ! git push --force origin "$BRANCH"; then
+              echo "::warning::could not push $BRANCH; run 'structure.py tighten' by hand (diff above)"
+              exit 0
+            fi
           fi
           if [ -z "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[]')" ]; then
             gh pr create --base develop --head "$BRANCH" \
