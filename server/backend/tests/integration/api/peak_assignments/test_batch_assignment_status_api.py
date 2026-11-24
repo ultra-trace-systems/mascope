@@ -25,6 +25,11 @@ from mascope_backend.api.new.peak_assignments import batch_stages
 from mascope_backend.api.new.peak_assignments.batch_assignment_status import (
     get_batch_assignment_status,
 )
+from mascope_backend.api.new.peak_assignments.batch_decisions import (
+    KINDS,
+    BatchDecisions,
+    stage_versions,
+)
 from mascope_backend.api.new.peak_assignments.batch_lock import _acquire_batch_fold_lock
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     fold_sample_into_batch_peaks,
@@ -58,6 +63,7 @@ from mascope_backend.api.new.peak_assignments.config import (
     PeakAssignmentConfig,
     settings_hash,
 )
+from mascope_backend.api.new.peak_assignments.row_terms import BATCH_DECISIONS_KEY
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakRun,
@@ -654,6 +660,43 @@ async def test_a_run_before_a_later_stage_of_the_pass_decided_is_resampled(
         await task
     now = await _versions(async_session_factory, batch_id)
     assert now[ORDER[-1]] > read[ORDER[-1]]
+    status = await _status(guest_client, batch_id)
+    assert status["state"] == "behind"
+    reasons = _reasons(status)
+    assert set(reasons) == {"resampled"}
+    assert reasons["resampled"]["sample_item_ids"] == [folded["s1"]]
+
+
+async def test_a_run_read_while_the_last_stage_it_reads_ran_is_resampled(
+    guest_client, folded, stand_ins, async_session_factory
+):
+    """A stage's version counts up when it starts: a run read while ``series``
+    ran recorded the version series keeps, with the state ``running``, and
+    read its records before series decided. Held at the last stage a run
+    reads, so no later stage's version tells it apart."""
+    batch_id = folded["batch_id"]
+    entered, release = _hold(stand_ins, "series")
+    task = asyncio.create_task(_pass(batch_id))
+    try:
+        await asyncio.wait_for(entered.wait(), 30)
+        record = BatchDecisions(
+            sample_batch_id=batch_id,
+            kinds=frozenset(KINDS),
+            stages=await stage_versions(batch_id),
+        ).record()
+        assert record["stages"]["series"]["state"] == "running"
+        await _add_run(
+            async_session_factory,
+            folded["s1"],
+            config={BATCH_DECISIONS_KEY: record},
+        )
+    finally:
+        release.set()
+        await task
+    now = await _versions(async_session_factory, batch_id)
+    assert {stage: entry["version"] for stage, entry in record["stages"].items()} == {
+        stage: now[stage] for stage in record["stages"]
+    }
     status = await _status(guest_client, batch_id)
     assert status["state"] == "behind"
     reasons = _reasons(status)
