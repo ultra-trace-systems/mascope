@@ -233,9 +233,10 @@ def member_target_id(member: Any, anchor: Any) -> str | None:
     The member's own (``BatchPeakOccurrence.target_compound_id``), which the
     fold writes: two members that matched two isomeric compounds through one
     ion share a registry entry, and the entry keeps the first compound only.
-    Where the member names none - folded before it kept one, or rewritten by
-    a batch stage (``batch_peaks.mark_member``) - its registry entry answers,
-    as it did for every member before, until the sample folds again.
+    Where the member names none - folded before it kept one, or re-pointed by
+    a batch stage, a pin or an import (``batch_peaks.mark_member``) - its
+    registry entry answers, as it did for every member before, until the
+    sample folds again.
 
     Only for the display (``reference_listing.target``, through
     :func:`~mascope_backend.api.new.peak_assignments.target_listing.with_target_listings`'s

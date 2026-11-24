@@ -87,18 +87,19 @@ class TestTheMark:
         assert batch_mark_of(member)["stage"] == "series"
         assert batch_mark_of(member)["before"]["batch_written"]["stage"] == "search"
 
-    def test_a_stage_takes_off_the_members_own_target_and_keeps_it_before(self):
+    def test_any_mark_takes_off_the_members_own_target_a_stage_keeps_it_before(self):
         """The member's own target compound is what its sample matched the
         fold's reading to: a stage's claim is not that reading, so the mark
         keeps it and the member names none until the claim is withdrawn. A
-        person's or an import's write leaves it."""
+        person's or an import's write re-points the member too, so it takes the
+        target off as well: the pin archives it (``measured_state``)."""
         member = _member(target_compound_id="tc-1")
         mark_member(member, "search")
         assert member.target_compound_id is None
         assert batch_mark_of(member)["before"]["target_compound_id"] == "tc-1"
         member = _member(target_compound_id="tc-1")
         mark_member(member, None)
-        assert member.target_compound_id == "tc-1"
+        assert member.target_compound_id is None
 
     def test_a_person_or_an_import_takes_it_off(self):
         member = _member()

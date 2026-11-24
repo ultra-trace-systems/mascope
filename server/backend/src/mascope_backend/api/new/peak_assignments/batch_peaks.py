@@ -2054,15 +2054,16 @@ def mark_member(member: Any, stage: Optional[str]) -> None:
     with no stage, take the mark off: a person's or an import's reading is
     not the batch's.
 
-    A stage's mark also takes off the member's own target compound: that is
-    what its sample matched the fold's reading to, not a claim of the batch's.
-    The mark keeps it under ``before``, so a withdrawn claim puts it back
-    (:func:`restore_marked`), and until then the member is read as one folded
-    without it (``fold_view.member_target_id``).
+    Either way the member's own target compound comes off: that is what its
+    sample matched the fold's reading to, and the member is about to read
+    another identity, a stage's claim or a person's pin or an import. A
+    stage's mark keeps it under ``before``, so a withdrawn claim puts it back
+    (:func:`restore_marked`); a pin archives it with the rest of the member
+    (``measured_state``), so its release puts it back. Until then the member
+    is read as one folded without it (``fold_view.member_target_id``).
     """
     member.batch_written = None if stage is None else batch_mark(member, stage)
-    if stage is not None:
-        member.target_compound_id = None
+    member.target_compound_id = None
 
 
 def restore_marked(member: Any, stage: str) -> bool:

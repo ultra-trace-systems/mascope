@@ -103,11 +103,11 @@ def consensus_target_id(
     """The target compound a batch peak's consensus names, off its members.
 
     A member names the compound its own sample matched (its
-    ``target_compound_id``), else, folded before it kept one or rewritten by a
-    batch stage, the one its registry entry recorded: what the member's row
-    shows (``fold_view.member_target_id``). The members that count are the
-    ones whose entry reads the consensus formula, through any channel: a
-    target compound is a neutral. The consensus names a compound only where
+    ``target_compound_id``), else, folded before it kept one or re-pointed by
+    a batch stage, a pin or an import, the one its registry entry recorded:
+    what the member's row shows (``fold_view.member_target_id``). The
+    members that count are the ones whose entry reads the consensus formula,
+    through any channel: a target compound is a neutral. The consensus names a compound only where
     every such member that names one names the same: two members that
     matched two isomers of the formula leave it naming none, as a target is
     shown and never made part of the reading.
