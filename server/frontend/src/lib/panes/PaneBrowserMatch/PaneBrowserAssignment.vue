@@ -64,6 +64,7 @@ import {
   useLedgerLensStore,
   useLedgerSort,
   useLedgerView,
+  usePendingRowFocus,
   useRowPopover,
   verdictRank
 } from '@/lib/ledger'
@@ -331,15 +332,21 @@ async function launch() {
 
 // Clicking an assignment focuses the matching peak (join by peak_id ===
 // sample_peak_id) and brings the Sample tab (spectrum + inspector) forward.
-function focusPeak(assignment) {
-  const peak = app.data.peak.list.find(
-    (p) => String(p.peak_id) === String(assignment.sample_peak_id)
-  )
-  if (peak) {
+// The ledger's rows can show before the sample's peak list does: a click then
+// waits as pending and is carried out once the list lands for the same sample
+// (lib/ledger/usePendingRowFocus.js), rather than doing nothing (#3588).
+const pendingFocus = usePendingRowFocus({
+  loading: () => app.data.peak.pending,
+  failed: () => Boolean(app.data.peak.error),
+  sampleId: () => app.data.sample.focusedId,
+  find: (peakId) => app.data.peak.list.find((p) => String(p.peak_id) === String(peakId)) ?? null,
+  focus: (peak) => {
     app.data.peak.focus(peak)
     app.ui.tab.active = 'sample'
   }
-  return Boolean(peak)
+})
+function focusPeak(assignment, then = null) {
+  return pendingFocus.request(assignment.sample_peak_id, then)
 }
 
 // The row's action: curate it, in the formula search for its peak, where a
@@ -347,7 +354,7 @@ function focusPeak(assignment) {
 // the inspector on the Sample tab, which the focus brings forward.
 const peakSearch = usePeakSearch()
 function curate(row) {
-  if (focusPeak(row)) peakSearch.open = true
+  focusPeak(row, () => (peakSearch.open = true))
 }
 
 // --- Rows whose peak the sample no longer has --------------------------------
@@ -766,6 +773,12 @@ const childLabel = (row) => sampleLineLabel(row, assignments.value.m0Of(row))
 // When a folded-out isotopologue is focused, highlight its M0 row.
 const selectedRow = computed({
   get: () => {
+    // A row clicked while the peaks load holds the selection until they land.
+    const waiting = pendingFocus.pending.value
+    if (waiting) {
+      const row = rows.value.find((r) => String(r.sample_peak_id) === String(waiting.peakId))
+      if (row) return row
+    }
     const focused = app.data.peak.focused
     if (!focused) return null
     // Prefer the exact row for the focused peak (present for M0/standalone rows,
@@ -787,7 +800,10 @@ const selectedRow = computed({
     // emitting null. Selection lives in the peak store, so unfocusing there
     // clears the spectrum highlight, the inspector and the timeseries too.
     if (row) focusPeak(row)
-    else app.data.peak.unfocus()
+    else {
+      pendingFocus.clear()
+      app.data.peak.unfocus()
+    }
   }
 })
 

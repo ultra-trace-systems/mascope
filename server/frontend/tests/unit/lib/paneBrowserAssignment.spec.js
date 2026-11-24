@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { ref } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 
@@ -68,6 +68,8 @@ let focusedPeak
 // list is still loading.
 let peakList
 let peaksPending
+// Bumped to tell the pane the three above changed after it mounted.
+const peakRev = ref(0)
 // The peak list's load error, or null.
 let peaksError
 // Whether the run's rows are still loading, and their load error, or null.
@@ -110,14 +112,30 @@ function makeApp() {
     data: {
       sample: {
         focused: focusedSampleId.value ? SAMPLE : null,
-        focusedId: focusedSampleId.value,
+        get focusedId() {
+          return focusedSampleId.value
+        },
+        set focusedId(id) {
+          focusedSampleId.value = id
+        },
         unfocus: sampleUnfocus
       },
       batch: { focused: { ...BATCH, assignment_settings: batchSettings } },
       peak: {
-        list: peakList,
-        pending: peaksPending,
-        error: peaksError,
+        // Read live, through `peakRev`: a test that lands the peaks after
+        // mounting bumps it, so the pane's watchers see the change.
+        get list() {
+          peakRev.value
+          return peakList
+        },
+        get pending() {
+          peakRev.value
+          return peaksPending
+        },
+        get error() {
+          peakRev.value
+          return peaksError
+        },
         focused: focusedPeak,
         focus: peakFocus,
         unfocus: peakUnfocus
@@ -2006,6 +2024,88 @@ describe('PaneBrowserAssignment header and controls', () => {
     const wrapper = await mountPane()
 
     expect(wrapper.find('[data-testid="ledger-count"]').exists()).toBe(false)
+  })
+
+  // The ledger's rows can show before the sample's peak list does (#3588).
+  describe('a row clicked while the peaks load', () => {
+    const land = async (list) => {
+      peakList = list
+      peaksPending = false
+      peakRev.value++
+      await flushPromises()
+    }
+    const peakOf = (row) => ({ peak_id: row.sample_peak_id, mz: row.sample_peak_mz })
+
+    beforeEach(() => {
+      peaksPending = true
+    })
+
+    it('holds the selection, and focuses the peak once the peaks land', async () => {
+      const wrapper = await mountPane()
+      wrapper.vm.selectedRow = FAMILY_B.parent
+      expect(peakFocus).not.toHaveBeenCalled()
+      expect(wrapper.vm.selectedRow).toBe(wrapper.vm.rows.find((r) => r.peak_assignment_id === 'b'))
+
+      wrapper.vm.app.ui.tab.active = 'batch'
+      await land([peakOf(FAMILY_A.parent), peakOf(FAMILY_B.parent)])
+      expect(peakFocus).toHaveBeenCalledTimes(1)
+      expect(peakFocus).toHaveBeenCalledWith(peakOf(FAMILY_B.parent))
+      // The Sample tab comes forward, as for a click on a row whose peak is in.
+      expect(wrapper.vm.app.ui.tab.active).toBe('sample')
+    })
+
+    it('drops it when the peaks fail to load', async () => {
+      const wrapper = await mountPane()
+      wrapper.vm.selectedRow = FAMILY_B.parent
+
+      // A failed load keeps the rows the store held before.
+      peaksError = new Error('down')
+      await land([peakOf(FAMILY_B.parent)])
+      expect(peakFocus).not.toHaveBeenCalled()
+    })
+
+    it('drops it when the sample changes first', async () => {
+      const wrapper = await mountPane()
+      wrapper.vm.selectedRow = FAMILY_B.parent
+
+      focusedSampleId.value = 'si-2'
+      await flushPromises()
+      expect(wrapper.vm.selectedRow).toBeNull()
+      await land([peakOf(FAMILY_B.parent)])
+      expect(peakFocus).not.toHaveBeenCalled()
+    })
+
+    it('focuses the second of two rows clicked', async () => {
+      const wrapper = await mountPane()
+      wrapper.vm.selectedRow = FAMILY_A.parent
+      wrapper.vm.selectedRow = FAMILY_B.parent
+
+      await land([peakOf(FAMILY_A.parent), peakOf(FAMILY_B.parent)])
+      expect(peakFocus).toHaveBeenCalledTimes(1)
+      expect(peakFocus).toHaveBeenCalledWith(peakOf(FAMILY_B.parent))
+    })
+
+    it('drops it when the row is clicked again, a deselect', async () => {
+      const wrapper = await mountPane()
+      wrapper.vm.selectedRow = FAMILY_B.parent
+      wrapper.vm.selectedRow = null
+      expect(wrapper.vm.selectedRow).toBeNull()
+
+      await land([peakOf(FAMILY_B.parent)])
+      expect(peakFocus).not.toHaveBeenCalled()
+    })
+
+    it("opens the formula search from the row's curate action once the peaks land", async () => {
+      const wrapper = await mountPane()
+      const { usePeakSearch } = await import('@/lib/panes/PanePeakAssign/stores/peakSearch.js')
+      const search = usePeakSearch()
+      wrapper.vm.curate(FAMILY_B.parent)
+      expect(search.open).toBe(false)
+
+      await land([peakOf(FAMILY_B.parent)])
+      expect(peakFocus).toHaveBeenCalledWith(peakOf(FAMILY_B.parent))
+      expect(search.open).toBe(true)
+    })
   })
 
   it('clears the peak focus when the selected row is clicked again', async () => {
