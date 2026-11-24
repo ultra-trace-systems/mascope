@@ -1,13 +1,16 @@
 # Assignment performance: folding a sample in and assigning a batch
 
-- **Status:** design
-- **As of:** 2026-11-23
+- **Status:** building
+- **As of:** 2026-11-24
 - **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c)
-  (Linear, MAS-1179 the measurement; the fold-in design is the Decision
-  MAS-1187; the findings are GitHub issues, section 6)
+  (Linear, MAS-1179 the measurement; the fold-in design was the Decision
+  MAS-1187, decided 2026-11-24, and is section 8, MAS-1224, with its steps
+  MAS-1231 to MAS-1233 and the Decision MAS-1230 on its defaults; the
+  findings are GitHub issues, section 6)
 - **What:** What peak assignment's two uses cost on the demo's largest batch, where the
-  time goes down to the functions, what one arrival changes, and the options for
-  folding samples in during continuous acquisition.
+  time goes down to the functions, what one arrival changes, and the design for
+  folding samples in during continuous acquisition: a light fold on arrival and
+  a pass of the batch stages deferred.
 
 ## 1. The two uses
 
@@ -315,7 +318,8 @@ N = 20, 1.5 to 1.6 GB at N = 40 in a whole pass and 1.8 GB in a fold-in, 1.9 to 
 With a sample about once a minute, back-to-back samples mostly carry the
 same assignments. It may not be right to run every batch stage on every
 arrival. This section measures what that choice needs to know and lays out
-the options; the choice is the owner's (MAS-1187 (Decision)).
+the options; the choice was the owner's (MAS-1187 (Decision)). Decided on
+2026-11-24: (d), the mix. Section 8 is the design.
 
 ### 7.1 How much one arrival changes
 
@@ -504,9 +508,314 @@ state are no different in kind from a batch whose stages are stale today.
 - Deferred passes converge: after the pass the ledger is within 3.5 % of the
   every-arrival one.
 
-The choice is the owner's: MAS-1187 (Decision).
+The choice was the owner's: MAS-1187 (Decision), decided on 2026-11-24 for
+(d). Section 8 is the design.
 
-## 8. Not measured
+## 8. The design: a light fold on arrival, the batch stages deferred
+
+The owner chose (d) on 2026-11-24 (MAS-1187): a light fold on arrival, so
+acquisition never falls behind, with the bar at 20 s the goal and 30 s
+acceptable at any batch size. A pass of the batch stages starts on its own on
+a count of arrivals or a timer, and always at the end of acquisition. The
+samples folded since the last pass are shown as provisional until it runs. A
+trigger by need, (c), is not built now; it can come later as one more
+trigger. This section is that design, read from the code as it is on
+develop and from the data of section 7. It builds nothing; its steps are
+8.8.
+
+Paths below are under `server/backend/src/mascope_backend/api/new/peak_assignments/`
+unless they say otherwise.
+
+### 8.1 The light fold
+
+**The light fold is today's ingest fold, unchanged.** It is the arrival's
+part of section 3's fold-in, without the pass a person had to press. What
+runs on arrival, in order:
+
+1. Matching, as for every sample (`match_compute_sample`, in
+   `api/controllers/sample/files/process/service.py`).
+2. The fold (`service.auto_assign_sample_peaks` ->
+   `batch_fold.fold_sample_peaks_without_run`): the INGEST_FOLD path of
+   `pipeline.py`. The pre-passes, Stage A on the known set, the judging
+   rounds, the tiering rules and the identification level run as for a run
+   of the sample with the untargeted search off.
+3. The sample's rows become members of its batch's batch peaks
+   (`batch_fold.keep_fold` -> `fold_sample_into_batch_peaks`). The consensus
+   of every batch peak it joined is recomputed with it
+   (`batch_peaks_controller`).
+4. The model the fold scored at is kept for the sample
+   (`model_readers.record_sample_model`).
+5. Every batch stage is marked stale, reason `fold`
+   (`batch_peaks_controller.py`, `batch_staleness.mark_every_stage_stale`),
+   in the fold's own transaction under the batch's fold lock. A stage that
+   is running keeps running, and ends stale (`batch_stages.finish_stage`).
+
+It costs 21.6 s median, 18 to 35 s over 47 arrivals, flat in N (7.1).
+
+**What does not run on arrival.** None of the nine stages. No untargeted
+search of the sample's own peaks: ingest runs with `run_untargeted=False`,
+and its new batch peaks wait for the batch search. No per-sample run row
+under the default `peak_assignment_ingest_ledger = "batch"`. Nothing that
+runs on arrival today stops running: the change is what runs after it.
+
+**What marks the stages stale** stays the fold's mark. The batch's
+assignment status already reads a fold's mark as no reason of its own where
+`new_samples` explains it (`batch_assignment_status.stale_reason`), so the
+status says *N samples added since the last assignment*, not *stages stale*.
+
+### 8.2 A provisional sample
+
+A sample is **provisional** from its fold until a pass covers it: it is in
+the batch and not in the newest completed pass's `samples`
+(`batch_stages.last_pass`, which records the samples a pass read as it
+started). That is the status read's `new_samples` set, so the per-sample
+state and the batch's count can never disagree. A failed or cancelled pass
+covers nothing.
+
+What its rows carry, against what the batch will say after the pass:
+
+| reading | on a provisional sample | the batch's word? |
+| -- | -- | -- |
+| the formula of a batch peak it joined | the consensus, recomputed with its member (8.1, step 3) | yes, as of now |
+| known species and water ladders | the fold takes a species present and a passed rung on the batch's standing verdict (7.2) | yes for the standing verdicts; a verdict the sample would flip waits for the pass |
+| its tier | its own judging against the batch's standing decisions | **no**: the claims, strips, stamps and corroborations a pass judges it under have not run. The pass after five light folds moved 62 to 72 % of the waiting members' decisions, most of them tiers (7.3) |
+| series corroboration | none judged for its members | **no** |
+| isotope lines | not stripped or stamped for it (`strip_again`, the stamp) | **no** |
+| its new batch peaks (about 4 an arrival past ten samples, 7.1) | unassigned, not searched | **no** |
+| co-variation, ratio stability, batch checks, probable blends | as of the last pass, without it | **no**: readings of the batch |
+
+The older samples are not provisional, but a pass moves some of their
+decisions too: 3 to 15 % after a deferred pass (7.3). The batch's status
+covers that (*behind*); marking every member of a batch provisional would
+say nothing.
+
+### 8.3 The triggers
+
+A pass starts on its own when the first of three things holds.
+
+- **The count.** k samples are waiting.
+- **The timer.** The oldest waiting sample has waited T minutes, read off
+  `SampleItem.sample_item_utc_created`. It bounds how long a sample stays
+  provisional when samples come slowly.
+- **The end of acquisition**, the first of: the newest waiting sample's file
+  carries an acquisition record whose sequence does not loop and whose step
+  is the last one (`SampleFile.acquisition`; `Sequence.loop` and
+  `step_index` in `libraries/sdk/src/mascope_sdk/acquisition.py`); a newer
+  file of the same instrument went to another batch; or no sample has
+  arrived for Q minutes, the quiet period. An acquisition batch is one day
+  of one mode (`acquisition_batch_name` in `process/service.py`), so the
+  second catches the day's turn at the instrument's midnight and a change of
+  mode. The quiet period catches the rest: a looping sequence stopped, an
+  instrument switched off. Most acquisition loops, so the first is rare.
+
+**Where the count lives: nowhere new.** It is the size of the waiting set
+(8.2), read from what the last pass recorded and the batch's samples
+(`batch_stages.batch_samples`), one query each. No counter is stored, so it
+survives a restart, two workers read the same number, and any pass that
+completes resets it, whoever started it. A batch with no completed pass yet
+has every sample waiting: its first pass starts on its k-th sample, and the
+status reads `folded_only` until then.
+
+**Which batches.** Only ACQUISITION batches: ingest folds into those alone.
+Only with peak assignment on, on ingest, into the batch ledger
+(`config.peak_assignment_enabled`, `peak_assignment_on_ingest`,
+`peak_assignment_ingest_ledger`).
+
+**Where it is checked.** After each fold commits, in the worker that folded
+the sample. And by a sweep in every worker's lifespan (`app/fast.py`), once a
+minute, over the batches with a waiting sample: the timer and the quiet
+period fire when nothing arrives, so an arrival cannot be what checks them.
+There is no scheduler in the backend today; the sweep is the smallest one.
+
+**The pass it starts** is the pass a person starts: `batch_stages.assign_batch`
+with `fold="auto"`, on the batch's own settings, action `assign`, so the
+status, Details and Run history read it as a pass with no change. Its run
+records why it started (`trigger`: `count`, `timer` or `end`, and the count
+it saw) and no user. It runs as a task of the worker, kept and observed as
+the ingest pipelines' tasks are (`_background_tasks` in `process/service.py`).
+
+**An arrival during a pass** folds as it does today, under the fold lock;
+the pass reads unlocked and writes under the lock. The pass recorded its
+samples as it started, so the arrival stays waiting, and the stages it
+marked stale end stale. When the pass ends, the rule is checked again at
+once. While samples come faster than a pass, the passes run back to back,
+and the number waiting is the pass's length over the arrival interval, not
+k.
+
+**A person's Assign batch always works**, as it does today, and covers every
+waiting sample, so the count resets when it completes. The trigger never
+refuses it or waits for it. While a pass runs, whoever started it, a person's
+press is refused with 409, as it is today (`batch_runs.start_run`); the
+running pass covers what waited when it started, and the next starts on its
+own when it ends if the rule holds.
+
+```mermaid
+flowchart TD
+  A[Sample arrives] --> B[Light fold]
+  B --> C{Pass running?}
+  C -- yes --> W[Sample waits]
+  C -- no --> D{"k waiting, T passed, or acquisition ended?"}
+  D -- no --> W
+  D -- yes --> E{Held after a failure or a cancel?}
+  E -- yes --> W
+  E -- no --> P[Pass of the batch stages]
+  P --> F[Pass ends: check again]
+  F --> D
+  S[Sweep, once a minute] --> D
+```
+
+### 8.4 The defaults, and what the data says
+
+The data of section 7 does not settle the defaults. What it says:
+
+- **The count barely moves where the ledger ends up.** After a pass at
+  every 5th arrival, the ledger is within 3.5 % of the one a pass after every
+  arrival makes; at the 16th arrival, a pass every 5th and one single pass
+  leave ledgers 2.7 % apart, against a floor of 0.2 to 0.4 % between two
+  identical passes (7.3).
+- **The count sets how many samples are provisional, and the cost.** Over
+  the 16 arrivals from N = 5 to 20, passes at every 5th arrival cost 4,812 s,
+  one pass at the end 2,547 s, a pass after every arrival about 14,000 s.
+- **During fast acquisition the count does not bite.** A pass at N = 20
+  took 1,333 s on the measured build. MAS-1172 (#3483) has merged since, and
+  cut the N = 4 pass from 263 s to 100 s (2.1); the curve over N was not
+  measured again (#3519). MAS-1188 (#3504) saves nothing in a fold-in: every
+  arrival moves series corroborations in every sample (MAS-1229). MAS-1189
+  (#3505) saves at most the search's 164 s at N = 20. So a pass at N = 20
+  likely takes 500 to 1,300 s on today's develop, and with a sample once a
+  minute, 8 to 22 samples arrive during one pass.
+- **Nothing was measured for the timer or the quiet period:** no site's
+  arrival intervals.
+
+**Proposed:** k = 5, the one cadence measured, which converged; T = 30
+minutes; Q = 15 minutes; on wherever peak assignment is on at ingest. The
+choice is the owner's: MAS-1230 (Decision), which lists a larger k and a
+measurement first as the other options. What would settle the numbers:
+#3519, the pass's curve on today's develop; an arrivals run at k = 5, 10 and
+20 up to N = 40, read as 7.3 reads its runs; and the arrival intervals of a
+site, which only a prod job can read.
+
+### 8.5 Where the settings live
+
+- **The instance's, in the runtime `[meta]` config**, beside
+  `peak_assignment_on_ingest` (`libraries/runtime/src/mascope_runtime/config.py`,
+  read in `config.py`): on or off, k, T and Q, with MAS-1230's defaults, in
+  `docs/maintaining.md`. They are the defaults because acquisition batches
+  are made by ingest one a day per mode, and a setting kept only on the
+  batch would have to be set again every day.
+- **A batch's own, where it differs** (MAS-1233): a column of its own on the
+  batch, `SampleBatch.auto_pass`, edited in **Edit assignment settings**
+  (`server/frontend/src/lib/dialogs/DialogBatchAssignSettings.vue`, MAS-1017)
+  and saved through the batch's PATCH. Not inside
+  `SampleBatch.assignment_settings`: those are hashed (`config.settings_hash`),
+  and a pass on another hash runs every stage from the first and reads
+  *settings changed* (`batch_stages.plan_pass`,
+  `batch_assignment_status.settings_reason`). When a pass runs does not change
+  what it computes, so saving it must not do that.
+
+### 8.6 What the user sees
+
+- **On the sample** (**This sample**, `AssignmentRunBar.vue` in
+  `server/frontend/src/lib/panes/PaneBrowserMatch/`): *Folded on arrival · the
+  batch stages have not run since*, and when the next pass is due (*after 2
+  more samples*, *by 14:30*, *when acquisition ends*). In its ledger
+  (`PaneBrowserAssignment.vue`), the tier marks of its rows carry a
+  provisional mark, with a tooltip that says the tier may move at the next
+  pass. Served on the fold's synthetic run of the sample (`fold_view.py`) as
+  `provisional` and `folded_utc`, and on a run of its own that no pass has
+  covered.
+- **On the batch** (the batch assignment status of MAS-1015,
+  `BatchAssignControl.vue` and `stores/batchAssign.js`): *5 samples waiting
+  for the batch stages · next pass after 5*, or *by 14:30*, beside **Update
+  assignment**, which runs the pass now. While a pass started on its own
+  runs: *Assigning on its own · 5 samples arrived*, in place of *Another user
+  is assigning this batch*. When the trigger holds after a failed pass: *Held
+  after a failed pass*, with **Retry**. The status read serves these in a new
+  `auto_pass` block (MAS-1231).
+- **In Details and Run history** (MAS-1016, `BatchAssignDetails.vue`,
+  `BatchRunHistory.vue`, `batchPass.js`): a pass started on its own says
+  why, *started on its own: 5 samples arrived*, or *... at the end of
+  acquisition*.
+- The user page is `docs/user/how-it-works/peak-assignment.md`, "Assigning
+  a batch", "Where the batch stands" and "Reading the ledger".
+
+### 8.7 What can go wrong
+
+- **A pass fails.** It stops at a stage, keeps the stages before it and
+  leaves the rest stale (MAS-983, `batch_stages.assign_batch`); the batch
+  reads `failed`. The trigger holds: it starts no pass on the same samples,
+  which would fail again, and starts one only when the rule holds for
+  samples that arrived after the failed pass started. A person's **Retry**
+  works as it does today.
+- **A pass is cancelled.** By a person: the same hold, so a cancel is not
+  undone a minute later. By a shutdown: a pass started on its own is
+  cancelled at shutdown, not drained (`drain_auto_process_tasks` drains the
+  pipelines): a pass can take an hour, and a deploy must not wait for it.
+- **A restart between a fold and its pass.** Nothing is lost: the count, the
+  timer's start and the quiet period are read from the database (8.3), and
+  the first sweep after the start finds the batch due. A pass interrupted by
+  the restart is closed by its own task as cancelled, with
+  `batch_stages.INTERRUPTED_ERROR`, on a clean shutdown; on a kill, startup
+  closes it as failed, with `STUCK_BATCH_RUN_ERROR`
+  (`reset_running_batch_peak_runs` in
+  `db/admin/peak_assignments/reset_running_runs.py`). Either way the trigger
+  reads it as interrupted, not held, and the sweep starts it again once.
+- **Two workers.** Each checks after its own folds and sweeps every batch.
+  Two that find one batch due race on `batch_runs.start_run`, which takes
+  the fold lock and refuses the second (`BatchRunInFlightException`); the
+  loser stands down. Two folds in two workers already serialise on the fold
+  lock.
+- **A batch that never ends, or grows faster than its pass.** An acquisition
+  batch ends at the instrument's midnight. Inside the day, a pass's cost
+  grows with N: about 67 s for every sample already in the batch on the
+  measured build (section 3). With a sample once a minute, the passes run
+  back to back from about N = 10, and the waiting set grows with the pass:
+  about 90 samples at N = 80 on that build. One core is then busy all day,
+  and a pass at N = 80 holds about 2.8 GB in the worker that runs it. The
+  findings that shorten a pass are #3507 (one core) and #3506
+  (`resolve_lines`). Whether a pass should stop starting on its own past a
+  size is open (8.9).
+- **A person curating while passes start on their own.** A pin made during a
+  pass is kept and marks the stages stale (`batch_curation.py`), but the
+  pass moves tiers under the person reading them, and the batch-level routes
+  (a rebuild, a stage on its own) are refused while it runs
+  (`batch_stages.check_no_run_in_flight`). The batch's own switch (MAS-1233)
+  turns the trigger off for that batch.
+- **Run history fills with passes started on their own.** A batch keeps its
+  newest five runs (`BATCH_RUN_KEEP`, `batch_runs.py`), so at k = 5 a
+  person's pass leaves the history after 25 arrivals. Open (8.9).
+- **The snapshot.** Every pass snapshots the current run as it starts
+  (`batch_runs.start_run`). Its cost at N = 80 was not measured apart from
+  the pass's.
+
+### 8.8 The steps
+
+| issue | step | blocked by | user page |
+| -- | -- | -- | -- |
+| MAS-1230 | Decision: the defaults k, T and Q, and on by default | nothing | |
+| MAS-1231 | the trigger and the pass started on its own, the instance's settings, the status read's `auto_pass` block | MAS-1224, MAS-1230 | `docs/user/how-it-works/peak-assignment.md`, `docs/maintaining.md` |
+| MAS-1232 | the provisional state served per sample, and shown on the sample, in its tiers and beside **Assign batch** | MAS-1224, MAS-1231 | `docs/user/how-it-works/peak-assignment.md` |
+| MAS-1233 | a batch's own setting in **Edit assignment settings**, kept out of the settings hash | MAS-1224, MAS-1231 | `docs/user/how-it-works/peak-assignment.md`, `docs/maintaining.md` |
+
+MAS-1232 and MAS-1233 touch different files and can be built side by side
+once MAS-1231 is in.
+
+### 8.9 What stays open for the owner
+
+1. **The defaults** of 8.4: MAS-1230 (Decision).
+2. **A ceiling on the size** past which a pass no longer starts on its own,
+   while #3507 and #3506 are open (8.7). Proposed: none now; the batch's own
+   switch turns it off where a pass is too long, and #3519 says how long.
+3. **Run history.** Whether passes started on their own count against the
+   five runs a batch keeps, or are kept apart so a person's pass stays in the
+   history. Proposed: they count, as any pass does; revisit if users miss
+   their own passes.
+4. **Who may stop it.** As designed, any editor may cancel a pass started on
+   its own, and the cancel holds the trigger until new samples arrive.
+5. **The trigger by need**, (c) of 7.4, once a measure of need is tested on
+   the arrivals data. It would be one more reason in MAS-1231's rule.
+
+## 9. Not measured
 
 - **An idle box.** Every run shared the box with other workers (section 2).
   The seconds are upper bounds; a run on a quiet box would take about a third
