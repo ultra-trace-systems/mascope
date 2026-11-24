@@ -1474,7 +1474,10 @@ same mark and the same words.
   nothing names its substitution.
 - **Clicking an m/z** opens the peak in the inspector, on the *Sample* tab. In a sample's
   ledger that is the sample's own peak. In the batch's it is the batch peak in its
-  brightest sample, the sample where the species is best measured.
+  brightest sample, the sample where the species is best measured. The sample ledger's
+  rows can show before the sample's peaks have loaded: a row clicked then stays selected
+  and its peak opens once they are in. Another click, or a switch to another sample,
+  before then replaces it.
 - **A row's action** shows at the row's end on hover, while the row or one of its
   controls has the keyboard focus, and on the selected row: **Curate** in a sample's
   ledger, which opens the formula search for the peak beside the inspector, and in the
