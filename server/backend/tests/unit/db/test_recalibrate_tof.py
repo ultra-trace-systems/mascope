@@ -512,10 +512,10 @@ def test_a_run_holds_the_ledger_alone_until_it_ends(tmp_path):
         pass
 
 
-def _refusal(directory, holder_action):
+def _refusal(directory, holder_action, refused=script.RUN):
     with script.hold_ledger(directory, holder_action):
         with pytest.raises(script.LedgerHeld) as held:
-            with script.hold_ledger(directory, "run"):
+            with script.hold_ledger(directory, refused):
                 pytest.fail("held twice")
     return str(held.value)
 
@@ -530,6 +530,17 @@ def test_a_refusal_by_a_run_says_to_remove_stop_before_starting_again(tmp_path):
     assert "rollback does not heed STOP" not in message
 
 
+def test_a_rollback_refused_by_a_run_keeps_its_dump(tmp_path):
+    """Only a run going on after a ``STOP`` skips the pre-script dump: a
+    rollback keeps its restore point, and "refits nothing" is a run's."""
+    message = _refusal(str(tmp_path / "ledger"), script.RUN, script.ROLLBACK)
+
+    assert "create the file STOP" in message
+    assert message.endswith("remove STOP, then start this again.")
+    assert "--skip-backup" not in message
+    assert "refits nothing" not in message
+
+
 def test_a_refusal_by_a_rollback_says_to_wait_it_out(tmp_path):
     """A rollback does not check ``STOP`` between its files."""
     message = _refusal(str(tmp_path / "ledger"), script.ROLLBACK)
@@ -541,7 +552,7 @@ def test_a_refusal_by_a_rollback_says_to_wait_it_out(tmp_path):
 
 
 def test_a_refusal_by_a_holder_it_cannot_name_gives_both_ways():
-    message = script._held_message("/ledger", "")
+    message = script._held_message("/ledger", "", script.RUN)
 
     assert "holds the ledger in /ledger. One goes on" in message
     assert "remove STOP, then start this again" in message
@@ -1881,6 +1892,30 @@ async def test_a_dry_run_reads_and_writes_nothing(tmp_path):
     assert report.counts["would apply ok"] == 1
     settle.assert_not_awaited()
     assert not (tmp_path / "ledger").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_dry_run_with_stop_there_gives_no_run_warning(tmp_path, monkeypatch):
+    """A dry run matches nothing an earlier run left, so the run's warning
+    about ``STOP`` is not its to give."""
+    (tmp_path / "ledger").mkdir()
+    (tmp_path / "ledger" / script.STOP_FILE).touch()
+    logger = MagicMock()
+    monkeypatch.setattr(script, "runtime", SimpleNamespace(logger=logger))
+    candidates = [_candidate(sample_file_id="a")]
+    with (
+        patch.object(script, "select_candidates", AsyncMock(return_value=candidates)),
+        patch.object(script, "_targets", AsyncMock(return_value={"m1": _target()})),
+        patch.object(
+            script, "_dry_one", AsyncMock(return_value=script.Outcome("would apply"))
+        ),
+        patch.object(script, "settle", AsyncMock()),
+        patch.object(script, "fresh_in_progress", AsyncMock(return_value=0)),
+        patch.object(script, "_refit_ready", lambda filename: None),
+    ):
+        await script.run_runner(_run_config(tmp_path, action=script.DRY_RUN))
+
+    logger.warning.assert_not_called()
 
 
 @pytest.mark.asyncio
