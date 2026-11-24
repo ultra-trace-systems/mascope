@@ -17,7 +17,8 @@ import {
   DialogMfaSetup,
   DialogMfaReauth,
   DialogDeletedDatasets,
-  DialogReferenceLists
+  DialogReferenceLists,
+  DialogMetadataFields
 } from '@/lib/dialogs'
 import { useMfaReauth } from '@/lib/dialogs/useMfaReauth'
 import { deviceMetaLabel } from '@/lib/devices'
@@ -37,7 +38,8 @@ const dialog = reactive({
   pairing: false,
   mfa: false,
   deleted: false,
-  reference: false
+  reference: false,
+  metadata: false
 })
 
 // The shared step-up-and-retry protocol: token regeneration below runs through
@@ -425,6 +427,7 @@ const vHelpLayer = app.ui.help.directive(layer)
     <b>Data</b>
     <p>Deleted datasets lists a record of each dataset deleted in your workspaces: the data itself is gone, the record stays.</p>
     <p>Reference lists shows the compound lists this deployment has loaded, and the species each holds.</p>
+    <p>Metadata fields, for editors, defines the typed fields acquisition metadata is recorded under: one registry for every instrument.</p>
   `
     "
   >
@@ -442,6 +445,14 @@ const vHelpLayer = app.ui.help.directive(layer)
       severity="secondary"
       text
       icon="pi ph ph-books"
+    />
+    <Button
+      v-if="app.auth.user.role_id >= ROLES.editor"
+      label="Metadata fields"
+      @click="() => (dialog.metadata = true)"
+      severity="secondary"
+      text
+      icon="pi ph ph-tag"
     />
   </section>
   <section
@@ -462,6 +473,7 @@ const vHelpLayer = app.ui.help.directive(layer)
   <DialogMfaSetup v-model:visible="dialog.mfa" />
   <DialogDeletedDatasets v-model:visible="dialog.deleted" />
   <DialogReferenceLists v-model:visible="dialog.reference" />
+  <DialogMetadataFields v-model:visible="dialog.metadata" />
   <DialogMfaReauth v-model:visible="reauthVisible" @verified="onReauthVerified" />
 </template>
 
