@@ -26,6 +26,14 @@ fixed vocabulary (:data:`LIST_TAGS`). Unlike the rest of the header, a tag
 reaches every record the list loads, because it is read where the record is
 shown - a row the list named says so - and nowhere else: the tier does not
 weigh it.
+
+A species may carry a one-structure mark (:data:`ONE_STRUCTURE`): the work
+that says its formula has one plausible structure in the chemistry the list
+covers, as trifluoroacetic acid's and sulfuric acid's do. It is chemistry as
+data, authored by peaky's owner (PKY-35, PKY-39), and it reaches the species'
+record: a row at level 4a whose formula a cited list marks so reads 2b, the
+structure named with the work that marks it (step 5.8b of the assignment
+quality plan).
 """
 
 import json
@@ -84,8 +92,22 @@ _LIST_KEYS = frozenset(
         "species",
     }
 )
+#: The species key, and the cross-reference of its record, a one-structure mark
+#: is written under: the work that says the formula has one plausible
+#: structure, as a list-level reference is written (:data:`REFERENCE_KEYS`).
+ONE_STRUCTURE = "one_structure"
+
 _SPECIES_KEYS = frozenset(
-    {"formula", "name", "reference", "evidence", "conditions", "radical", "note"}
+    {
+        "formula",
+        "name",
+        "reference",
+        "evidence",
+        "conditions",
+        "radical",
+        "note",
+        ONE_STRUCTURE,
+    }
 )
 #: The keys a list-level reference may carry, in the order a reader is given
 #: them.
@@ -115,6 +137,10 @@ class Species:
     #: The author's claim, checked against the formula - never what decides.
     radical: bool | None = None
     note: str | None = None
+    #: The work that says the formula has one plausible structure
+    #: (:data:`ONE_STRUCTURE`), as the file gives it; None for a species
+    #: whose list marks no such thing.
+    one_structure: dict | None = None
     #: Keys schema 2 does not define, kept so a check can name them.
     unknown_keys: tuple[str, ...] = ()
 
@@ -167,6 +193,7 @@ def _species(entry, where: str) -> Species:
     if not isinstance(entry, dict) or _text(entry.get("formula")) is None:
         raise PeakListError(f"{where}: a species needs a formula")
     radical = entry.get("radical")
+    mark = entry.get(ONE_STRUCTURE)
     return Species(
         formula=_text(entry["formula"]),
         name=_text(entry.get("name")),
@@ -175,6 +202,11 @@ def _species(entry, where: str) -> Species:
         conditions=_strings(entry.get("conditions")),
         radical=radical if isinstance(radical, bool) else None,
         note=_text(entry.get("note")),
+        # A mark that is not a reference object is kept as an empty one, so
+        # the checks name it rather than read it as no mark at all.
+        one_structure=(
+            mark if isinstance(mark, dict) else None if mark is None else {}
+        ),
         unknown_keys=tuple(sorted(set(entry) - _SPECIES_KEYS)),
     )
 
@@ -385,7 +417,9 @@ def list_problems(
     :data:`LIST_TAGS`. Every species needs a neutral molecular formula with a
     non-negative DBE, odd-electron only in a list that allows radicals, and
     agreeing with any radical claim of its own; and each identity is listed
-    once - a formula may repeat only as isomers under different names.
+    once - a formula may repeat only as isomers under different names. A
+    species with a one-structure mark has a name, its formula is listed once,
+    and the mark cites its work as a list-level reference does.
 
     :param peak_list: The list, as :func:`read_peak_list` returns it.
     :param licenses: The licence tags a list may carry; None skips that check.
@@ -442,6 +476,7 @@ def list_problems(
     # Identity is one-to-many on a formula, so isomers may share one; what
     # repeats by mistake is the same formula under the same name, or nameless.
     first_seen: dict[tuple[str, str | None], int] = {}
+    names_by_formula: dict[str, list[tuple[int, Species]]] = {}
     for number, species in enumerate(peak_list.species, start=1):
         where = f"species {number} ({species.formula})"
         if species.unknown_keys:
@@ -457,6 +492,7 @@ def list_problems(
             problems.append(
                 f"{where}: its reference '{species.reference}' is not a DOI"
             )
+        problems.extend(_one_structure_problems(species, where))
         canonical = canonical_formula(species.formula)
         if canonical is None:
             problems.append(f"{where}: not a neutral molecular formula")
@@ -485,4 +521,35 @@ def list_problems(
             )
         else:
             first_seen[identity] = number
+        names_by_formula.setdefault(canonical, []).append((number, species))
+    # A formula marked as having one plausible structure names one: an isomer
+    # beside it in the same list says otherwise.
+    for entries in names_by_formula.values():
+        if len(entries) > 1 and any(s.one_structure is not None for _, s in entries):
+            numbers = ", ".join(str(n) for n, _ in entries)
+            problems.append(
+                f"species {numbers} ({entries[0][1].formula}): a formula marked as "
+                "having one plausible structure is listed more than once"
+            )
+    return problems
+
+
+def _one_structure_problems(species: Species, where: str) -> list[str]:
+    """What keeps a species' one-structure mark from being read.
+
+    The mark names the structure and cites the work that says it is the
+    formula's one: the species needs a name, and the mark is held to what a
+    list-level reference is.
+    """
+    if species.one_structure is None:
+        return []
+    problems = []
+    if species.name is None:
+        problems.append(
+            f"{where}: a one-structure mark names its structure, and the species "
+            "has no name"
+        )
+    problems.extend(
+        _reference_problems(species.one_structure, f"{where}, its one-structure mark")
+    )
     return problems

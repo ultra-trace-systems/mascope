@@ -13,18 +13,20 @@ meaning, and a letter for the kind of evidence that earned each.
 5a  A measured mass; a rival on the shortlist that no test excluded, listed.
 4b  The ion's formula: every rival excluded, the molecule-reagent split open.
 4a  The neutral formula: every rival excluded, the split pinned.
-3a  Data and list agree.          (later steps: 5.8b, 5.8d)
-3b  One functional group.         (5.8b, 5.8e)
-3c  A context list.               (5.8b)
+3a  Data and list agree.          (later steps: 5.8b2, 5.8d)
+3b  One functional group.         (5.8b by ionization; 5.8e by MS/MS)
+3c  A context list.               (5.8b2)
 3d  A homologue series.           (5.8d)
 2a  A library spectrum.           (5.8e, offered to a person)
-2b  Diagnostic evidence.          (5.8b, 5.8e)
+2b  Diagnostic evidence.          (5.8b by a one-structure mark; 5.8e)
 1   Confirmed, by a person only.  (5.8f)
 == =========================================================================
 
 This module states the formula levels a sample's run can state (step 5.8):
-5b, 5a, 4b and 4a. The letters name the kind of evidence, not a rank inside a
-number. Every one is read from facts the run already records; nothing here
+5b, 5a, 4b and 4a; and, on a row at 4a, the structure its run's chemistry
+data says (step 5.8b): 3b by ionization and 2b on a one-structure mark. The
+letters name the kind of evidence, not a rank inside a number. Every one is
+read from facts the run already records; nothing here
 measures anything new about the winner, and the level moves no tier, role,
 member or claim (the plan owner's call of 2026-11-17: the level and the tier
 cross, and the crossing is read on the bench's card before any tier rule
@@ -83,6 +85,21 @@ Each committed monoisotopic row is read in order:
   run's reagent is labelled, a second channel commits the neutral (read as
   the rival test reads one: on a separated peak, and not on a TOF), or no
   other split of the ion was found under the run's channels.
+- **2b or 3b, on a row at 4a only.** 2b where a cited list marks the row's
+  formula as having one plausible structure (a list identity of the row
+  carrying the mark, ``mascope_reference.peaklist.ONE_STRUCTURE``, with the
+  work that says so): the row names the structure, the list and the work.
+  3b where the row's channel says one functional group through the class
+  table of the run's reagent profile
+  (``mascope_tools.composition.profiles.IonizationClass``): a nitrate
+  reagent's ``[M-H]-`` an acidic hydrogen, so "an acid of this formula". The
+  row names the class and its citation, never a compound. A row that earns
+  both shows 2b, the class named in its evidence line. Both tables are
+  chemistry as data, authored and cited by peaky's owner (PKY-39); a row
+  under 4a reads neither, since a structure is said only of a pinned neutral
+  formula. 3c and 3a, a context list, come with step 5.8b2: a list the
+  run's environment selected through its regimes, once the run records that
+  selection (MAS-342; the plan owner's call of 2026-11-24, MAS-1259).
 
 An isotopologue row shows its owner's level. Reagent and artifact rows commit
 no formula and carry none.
@@ -149,6 +166,7 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     isotope_lines,
     settled_detail,
 )
+from mascope_reference.peaklist import ONE_STRUCTURE
 from mascope_tools.composition.arbitration import tie_gap as arbitration_tie_gap
 from mascope_tools.composition.heuristic_filter import (
     PLAUSIBILITY_FLOOR,
@@ -156,7 +174,12 @@ from mascope_tools.composition.heuristic_filter import (
     formula_plausibility,
 )
 from mascope_tools.composition.mechanism_notation import parse_mechanism
-from mascope_tools.composition.profiles import ChemistryContext
+from mascope_tools.composition.profiles import (
+    ChemistryContext,
+    IonizationClass,
+    ReagentProfile,
+    ionization_class,
+)
 
 
 #: Bumped whenever a fact the rules read, a rule, or the order that picks one
@@ -164,8 +187,10 @@ from mascope_tools.composition.profiles import ChemistryContext
 #: (``tiering.TIERING_RULES_VERSION``), as ``level_rules_version``, because a
 #: level is only comparable across runs together with the rules that stated
 #: it. 2 (MAS-1072): the shortlist is the row's rival set, the rivals its
-#: density counts, at the model its caps read.
-LEVEL_RULES_VERSION = 2
+#: density counts, at the model its caps read. 3 (MAS-939): a row at 4a reads
+#: 2b on a cited list's one-structure mark and 3b on its channel's class, and
+#: its lift names a context list for the run's chemistry.
+LEVEL_RULES_VERSION = 3
 
 #: The provenance key a committed row's level is recorded under.
 IDENTIFICATION_LEVEL = "identification_level"
@@ -189,12 +214,33 @@ LEVELS = ("1", "2a", "2b", "3a", "3b", "3c", "3d", "4a", "4b", "5a", "5b")
 #: ``engine_level`` outside it.
 ENGINE_LEVELS = tuple(level for level in LEVELS if level != REVIEW_LEVEL)
 
-#: The levels this step states; the rest come with the steps that read the
+#: The levels this module states; the rest come with the steps that read the
 #: evidence they name (5.8b to 5.8f).
+LEVEL_2B = "2b"
+LEVEL_3B = "3b"
 LEVEL_4A = "4a"
 LEVEL_4B = "4b"
 LEVEL_5A = "5a"
 LEVEL_5B = "5b"
+
+#: The provenance record a row's list identities are in: every compound a
+#: reference source names for its formula, each with the cross-references its
+#: list carries (``listing.reference_listing``).
+REFERENCE_IDENTITIES = "reference_identities"
+
+#: What would lift a row at 4a that no chemistry data lifts.
+LIFT_4A = "a context list for the run's chemistry; MS/MS"
+
+#: What would lift a row at 3b, whose channel named a class and no compound.
+LIFT_3B = (
+    "a context list for the run's chemistry naming a compound of this formula; MS/MS"
+)
+
+#: What would lift a row at 2b: only a person states level 1 (step 5.8f).
+LIFT_2B = (
+    "level 1, in review: a person's claim on an authentic standard measured "
+    "on this instrument with the same reagent chemistry"
+)
 
 #: The tests a rival can be excluded on, and the word for one none excluded.
 TEST_MASS = "mass"
@@ -478,6 +524,8 @@ class LevelContext:
     :param resolution: The file's resolving power as a function of m/z, at
         which a rival's envelope is predicted one line per peak the file
         resolves, as the run's own rows' are.
+    :param profile: The run's reagent profile, whose class table a row at 4a
+        is read through for 3b; None reads none.
     """
 
     neutral_channels: dict[str, dict]
@@ -487,6 +535,7 @@ class LevelContext:
     lines: SpectrumLines | None = None
     gate: LineGate | None = None
     resolution: Callable[[float], float] | None = None
+    profile: ReagentProfile | None = None
 
 
 def _absent_line_of(row: dict, rival: Rival, ctx: LevelContext) -> dict | None:
@@ -724,7 +773,7 @@ def _split(row: dict, ctx: LevelContext) -> tuple[str, str, str, dict]:
                 "share, a labelled reagent, or MS/MS",
                 _fact(rule, f"cross_channel.{rule}"),
             )
-    lift = "a context list naming a compound of this formula, or MS/MS"
+    lift = LIFT_4A
     settled = cross_channel.get(SAME_ION_SETTLED)
     if isinstance(settled, dict):
         by = {
@@ -849,6 +898,126 @@ def held_units(
         if counts and all(ion.get(element, 0) >= n for element, n in counts.items()):
             held.append((channel, unit))
     return held
+
+
+def one_structure_marks(row: dict) -> list[dict]:
+    """The compounds a cited list marks as the row's formula's one plausible
+    structure (level 2b).
+
+    Read off the row's list identities (:data:`REFERENCE_IDENTITIES`): an
+    identity whose list marks it (``xrefs.one_structure``) with a work found
+    by its DOI or ISBN. A mark that cites no such work is not read, whatever
+    loaded it, and a structure database's identity carries none: its records
+    are not a list's chemistry data.
+
+    :param row: A committed monoisotopic row.
+    :return: Per mark, in the row's order: the ``name`` it marks, the
+        ``source`` list, and the ``reference`` that says so.
+    """
+    marks = []
+    for identity in _provenance(row).get(REFERENCE_IDENTITIES) or []:
+        if not isinstance(identity, dict):
+            continue
+        xrefs = identity.get("xrefs")
+        mark = xrefs.get(ONE_STRUCTURE) if isinstance(xrefs, dict) else None
+        if not isinstance(mark, dict):
+            continue
+        reference = {
+            key: mark[key]
+            for key in ("citation", "doi", "isbn")
+            if isinstance(mark.get(key), str) and mark[key].strip()
+        }
+        if not reference.keys() & {"doi", "isbn"}:
+            continue
+        marks.append(
+            {
+                "name": identity.get("name") or row.get("assigned_formula"),
+                "source": identity.get("source"),
+                "reference": reference,
+            }
+        )
+    return marks
+
+
+def _cited(references: Iterable[dict]) -> str:
+    """Works for a person, each once: the citation and what finds it."""
+    texts: list[str] = []
+    for reference in references:
+        found_by = reference.get("doi") or reference.get("isbn")
+        citation = reference.get("citation")
+        text = f"{citation} ({found_by})" if citation and found_by else found_by
+        if text and text not in texts:
+            texts.append(text)
+    return "; ".join(texts)
+
+
+def _unique(values: Iterable[Any]) -> list[str]:
+    seen: list[str] = []
+    for value in values:
+        if value and str(value) not in seen:
+            seen.append(str(value))
+    return seen
+
+
+def _mark_clause(marks: Sequence[dict]) -> str:
+    """The evidence a row's one-structure marks give, in one clause."""
+    names = _unique(mark["name"] for mark in marks)
+    lists = _unique(mark["source"] for mark in marks)
+    marked = f", as {', '.join(lists)} marks it" if lists else ""
+    return (
+        f"one plausible structure, {' or '.join(names)}{marked}, citing "
+        f"{_cited(mark['reference'] for mark in marks)}"
+    )
+
+
+def _class_clause(entry: IonizationClass, notation: str) -> str:
+    """The evidence a row's channel gives by its class, in one clause."""
+    return (
+        f"{entry.noun} of this formula: its channel, {notation}, says "
+        f"{entry.group} ({_cited(r.record() for r in entry.references)})"
+    )
+
+
+def _structure(
+    row: dict, ctx: LevelContext, evidence: str, lift: str, facts: list[dict]
+) -> tuple[str, str, str]:
+    """What the run's chemistry data says of a row at 4a: 2b, 3b or neither.
+
+    :param row: The committed monoisotopic row, at 4a.
+    :param ctx: What the pass reads of the run.
+    :param evidence: The row's evidence line at 4a.
+    :param lift: Its lift at 4a, kept where nothing lifts it.
+    :param facts: The row's facts, which the facts read here are added to.
+    :return: The level, its evidence line and its lift.
+    """
+    marks = one_structure_marks(row)
+    notation = ctx.notation_by_id.get(str(row.get("ionization_mechanism_id")))
+    entry = ionization_class(ctx.profile, notation)
+    for mark in marks:
+        facts.append(
+            {
+                **_fact(ONE_STRUCTURE, REFERENCE_IDENTITIES, str(mark["name"])),
+                "source": mark["source"],
+                "reference": mark["reference"],
+            }
+        )
+    if entry is not None:
+        facts.append(
+            {
+                **_fact(
+                    "ionization_class", "resolved_profile", f"{notation}: {entry.group}"
+                ),
+                "entry": entry.record(),
+            }
+        )
+    if marks:
+        line = f"{_mark_clause(marks)}; {evidence}"
+        if entry is not None:
+            line += f"; it earns 3b too: {_class_clause(entry, str(notation))}"
+        return LEVEL_2B, line, LIFT_2B
+    if entry is not None:
+        return LEVEL_3B, f"{_class_clause(entry, str(notation))}; {evidence}", LIFT_3B
+    return LEVEL_4A, evidence, lift
 
 
 def _tested_summary(tested: Sequence[dict]) -> str:
@@ -1003,10 +1172,14 @@ def _level(
     excluded = (
         _tested_summary(tested) if tested else "no rival on the measured shortlist"
     )
+    evidence = f"{excluded}; {split}"
+    if level == LEVEL_4A:
+        # A structure is said only of a pinned neutral formula (step 5.8b).
+        level, evidence, split_lift = _structure(row, ctx, evidence, split_lift, facts)
     return {
         **record,
         "level": level,
-        "evidence": f"{excluded}; {split}",
+        "evidence": evidence,
         "lift": split_lift,
         "facts": facts,
     }
@@ -1060,6 +1233,7 @@ def apply_levels(
     lines: SpectrumLines | None = None,
     tiering: dict | None = None,
     resolution: Callable[[float], float] | None = None,
+    profile: ReagentProfile | None = None,
 ) -> dict:
     """Give every committed row of a run its identification level.
 
@@ -1078,6 +1252,8 @@ def apply_levels(
     :param tiering: The run's tiering record, whose absent-line gate the
         rivals' lines are asked at (``tiering.LineGate.from_record``).
     :param resolution: The file's resolving power as a function of m/z.
+    :param profile: The run's reagent profile, whose class table says the
+        functional group a channel implies (3b).
     :return: What the run records: the mapping version, the count per level of
         the monoisotopic rows and of the isotopologue rows, and how many rows
         had no measured shortlist, at whichever level they show.
@@ -1093,6 +1269,7 @@ def apply_levels(
         lines=lines,
         gate=LineGate.from_record(tiering) if tiering is not None else None,
         resolution=resolution,
+        profile=profile,
     )
     lines_of = isotope_lines(rows)
     levels: Counter = Counter()

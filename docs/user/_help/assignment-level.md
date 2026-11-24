@@ -16,6 +16,16 @@ measured:
 - **4a** &mdash; the neutral formula: every rival excluded, and the split into
   molecule and adduct pinned.
 
+On a peak at 4a, the run's chemistry data can say more:
+
+- **3b** &mdash; one functional group: the adduct the peak was read through
+  says a class of molecule, such as an acid deprotonated by a nitrate
+  reagent. The row names the class, *an acid of this formula*, and no
+  compound.
+- **2b** &mdash; one plausible structure: a cited reference list marks the
+  formula as having only one, as trifluoroacetic acid's. The row names the
+  structure, the list and the work it cites.
+
 The chip takes a colour of its own per number, apart from the tier's: slate
 for 5 (a mass), blue for 4 (a formula), plum from 3 up (a claim about
 structure), always with its text. Beside it, **why** says what earned the level and **would lift it**

@@ -1357,8 +1357,10 @@ not a rank inside the number: 3c is not weaker than 3a, it rests on something el
 | 5a | A measured mass, rivals listed | a rival on the shortlist no test excluded |
 | 4b | The ion's formula, the molecule-adduct split open | every rival excluded; another reading of the ion unsettled |
 | 4a | The neutral formula, the split pinned | every rival excluded; the split settled |
-| 3a to 3d | A tentative candidate: data and list agree, one functional group, a context list, a homologue series | coming: context, ionization, co-variation |
-| 2a, 2b | A probable structure: a library spectrum, diagnostic evidence | coming: MS/MS |
+| 3b | A tentative candidate: one functional group | a 4a row whose adduct says a class of molecule, from the reagent profile's class table |
+| 3a, 3c, 3d | A tentative candidate: data and list agree, a context list, a homologue series | coming: context lists, co-variation |
+| 2b | A probable structure: diagnostic evidence | a 4a row whose formula a cited list marks as having one plausible structure; MS/MS fragments are coming |
+| 2a | A probable structure: a library spectrum | coming: MS/MS |
 | 1 | A confirmed structure | a person, in review, only: a reference standard and an independent line ([Naming the structure](#naming-the-structure)) |
 
 **How a level is read.** Each committed row is asked, in order:
@@ -1373,7 +1375,11 @@ flowchart TD
   D -- no --> L5a2["5a: rivals listed"]
   D -- yes --> E{Split settled?}
   E -- no --> L4b[4b]
-  E -- yes --> L4a[4a]
+  E -- yes --> F{"A cited list marks one structure?"}
+  F -- yes --> L2b[2b]
+  F -- no --> G{"The adduct says a group?"}
+  G -- yes --> L3b[3b]
+  G -- no --> L4a[4a]
 ```
 
 - **Refuted or untestable.** A line of the formula's own isotope pattern that the spectrum
@@ -1414,6 +1420,29 @@ flowchart TD
   one; no bromine under bromide; fewer than two nitrogens under uronium, whose urea brings
   two). Otherwise the split is open and the level is 4b. A row that earns two letters of
   one number shows one, 5b before 5a, and names the other in its evidence.
+- **Past the formula.** Only a row at 4a is read for a structure: a structure is said of
+  a molecule, and below 4a the molecule is not pinned. Two pieces of chemistry data can
+  then say more, each entry citing the work it rests on, which the row's evidence line
+  names.
+    - **3b, one functional group.** Some adducts form only on a molecule with a given
+      group: a nitrate reagent deprotonates a molecule with an acidic hydrogen, a uronium
+      reagent protonates one with a basic site. Each reagent profile carries a class
+      table, one entry per adduct, and a row read through an adduct the table names
+      states the class: *an acid of this formula*. It names no compound.
+    - **2b, one plausible structure.** A few formulas have one plausible structure in the
+      chemistry Mascope reads, as trifluoroacetic acid and sulfuric acid have. A reference
+      list can mark such a formula, citing the work that says so
+      ([Reference compound lists](../guides/reference-lists.md#the-lists-that-ship-with-mascope)).
+      A row whose formula a list marks states the structure at 2b, the list and the work
+      named. A structure database's entry, or a list's compound without the mark, raises
+      nothing: it is a candidate of the formula, not a statement of its structure.
+    - A row that earns both shows 2b and names the class in its evidence. The shipped
+      reagent profiles and lists carry no entries yet: they are being written, each with
+      its citation, so until they are in no row reads 3b or 2b.
+- **A context list** (3c, and 3a where a second channel agrees) comes with sample
+  environments. A list that the samples' environment selects for the study will lift a
+  row to 3c. A background list that every run reads, such as the contaminants, will
+  lift nothing.
 
 **On a TOF** most rows read 5b. On three published TOF nitrate datasets Mascope is
 benchmarked on, 68 to 85 % of the committed rows read 5b, 13 to 27 % read 5a, and

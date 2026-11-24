@@ -422,3 +422,94 @@ def test_the_registry_knows_the_adapter():
     adapter = get_adapter("peaklist")
     assert isinstance(adapter, PeakListAdapter)
     assert adapter.license == "custom"
+
+
+# --- The one-structure mark (step 5.8b) -----------------------------------------
+
+
+_MARK = {
+    "citation": "A. Author, On trifluoroacetic acid. J. Test 2 (2025) 3-4.",
+    "doi": "10.1234/t.2",
+}
+
+
+def _marked(**species) -> dict:
+    return _good(
+        species=[
+            {"formula": "C2HF3O2", "name": "Trifluoroacetic acid", **species},
+            {"formula": "C10H16O7"},
+        ]
+    )
+
+
+def test_a_cited_one_structure_mark_ships(tmp_path):
+    data = _marked(one_structure=_MARK)
+
+    assert _problems(tmp_path, data) == []
+    first, _ = read_peak_list(_write(tmp_path, data)).species
+    assert first.one_structure == _MARK
+
+
+@pytest.mark.parametrize(
+    ("species", "expected"),
+    [
+        (
+            {"one_structure": {"citation": "A. Author, A paper."}},
+            "species 1 (C2HF3O2), its one-structure mark: neither a DOI nor an ISBN",
+        ),
+        (
+            {"one_structure": {"doi": "10.1234/t.2"}},
+            "species 1 (C2HF3O2), its one-structure mark: no citation",
+        ),
+        (
+            {"one_structure": True},
+            "species 1 (C2HF3O2), its one-structure mark: no citation",
+        ),
+    ],
+)
+def test_a_one_structure_mark_cites_its_work(tmp_path, species, expected):
+    assert expected in _problems(tmp_path, _marked(**species))
+
+
+def test_a_one_structure_mark_names_its_structure(tmp_path):
+    data = _good(species=[{"formula": "C2HF3O2", "one_structure": _MARK}])
+
+    assert _problems(tmp_path, data) == [
+        "species 1 (C2HF3O2): a one-structure mark names its structure, and the "
+        "species has no name"
+    ]
+
+
+def test_a_formula_with_one_structure_is_listed_once(tmp_path):
+    data = _good(
+        species=[
+            {
+                "formula": "C2HF3O2",
+                "name": "Trifluoroacetic acid",
+                "one_structure": _MARK,
+            },
+            {"formula": "C2HF3O2", "name": "An isomer"},
+        ]
+    )
+
+    assert _problems(tmp_path, data) == [
+        "species 1, 2 (C2HF3O2): a formula marked as having one plausible "
+        "structure is listed more than once"
+    ]
+
+
+def test_a_one_structure_mark_reaches_its_species_record(tmp_path):
+    first, second = PeakListAdapter().parse(
+        _write(tmp_path, _marked(one_structure=_MARK))
+    )
+
+    assert first.xrefs == {"one_structure": _MARK}
+    assert second.xrefs == {}
+
+
+def test_a_mark_that_names_no_work_reaches_no_record(tmp_path):
+    [first, _] = PeakListAdapter().parse(
+        _write(tmp_path, _marked(one_structure={"note": "no work named"}))
+    )
+
+    assert first.xrefs == {}

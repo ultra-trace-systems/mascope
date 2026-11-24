@@ -2,7 +2,7 @@
 
 - **Status:** building
 - **As of:** 2026-11-17
-- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear; MAS-73 and MAS-939 to MAS-944 carry the identification level, decision 38 is MAS-938; MAS-324 to MAS-327 the open P2 to P4 steps)
+- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear; MAS-73, MAS-939 to MAS-944 and MAS-1262 carry the identification level, decision 38 is MAS-938; MAS-324 to MAS-327 the open P2 to P4 steps)
 - **What:** The layered science of going from a peak to a confident identification: plausibility, arbitration, calibration, tiers.
 
 *A science-based, layered architecture for going from a peak to a confident chemical
@@ -760,18 +760,23 @@ says which statement leads the row, not that one kind of evidence outranks anoth
   profile, with 4.2g's label twin reading the label present); a second ionization route that
   commits the same neutral (`same_ion_settled`; on uronium, 4.2g's neutral pair once
   co-variation is weighed); or MS/MS in which the adduct releases its reagent cleanly.
-- **3c, context list** (5.8b). On a 4a row, a curated, cited list whose tags match the run's
-  resolved context (3.6: the context the dataset or batch names; the list tags of 2.5a and
-  2.5b) holds a compound of the row's neutral formula; the row names the compounds. A list
-  outside the run's context raises nothing, and neither does a structure database or a
-  target's declaration: those are candidates
+- **3c, context list** (5.8b2). On a 4a row, a curated, cited list that the run's environment
+  selected through its regimes holds a compound of the row's neutral formula; the row names
+  the compounds, the list and the regimes. The environment is the join (the plan owner's call
+  of 2026-11-24, MAS-1259): a list's `applies_to_contexts` holds regimes, not chemistry
+  contexts, and an environment names the regimes its samples read
+  ([`sample_filters_and_metadata.md`](sample_filters_and_metadata.md) 2.6 and 4.6, list
+  selection by environment, MAS-342). A list read for any other reason raises nothing: with no
+  environment in play, because it declares no regimes, or because it is `always_active` (a
+  background list, such as the contaminants, is not a compound the study expects). Neither
+  does a structure database or a target's declaration: those are candidates
   ([`identification_claims.md`](identification_claims.md) section 4), not context.
 - **3b, one functional group** (5.8b from ionization, 5.8e from MS/MS). On a 4a row, one
   constraint on the structure: a class, not a name. From ionization, through a table each
   profile carries, authored by peaky's owner with every entry cited (PKY-39): deprotonation
   by a nitrate reagent says an acidic hydrogen, protonation on uronium a basic site. From
   MS/MS, one named loss: CO2 a carboxylic acid, H2O2 a hydroperoxide, NH3 an amide or amine.
-- **3a, data and list agree** (5.8b, 5.8d). A 3c row that also has two routes (a second
+- **3a, data and list agree** (5.8b2, 5.8d). A 3c row that also has two routes (a second
   channel committing its neutral) or an anchored homologue (a series member whose anchor
   holds 3a or 3b). The strongest automated level for a formula with more than one plausible
   structure.

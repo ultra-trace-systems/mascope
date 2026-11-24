@@ -8,6 +8,8 @@ that the fingerprint is deterministic when a mode carries several diagnostic
 mechanisms, and that the identity profile really is an identity.
 """
 
+import dataclasses
+
 import pytest
 
 from mascope_tools.composition import profiles as P
@@ -349,3 +351,126 @@ class TestFittedWindow:
 
     def test_it_is_never_wider_than_the_class_window(self):
         assert P.fitted_window_ppm(10.0, 3.0, 0.0, 6.0) == 10.0
+
+
+# --- The class table (step 5.8b) ------------------------------------------------
+
+
+CITED = P.Citation(
+    "A. Author et al., A study of acids. J. Example 1 (2020) 1-10.",
+    doi="10.1234/example.2020",
+)
+ACID = P.IonizationClass("[M-H]-", "an acidic hydrogen", "an acid", (CITED,))
+
+
+def _with(*entries: P.IonizationClass) -> P.ReagentProfile:
+    """The nitrate preset with a class table of fixture entries."""
+    return dataclasses.replace(P.NO3, ionization_classes=entries)
+
+
+class TestClassTable:
+    def test_every_shipped_table_is_cited(self):
+        # The entries are PKY-39's; whatever they are, each is held here.
+        for profile in P.REAGENT_PROFILES.values():
+            assert P.ionization_class_problems(profile) == [], profile.name
+
+    def test_a_channel_finds_its_entry_by_any_spelling(self):
+        profile = _with(ACID)
+
+        assert P.ionization_class(profile, "[M-H]-") is ACID
+        assert P.ionization_class(profile, "-H+") is ACID
+
+    def test_a_channel_the_table_does_not_name_finds_none(self):
+        assert P.ionization_class(_with(ACID), "[M+NO3]-") is None
+        assert P.ionization_class(P.NO3, "[M-H]-") is None
+        assert P.ionization_class(None, "[M-H]-") is None
+        assert P.ionization_class(_with(ACID), None) is None
+
+    def test_a_cited_entry_has_no_problems(self):
+        isbn = P.Citation("A. Author, A book (2019).", isbn="978-3-95806-596-3")
+        entry = P.IonizationClass("[M+H]+", "a basic site", "a base", (isbn,))
+
+        assert P.ionization_class_problems(_with(ACID, entry)) == []
+
+    @pytest.mark.parametrize(
+        ("entry", "expected"),
+        [
+            (
+                P.IonizationClass("acid", "an acidic hydrogen", "an acid", (CITED,)),
+                "'acid' is not a mechanism",
+            ),
+            (P.IonizationClass("[M-H]-", " ", "an acid", (CITED,)), "no group"),
+            (
+                P.IonizationClass("[M-H]-", "an acidic hydrogen", "", (CITED,)),
+                "no class",
+            ),
+            (
+                P.IonizationClass("[M-H]-", "an acidic hydrogen", "an acid"),
+                "no reference",
+            ),
+            (
+                P.IonizationClass(
+                    "[M-H]-", "an acidic hydrogen", "an acid", (P.Citation("A work"),)
+                ),
+                "neither a DOI nor an ISBN",
+            ),
+            (
+                P.IonizationClass(
+                    "[M-H]-",
+                    "an acidic hydrogen",
+                    "an acid",
+                    (P.Citation("", doi="10.1234/x.1"),),
+                ),
+                "no citation",
+            ),
+            (
+                P.IonizationClass(
+                    "[M-H]-",
+                    "an acidic hydrogen",
+                    "an acid",
+                    (P.Citation("A work", doi="doi:1234"),),
+                ),
+                "'doi:1234' is not a DOI",
+            ),
+            (
+                P.IonizationClass(
+                    "[M-H]-",
+                    "an acidic hydrogen",
+                    "an acid",
+                    (P.Citation("A work", isbn="978-3-95806-596-4"),),
+                ),
+                "'978-3-95806-596-4' is not a valid ISBN",
+            ),
+        ],
+    )
+    def test_an_entry_names_its_channel_its_class_and_its_work(self, entry, expected):
+        [problem] = P.ionization_class_problems(_with(entry))
+
+        assert problem.startswith("NO3 class 1")
+        assert problem.endswith(expected)
+
+    def test_a_channel_has_one_entry(self):
+        again = P.IonizationClass("-H+", "an acidic hydrogen", "an acid", (CITED,))
+
+        [problem] = P.ionization_class_problems(_with(ACID, again))
+
+        assert problem.endswith("the channel has an entry already")
+
+    def test_an_entry_is_recorded_with_its_works(self):
+        assert ACID.record() == {
+            "mechanism": "[M-H]-",
+            "group": "an acidic hydrogen",
+            "noun": "an acid",
+            "references": [
+                {
+                    "citation": (
+                        "A. Author et al., A study of acids. J. Example 1 (2020) 1-10."
+                    ),
+                    "doi": "10.1234/example.2020",
+                }
+            ],
+        }
+        assert CITED.text() == (
+            "A. Author et al., A study of acids. J. Example 1 (2020) 1-10. "
+            "(10.1234/example.2020)"
+        )

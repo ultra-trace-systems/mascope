@@ -919,6 +919,11 @@ class TestTheJudgedLedger:
         assert handed["context"].name == "chamber"
         assert handed["notation_by_id"]
         assert handed["instrument_type"] == "orbi"
+        config = recorder.recorded_configs()[-1]
+        # The reagent profile the run resolved to, whose class table a row at
+        # 4a is read through (step 5.8b).
+        assert handed["profile"] is not None
+        assert handed["profile"].name == config["resolved_profile"]["profile"]
         by_peak = {row["sample_peak_id"]: row for row in recorder.rows}
         m0, child = by_peak["p1"], by_peak["p2"]
         assert m0["level"] in ("4a", "4b", "5a", "5b")

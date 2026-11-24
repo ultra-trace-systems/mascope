@@ -14,7 +14,10 @@ included, into the provenance of each row whose formula it matches, so a list's
 constants on every record would be written onto every matched peak of every
 sample and read by nothing. The list's ``tags`` are the one exception, because
 a row does read them: a compound the cyclic-siloxane list names says, on the
-row, that the list reads it as background.
+row, that the list reads it as background. A species' one-structure mark is
+its own fact and rides on its record too (``xrefs.one_structure``, the work
+that marks it as its formula's one plausible structure), read by the
+identification level on a row at 4a.
 
 A radical is held back unless the list says ``allow_radicals``, which a
 schema 1 list cannot say.
@@ -30,6 +33,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from mascope_reference.peaklist import (
+    ONE_STRUCTURE,
     PeakList,
     admitted_species,
     read_peak_list,
@@ -100,6 +104,13 @@ class PeakListAdapter:
                 xrefs["reference"] = species.reference
             if peak_list.tags:
                 xrefs["tags"] = list(peak_list.tags)
+            mark = (
+                recorded_reference(species.one_structure)
+                if species.one_structure
+                else None
+            )
+            if mark is not None:
+                xrefs[ONE_STRUCTURE] = mark
             yield ReferenceRecord(
                 formula=species.formula,
                 name=species.name,
