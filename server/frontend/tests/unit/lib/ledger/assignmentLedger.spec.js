@@ -636,3 +636,146 @@ describe('AssignmentLedger, the shared cells', () => {
     expect(button('own').attributes('disabled')).toBeUndefined()
   })
 })
+
+// The lens and Group by (MAS-1069): the bar over the narrowed rows, its label
+// column, and the rows that stand for no peak of the scope.
+describe('AssignmentLedger, groups', () => {
+  const LENS = { title: 'CH2 series from C5H8O4, 4 batch peaks', column: 'Step', plot: true }
+  const rows = [
+    { id: 'a', mz: 100.05, consensus_formula: 'C5H8O4', lensLabel: 'root', verdict: null },
+    {
+      id: 'gap',
+      ledgerKind: 'gap',
+      lensLabel: '+1 CH2',
+      pseudoFormula: 'C6H10O4',
+      pseudoNote: 'no batch peak'
+    },
+    {
+      id: 'absent',
+      ledgerKind: 'absent',
+      lensLabel: '+2 CH2',
+      pseudoMz: 222.1,
+      pseudoFormula: 'C7H12O4',
+      pseudoIon: 'C7H12NO7-',
+      pseudoNote: 'not in this sample'
+    }
+  ]
+
+  it('names the group in a bar, labels each row and offers to plot it', async () => {
+    const wrapper = mountLedger('batch', { props: { rows, lens: LENS } })
+    expect(wrapper.find('[data-testid="lens-title"]').text()).toBe(LENS.title)
+    // The label column comes after the scope's Plot column.
+    expect(fields(wrapper).slice(0, 2)).toEqual(['multiple', 'lensLabel'])
+    expect(column(wrapper, 'lensLabel').find('.head').text()).toBe('Step')
+    expect(cell(wrapper, 'lensLabel', 'gap').text()).toBe('+1 CH2')
+
+    await wrapper.find('[data-testid="lens-plot"]').trigger('click')
+    await wrapper.find('[data-testid="lens-close"]').trigger('click')
+    expect(wrapper.emitted('plot-lens')).toHaveLength(1)
+    expect(wrapper.emitted('close-lens')).toHaveLength(1)
+  })
+
+  it('draws neither the bar nor the column without a lens, nor Plot where it is not offered', () => {
+    const wrapper = mountLedger('batch', { props: { rows: rows.slice(0, 1) } })
+    expect(wrapper.find('[data-testid="lens-bar"]').exists()).toBe(false)
+    expect(fields(wrapper)).not.toContain('lensLabel')
+    const sample = mountLedger('sample', { props: { rows, lens: { ...LENS, plot: false } } })
+    expect(sample.find('[data-testid="lens-plot"]').exists()).toBe(false)
+  })
+
+  it('closes on Escape, but not while a menu over it takes the key', async () => {
+    const wrapper = mountLedger('batch', { props: { rows, lens: LENS }, attachTo: document.body })
+    const popover = document.createElement('div')
+    popover.className = 'p-popover'
+    const inside = document.createElement('button')
+    popover.appendChild(inside)
+    document.body.appendChild(popover)
+    inside.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(wrapper.emitted('close-lens')).toBeUndefined()
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    expect(wrapper.emitted('close-lens')).toHaveLength(1)
+    popover.remove()
+
+    // Closed, it listens no more.
+    const removed = vi.spyOn(window, 'removeEventListener')
+    await wrapper.setProps({ lens: null })
+    expect(removed).toHaveBeenCalledWith('keydown', expect.any(Function))
+    removed.mockRestore()
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    expect(wrapper.emitted('close-lens')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('draws a gap and an absent member greyed, with what each is and no tier or verdict', () => {
+    const wrapper = mountLedger('batch', { props: { rows, lens: LENS } })
+    const rowClass = wrapper.findComponent(DataTable).props('rowClass')
+    expect(rowClass(rows[1])).toEqual(['ledger-pseudo ledger-gap'])
+    expect(rowClass(rows[0])).toEqual([])
+
+    const gap = cell(wrapper, 'consensus_formula', 'gap')
+    const parts = (el) => el.findAll('span').map((span) => span.text())
+    expect(parts(gap.find('[data-testid="pseudo-gap"]'))).toEqual(['C6H10O4', 'no batch peak'])
+    const absent = cell(wrapper, 'consensus_formula', 'absent')
+    expect(parts(absent.find('[data-testid="pseudo-absent"]'))).toEqual([
+      'C7H12O4',
+      'not in this sample'
+    ])
+    // The absent member's m/z is no link: there is no row to open.
+    expect(cell(wrapper, 'mz', 'absent').find('[data-testid="ledger-mz"]').exists()).toBe(false)
+    expect(cell(wrapper, 'mz', 'absent').text()).toBe('222.1000')
+    expect(cell(wrapper, 'consensus_ion_formula', 'absent').text()).toBe('C7H12NO7-')
+    for (const id of ['gap', 'absent']) {
+      expect(cell(wrapper, 'tierRank', id).find('.tier-tag').exists()).toBe(false)
+      expect(cell(wrapper, 'verdictRank', id).find('button').exists()).toBe(false)
+    }
+    expect(cell(wrapper, 'mz', 'a').find('[data-testid="ledger-mz"]').exists()).toBe(true)
+  })
+
+  it('gives a row that stands for no peak no tier, level or action', () => {
+    const wrapper = mountLedger('batch', {
+      props: { rows, lens: LENS, hasLevels: true },
+      slots: {
+        actions: () => h('button', { class: 'act' }),
+        tier: () => h('span', { class: 'tier-slot' })
+      }
+    })
+    expect(cell(wrapper, 'tierRank', 'a').find('.tier-slot').exists()).toBe(true)
+    expect(cell(wrapper, 'tierRank', 'gap').find('.tier-slot').exists()).toBe(false)
+    const actions = wrapper.findAll('.column').at(-1)
+    expect(actions.find('.cell[data-row="a"] .act').exists()).toBe(true)
+    expect(actions.find('.cell[data-row="gap"] .act').exists()).toBe(false)
+    expect(cell(wrapper, 'member_level', 'a').find('.level-cell').exists()).toBe(true)
+    expect(cell(wrapper, 'member_level', 'absent').find('.level-cell').exists()).toBe(false)
+  })
+
+  it('draws a group line: its name, its count and its best tier, folded by a button', async () => {
+    const line = {
+      id: 'g',
+      ledgerKind: 'group',
+      groupKey: 'k',
+      groupName: 'C6H10O4',
+      groupCount: '2 batch peaks',
+      groupTier: 'assigned',
+      collapsed: false
+    }
+    const wrapper = mountLedger('batch', { props: { rows: [line] } })
+    const button = cell(wrapper, 'consensus_formula', 'g').find('[data-testid="group-line"]')
+    expect(button.element.tagName).toBe('BUTTON')
+    expect(button.find('.group-name').text()).toBe('C6H10O4')
+    expect(button.find('.group-count').text()).toBe('2 batch peaks')
+    expect(button.attributes('aria-label')).toBe('Fold C6H10O4, 2 batch peaks')
+    expect(button.attributes('aria-expanded')).toBe('true')
+    expect(cell(wrapper, 'tierRank', 'g').find('.tier-tag').attributes('data-tier')).toBe(
+      'assigned'
+    )
+    await button.trigger('click')
+    expect(wrapper.emitted('toggle-group')).toEqual([[line]])
+    // Enter and Space stop at the button: the table would read them as a
+    // selection of the row.
+    const outer = vi.fn()
+    wrapper.element.addEventListener('keydown', outer)
+    await button.trigger('keydown', { key: 'Enter' })
+    await button.trigger('keydown', { key: ' ' })
+    expect(outer).not.toHaveBeenCalled()
+  })
+})

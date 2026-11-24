@@ -68,10 +68,23 @@ const helpStub = {
   bottom: () => ({})
 }
 
+// The browser's paradigm and the batch ledger the card's group actions reach:
+// Show in the ledger switches to the assignments, Plot them selects batch peaks.
+const matchMode = { mode: 'targets' }
+const batchPeakLedger = {
+  list: [],
+  selected: [],
+  instrumentType: null,
+  inPartition: () => true,
+  showInstrument: vi.fn()
+}
+const notificationPush = vi.fn()
+
 function makeApp() {
   return {
     data: {
       sample: { focusedId: 'si-1' },
+      batchPeak: batchPeakLedger,
       batch: { focusedId: 'sb-1' },
       // `focused` is a getter over a ref so the pane's computeds actually
       // re-evaluate when a test moves the focus after mounting; a plain value
@@ -127,7 +140,7 @@ function makeApp() {
       },
       ionization: { mechanism: { list: mechanisms } }
     },
-    ui: { help: helpStub }
+    ui: { help: helpStub, matchMode, notification: { push: notificationPush } }
   }
 }
 
@@ -4969,6 +4982,54 @@ describe('PanePeakAssign the card, answer first', () => {
         expect(labels.map((label) => label.text())).toEqual(['root', '+1 CH2', '+3 CH2', '+4 CH2'])
       })
 
+      it('shows the group in the ledger, on this sample, among the assignments', async () => {
+        const { createPinia, setActivePinia } = await import('pinia')
+        setActivePinia(createPinia())
+        const { useLedgerLensStore } = await import('@/lib/ledger/useLedgerLens.js')
+        detailRecord = {
+          provenance: {
+            tier_reasons: [{ rule: 'corroborated', detail: 'seen through 2 channels' }]
+          },
+          batch_groups: [channels]
+        }
+        matchMode.mode = 'targets'
+        const wrapper = await mountPane()
+        await wrapper.find('[data-testid="group-show"]').trigger('click')
+
+        expect(matchMode.mode).toBe('assignments')
+        expect(useLedgerLensStore().lenses.sample).toMatchObject({
+          group: channels,
+          sampleId: 'si-1'
+        })
+      })
+
+      it("plots the group's batch peaks in the batch chart", async () => {
+        const { createPinia, setActivePinia } = await import('pinia')
+        setActivePinia(createPinia())
+        detailRecord = {
+          provenance: {
+            tier_reasons: [{ rule: 'corroborated', detail: 'seen through 2 channels' }]
+          },
+          batch_groups: [channels]
+        }
+        batchPeakLedger.list = ['bp-1', 'bp-2', 'bp-3', 'bp-9'].map((batch_peak_id) => ({
+          batch_peak_id
+        }))
+        batchPeakLedger.selected = [{ batch_peak_id: 'bp-9' }]
+        try {
+          const wrapper = await mountPane()
+          await wrapper.find('[data-testid="group-plot"]').trigger('click')
+          expect(batchPeakLedger.selected.map((bp) => bp.batch_peak_id)).toEqual([
+            'bp-1',
+            'bp-2',
+            'bp-3'
+          ])
+        } finally {
+          batchPeakLedger.list = []
+          batchPeakLedger.selected = []
+        }
+      })
+
       it('lists nothing where the batch serves no such group', async () => {
         detailRecord = {
           provenance: {
@@ -4979,6 +5040,7 @@ describe('PanePeakAssign the card, answer first', () => {
         const wrapper = await mountPane()
 
         expect(wrapper.find('[data-testid="group-members"]').exists()).toBe(false)
+        expect(wrapper.find('[data-testid="group-actions"]').exists()).toBe(false)
       })
     })
   })

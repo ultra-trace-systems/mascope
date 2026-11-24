@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, useAttrs } from 'vue'
+import { computed, onBeforeUnmount, ref, useAttrs, watch } from 'vue'
 
 import Button from 'primevue/button'
 import Column from 'primevue/column'
@@ -64,7 +64,17 @@ import './narrow.css'
  *   within the row and on the selected row. Clicking an m/z opens the peak
  *   in the inspector (`open-mz`);
  * - the narrow widths: ./narrow.css drops the level, the sample count, the
- *   batch's badges and the intensity's bar, in that order.
+ *   batch's badges and the intensity's bar, in that order;
+ * - the lens (section 3.5): with `lens` set, a bar above the table names the
+ *   group the rows are narrowed to, offers to plot it where the scope can,
+ *   and closes with its x or Escape; a Step or Channel column labels each
+ *   row (`lensLabel`);
+ * - the rows that stand for no peak of the scope (`ledgerKind`): a group
+ *   line of Group by, which folds its members (`toggle-group`), a series
+ *   step with no batch peak (`gap`), a member the scope holds no row for
+ *   (`absent`), and a row listed under another group line (`reference`).
+ *   Each shows its label in the Compound cell and nothing a row of a peak
+ *   would: no box, tier, verdict or action.
  *
  * Sorting and filtering are the scope's (useLedgerSort, useLedgerFilters):
  * the table is `lazy`, so `rows` arrive filtered, sorted and folded as shown.
@@ -146,16 +156,26 @@ const props = defineProps({
 
   /** The verdict cell's props for a row (LedgerVerdictCell), and its help card. */
   verdictCell: { type: Function, required: true },
-  verdictHelp: { type: Object, required: true }
+  verdictHelp: { type: Object, required: true },
+
+  /**
+   * The lens the rows are narrowed to, or null: `title`, the bar's line;
+   * `column`, the label column's header (Step or Channel); `plot`, whether
+   * the bar offers to plot the group (`plot-lens`).
+   */
+  lens: { type: Object, default: null }
 })
-defineEmits([
+const emit = defineEmits([
   'update:sortField',
   'update:sortOrder',
   'update:search',
   'toggle-tier',
   'open-verdict',
   'open-mz',
-  'toggle-family'
+  'toggle-family',
+  'toggle-group',
+  'close-lens',
+  'plot-lens'
 ])
 const attrs = useAttrs()
 
@@ -179,13 +199,40 @@ defineExpose({ table, viewMenu, overflowMenu })
 // An isotopologue line, in either scope: the sample's rows mark it
 // `isChild`, the batch's carry the family they fold under as `parentId`.
 const isLineRow = (row) => Boolean(row.isChild || row.parentId)
+// A row that stands for no peak of the scope: a group line, a gap, a member
+// the scope holds no row for, or a row listed under an earlier group line.
+const isPseudo = (row) => Boolean(row?.ledgerKind)
+// A row that shows only what a line or a pseudo-row shows.
+const isQuiet = (row) => isLineRow(row) || isPseudo(row)
 
 // A line is a sub-row: the class the narrow rules and the quiet style key on,
 // beside whatever the scope gives its rows.
 const rowClass = (row) => {
   const own = typeof attrs.rowClass === 'function' ? attrs.rowClass(row) : attrs.rowClass
-  return [own, isLineRow(row) ? 'ledger-line' : null].filter(Boolean)
+  return [
+    own,
+    isLineRow(row) ? 'ledger-line' : null,
+    isPseudo(row) ? `ledger-pseudo ledger-${row.ledgerKind}` : null
+  ].filter(Boolean)
 }
+
+// Escape closes the lens, wherever the focus is, but not while a menu or a
+// dialog over the ledger is open: Escape is theirs first.
+function onLensKey(event) {
+  if (event.key !== 'Escape' || event.defaultPrevented || !props.lens) return
+  const target = event.target
+  if (target?.closest?.('.p-popover, .p-dialog, .p-select-overlay')) return
+  emit('close-lens')
+}
+watch(
+  () => Boolean(props.lens),
+  (open) => {
+    if (open) window.addEventListener('keydown', onLensKey)
+    else window.removeEventListener('keydown', onLensKey)
+  },
+  { immediate: true }
+)
+onBeforeUnmount(() => window.removeEventListener('keydown', onLensKey))
 
 // The intensity: the compact number, the exact one on hover, and the bar on a
 // log scale over the scope's rows.
@@ -326,6 +373,38 @@ const engineChipTooltip = (row) =>
 
       <slot name="above-table" />
 
+      <!-- The lens: the group the rows are narrowed to, the way to plot it,
+           and the way out. Escape closes it too. -->
+      <div v-if="lens" class="lens-bar" role="region" aria-label="Group" data-testid="lens-bar">
+        <span class="pi ph ph-funnel-simple lens-icon" aria-hidden="true" />
+        <span class="lens-title" data-testid="lens-title">{{ lens.title }}</span>
+        <Button
+          v-if="lens.plot"
+          class="lens-plot"
+          label="Plot the group"
+          icon="pi ph ph-chart-line"
+          size="small"
+          text
+          data-testid="lens-plot"
+          v-tooltip.top="
+            'Plot the group\'s batch peaks in the batch chart, in place of what it plots'
+          "
+          @click="$emit('plot-lens')"
+        />
+        <Button
+          class="lens-close"
+          icon="pi pi-times"
+          size="small"
+          text
+          rounded
+          severity="secondary"
+          aria-label="Close the group (Escape)"
+          data-testid="lens-close"
+          v-tooltip.top="'Close the group and list the ledger as before (Escape)'"
+          @click="$emit('close-lens')"
+        />
+      </div>
+
       <div v-if="pending" class="center loading-region">
         <ProgressSpinner />
       </div>
@@ -361,6 +440,19 @@ const engineChipTooltip = (row) =>
              chart. -->
         <slot name="lead-column" />
 
+        <!-- Under the lens: each row's place in the group, its step from the
+             series' root or the channel it reads. -->
+        <Column v-if="lens" field="lensLabel" style="min-width: 5rem">
+          <template #header>
+            <span>{{ lens.column }}</span>
+          </template>
+          <template #body="{ data }">
+            <span v-if="data.lensLabel" class="lens-label" data-testid="lens-label">{{
+              data.lensLabel
+            }}</span>
+          </template>
+        </Column>
+
         <!-- The header tooltips sit on a span in the header slot, never on the
              Column itself: Column renders no element of its own. -->
         <Column :field="fields.mz" sortable style="min-width: 5.5rem">
@@ -370,7 +462,11 @@ const engineChipTooltip = (row) =>
           <!-- The peak, in the inspector: the sample's own row, or the batch
                peak in its brightest sample. -->
           <template #body="{ data }">
+            <span v-if="isPseudo(data)" class="pseudo-mz">{{
+              data.pseudoMz != null ? num.mz.format(data.pseudoMz) : ''
+            }}</span>
             <button
+              v-else
               type="button"
               class="mz-link"
               data-testid="ledger-mz"
@@ -390,7 +486,39 @@ const engineChipTooltip = (row) =>
             <span v-tooltip.top="headers.formula">Compound</span>
           </template>
           <template #body="{ data }">
-            <span v-if="isLineRow(data)" class="line-cell" data-testid="line-cell"
+            <!-- A group line of Group by: its name, its member count and its
+                 best member's tier. A button, so Tab reaches it and Enter or
+                 Space fold it; the keys stop here, where the table would read
+                 them as a selection. -->
+            <button
+              v-if="data.ledgerKind === 'group'"
+              type="button"
+              class="group-line"
+              data-testid="group-line"
+              :aria-expanded="!data.collapsed"
+              :aria-label="`${data.collapsed ? 'Unfold' : 'Fold'} ${data.groupName}, ${data.groupCount}`"
+              @click.stop="$emit('toggle-group', data)"
+              @keydown.enter.stop
+              @keydown.space.stop
+            >
+              <span
+                :class="['pi', data.collapsed ? 'pi-chevron-right' : 'pi-chevron-down']"
+                aria-hidden="true"
+              />
+              <span class="group-name">{{ data.groupName }}</span>
+              <span class="group-count">{{ data.groupCount }}</span>
+            </button>
+            <!-- A gap, a member the scope holds no row for, or a row listed
+                 under an earlier group line: greyed, with what it is. -->
+            <span
+              v-else-if="isPseudo(data)"
+              class="pseudo-cell"
+              :data-testid="`pseudo-${data.ledgerKind}`"
+            >
+              <span v-if="data.pseudoFormula" class="formula">{{ data.pseudoFormula }}</span>
+              <span class="pseudo-note">{{ data.pseudoNote }}</span>
+            </span>
+            <span v-else-if="isLineRow(data)" class="line-cell" data-testid="line-cell"
               ><slot name="line-label" :data="data"
             /></span>
             <span v-else class="compound-cell" data-testid="compound-cell">
@@ -432,7 +560,8 @@ const engineChipTooltip = (row) =>
             <span v-tooltip.top="headers.ion">Ion</span>
           </template>
           <template #body="{ data }">
-            <span v-if="!isLineRow(data)" class="ion-cell"
+            <span v-if="isPseudo(data)" class="ion pseudo-ion">{{ data.pseudoIon ?? '' }}</span>
+            <span v-else-if="!isLineRow(data)" class="ion-cell"
               ><slot name="ion" :data="data"
                 ><span class="ion">{{ data[fields.ion] ?? '' }}</span></slot
               ></span
@@ -479,7 +608,15 @@ const engineChipTooltip = (row) =>
                sorts, filters and rolls up on, and a row where the two differ is
                the one worth opening. -->
           <template #body="{ data }">
-            <span v-if="!isLineRow(data)" class="tier-cell">
+            <!-- A group line: its best member's tier. -->
+            <span v-if="data.ledgerKind === 'group'" class="tier-cell">
+              <BaseTierTag
+                v-if="data.groupTier || data.groupRole"
+                :tier="data.groupTier"
+                :role="data.groupRole"
+              />
+            </span>
+            <span v-else-if="!isQuiet(data)" class="tier-cell">
               <slot name="tier" :data="data" :cap="tierCap(data)" />
               <BaseTierTag
                 v-if="engineReadings && data.engine_tier"
@@ -523,9 +660,7 @@ const engineChipTooltip = (row) =>
             >
           </template>
           <template #body="{ data }">
-            <span v-if="!isLineRow(data)" class="level-cell"
-              ><slot name="level" :data="data"
-            /></span>
+            <span v-if="!isQuiet(data)" class="level-cell"><slot name="level" :data="data" /></span>
           </template>
           <template #filter="{ filterModel, filterCallback }">
             <Select
@@ -561,7 +696,7 @@ const engineChipTooltip = (row) =>
           </template>
           <template #body="{ data }">
             <LedgerVerdictCell
-              v-if="!isLineRow(data)"
+              v-if="!isQuiet(data)"
               v-bind="verdictCell(data)"
               @open="$emit('open-verdict', $event, data)"
             />
@@ -576,7 +711,7 @@ const engineChipTooltip = (row) =>
             <span class="sr-only">Actions</span>
           </template>
           <template #body="{ data }">
-            <span v-if="!isLineRow(data)" class="row-actions" data-testid="row-actions"
+            <span v-if="!isQuiet(data)" class="row-actions" data-testid="row-actions"
               ><slot name="actions" :data="data"
             /></span>
           </template>
@@ -689,6 +824,87 @@ const engineChipTooltip = (row) =>
    smaller and muted. It inherits the rest from the row above it. */
 .ledger :deep(tr.ledger-line > td) {
   font-size: 0.82rem;
+  color: var(--p-text-muted-color);
+}
+
+/* The lens's bar: the group's name, Plot the group and the x. */
+.lens-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex: 0 0 auto;
+  padding: 0.2rem 0.4rem 0.2rem 0.6rem;
+  border: 1px solid var(--p-content-border-color);
+  border-radius: 6px;
+  background: var(--p-content-hover-background);
+  font-size: 0.82rem;
+}
+.lens-icon {
+  color: var(--p-text-muted-color);
+}
+.lens-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lens-label {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--p-text-muted-color);
+}
+
+/* The rows that stand for no peak: greyed, a gap or an absent member with
+   what it is beside its formula. */
+.ledger :deep(tr.ledger-gap > td),
+.ledger :deep(tr.ledger-absent > td),
+.ledger :deep(tr.ledger-reference > td) {
+  color: var(--p-text-muted-color);
+  font-size: 0.82rem;
+}
+.ledger :deep(tr.ledger-gap > td) {
+  font-style: italic;
+}
+.pseudo-cell {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+.pseudo-note {
+  font-size: 0.72rem;
+}
+.pseudo-mz {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+/* A group line of Group by: its caret, its name and its count. */
+.ledger :deep(tr.ledger-group > td) {
+  background: var(--p-content-hover-background);
+}
+.group-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.1rem 0.3rem;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+.group-line .pi {
+  font-size: 0.65rem;
+  color: var(--p-text-muted-color);
+}
+.group-line:focus-visible {
+  outline: 2px solid var(--p-primary-color);
+}
+.group-count {
+  font-size: 0.72rem;
+  font-weight: 400;
   color: var(--p-text-muted-color);
 }
 

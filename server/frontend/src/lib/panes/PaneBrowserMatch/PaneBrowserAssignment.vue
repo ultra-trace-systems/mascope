@@ -43,15 +43,25 @@ import { queueReason, queueRows, queueTooltip } from '@/lib/verificationQueue'
 import { scrollVirtualRowIntoView } from '@/lib/virtualScroll'
 import {
   AssignmentLedger,
+  ENTRY_GAP,
+  ENTRY_MEMBER,
+  GROUP_CHANNELS,
   LEDGER_ROW_HEIGHT,
   LedgerMenuChoice,
   LedgerVerdictPopover,
   LedgerViewToggle,
+  groupSections,
   ledgerTierChips,
+  lensColumnLabel,
+  lensEntries,
+  lensTitle,
+  localChannelGroup,
   runSearchWindow,
+  sampleGroupSets,
   sampleLineLabel,
   useFamilyFold,
   useLedgerFilters,
+  useLedgerLensStore,
   useLedgerSort,
   useLedgerView,
   useRowPopover,
@@ -374,7 +384,7 @@ const staleNotice = computed(() => {
     'Run the assignment again to read the current peaks.'
   )
 })
-const rowClass = (row) => (isStale(row) ? 'stale-peak' : null)
+const rowClass = (row) => (!row.ledgerKind && isStale(row) ? 'stale-peak' : null)
 
 // --- Filters ------------------------------------------------------------------
 
@@ -430,43 +440,12 @@ const showIsotopologues = viewChoice('isotopologues')
 // One family at a time, from the caret on its row, against Show's choice.
 const families = useFamilyFold(showIsotopologues)
 
-// --- One row per neutral --------------------------------------------------------
+// --- One neutral, several channels -------------------------------------------------
 
 // A run that searches several ionization channels can commit the same neutral
 // through more than one of them - [M+H]+ and [M+NH4]+, [M-H]- and [M+Br]- - and
-// the ledger lists each as a row of its own, at its own m/z. Grouped, the
-// neutral is one row: its strongest reading heads it, by the ledger's resting
-// order (tier, then fit), and the others sit under it, shown when the reader
-// opens the group from the head's ionization cell. Off by default: a row per
-// ion is what a reader matching the ledger against the spectrum needs.
-//
-// Grouped on what the rows show, so the filters apply first. Only an analyte's
-// formula groups; a source ion or a peak nothing explained names no neutral.
-// Show > Group by: none, or compound. The batch's groups (by series) are the
-// batch scope's.
-const groupByFormula = computed({
-  get: () => view.groupBy === 'compound',
-  set: (on) => (view.groupBy = on ? 'compound' : 'none')
-})
-const GROUP_BY = [
-  { value: 'none', label: 'None' },
-  {
-    value: 'compound',
-    label: 'Compound',
-    tooltip:
-      'One row per neutral formula: its other ionization channels fold under its strongest reading'
-  }
-]
-// The groups the reader opened, by neutral. Kept while grouping stays on, so a
-// re-sort or a filter does not close them.
-const openGroups = reactive(new Set())
-const toggleGroup = (key) => {
-  if (openGroups.has(key)) openGroups.delete(key)
-  else openGroups.add(key)
-}
-watch(groupByFormula, (on) => {
-  if (!on) openGroups.clear()
-})
+// the ledger lists each as a row of its own, at its own m/z. Only an analyte's
+// formula names a neutral; a source ion or a peak nothing explained names none.
 const groupKeyOf = (row) =>
   row.assigned_formula && !ROLE_BUCKETS.includes(row.role) ? neutralKey(row.assigned_formula) : ''
 
@@ -492,8 +471,8 @@ const channelsOf = (row) => {
   return key ? (channelsByNeutral.value.get(key) ?? []) : []
 }
 const channelCount = (row) => channelsOf(row).length
-// The pill's hover: the channels the neutral is read through, and on a
-// group's head what clicking does.
+// The pill's hover: the channels the neutral is read through, and what
+// clicking does.
 const channelTooltip = (row) => {
   const mechs = [
     ...new Set(
@@ -502,12 +481,70 @@ const channelTooltip = (row) => {
       )
     )
   ]
-  const line =
+  return (
     `The same neutral is read through ${channelCount(row)} channels of this sample: ` +
-    mechs.join(', ')
-  if (!row.channelRows?.length) return line
-  const shown = openGroups.has(row.groupKey)
-  return `${line}. Click to ${shown ? 'fold' : 'show'} the others under this row`
+    `${mechs.join(', ')}. Click to see the channels together`
+  )
+}
+
+// --- Group by ----------------------------------------------------------------------
+
+// Show > Group by: none, or compound - one group line per neutral two or more
+// of the sample's rows read, over those rows, and the rest under an Ungrouped
+// line at the end. Grouping by series needs every row's groups at once, which
+// the sample's list does not carry: it is the batch scope's.
+const GROUP_BY = [
+  { value: 'none', label: 'None' },
+  {
+    value: 'compound',
+    label: 'Compound',
+    tooltip: "One group line per neutral the sample's rows read through several channels"
+  }
+]
+// The group lines the reader folded, by key. Kept while the grouping stays.
+const collapsed = reactive(new Set())
+watch(
+  () => view.groupBy,
+  () => collapsed.clear()
+)
+const toggleGroupLine = (line) => {
+  if (collapsed.has(line.groupKey)) collapsed.delete(line.groupKey)
+  else collapsed.add(line.groupKey)
+}
+
+// --- The lens ----------------------------------------------------------------------
+
+// The ledger narrowed to the rows a reading spans (section 3.5). The sample's
+// list carries no groups, so a click on the xN pill reads that row's detail
+// for the batch's groups (`batch_groups`) and opens its channels from them:
+// every member, the sample's own row where it holds the member and a greyed
+// line where it does not. Where the batch serves none - it has no batch peaks
+// yet - the lens falls back to the sample's own rows, channels only. The card's
+// Show in the ledger opens one here too. Shown only while the sample it was
+// opened on is the one listed.
+const lenses = useLedgerLensStore()
+const lensState = computed(() => {
+  const state = lenses.lenses.sample
+  return state && state.sampleId === app.data.sample.focusedId ? state : null
+})
+const lensGroup = computed(() => lensState.value?.group ?? null)
+const closeLens = () => lenses.close('sample')
+
+async function openChannelLens(row) {
+  const sampleId = app.data.sample.focusedId
+  // A failed read has been reported by the http layer; the lens then stands
+  // on the sample's own rows.
+  const detail = await assignments.value.loadDetail(row).catch(() => null)
+  if (app.data.sample.focusedId !== sampleId) return
+  // The detail serves the groups the row's batch peak is in, and a batch peak
+  // is in one channel group at most: its neutral's.
+  const served = (detail?.batch_groups ?? []).find((group) => group?.kind === GROUP_CHANNELS)
+  const group =
+    served ??
+    localChannelGroup(channelsOf(row), {
+      mechanismOf: (other) => mechById.value.get(other.ionization_mechanism_id) ?? null
+    })
+  if (group) lenses.open('sample', group, { sampleId })
 }
 
 // --- Sorting ----------------------------------------------------------------
@@ -541,9 +578,7 @@ watch(queueMode, (on) => {
 
 // The isotope lines of a row, as rows under it: an analyte's isotopologues, a
 // source ion's heavier lines (isIsotopeLine), ordered by m/z among themselves.
-// `underChannel` marks the lines of a grouped channel's row, indented a step
-// further than the row they follow.
-function isotopologuesOf(parent, underChannel = false) {
+function isotopologuesOf(parent) {
   return assignments.value
     .childrenOf(parent.peak_assignment_id)
     .slice()
@@ -558,30 +593,24 @@ function isotopologuesOf(parent, underChannel = false) {
       listing: null,
       target: null,
       mech: mechById.value.get(child.ionization_mechanism_id) ?? null,
-      isChild: true,
-      underChannel
+      isChild: true
     }))
 }
 
-// Table rows. Parents (M0 + unassigned/reagent) are filtered by the active
-// chips, grouped by neutral when that is on, then ordered by the sorted column
-// with confidence breaking ties - or, in the verification queue, the queue's
-// rows in the queue's order. When unfolded, each parent's isotope lines are
-// inserted right after it, and an open group's other channels after those, each
-// with its own lines - a family is one block wherever its parent lands, which
-// is the only arrangement in which the indented child rows can be read at all.
-const rows = computed(() => {
-  const ledger = assignments.value.list.filter((row) => !isIsotopeLine(row))
-  const parents = (queueMode.value ? queueRows(ledger, queue.value?.list) : ledger)
-    .filter((row) => passes(row, { verdicts: !queueMode.value }))
+// Every row of the run that stands on its own (M0 + unassigned/reagent),
+// decorated with the ranks the columns sort on. The filters pick from these;
+// the lens and Group by's sets read all of them.
+const decoratedRows = computed(() =>
+  assignments.value.list
+    .filter((row) => !isIsotopeLine(row))
     .map((row) => {
       const listing = ledgerListing(row.reference_listing)
       return {
         ...row,
         tierRank: bucketRank(row.tier, row.role),
         // Null where the producing engine stated no tier, so those rows sort
-        // last in both directions: "this engine said nothing" is not a position
-        // on the scale.
+        // last in both directions: "this engine said nothing" is not a
+        // position on the scale.
         engineTierRank: row.engine_tier != null ? tierRank(row.engine_tier) : null,
         // Null rather than a rank where the row carries no level, likewise.
         levelRank: isLevel(row.level) ? levelRank(row.level) : null,
@@ -589,62 +618,134 @@ const rows = computed(() => {
         listing,
         target: targetOf(row.reference_listing, listing),
         mech: mechById.value.get(row.ionization_mechanism_id) ?? null,
-        isChild: false,
-        isChannel: false
+        isChild: false
       }
     })
+)
+const rowByPeak = computed(
+  () => new Map(decoratedRows.value.map((row) => [String(row.sample_peak_id), row]))
+)
 
-  // One row per neutral: the strongest reading heads its group and carries the
-  // others, which leave the top level.
-  let heads = parents
-  if (groupByFormula.value) {
-    const groups = new Map()
-    for (const row of parents) {
-      const key = groupKeyOf(row)
-      if (!key) continue
-      if (groups.has(key)) groups.get(key).push(row)
-      else groups.set(key, [row])
-    }
-    const grouped = new Set()
-    for (const [key, group] of groups) {
-      if (group.length < 2) continue
-      group.sort(byConfidence)
-      const [head, ...others] = group
-      head.groupKey = key
-      head.channelRows = others.map((row) => ({ ...row, isChannel: true }))
-      for (const row of others) grouped.add(row)
-    }
-    heads = parents.filter((row) => !grouped.has(row))
-  }
-
-  sort(heads, queueMode.value ? byQueue : byConfidence)
+// Table rows. Parents are filtered by the active chips and the search, then
+// ordered by the sorted column with confidence breaking ties - or, in the
+// verification queue, the queue's rows in the queue's order - and with Group
+// by compound, set under their group lines. When unfolded, each parent's
+// isotope lines are inserted right after it: a family is one block wherever
+// its parent lands, which is the only arrangement in which the indented child
+// rows can be read at all. The lens lists its group instead, whatever the
+// filters keep.
+const rows = computed(() => {
+  if (lensGroup.value) return lensRows.value
+  const ledger = decoratedRows.value
+  const parents = (queueMode.value ? queueRows(ledger, queue.value?.list) : ledger).filter((row) =>
+    passes(row, { verdicts: !queueMode.value })
+  )
+  sort(parents, queueMode.value ? byQueue : byConfidence)
 
   const result = []
-  for (const head of heads) {
-    result.push(head)
-    if (families.isOpen(head.peak_assignment_id)) result.push(...isotopologuesOf(head))
-    if (head.channelRows && openGroups.has(head.groupKey)) {
-      for (const channel of head.channelRows) {
-        result.push(channel)
-        if (families.isOpen(channel.peak_assignment_id)) {
-          result.push(...isotopologuesOf(channel, true))
-        }
-      }
-    }
+  const withFamily = (row) => {
+    result.push(row)
+    if (families.isOpen(row.peak_assignment_id)) result.push(...isotopologuesOf(row))
+  }
+  const idOf = (row) => String(row.sample_peak_id)
+  const sets = view.groupBy === 'compound' ? sampleGroupSets(ledger, groupKeyOf, idOf) : []
+  if (!sets.length) {
+    parents.forEach(withFamily)
+    return result
+  }
+  for (const section of groupSections(parents, sets, idOf)) {
+    const set = sets.find((entry) => entry.key === section.key)
+    const best = (set?.ids ?? [])
+      .map((id) => rowByPeak.value.get(id))
+      .filter(Boolean)
+      .sort((a, b) => a.tierRank - b.tierRank)[0]
+    const isCollapsed = collapsed.has(section.key)
+    result.push({
+      sample_peak_id: `group:${section.key}`,
+      peak_assignment_id: `group:${section.key}`,
+      ledgerKind: 'group',
+      groupKey: section.key,
+      groupName: section.name,
+      groupCount: `${section.size} row${section.size === 1 ? '' : 's'}`,
+      groupTier: section.ungrouped ? null : (best?.tier ?? null),
+      groupRole: section.ungrouped ? null : (best?.role ?? null),
+      collapsed: isCollapsed
+    })
+    if (!isCollapsed) section.rows.forEach(withFamily)
   }
   return result
 })
 
-// The head each grouped row sits under, so a peak focused elsewhere finds its
-// row even while its group is folded.
-const headOfGrouped = computed(() => {
-  const heads = new Map()
-  for (const row of rows.value) {
-    for (const channel of row.channelRows ?? []) {
-      heads.set(channel.peak_assignment_id, row.peak_assignment_id)
-    }
+// Under the lens: the group's members in its order, each labelled by its step
+// or its channel - the sample's own row where it holds the member, a greyed
+// "not in this sample" line where it does not, and a series step with no batch
+// peak as a greyed gap, labelled apart. A sort picked under the lens orders the
+// sample's rows by its column, the greyed lines after them.
+const memberRow = (member) =>
+  member.sample_peak_id != null
+    ? (rowByPeak.value.get(String(member.sample_peak_id)) ?? null)
+    : null
+const lensRows = computed(() => {
+  const group = lensGroup.value
+  if (!group) return []
+  const entries = lensEntries(group, memberRow)
+  const members = entries
+    .filter((entry) => entry.entry === ENTRY_MEMBER)
+    .map((entry) => ({ ...entry.row, lensLabel: entry.label }))
+  const pseudo = (entry) => {
+    const id = `lens:${entry.key}`
+    return entry.entry === ENTRY_GAP
+      ? {
+          sample_peak_id: id,
+          peak_assignment_id: id,
+          ledgerKind: 'gap',
+          lensLabel: entry.label,
+          pseudoFormula: entry.formula,
+          pseudoNote: 'no batch peak'
+        }
+      : {
+          sample_peak_id: id,
+          peak_assignment_id: id,
+          ledgerKind: 'absent',
+          lensLabel: entry.label,
+          pseudoMz: entry.member.mz,
+          pseudoFormula: entry.member.formula,
+          pseudoIon: entry.member.mechanism ?? entry.member.ion_formula,
+          pseudoNote: 'not in this sample'
+        }
   }
-  return heads
+  const result = []
+  const withFamily = (row) => {
+    result.push(row)
+    if (families.isOpen(row.peak_assignment_id)) result.push(...isotopologuesOf(row))
+  }
+  if (lensState.value?.sorted && sortField.value) {
+    sort(members, byConfidence)
+    members.forEach(withFamily)
+    result.push(...entries.filter((entry) => entry.entry !== ENTRY_MEMBER).map(pseudo))
+    return result
+  }
+  let next = 0
+  for (const entry of entries) {
+    if (entry.entry === ENTRY_MEMBER) withFamily(members[next++])
+    else result.push(pseudo(entry))
+  }
+  return result
+})
+// A sort picked under the lens is the reader's: the members follow it.
+watch([sortField, sortOrder], () => {
+  if (lensGroup.value) lenses.sortedUnder('sample')
+})
+// The lens bar's line and its label column. No Plot the group here: the
+// batch chart is the batch scope's, and the card offers Plot them.
+const lens = computed(() => {
+  const group = lensGroup.value
+  if (!group) return null
+  return {
+    title: lensTitle(group, lensEntries(group, memberRow), { scope: 'sample' }),
+    column: lensColumnLabel(group),
+    plot: false
+  }
 })
 
 // An unfolded line's label: its substitution wherever the row names one,
@@ -662,17 +763,17 @@ const selectedRow = computed({
     // and for isotopologue children when unfolded).
     const exact = rows.value.find((r) => String(r.sample_peak_id) === String(focused.peak_id))
     if (exact) return exact
-    // Folded: a focused isotopologue child maps to its M0 row, and a row of a
-    // folded group - or a line of one - to the group's head.
+    // Folded: a focused isotopologue child maps to its M0 row.
     const assignment = assignments.value.forPeak(focused.peak_id)
     const ownerId = isIsotopeLine(assignment)
       ? assignment.owner_peak_assignment_id
       : (assignment?.peak_assignment_id ?? null)
     if (ownerId == null) return null
-    const rowOf = (id) => (id != null ? rows.value.find((r) => r.peak_assignment_id === id) : null)
-    return rowOf(ownerId) ?? rowOf(headOfGrouped.value.get(ownerId)) ?? null
+    return rows.value.find((r) => r.peak_assignment_id === ownerId) ?? null
   },
   set: (row) => {
+    // A group line, a gap or a member the sample lacks names no peak of the
+    // sample, so focusPeak finds none to focus.
     // Clicking the selected row again de-selects it, and PrimeVue says so by
     // emitting null. Selection lives in the peak store, so unfocusing there
     // clears the spectrum highlight, the inspector and the timeseries too.
@@ -845,9 +946,11 @@ const HEADERS = {
         </p>
         <p>
         <b>Verdict</b> narrows the table to one verification verdict.
-        <b>Group by</b> compound makes a neutral read through several
-        ionization channels one row, headed by its strongest reading; the
-        arrow beside its ionization shows the others under it.
+        <b>Group by</b> compound sets the rows of a neutral read through
+        several ionization channels under one group line, which folds them;
+        the rest sit under <b>Ungrouped</b>. The &times;N pill beside an
+        ionization shows a neutral's channels together, as the batch lists
+        them, until &times; or Escape closes the lens.
         </p>
         <p>
         On a run imported from another engine that states tiers of its
@@ -882,10 +985,13 @@ const HEADERS = {
     :metaKeySelection="false"
     v-model:selection="selectedRow"
     :rowClass="rowClass"
+    :lens="lens"
     @toggle-tier="toggleTier"
     @open-verdict="openVerdict"
     @open-mz="focusPeak"
     @toggle-family="toggleFamily"
+    @toggle-group="toggleGroupLine"
+    @close-lens="closeLens"
   >
     <template #notices>
       <Message
@@ -1051,7 +1157,7 @@ const HEADERS = {
         <!-- An isotope line is its family's species: it carries no box. -->
         <template #body="{ data }">
           <Checkbox
-            v-if="!data.isChild"
+            v-if="!data.isChild && !data.ledgerKind"
             class="plot-box"
             binary
             :modelValue="chart.isPlotted(data)"
@@ -1076,7 +1182,7 @@ const HEADERS = {
 
     <!-- An unfolded line: named by its substitution. -->
     <template #line-label="{ data }">
-      <span class="child-cell" :class="{ deeper: data.underChannel }">
+      <span class="child-cell">
         <span class="child-caret">&#8627;</span>
         <span class="child-label" v-tooltip.top="data.isotope_formula || data.isotope_label">{{
           childLabel(data)
@@ -1085,20 +1191,9 @@ const HEADERS = {
     </template>
 
     <template #formula="{ data }">
-      <!-- The same neutral read through another channel, under the row that
-           heads its group: indented, and named again so the row reads on its
-           own. -->
-      <span
-        v-if="data.isChannel"
-        class="channel-cell"
-        v-tooltip.top="'The same neutral, read through another ionization channel'"
-      >
-        <span class="child-caret">&#8627;</span>
-        <span class="formula">{{ formulaOf(data) }}</span>
-      </span>
       <!-- The formula carries hover-to-copy. -->
       <BaseCopyableField
-        v-else-if="formulaOf(data)"
+        v-if="formulaOf(data)"
         class="formula"
         :field="formulaOf(data)"
         :tooltip="data.assigned_formula ? null : ION_TOOLTIP"
@@ -1106,32 +1201,20 @@ const HEADERS = {
     </template>
 
     <!-- The mechanism, and the xN pill where the sample's rows read the same
-         neutral through N channels. On a group's head the pill is the button
-         that shows the others under it. -->
+         neutral through N channels: it opens the channels together. -->
     <template #ion="{ data }">
       <span class="mech">{{ data.mech || '' }}</span>
       <button
-        v-if="data.channelRows?.length"
+        v-if="channelCount(data) > 1"
         type="button"
-        class="channel-pill group-toggle"
-        data-testid="group-toggle"
-        :aria-expanded="openGroups.has(data.groupKey)"
-        :aria-label="
-          `${openGroups.has(data.groupKey) ? 'Fold' : 'Show'} the other ` +
-          `${data.channelRows.length === 1 ? 'channel' : 'channels'} of ${data.assigned_formula}`
-        "
+        class="channel-pill"
+        data-testid="channel-pill"
+        :aria-label="`See the ${channelCount(data)} channels of ${data.assigned_formula} together`"
         v-tooltip.top="channelTooltip(data)"
-        @click.stop="toggleGroup(data.groupKey)"
+        @click.stop="openChannelLens(data)"
       >
         &times;{{ channelCount(data) }}
       </button>
-      <span
-        v-else-if="channelCount(data) > 1"
-        class="channel-pill"
-        data-testid="channel-pill"
-        v-tooltip.top="channelTooltip(data)"
-        >&times;{{ channelCount(data) }}</span
-      >
     </template>
 
     <template #tier="{ data, cap }">
@@ -1233,15 +1316,8 @@ const HEADERS = {
   opacity: 0.85;
   white-space: nowrap;
 }
-/* An isotopologue of a grouped channel's row, a step under that row. */
-.child-cell.deeper {
-  padding-left: 1.8rem;
-}
-.channel-cell .formula {
-  opacity: 0.8;
-}
-/* The xN pill: how many channels of the sample read the neutral. On a
-   group's head it is the button that shows the others. */
+/* The xN pill: how many channels of the sample read the neutral; it opens
+   them together. */
 .channel-pill {
   display: inline-flex;
   align-items: center;
@@ -1256,18 +1332,11 @@ const HEADERS = {
   font-variant-numeric: tabular-nums;
   line-height: 1.4;
 }
-.group-toggle {
+.channel-pill {
   cursor: pointer;
 }
-.group-toggle:hover,
-.group-toggle[aria-expanded='true'] {
+.channel-pill:hover {
   color: var(--p-text-color);
   background: var(--p-content-hover-background);
-}
-.channel-cell {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 0.35rem;
-  padding-left: 0.9rem;
 }
 </style>

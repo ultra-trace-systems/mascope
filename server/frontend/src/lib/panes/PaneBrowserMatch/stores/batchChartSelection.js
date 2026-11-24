@@ -73,5 +73,55 @@ export const useBatchChartSelection = defineStore('browser.match.batchChartSelec
     return true
   }
 
-  return { canPlot, isPlotted, toggle }
+  /**
+   * Plot a group's batch peaks in the batch chart, in place of what it plots:
+   * the lens's *Plot the group* and the card's *Plot them*
+   * (docs/dev/assignment_ledger_and_card.md, section 3.5). The chart draws
+   * one instrument type at a time, so the type of the group's first batch
+   * peak is the one shown; the cap holds; and members the ledger has not
+   * loaded, or of the other type, are said rather than skipped silently.
+   *
+   * @param {Array<string>} batchPeakIds - the group's members
+   * @returns {number} how many batch peaks the chart now plots
+   */
+  function plotGroup(batchPeakIds) {
+    const store = ledger()
+    const wanted = new Set(batchPeakIds ?? [])
+    const list = store?.list ?? []
+    // An isotope line is its family's species, which its family's row plots;
+    // the Batch peaks ledger keeps none in the selection.
+    const listed = new Set(list.map((bp) => bp.batch_peak_id))
+    const isLine = (bp) => bp.line_owner_id != null && listed.has(bp.line_owner_id)
+    const records = list.filter((bp) => wanted.has(bp.batch_peak_id) && !isLine(bp))
+    if (!records.length) {
+      notify(
+        'The Batch peaks ledger has not loaded these species yet. Open it first: ' +
+          "click the batch name in this ledger's header."
+      )
+      return 0
+    }
+    if (!store.inPartition(records[0])) {
+      const to = INSTRUMENT_TYPE_LABELS[records[0].instrument_type]
+      store.showInstrument(records[0].instrument_type)
+      notify(`The batch chart now draws the batch's ${to} species.`, 'info')
+    }
+    const shown = records.filter((bp) => store.inPartition(bp))
+    const plotted = shown.slice(0, MAX_SELECTED_BATCH_PEAKS)
+    store.selected = plotted
+    const species = [...wanted].filter((id) => {
+      const bp = list.find((row) => row.batch_peak_id === id)
+      return !bp || !isLine(bp)
+    }).length
+    const left = species - plotted.length
+    if (left) {
+      notify(
+        `${plotted.length} of the group's ${species} batch peaks are plotted: ` +
+          `the rest ${left === 1 ? 'is' : 'are'} not in the ledger the chart draws.`,
+        'info'
+      )
+    }
+    return plotted.length
+  }
+
+  return { canPlot, isPlotted, toggle, plotGroup }
 })

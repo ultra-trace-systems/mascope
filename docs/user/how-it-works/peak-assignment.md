@@ -1241,15 +1241,13 @@ the spectrum's family of related formulas rather than fragmentation, nitric acid
 dense spectrum many rows carry it. The tier is left as it was.
 
 The ledger lists each reading of a neutral as a row of its own, at its own m/z, so a
-compound seen through two channels is two rows far apart in the table. **Group
-by**, **Compound**, in the ledger's **Show** menu, makes it one:
-the neutral's strongest reading heads the row (the higher tier, then the better fit), and
-the arrow and count beside its ionization open the other readings under it, each with its
-own m/z, tier and verdict, and with its own isotopologues when those are unfolded. The
-tier chips and the verdict filter apply to each reading before it is grouped, so a
-filtered-out reading leaves the next one to head the row, and the counts above the ledger
-still count readings. A reagent's ion or a peak nothing explained names no neutral of the
-sample and is never grouped.
+compound seen through two channels is two rows far apart in the table. The **×N** pill
+beside the ionization shows them together, in a lens on the ledger, and **Group by**,
+**Compound**, in the ledger's **Show** menu, sets each neutral's readings under one group
+line, with the tier of its strongest reading (*Seeing a group*, below). The tier chips
+and the verdict filter apply to each reading, and the counts above the ledger still count
+readings. A reagent's ion or a peak nothing explained names no neutral of the sample and
+is never grouped.
 
 The inspector reads the same rows. A row whose neutral the run committed through more
 than one channel carries a ***Supported by N channels*** badge, and clicking it opens
@@ -1497,7 +1495,7 @@ same mark and the same words.
 | **Plot** | a box that puts the species in the batch chart | the same box: the rows ticked are what the chart draws |
 | **m/z** | the peak's m/z | the batch peak's anchor m/z |
 | **Compound** | the formula, and under it what a list or a target names it | the consensus formula, and under it the same |
-| **Ion** | the ionization mechanism, and a **×N** pill where the sample's rows read the neutral through N channels | the ion formula the batch peak is |
+| **Ion** | the ionization mechanism, and a **×N** pill where the sample's rows read the neutral through N channels | the ion formula the batch peak is, and a **×N** pill where the batch reads the neutral through N channels |
 | **Intensity** | the peak's intensity | **Max intensity**: the brightest sample's |
 | **Tier** | the tier chip, a down arrow on it where a rule holds it down | the consensus tier, the same arrow |
 | **Level** | where any row has one | the members' level, where any row has one |
@@ -1507,10 +1505,10 @@ same mark and the same words.
 
 - **Compound** shows the neutral formula in both ledgers, so two channels of one compound
   read alike there, and the **Ion** column tells them apart. In a sample's ledger the
-  **×N** pill counts the sample's rows of the neutral, whatever the filters hide; on the
-  head of a group (*Group by › Compound*) it is the button that shows the others under
-  it. A batch peak is one ion, so the two channels of a compound are two rows of the
-  batch's ledger. What a list calls the formula is the cell's second line, folded to the
+  **×N** pill counts the sample's rows of the neutral, whatever the filters hide. A batch
+  peak is one ion, so the two channels of a compound are two rows of the batch's ledger,
+  and there the pill counts the batch peaks of the neutral, as the batch's groups list
+  them. Clicking the pill shows the channels together (*Seeing a group*, below). What a list calls the formula is the cell's second line, folded to the
   name cut short: **Write listed names in full**, in the **...** menu, writes the name and
   its list out.
 - **Intensity** is a compact number, three digits with *k* for thousands and *M* for
@@ -1542,6 +1540,9 @@ person's act.
 - At most three badges show on a row. The ones that hold the reading back come first,
   then the others in a fixed order, and **+n** counts the rest, naming them on hover.
 - The ratio-stability badge opens the pairs behind its grade (*Ratio stability*, below).
+- The badges whose reading is about other rows open those rows together: the series badge
+  its series, the co-variation badge the pair it read, and the batch facts badge the line,
+  twin or partner a check names (*Seeing a group*, below).
 - The column sorts the rows with the most that holds them back first, then the most
   badges, a row with none last.
 
@@ -1592,11 +1593,66 @@ flowchart LR
     which shows the engine's own tier as a second chip in the **Tier** cell and counts the
     chips by it, and in the batch **Engine tier and level** and **Engine disagrees**.
   - **Verdict** narrows the table to one verdict, in both ledgers.
-  - **Group by**: *None* or *Compound* in a sample's ledger. *Compound* makes a neutral
-    read through several channels one row, headed by its strongest reading. Grouping
-    the batch's rows comes with the batch's groups.
+  - **Group by**: *None*, *Compound* or, in the batch's ledger, *Series*
+    (*Seeing a group*, below).
 - **...** holds **Export ledger (CSV)** in the batch's ledger, and **Write listed names
   in full**, one switch for both ledgers.
+
+### Seeing a group
+
+Several readings are about more than one row: a homologous series, the channels of one
+neutral, a co-variation pair, the line, 14N twin or urea partner a batch check names. The
+ledger shows those rows together, rather than naming them in a tooltip. Which rows
+belong to a group is the server's, worked out once for the whole batch, so the ledger, its
+lens and the inspector count the same members whatever the filters hide. Isotopologue
+lines are no such group: they stay folded under their compound's caret.
+
+```mermaid
+flowchart TD
+  B[Badge or xN pill] --> L[The lens]
+  C[Card: Show in the ledger] --> L
+  L --> N[Rows narrowed to the group]
+  N --> S["Step or Channel column"]
+  N --> G["Greyed gap or missing member"]
+  L --> P[Plot the group]
+  L --> X["x or Escape: the ledger as before"]
+```
+
+**The lens.** Clicking a series, co-variation or batch facts badge in **Across the batch**,
+or the **×N** pill in the **Ion** column, narrows the ledger to the group's rows:
+
+- A bar above the table names the group, such as *CH2 series from C8H13NO9, through
+  [M+NO3]⁻, 4 batch peaks, one step with no peak*. Its **×** closes the lens, and so does
+  Escape, and the ledger is as it was: the same sort, the same chips, the same search.
+- The rows come in the group's own order: a series from its lightest step to its heaviest,
+  channels by m/z. A **Step** column labels each row of a series by its place, *root*,
+  *+1 CH2* or *−1 CH2*; for any other group a **Channel** column names its ion, or what a
+  check calls the partner, such as *14N twin*.
+- A step of a series that no batch peak stands at stays in the list, greyed, with the
+  formula it would have and *no batch peak*. A gap is counted apart from the batch peaks.
+- The lens lists every member whatever the tier chips, the search or **Show** hide, and
+  gives the filters back when it closes. A sort picked while it is open orders the members
+  by that column, the greyed lines after them.
+- In the batch's ledger, **Plot the group** draws the group's batch peaks in the batch
+  chart, in place of what it drew.
+- In a sample's ledger, the pill reads the row's detail for the batch's groups, so the
+  lens lists every member the batch holds: the sample's own row where it holds the member,
+  and a greyed *not in this sample* line where it does not, counted apart from a gap.
+  Where the batch has no batch peaks yet, the lens lists the sample's own rows of the
+  neutral, channels only.
+- The inspector's lists of a reason's rows offer **Show in the ledger**, which opens the
+  lens on the sample's ledger, and **Plot them**.
+
+**Group by**, in **Show**, draws every group at once: a group line over its members,
+naming the compound or the series, how many rows it holds, and the tier of its best
+member. Click a line, or press Enter or Space on it, to fold its members and unfold them
+again. The rows in no group sit under an *Ungrouped* line at the end.
+
+- *Compound* groups the channels of one neutral: in the batch's ledger the batch peaks the
+  batch reads it through, in a sample's ledger the sample's own rows of it.
+- *Series* groups each homologous series, in the batch's ledger only: grouping by series
+  needs every row's groups at once, which only the batch's ledger reads. A batch peak in
+  two series is listed under the first, and named again, greyed, under the other.
 
 ## The peak inspector
 
@@ -1630,7 +1686,9 @@ flowchart TD
   tier on follows, in the support colour. A reason that spans other rows lists them: a
   *second channel* lists the neutral's other channels, and *in a series* the members of
   the row's own series, each by its step from the root in the series' unit. Each m/z there focuses its peak where the
-  sample holds one. The ***Supported by N channels*** badge and the other readings of the
+  sample holds one. Under the list, **Show in the ledger** narrows this sample's ledger to
+  those rows (*Seeing a group*, above), and **Plot them** draws their batch peaks in the
+  batch chart, in place of what it drew. The ***Supported by N channels*** badge and the other readings of the
   same ion are in this box too.
 - **Four measurements**, each a value with a caption in words:
   - the **mass error**, in ppm, and under it how many widths of the run's own mass

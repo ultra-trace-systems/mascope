@@ -136,3 +136,56 @@ describe('useBatchChartSelection', () => {
     expect(chart.toggle({ batch_peak_id: 'bp-0' })).toBe(true)
   })
 })
+
+// A group's batch peaks into the chart (MAS-1069): the lens's Plot the group
+// and the card's Plot them.
+describe('useBatchChartSelection plotGroup', () => {
+  const ids = () => app.data.batchPeak.selected.map((bp) => bp.batch_peak_id)
+
+  it('plots the group in place of what the chart drew', () => {
+    app = makeApp(ledger(['bp-1', 'bp-2', 'bp-3', 'bp-9'], ['bp-9']))
+    expect(useBatchChartSelection().plotGroup(['bp-1', 'bp-3'])).toBe(2)
+    expect(ids()).toEqual(['bp-1', 'bp-3'])
+    expect(app.ui.notification.push).not.toHaveBeenCalled()
+  })
+
+  it('leaves out an isotope line, which its family row plots', () => {
+    const store = ledger(['bp-1', 'bp-2'])
+    store.list[1].line_owner_id = 'bp-1'
+    app = makeApp(store)
+    expect(useBatchChartSelection().plotGroup(['bp-1', 'bp-2'])).toBe(1)
+    expect(ids()).toEqual(['bp-1'])
+    expect(app.ui.notification.push).not.toHaveBeenCalled()
+  })
+
+  it('says what it left out, and what the ledger has not loaded', () => {
+    app = makeApp(ledger(['bp-1']))
+    expect(useBatchChartSelection().plotGroup(['bp-1', 'bp-x'])).toBe(1)
+    expect(app.ui.notification.push).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining("1 of the group's 2") })
+    )
+
+    // A group the ledger holds none of leaves the chart as it was.
+    setActivePinia(createPinia())
+    app = makeApp(ledger(['bp-1'], ['bp-1']))
+    expect(useBatchChartSelection().plotGroup(['bp-x'])).toBe(0)
+    expect(ids()).toEqual(['bp-1'])
+    expect(app.ui.notification.push).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('has not loaded') })
+    )
+  })
+
+  it("shows the first member's instrument type and plots that type's members", () => {
+    app = makeApp(ledger(['bp-t', 'bp-o'], [], { 'bp-t': 'tof', 'bp-o': 'orbi' }))
+    expect(useBatchChartSelection().plotGroup(['bp-t', 'bp-o'])).toBe(1)
+    expect(app.data.batchPeak.showInstrument).toHaveBeenCalledWith('tof')
+    expect(ids()).toEqual(['bp-t'])
+  })
+
+  it('holds the cap', () => {
+    const many = Array.from({ length: MAX_SELECTED_BATCH_PEAKS + 5 }, (_, i) => `bp-${i}`)
+    app = makeApp(ledger(many))
+    expect(useBatchChartSelection().plotGroup(many)).toBe(MAX_SELECTED_BATCH_PEAKS)
+    expect(app.data.batchPeak.selected).toHaveLength(MAX_SELECTED_BATCH_PEAKS)
+  })
+})

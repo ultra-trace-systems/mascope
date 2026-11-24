@@ -87,6 +87,10 @@ let runRecord
 let tierCountsRecord
 // The run's verification queue, in the server's order.
 let queueList
+// The detail row a click on a pill reads (`loadDetail`), and the mechanisms
+// the Ion column names.
+let detailRecord = null
+let mechanismList = []
 
 // Minimal help-mode facade: the pane registers help cards through these calls;
 // the tests only need them to resolve.
@@ -125,7 +129,7 @@ function makeApp() {
         select: vi.fn(),
         unselect: vi.fn()
       },
-      ionization: { mechanism: { list: [] } },
+      ionization: { mechanism: { list: mechanismList } },
       peakAssignment: {
         run: {
           pending: false,
@@ -149,6 +153,7 @@ function makeApp() {
             isIsotopeLine(row) ? (byId.get(row.owner_peak_assignment_id) ?? row) : row,
           forPeak: (peakId) =>
             assignmentList.find((row) => String(row.sample_peak_id) === String(peakId)) ?? null,
+          loadDetail: async () => detailRecord,
           run: runRecord
         },
         verification: { forAssignment },
@@ -330,6 +335,9 @@ function apiError(status, message) {
 
 const { default: PaneBrowserAssignment } =
   await import('@/lib/panes/PaneBrowserMatch/PaneBrowserAssignment.vue')
+
+// The pill's lens reads the detail row, a promise.
+const flushPromisesLocal = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 // Imported statically (vi.mock is hoisted above it, so the stubs still apply):
 // compiling this pane is the expensive part, and as a dynamic import inside the
@@ -1482,7 +1490,10 @@ describe('PaneBrowserAssignment rows whose peak the sample no longer has', () =>
 // One row per neutral (step 3.4d, the plan owner's request in the build): a
 // neutral committed through more than one channel is one row, headed by its
 // strongest reading, with the others under it when the group is opened.
-describe('PaneBrowserAssignment grouping by formula', () => {
+// Show > Group by compound: a group line over each neutral the sample's rows
+// read through several channels, the rest under an Ungrouped line
+// (docs/dev/assignment_ledger_and_card.md, section 3.5).
+describe('PaneBrowserAssignment Group by compound', () => {
   beforeEach(() => {
     runList = [{ peak_assignment_run_id: 'run-1', status: 'completed' }]
   })
@@ -1516,64 +1527,63 @@ describe('PaneBrowserAssignment grouping by formula', () => {
   async function grouped(...families) {
     seed(...families)
     const wrapper = await mountPane()
-    wrapper.vm.groupByFormula = true
+    wrapper.vm.view.groupBy = 'compound'
     await wrapper.vm.$nextTick()
     return wrapper
   }
-  const ids = (wrapper) => wrapper.vm.rows.map((row) => row.peak_assignment_id)
+  const lines = (wrapper) =>
+    wrapper.vm.rows.map((row) =>
+      row.ledgerKind === 'group'
+        ? `${row.groupName} | ${row.groupCount} | ${row.groupTier}`
+        : row.peak_assignment_id
+    )
 
   it('lists a row per ion until it is switched on', async () => {
     seed(protonated(), ammoniated(), other())
     const wrapper = await mountPane()
 
-    expect(wrapper.vm.groupByFormula).toBe(false)
-    expect(ids(wrapper).sort()).toEqual(['h', 'nh4', 'o'])
+    expect(wrapper.vm.view.groupBy).toBe('none')
+    expect(lines(wrapper).sort()).toEqual(['h', 'nh4', 'o'])
   })
 
-  it('makes a neutral one row, headed by its strongest reading', async () => {
+  it("draws a group line over the neutral's channels, the rest Ungrouped", async () => {
     const wrapper = await grouped(ammoniated(), sodiated(), protonated(), other())
-
-    expect(ids(wrapper)).toEqual(['h', 'o'])
-    const head = wrapper.vm.rows[0]
-    // Tier first, then fit: the two candidates follow in that order.
-    expect(head.channelRows.map((row) => row.peak_assignment_id)).toEqual(['nh4', 'na'])
+    // Equal intensities: confidence orders them, tier first and then fit.
+    expect(lines(wrapper)).toEqual([
+      'C10H16O | 3 rows | assigned',
+      'h',
+      'nh4',
+      'na',
+      'Ungrouped | 1 row | null',
+      'o'
+    ])
   })
 
-  it('shows the other channels under the head when the group is opened', async () => {
-    const wrapper = await grouped(ammoniated(), sodiated(), protonated(), other())
-
-    wrapper.vm.toggleGroup(wrapper.vm.rows[0].groupKey)
+  it('folds a group line and unfolds it again', async () => {
+    const wrapper = await grouped(ammoniated(), protonated(), other())
+    wrapper.vm.toggleGroupLine(wrapper.vm.rows[0])
     await wrapper.vm.$nextTick()
-    expect(ids(wrapper)).toEqual(['h', 'nh4', 'na', 'o'])
-    expect(
-      wrapper.vm.rows.filter((row) => row.isChannel).map((row) => row.peak_assignment_id)
-    ).toEqual(['nh4', 'na'])
-
-    wrapper.vm.toggleGroup(wrapper.vm.rows[0].groupKey)
+    expect(lines(wrapper)).toEqual(['C10H16O | 2 rows | assigned', 'Ungrouped | 1 row | null', 'o'])
+    expect(wrapper.vm.rows[0].collapsed).toBe(true)
+    wrapper.vm.toggleGroupLine(wrapper.vm.rows[0])
     await wrapper.vm.$nextTick()
-    expect(ids(wrapper)).toEqual(['h', 'o'])
+    expect(lines(wrapper)).toHaveLength(5)
   })
 
-  it("puts each channel's isotopologues under it, a step further in", async () => {
+  it("puts each channel's isotopologues under it", async () => {
     const wrapper = await grouped(protonated(), ammoniated())
     wrapper.vm.showIsotopologues = true
-    wrapper.vm.toggleGroup(wrapper.vm.rows[0].groupKey)
     await wrapper.vm.$nextTick()
-
-    expect(ids(wrapper)).toEqual(['h', 'h-c0', 'nh4', 'nh4-c0'])
-    const byId = new Map(wrapper.vm.rows.map((row) => [row.peak_assignment_id, row]))
-    expect(byId.get('h-c0').underChannel).toBe(false)
-    expect(byId.get('nh4-c0').underChannel).toBe(true)
+    expect(lines(wrapper)).toEqual(['C10H16O | 2 rows | assigned', 'h', 'h-c0', 'nh4', 'nh4-c0'])
   })
 
-  it('groups what the filters leave', async () => {
+  // The group line counts the neutral's rows and names its best tier whatever
+  // the filters leave of it, as the pill counts them.
+  it('groups what the filters leave, counted on all its rows', async () => {
     const wrapper = await grouped(protonated(), ammoniated(), sodiated())
-
     wrapper.vm.toggleTier('candidate')
     await wrapper.vm.$nextTick()
-    // The assigned reading is filtered out, so the stronger candidate heads.
-    expect(ids(wrapper)).toEqual(['nh4'])
-    expect(wrapper.vm.rows[0].channelRows.map((row) => row.peak_assignment_id)).toEqual(['na'])
+    expect(lines(wrapper)).toEqual(['C10H16O | 3 rows | assigned', 'nh4', 'na'])
   })
 
   it('never groups a row that names no neutral of the sample', async () => {
@@ -1583,21 +1593,27 @@ describe('PaneBrowserAssignment grouping by formula', () => {
     reagent2.parent.ion_formula = 'Br-'
     const wrapper = await grouped(reagent, reagent2)
 
-    expect(ids(wrapper).sort()).toEqual(['br', 'br2'])
-    expect(wrapper.vm.rows.every((row) => !row.channelRows)).toBe(true)
+    expect(lines(wrapper).sort()).toEqual(['br', 'br2'])
   })
 
-  it('selects the head for a peak of a folded group', async () => {
-    focusedPeak = { peak_id: 'p-nh4' }
-    try {
-      const wrapper = await grouped(protonated(), ammoniated())
-      expect(wrapper.vm.selectedRow?.peak_assignment_id).toBe('h')
-    } finally {
-      focusedPeak = null
-    }
+  it('focuses no peak from a group line', async () => {
+    const wrapper = await grouped(protonated(), ammoniated())
+    wrapper.vm.selectedRow = wrapper.vm.rows[0]
+    expect(peakFocus).not.toHaveBeenCalled()
   })
 
-  it("offers it under the Show menu's Group by", async () => {
+  it('unfolds every group line again when the grouping changes', async () => {
+    const wrapper = await grouped(ammoniated(), protonated(), other())
+    wrapper.vm.toggleGroupLine(wrapper.vm.rows[0])
+    await wrapper.vm.$nextTick()
+    wrapper.vm.view.groupBy = 'none'
+    await wrapper.vm.$nextTick()
+    wrapper.vm.view.groupBy = 'compound'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.vm.rows[0].collapsed).toBe(false)
+  })
+
+  it("offers compound under the Show menu's Group by, and not series", async () => {
     seed(protonated())
     const wrapper = await mountPane()
     const choice = wrapper.find('.view-menu-popover .group-by')
@@ -1605,14 +1621,116 @@ describe('PaneBrowserAssignment grouping by formula', () => {
     expect(choice.attributes('aria-label')).toBe('Group the rows by')
     expect(choice.findAll('button').map((chip) => chip.text())).toEqual(['None', 'Compound'])
     await choice.find('[data-value="compound"]').trigger('click')
-    expect(wrapper.vm.groupByFormula).toBe(true)
+    expect(wrapper.vm.view.groupBy).toBe('compound')
     await choice.find('[data-value="none"]').trigger('click')
-    expect(wrapper.vm.groupByFormula).toBe(false)
+    expect(wrapper.vm.view.groupBy).toBe('none')
+  })
+})
+
+// The lens in the sample scope: the sample's list carries no groups, so the
+// pill reads the row's detail for the batch's, and falls back to the sample's
+// own rows where the batch has no batch peaks yet.
+describe('PaneBrowserAssignment the lens', () => {
+  beforeEach(() => {
+    runList = [{ peak_assignment_run_id: 'run-1', status: 'completed' }]
+    mechanismList.splice(
+      0,
+      mechanismList.length,
+      { ionization_mechanism_id: 'm-h', ionization_mechanism: '[M+H]+' },
+      { ionization_mechanism_id: 'm-nh4', ionization_mechanism: '[M+NH4]+' }
+    )
+  })
+  afterEach(() => {
+    detailRecord = null
+    mechanismList.splice(0, mechanismList.length)
+    vi.clearAllMocks()
   })
 
-  it('renders the toggle on the head, naming the other channels', async () => {
+  const channel = (id, mech, { mz, tier = 'assigned', formula = 'C10H16O', intensity = 100 }) => {
+    const fam = family({ id, mz, intensity, formula, tier })
+    fam.parent.ionization_mechanism_id = mech
+    return fam
+  }
+  const PEAKS = () => [
+    channel('h', 'm-h', { mz: 153.127, intensity: 300 }),
+    channel('nh4', 'm-nh4', { mz: 170.154, tier: 'candidate', intensity: 200 }),
+    channel('o', 'm-h', { mz: 137.132, formula: 'C10H16', intensity: 900 })
+  ]
+  // The batch's channel group of the neutral: a third channel this sample
+  // holds no peak for.
+  const SERVED = {
+    group_id: 'channels:C10H16O',
+    kind: 'channels',
+    formula: 'C10H16O',
+    members: [
+      {
+        batch_peak_id: 'bp-h',
+        formula: 'C10H16O',
+        mechanism: '[M+H]+',
+        mz: 153.127,
+        sample_peak_id: 'p-h'
+      },
+      {
+        batch_peak_id: 'bp-nh4',
+        formula: 'C10H16O',
+        mechanism: '[M+NH4]+',
+        mz: 170.154,
+        sample_peak_id: 'p-nh4'
+      },
+      {
+        batch_peak_id: 'bp-na',
+        formula: 'C10H16O',
+        mechanism: '[M+Na]+',
+        mz: 175.109,
+        sample_peak_id: null
+      }
+    ]
+  }
+  const ledgerOf = (wrapper) => wrapper.findComponent({ name: 'AssignmentLedger' })
+  const labels = (wrapper) =>
+    wrapper.vm.rows.map((row) => [row.ledgerKind ?? row.peak_assignment_id, row.lensLabel])
+  async function opened(detail) {
+    detailRecord = detail
+    seed(...PEAKS())
+    const wrapper = await mountPane()
+    await wrapper.vm.openChannelLens(
+      wrapper.vm.rows.find((row) => row.peak_assignment_id === 'nh4')
+    )
+    await wrapper.vm.$nextTick()
+    return wrapper
+  }
+
+  it("is built from the row's detail: every member, the sample's own rows and the rest", async () => {
+    const wrapper = await opened({ batch_groups: [SERVED] })
+    expect(labels(wrapper)).toEqual([
+      ['h', '[M+H]+'],
+      ['nh4', '[M+NH4]+'],
+      ['absent', '[M+Na]+']
+    ])
+    const absent = wrapper.vm.rows[2]
+    expect(absent).toMatchObject({ pseudoNote: 'not in this sample', pseudoMz: 175.109 })
+    expect(ledgerOf(wrapper).props('lens')).toEqual({
+      title: 'C10H16O through three channels, 3 batch peaks, 1 not in this sample',
+      column: 'Channel',
+      plot: false
+    })
+  })
+
+  it("falls back to the sample's own channel rows where the batch has no batch peaks", async () => {
+    const wrapper = await opened({ batch_groups: null })
+    expect(labels(wrapper)).toEqual([
+      ['h', '[M+H]+'],
+      ['nh4', '[M+NH4]+']
+    ])
+    expect(ledgerOf(wrapper).props('lens').title).toBe(
+      'C10H16O through two channels, 2 rows of this sample'
+    )
+  })
+
+  it('opens from the pill on the row', async () => {
+    detailRecord = { batch_groups: [SERVED] }
+    seed(...PEAKS())
     const tableRows = ref([])
-    seed(protonated(), ammoniated())
     const wrapper = mount(PaneBrowserAssignment, {
       global: {
         directives: { tooltip: {}, help: {} },
@@ -1630,22 +1748,139 @@ describe('PaneBrowserAssignment grouping by formula', () => {
             template:
               '<div class="stub-col" :data-field="field">' +
               '<template v-for="(row, i) in rows" :key="i">' +
-              '<div class="stub-cell"><slot name="body" :data="row" /></div></template></div>'
+              '<div class="stub-cell" :data-row="row.peak_assignment_id"><slot name="body" :data="row" /></div></template></div>'
           }
         }
       }
     })
-    wrapper.vm.groupByFormula = true
     await wrapper.vm.$nextTick()
+    const pill = wrapper.find('.stub-cell[data-row="h"] [data-testid="channel-pill"]')
+    expect(pill.text()).toBe('×2')
+    expect(wrapper.find('.stub-cell[data-row="o"] [data-testid="channel-pill"]').exists()).toBe(
+      false
+    )
+    await pill.trigger('click')
+    await flushPromisesLocal()
+    expect(wrapper.vm.rows.map((row) => row.ledgerKind ?? row.peak_assignment_id)).toEqual([
+      'h',
+      'nh4',
+      'absent'
+    ])
+    // The member the sample lacks has no plot box: there is no row's species.
+    await wrapper.vm.$nextTick()
+    const lead = wrapper.findAll('.stub-col').find((col) => col.attributes('data-field') == null)
+    expect(lead.find('.stub-cell[data-row="h"] .plot-box').exists()).toBe(true)
+    expect(lead.find('.stub-cell[data-row="lens:absent:bp-na"] .plot-box').exists()).toBe(false)
+    wrapper.unmount()
+  })
 
-    // The head's xN pill is its toggle: two channels read the neutral.
-    const toggle = wrapper.find('[data-testid="group-toggle"]')
-    expect(toggle.text()).toBe('×2')
-    expect(toggle.attributes('aria-expanded')).toBe('false')
-    await toggle.trigger('click')
-    expect(wrapper.find('[data-testid="group-toggle"]').attributes('aria-expanded')).toBe('true')
-    // The channel's row reads as the same neutral, under its head.
-    expect(wrapper.find('.channel-cell').text()).toContain('C10H16O')
+  it('lists a series the card opens, its gap and the members the sample lacks apart', async () => {
+    const { useLedgerLensStore } = await import('@/lib/ledger/useLedgerLens.js')
+    seed(...PEAKS())
+    const wrapper = await mountPane()
+    useLedgerLensStore().open(
+      'sample',
+      {
+        group_id: 'series:bp-h:CH2:m-h',
+        kind: 'series',
+        unit: 'CH2',
+        root_formula: 'C10H16O',
+        members: [
+          {
+            batch_peak_id: 'bp-h',
+            formula: 'C10H16O',
+            mz: 153.127,
+            step: 0,
+            sample_peak_id: 'p-h'
+          },
+          { batch_peak_id: 'bp-3', formula: 'C13H22O', mz: 195.17, step: 3, sample_peak_id: null }
+        ]
+      },
+      { sampleId: SAMPLE.sample_item_id }
+    )
+    await wrapper.vm.$nextTick()
+    expect(
+      wrapper.vm.rows.map((row) => [
+        row.ledgerKind ?? row.peak_assignment_id,
+        row.lensLabel,
+        row.pseudoNote
+      ])
+    ).toEqual([
+      ['h', 'root', undefined],
+      ['gap', '+1 CH2', 'no batch peak'],
+      ['gap', '+2 CH2', 'no batch peak'],
+      ['absent', '+3 CH2', 'not in this sample']
+    ])
+    expect(ledgerOf(wrapper).props('lens').title).toBe(
+      'CH2 series from C10H16O, 2 batch peaks, two steps with no peak, 1 not in this sample'
+    )
+  })
+
+  it('lifts the tier filter while open, and closes back onto the view', async () => {
+    detailRecord = { batch_groups: [SERVED] }
+    seed(...PEAKS())
+    const wrapper = await mountPane()
+    wrapper.vm.toggleTier('assigned')
+    await wrapper.vm.$nextTick()
+    const before = wrapper.vm.rows.map((row) => row.peak_assignment_id)
+    expect(before).not.toContain('nh4')
+    await wrapper.vm.openChannelLens(wrapper.vm.rows.find((row) => row.peak_assignment_id === 'h'))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.vm.rows.map((row) => row.peak_assignment_id)).toContain('nh4')
+
+    ledgerOf(wrapper).vm.$emit('close-lens')
+    await wrapper.vm.$nextTick()
+    expect(ledgerOf(wrapper).props('lens')).toBeNull()
+    expect(wrapper.vm.rows.map((row) => row.peak_assignment_id)).toEqual(before)
+  })
+
+  it('survives a sort, the greyed lines after the rows', async () => {
+    const wrapper = await opened({ batch_groups: [SERVED] })
+    wrapper.vm.sortField = 'sample_peak_intensity'
+    wrapper.vm.sortOrder = 1
+    await wrapper.vm.$nextTick()
+    expect(labels(wrapper).map(([id]) => id)).toEqual(['nh4', 'h', 'absent'])
+  })
+
+  it("is the sample's it was opened on: another sample's lens is not drawn", async () => {
+    const { useLedgerLensStore } = await import('@/lib/ledger/useLedgerLens.js')
+    seed(...PEAKS())
+    const wrapper = await mountPane()
+    useLedgerLensStore().open('sample', SERVED, { sampleId: 'si-other' })
+    await wrapper.vm.$nextTick()
+    expect(ledgerOf(wrapper).props('lens')).toBeNull()
+    expect(wrapper.vm.rows.map((row) => row.peak_assignment_id)).toEqual(['o', 'h', 'nh4'])
+  })
+
+  it('opens nothing when the sample changed while the detail was read', async () => {
+    let answer
+    detailRecord = new Promise((resolve) => (answer = resolve))
+    seed(...PEAKS())
+    const wrapper = await mountPane()
+    const opening = wrapper.vm.openChannelLens(wrapper.vm.rows[1])
+    wrapper.vm.app.data.sample.focusedId = 'si-2'
+    answer({ batch_groups: [SERVED] })
+    await opening
+    const { useLedgerLensStore } = await import('@/lib/ledger/useLedgerLens.js')
+    expect(useLedgerLensStore().lenses.sample).toBeNull()
+  })
+
+  it('marks no greyed line stale', async () => {
+    peakList = [{ peak_id: 'p-h' }, { peak_id: 'p-nh4' }, { peak_id: 'p-o' }]
+    try {
+      const wrapper = await opened({ batch_groups: [SERVED] })
+      const [own, , absent] = wrapper.vm.rows
+      expect(wrapper.vm.rowClass(absent)).toBeNull()
+      expect(wrapper.vm.rowClass({ ...own, sample_peak_id: 'p-gone' })).toBe('stale-peak')
+    } finally {
+      peakList = []
+    }
+  })
+
+  it('focuses no peak from a member the sample lacks', async () => {
+    const wrapper = await opened({ batch_groups: [SERVED] })
+    wrapper.vm.selectedRow = wrapper.vm.rows[2]
+    expect(peakFocus).not.toHaveBeenCalled()
   })
 })
 
@@ -3199,7 +3434,7 @@ describe('PaneBrowserAssignment filter bar', () => {
     await search(wrapper, 'C')
     wrapper.vm.toggleTier('assigned')
     wrapper.vm.showIsotopologues = true
-    wrapper.vm.groupByFormula = true
+    wrapper.vm.view.groupBy = 'compound'
     wrapper.vm.verdictFilter = 'unverified'
     wrapper.vm.queueMode = true
     wrapper.vm.engineView = true
@@ -3212,7 +3447,7 @@ describe('PaneBrowserAssignment filter bar', () => {
     // chips set in it stay.
     expect(wrapper.vm.engineView).toBe(true)
     expect(wrapper.vm.showIsotopologues).toBe(true)
-    expect(wrapper.vm.groupByFormula).toBe(true)
+    expect(wrapper.vm.view.groupBy).toBe('compound')
     expect(wrapper.vm.verdictFilter).toBe('unverified')
     expect(wrapper.vm.queueMode).toBe(true)
     wrapper.unmount()
@@ -3221,7 +3456,7 @@ describe('PaneBrowserAssignment filter bar', () => {
     setActivePinia(createPinia())
     wrapper = await mountPane()
     expect(wrapper.vm.searchQuery).toBe('C')
-    expect(wrapper.vm.groupByFormula).toBe(true)
+    expect(wrapper.vm.view.groupBy).toBe('compound')
     expect(wrapper.vm.queueMode).toBe(true)
   })
 
@@ -3243,7 +3478,7 @@ describe('PaneBrowserAssignment filter bar', () => {
     )
     setActivePinia(createPinia())
     const wrapper = await mountPane()
-    expect(wrapper.vm.groupByFormula).toBe(false)
+    expect(wrapper.vm.view.groupBy).toBe('none')
     expect(wrapper.vm.verdictFilter).toBe('all')
     expect(wrapper.vm.queueMode).toBe(false)
   })

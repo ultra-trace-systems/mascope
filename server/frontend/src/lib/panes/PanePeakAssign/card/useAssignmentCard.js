@@ -17,6 +17,8 @@ import { isLevel, isOpenRival, levelMeta, unlistedRivalsLine } from '@/lib/level
 import { sourceLabel } from '@/lib/assignmentSources'
 import { EVIDENCE_LEVELS, VERDICT_META, claimCandidates } from '@/lib/verification'
 import { useBatchPeakJump } from '@/lib/panes/PaneBrowserMatch/stores/batchPeakJump.js'
+import { useBatchChartSelection } from '@/lib/panes/PaneBrowserMatch/stores/batchChartSelection.js'
+import { useLedgerLensStore } from '@/lib/ledger/useLedgerLens.js'
 import { useBatchPeakCuration } from '../stores/batchPeakCuration.js'
 import { useChangeGate } from '../changeGate.js'
 import {
@@ -1583,6 +1585,21 @@ export function useAssignmentCard({ showSearch }) {
     const peak = memberPeak(member)
     if (peak) app.data.peak.focus(peak)
   }
+  // The group in the ledger, and in the batch chart
+  // (docs/dev/assignment_ledger_and_card.md, section 3.5). The card is a
+  // sample's row, so Show in the ledger narrows this sample's ledger to the
+  // group: the assignments are what the browser shows, and the lens lists
+  // every member, the sample's own rows and the ones it lacks. Plot them puts
+  // the group's batch peaks in the batch chart.
+  // The stores are reached on the click, not at setup: the card is drawn in
+  // places that never use them.
+  function showGroupInLedger(group) {
+    if (!group) return
+    app.ui.matchMode.mode = 'assignments'
+    useLedgerLensStore().open('sample', group, { sampleId: app.data.sample.focusedId })
+  }
+  const plotGroup = (group) =>
+    useBatchChartSelection().plotGroup((group?.members ?? []).map((member) => member.batch_peak_id))
 
   // --- Across the batch -----------------------------------------------------------
   // The four readings MAS-1066 added to the detail, in the registry's record
@@ -1935,6 +1952,8 @@ export function useAssignmentCard({ showSearch }) {
     memberPeak,
     isOwnMember,
     focusMember,
+    showGroupInLedger,
+    plotGroup,
     batchContinuity,
     extraReadings,
     batchReadingCount,

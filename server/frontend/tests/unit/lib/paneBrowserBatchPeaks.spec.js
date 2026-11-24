@@ -3727,3 +3727,320 @@ describe('PaneBrowserBatchPeaks rows and their actions', () => {
     expect(cap(first.batch_peak_id === 'bp-kept' ? first : second)).toBeNull()
   })
 })
+
+// The rows a reading spans (MAS-1069): the lens a badge or the xN pill opens,
+// Plot the group, and Group by - on the fixture batch the backend's groups
+// suite seeds (./ledger/groupBatch.js).
+describe('PaneBrowserBatchPeaks groups', () => {
+  const ledgerOf = () => wrapper.findComponent({ name: 'AssignmentLedger' })
+  const ids = () => wrapper.vm.rows.map((row) => row.batch_peak_id)
+  const labels = () => wrapper.vm.rows.map((row) => [row.batch_peak_id, row.lensLabel])
+  let fixture
+  beforeEach(async () => {
+    fixture = await import('./ledger/groupBatch.js')
+  })
+  // The fixture's batch peaks, the series members with their series record
+  // and an intensity each, brightest the heaviest.
+  const PEAKS = () =>
+    fixture.BATCH_PEAKS.map((row) => ({
+      ...row,
+      max_intensity: row.mz * 10,
+      best_fit_score: 0.9,
+      series: ['bp-up', 'bp-three'].includes(row.batch_peak_id)
+        ? { unit: 'CH2', root_formula: 'C5H8O4', root_batch_peak_id: 'bp-root', step: 1 }
+        : null
+    }))
+  const SERIES_ORDER = ['bp-down', 'bp-root', 'bp-up', 'lens:gap:2', 'bp-three']
+
+  async function mountGroups(options = {}) {
+    wrapper = await mountPane({
+      peaks: PEAKS(),
+      ledger: { groups: fixture.BATCH_GROUPS },
+      ...options
+    })
+    return wrapper
+  }
+  const openSeries = async () => {
+    wrapper.vm.openLens(fixture.SERIES_GROUP)
+    await wrapper.vm.$nextTick()
+  }
+
+  it("opens the series lens from a row's series badge", async () => {
+    const cells = await cellsOf('acrossRank', PEAKS())
+    app.data.batchPeak.groups = fixture.BATCH_GROUPS
+    await wrapper.vm.$nextTick()
+    // The root carries no series record of its own: its badge is the step's.
+    expect(cells['bp-root'].find('[data-testid="lens-series"]').exists()).toBe(false)
+    await cells['bp-up'].find('[data-testid="lens-series"]').trigger('click')
+    expect(ids()).toEqual(SERIES_ORDER)
+  })
+
+  it('narrows to the group in its order and labels each step', async () => {
+    await mountGroups()
+    await openSeries()
+    expect(labels()).toEqual([
+      ['bp-down', '−1 CH2'],
+      ['bp-root', 'root'],
+      ['bp-up', '+1 CH2'],
+      ['lens:gap:2', '+2 CH2'],
+      ['bp-three', '+3 CH2']
+    ])
+    expect(ledgerOf().props('lens')).toEqual({
+      title: 'CH2 series from C5H8O4, through [M+NO3]-, 4 batch peaks, one step with no peak',
+      column: 'Step',
+      plot: true
+    })
+  })
+
+  it('keeps the gap in the list, with the formula the step stands at', async () => {
+    await mountGroups()
+    await openSeries()
+    // The ledger draws a pseudo-row greyed (assignmentLedger.spec.js).
+    expect(wrapper.vm.rows.find((row) => row.ledgerKind === 'gap')).toMatchObject({
+      lensLabel: '+2 CH2',
+      pseudoFormula: 'C7H12O4',
+      pseudoNote: 'no batch peak'
+    })
+  })
+
+  it('lifts the tier filter while open and keeps it for after', async () => {
+    await mountGroups()
+    wrapper.vm.toggleTier('assigned')
+    await wrapper.vm.$nextTick()
+    const before = ids()
+    expect(before).not.toContain('bp-down')
+    await openSeries()
+    expect(ids()).toEqual(SERIES_ORDER)
+    ledgerOf().vm.$emit('close-lens')
+    await wrapper.vm.$nextTick()
+    expect(ids()).toEqual(before)
+  })
+
+  it('survives a sort: the members follow the column, the gap after them', async () => {
+    await mountGroups()
+    await openSeries()
+    wrapper.vm.sortField = 'mz'
+    wrapper.vm.sortOrder = 1
+    await wrapper.vm.$nextTick()
+    expect(ledgerOf().props('lens')).not.toBeNull()
+    expect(ids()).toEqual(['bp-down', 'bp-root', 'bp-up', 'bp-three', 'lens:gap:2'])
+  })
+
+  it('closes on its x and on Escape, and the previous view comes back', async () => {
+    await mountGroups()
+    const before = ids()
+    await openSeries()
+    ledgerOf().vm.$emit('close-lens')
+    await wrapper.vm.$nextTick()
+    expect(ledgerOf().props('lens')).toBeNull()
+    expect(ids()).toEqual(before)
+
+    await openSeries()
+    await wrapper.find('[data-testid="lens-close"]').trigger('click')
+    expect(ids()).toEqual(before)
+
+    await openSeries()
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await wrapper.vm.$nextTick()
+    expect(ledgerOf().props('lens')).toBeNull()
+    expect(ids()).toEqual(before)
+  })
+
+  it("Plot the group selects the group's batch peaks for the batch chart", async () => {
+    await mountGroups()
+    app.data.batchPeak.selected = [fixture.BATCH_PEAKS.find((bp) => bp.batch_peak_id === 'bp-twin')]
+    await openSeries()
+    await wrapper.find('[data-testid="lens-bar"] .menu-button').trigger('click')
+    expect(app.data.batchPeak.selected.map((bp) => bp.batch_peak_id)).toEqual([
+      'bp-down',
+      'bp-root',
+      'bp-up',
+      'bp-three'
+    ])
+  })
+
+  it('opens the channels of a neutral from the xN pill, counted on the served group', async () => {
+    const cells = await cellsOf('consensus_ion_formula', PEAKS())
+    app.data.batchPeak.groups = fixture.BATCH_GROUPS
+    await wrapper.vm.$nextTick()
+    const pill = cells['bp-up'].find('[data-testid="channel-pill"]')
+    expect(pill.text()).toBe('×2')
+    // A neutral read through one channel carries none.
+    expect(cells['bp-root'].find('[data-testid="channel-pill"]').exists()).toBe(false)
+    await pill.trigger('click')
+    expect(labels()).toEqual([
+      ['bp-up_other', '[M-H]-'],
+      ['bp-up', '[M+NO3]-']
+    ])
+    expect(ledgerOf().props('lens').column).toBe('Channel')
+  })
+
+  it("opens the 14N twin from the root's batch facts", async () => {
+    await mountGroups()
+    wrapper.vm.openLens(wrapper.vm.badgeGroup({ batch_peak_id: 'bp-twin' }, 'facts'))
+    await wrapper.vm.$nextTick()
+    expect(labels()).toEqual([
+      ['bp-root', '[M+NO3]-'],
+      ['bp-twin', '14N twin']
+    ])
+  })
+
+  it("closes on another batch: a lens is the batch's it was opened on", async () => {
+    await mountGroups()
+    await openSeries()
+    app.data.batch.focusedId = 'b-2'
+    await wrapper.vm.$nextTick()
+    expect(ledgerOf().props('lens')).toBeNull()
+  })
+
+  it('offers Group by none, compound and series', async () => {
+    await mountGroups()
+    const choice = wrapper
+      .findAllComponents({ name: 'LedgerMenuChoice' })
+      .find((c) => c.props('label') === 'Group by')
+    expect(choice.props('options').map((o) => o.value)).toEqual(['none', 'compound', 'series'])
+  })
+
+  const lines = () =>
+    wrapper.vm.rows.map((row) =>
+      row.ledgerKind === 'group'
+        ? `${row.groupName} | ${row.groupCount} | ${row.groupTier}`
+        : row.ledgerKind
+          ? `${row.ledgerKind}:${row.pseudoFormula}`
+          : row.batch_peak_id
+    )
+
+  it('groups by series: a group line over its members, the rest Ungrouped', async () => {
+    await mountGroups()
+    wrapper.vm.view.groupBy = 'series'
+    await wrapper.vm.$nextTick()
+    expect(lines()).toEqual([
+      'CH2 series from C5H8O4, through [M+NO3]- | 4 batch peaks | assigned',
+      'bp-three',
+      'bp-up',
+      'bp-root',
+      'bp-down',
+      'Ungrouped | 3 batch peaks | null',
+      'bp-two_other',
+      'bp-twin',
+      'bp-up_other'
+    ])
+  })
+
+  it('groups by compound, and a group line folds its members', async () => {
+    await mountGroups()
+    wrapper.vm.view.groupBy = 'compound'
+    await wrapper.vm.$nextTick()
+    expect(lines().slice(0, 3)).toEqual([
+      'C6H10O4 | 2 batch peaks | assigned',
+      'bp-up',
+      'bp-up_other'
+    ])
+    expect(lines()[3]).toBe('Ungrouped | 5 batch peaks | null')
+
+    ledgerOf().vm.$emit('toggle-group', wrapper.vm.rows[0])
+    await wrapper.vm.$nextTick()
+    expect(lines()[1]).toBe('Ungrouped | 5 batch peaks | null')
+    expect(wrapper.vm.rows[0].collapsed).toBe(true)
+  })
+
+  it('follows the group as the newest read serves it', async () => {
+    await mountGroups()
+    await openSeries()
+    // A reload serves the series with a member two steps up: the gap is gone.
+    app.data.batchPeak.list = [
+      ...app.data.batchPeak.list,
+      { ...fixture.BATCH_PEAKS[0], batch_peak_id: 'bp-two', consensus_formula: 'C7H12O4', mz: 222 }
+    ]
+    app.data.batchPeak.groups = [
+      {
+        ...fixture.SERIES_GROUP,
+        members: [
+          ...fixture.SERIES_GROUP.members,
+          { ...fixture.member('up'), batch_peak_id: 'bp-two', formula: 'C7H12O4', mz: 222, step: 2 }
+        ]
+      }
+    ]
+    await wrapper.vm.$nextTick()
+    expect(ids()).toEqual(['bp-down', 'bp-root', 'bp-up', 'bp-two', 'bp-three'])
+  })
+
+  it('lists a member of the other instrument type greyed, as not in this ledger', async () => {
+    await mountGroups({
+      ledger: {
+        groups: fixture.BATCH_GROUPS,
+        inPartition: (bp) => bp.batch_peak_id !== 'bp-three'
+      }
+    })
+    await openSeries()
+    expect(wrapper.vm.rows.at(-1)).toMatchObject({
+      ledgerKind: 'absent',
+      lensLabel: '+3 CH2',
+      pseudoNote: 'not in this ledger',
+      pseudoMz: 236
+    })
+  })
+
+  it('names a row in two series again under the second, greyed', async () => {
+    const OXYGEN = {
+      group_id: 'series:bp-o:O:mech',
+      kind: 'series',
+      unit: 'O',
+      root_batch_peak_id: 'bp-twin',
+      root_formula: 'C5H9NO3',
+      members: [fixture.member('twin', { step: 0 }), fixture.member('up', { step: 1 })]
+    }
+    await mountGroups({ ledger: { groups: [fixture.SERIES_GROUP, OXYGEN] } })
+    wrapper.vm.view.groupBy = 'series'
+    await wrapper.vm.$nextTick()
+    const second = wrapper.vm.rows.findIndex((row) => row.groupKey === OXYGEN.group_id)
+    expect(wrapper.vm.rows.slice(second + 1, second + 3)).toMatchObject([
+      { batch_peak_id: 'bp-twin' },
+      {
+        ledgerKind: 'reference',
+        pseudoFormula: 'C6H10O4',
+        pseudoNote: 'listed under CH2 series from C5H8O4, through [M+NO3]-'
+      }
+    ])
+  })
+
+  it('unfolds every group line again when the grouping changes', async () => {
+    await mountGroups()
+    wrapper.vm.view.groupBy = 'series'
+    await wrapper.vm.$nextTick()
+    ledgerOf().vm.$emit('toggle-group', wrapper.vm.rows[0])
+    await wrapper.vm.$nextTick()
+    expect(wrapper.vm.rows[0].collapsed).toBe(true)
+    wrapper.vm.view.groupBy = 'compound'
+    await wrapper.vm.$nextTick()
+    wrapper.vm.view.groupBy = 'series'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.vm.rows[0].collapsed).toBe(false)
+  })
+
+  it('draws no sample count and no badges on a group line', async () => {
+    const samples = await cellsOf('n_present', PEAKS())
+    app.data.batchPeak.groups = fixture.BATCH_GROUPS
+    wrapper.vm.view.groupBy = 'series'
+    await wrapper.vm.$nextTick()
+    void samples
+    const cellOf = (field, id) =>
+      wrapper
+        .findAll('.column-stub')
+        .find((col) => col.attributes('data-field') === field)
+        .find(`.stub-cell[data-row="${id}"]`)
+    const line = wrapper.vm.rows[0].batch_peak_id
+    expect(cellOf('n_present', line).find('[data-testid="samples"]').exists()).toBe(false)
+    expect(cellOf('acrossRank', line).find('[data-testid="across"]').exists()).toBe(false)
+    expect(cellOf('n_present', 'bp-up').find('[data-testid="samples"]').exists()).toBe(true)
+  })
+
+  it('selects no group line, gap or reference row', async () => {
+    await mountGroups()
+    wrapper.vm.view.groupBy = 'series'
+    await wrapper.vm.$nextTick()
+    wrapper.vm.applySelection(wrapper.vm.rows)
+    expect(app.data.batchPeak.selected.every((row) => !row.ledgerKind)).toBe(true)
+    expect(app.data.batchPeak.selected).toHaveLength(7)
+  })
+})

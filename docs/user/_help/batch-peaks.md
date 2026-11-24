@@ -16,3 +16,10 @@ flat series, one badge kind at a time), the engine's readings and the verdict
 filter; **...** holds **Export ledger (CSV)** and **Write listed names in
 full**. Every choice is kept for this ledger, through a visit to a sample and a
 reload.
+
+A series, co-variation or batch facts badge, or the **×N** pill beside an ion,
+opens the rows it is about together: the ledger narrows to the group in its
+own order, a **Step** or **Channel** column labels each row, a series step with
+no batch peak stays greyed, and **Plot the group** draws them in the batch
+chart. **×** or Escape gives the ledger back. **Show › Group by** draws every
+group at once: by compound or by series, under collapsible group lines.

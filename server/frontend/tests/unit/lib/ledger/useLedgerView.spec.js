@@ -83,7 +83,7 @@ describe('useLedgerViewStore', () => {
           order: 2,
           queue: true
         },
-        batch: { badge: 'sparkles', groupBy: 'compound', blends: true, field: 7 },
+        batch: { badge: 'sparkles', groupBy: 'family', blends: true, field: 7 },
         listingFull: 'yes'
       })
     )
@@ -97,10 +97,19 @@ describe('useLedgerViewStore', () => {
     expect(view.sample.order).toBe(defaultLedgerView('sample').order)
     expect(view.sample.queue).toBe(true)
     expect(view.batch.badge).toBeNull()
+    // The batch groups by compound or series; a family is the fold, no grouping.
     expect(view.batch.groupBy).toBe('none')
     expect(view.batch.field).toBe(defaultLedgerView('batch').field)
     expect(view.batch.blends).toBe(true)
     expect(useLedgerListing().full).toBe(false)
+  })
+
+  it('keeps a batch grouping by compound or by series', () => {
+    for (const groupBy of ['compound', 'series']) {
+      setActivePinia(createPinia())
+      localStorage.setItem(LEDGER_VIEW_STORAGE_KEY, JSON.stringify({ batch: { groupBy } }))
+      expect(useLedgerViewStore().batch.groupBy).toBe(groupBy)
+    }
   })
 
   it('falls back to the defaults on unreadable storage', () => {
