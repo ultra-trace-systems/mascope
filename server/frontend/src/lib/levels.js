@@ -127,6 +127,61 @@ export const LEVEL_META = Object.freeze(
  */
 export const isLevel = (level) => LEVELS.includes(level)
 
+// --- A claim recorded before the letters ---------------------------------------
+//
+// A claim made under version 1 of the claims' mapping (docs/dev/
+// identification_claims.md, section 5.4) records its number and no letter, and
+// nothing backfills one. Level 1 has no letter on the scale, so it reads as
+// itself; a bare 2, 3 or 4 is no level the scale names, and guessing a letter
+// for it would state evidence nobody recorded. It reads as the number alone,
+// in its number's colour, with a hover line that says why it has no letter, and
+// sorts just before its number's lettered levels.
+
+const VERSION_ONE_META = Object.freeze(
+  Object.fromEntries(
+    [2, 3, 4, 5].map((number) => {
+      const key = String(number)
+      const band = BAND_BY_NUMBER[number]
+      const first = LEVELS.findIndex((level) => level[0] === key)
+      return [
+        key,
+        Object.freeze({
+          key,
+          label: key,
+          number,
+          band,
+          token: `--level-${band}`,
+          name: 'recorded before the letters',
+          description:
+            `Level ${number}: stated by a claim recorded before the scale's letters ` +
+            "(version 1 of the claims' mapping), so it names no kind of evidence",
+          rank: first - 0.5,
+          versionOne: true
+        })
+      ]
+    })
+  )
+)
+
+/**
+ * Whether a value is a version-1 claim's level: a number of the scale with no
+ * letter, where the scale names that number only with one.
+ *
+ * @param {*} level the level as a reader is shown it
+ * @returns {boolean}
+ */
+export const isVersionOneLevel = (level) =>
+  typeof level === 'string' && Object.prototype.hasOwnProperty.call(VERSION_ONE_META, level)
+
+/**
+ * Whether a reader can be shown the value as a level: one of the scale's, or a
+ * version-1 claim's bare number.
+ *
+ * @param {*} level the level as a reader is shown it
+ * @returns {boolean}
+ */
+export const isShownLevel = (level) => isLevel(level) || isVersionOneLevel(level)
+
 /**
  * Sort rank for a level. A row with none, or one the scale does not name,
  * ranks after every level, so it never heads a column sorted best first.
@@ -134,7 +189,12 @@ export const isLevel = (level) => LEVELS.includes(level)
  * @param {*} level the level as stored on the record
  * @returns {number} its index in `LEVELS`, or `LEVELS.length`
  */
-export const levelRank = (level) => (isLevel(level) ? LEVEL_RANK[level] : LEVELS.length)
+export const levelRank = (level) =>
+  isLevel(level)
+    ? LEVEL_RANK[level]
+    : isVersionOneLevel(level)
+      ? VERSION_ONE_META[level].rank
+      : LEVELS.length
 
 /**
  * Chip presentation for a level, or null for a row that carries none.
@@ -146,7 +206,8 @@ export const levelRank = (level) => (isLevel(level) ? LEVEL_RANK[level] : LEVELS
  * @param {*} level the level as stored on the record
  * @returns {{key: string, label: string, number: number, name: string, description: string, band: string, token: string}|null}
  */
-export const levelMeta = (level) => (isLevel(level) ? LEVEL_META[level] : null)
+export const levelMeta = (level) =>
+  isLevel(level) ? LEVEL_META[level] : isVersionOneLevel(level) ? VERSION_ONE_META[level] : null
 
 /**
  * The hover lines of a level chip: what the level means, then what earned it
@@ -157,19 +218,97 @@ export const levelMeta = (level) => (isLevel(level) ? LEVEL_META[level] : null)
  * @param {string|null} [options.evidence] the line naming what earned it
  * @param {string|null} [options.lift] what would raise it
  * @param {string|null} [options.role] the row's role; an isotopologue's level is its M0's
+ * @param {'claim'|'engine'|null} [options.source] whose level it is, where a
+ *   reader could be shown either (readerLevel); left out where only one can be
+ * @param {string|null} [options.engineLevel] the engine's level, under a claim
  * @returns {string} the lines joined, or '' for a row with no level
  */
-export function levelTooltip({ level, evidence = null, lift = null, role = null }) {
+export function levelTooltip({
+  level,
+  evidence = null,
+  lift = null,
+  role = null,
+  source = null,
+  engineLevel = null
+}) {
   const meta = levelMeta(level)
   if (!meta) return ''
   return [
     meta.description,
+    source ? sourceLine(source, engineLevel) : null,
     evidence ? `Why: ${evidence}` : null,
     lift ? `Would lift it: ${lift}` : null,
     role === 'iso_child' ? 'An isotopologue: it holds the level of its M0' : null
   ]
     .filter(Boolean)
     .join('\n')
+}
+
+// Whose level a chip shows: the live claim's, or the engine's.
+function sourceLine(source, engineLevel) {
+  if (source === 'claim') {
+    const engine = levelMeta(engineLevel)
+    return (
+      'Source: claim - the live verdict states this level' +
+      (engine ? `; the engine read ${engine.label}` : '')
+    )
+  }
+  return 'Source: engine - no live verdict states a level'
+}
+
+/**
+ * The level a reader is shown for a row: the live claim's where a verdict
+ * states one, else the engine's (docs/dev/identification_claims.md, section 3
+ * rule 4 and section 6.1). A verdict states a level when it carries an integer
+ * `level`: a confirmation that names a structure, a class or the formula under
+ * the claims' mapping. A rejection, an unsure verdict, a confirmation on visual
+ * evidence and a refuting standard state none, and nor does a batch-level claim
+ * served to a sample its window leaves out: the server sends that one with no
+ * level and `outside_window`, so the row reads the engine's there.
+ *
+ * The claim's level is its number and the scale's letter (`level_letter`); one
+ * recorded under version 1 has no letter and reads as the number alone
+ * (isVersionOneLevel). Its two lines are the claim's own, from `context.claim`.
+ *
+ * @param {object} options
+ * @param {?object} [options.verdict] the live verdict that reaches the row: its
+ *   own, else the batch-level one
+ * @param {?string} [options.level] the engine's level
+ * @param {?string} [options.evidence] the line naming what earned the engine's
+ * @param {?string} [options.lift] what would raise the engine's
+ * @returns {?{level: string, source: 'claim'|'engine', evidence: ?string, lift: ?string, engineLevel: ?string}}
+ *   null where neither states a level the scale can show
+ */
+export function readerLevel({ verdict = null, level = null, evidence = null, lift = null } = {}) {
+  const claimed = claimLevelOf(verdict)
+  const engineLevel = isLevel(level) ? level : null
+  if (claimed) {
+    const claim = verdict.context?.claim
+    const lines = claim && typeof claim === 'object' ? claim : {}
+    return {
+      level: claimed,
+      source: 'claim',
+      evidence: lines.evidence ?? null,
+      lift: lines.lift ?? null,
+      engineLevel
+    }
+  }
+  if (!engineLevel) return null
+  return { level: engineLevel, source: 'engine', evidence, lift, engineLevel }
+}
+
+/**
+ * The level a verdict states, as the chip writes it, or null where it states
+ * none: a number with its letter (`2b`), level 1, or a version-1 claim's bare
+ * number. A number with a letter the scale does not name is no level to show.
+ *
+ * @param {?object} verdict a verification record
+ * @returns {?string}
+ */
+export function claimLevelOf(verdict) {
+  if (!verdict || verdict.outside_window || !Number.isInteger(verdict.level)) return null
+  const key = `${verdict.level}${verdict.level_letter ?? ''}`
+  return isShownLevel(key) ? key : null
 }
 
 // --- The rivals a level was read against ---------------------------------------
@@ -305,3 +444,24 @@ export const LEVEL_FILTER_OPTIONS = Object.freeze(
     Object.freeze({ value: level, label: LEVEL_META[level].label, name: LEVEL_META[level].name })
   )
 )
+
+/**
+ * A level filter's options for the levels a ledger shows: the scale's, and in
+ * its place a version-1 claim's bare number where a row shows one, so a reader
+ * can filter on every level the column draws.
+ *
+ * @param {Iterable<string>} shown the levels the ledger's rows show
+ * @returns {Array<{value: string, label: string, name: string}>}
+ */
+export function levelFilterOptions(shown) {
+  const extra = [...new Set(shown)].filter(isVersionOneLevel)
+  if (!extra.length) return LEVEL_FILTER_OPTIONS
+  return [
+    ...LEVEL_FILTER_OPTIONS,
+    ...extra.map((level) => ({
+      value: level,
+      label: VERSION_ONE_META[level].label,
+      name: VERSION_ONE_META[level].name
+    }))
+  ].sort((a, b) => levelRank(a.value) - levelRank(b.value))
+}

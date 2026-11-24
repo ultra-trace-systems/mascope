@@ -57,6 +57,29 @@ describe('BaseLevelTag', () => {
     }
   })
 
+  // Where a reader could be shown a claim's level or the engine's, the hover
+  // says whose it is (readerLevel).
+  it("says on hover whose level it is, and the engine's under a claim", () => {
+    const claim = mountTag({ level: '2b', source: 'claim', engineLevel: '4a' })
+    expect(claim.find('.level-tag').attributes('data-tooltip')).toContain(
+      'Source: claim - the live verdict states this level; the engine read 4a'
+    )
+    const engine = mountTag({ level: '4a', source: 'engine' })
+    expect(engine.find('.level-tag').attributes('data-tooltip')).toContain(
+      'Source: engine - no live verdict states a level'
+    )
+    expect(mountTag({ level: '4a' }).find('.level-tag').attributes('data-tooltip')).not.toContain(
+      'Source'
+    )
+  })
+
+  // A claim recorded under version 1 of the mapping has a number and no letter.
+  it("draws a version-1 claim's bare number in its number's colour", () => {
+    const tag = mountTag({ level: '3' }).find('.level')
+    expect(tag.text()).toBe('3')
+    expect(tag.attributes('style')).toContain('var(--level-structure)')
+  })
+
   it('says on hover what the level means, what earned it and what would lift it', () => {
     const wrapper = mountTag({
       level: '5a',

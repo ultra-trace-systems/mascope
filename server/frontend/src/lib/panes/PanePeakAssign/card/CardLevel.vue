@@ -13,6 +13,15 @@ import { useCard } from './useCard.js'
 // mass. Folded by default; the chip row carries the level itself.
 const { app, focusedAssignment, identificationLevel, rivalTooltip } = useCard()
 
+// Whose level it is: the live verdict's claim, which states it in place of the
+// engine's, or the engine's where no live verdict states one.
+const sourceLine = computed(() => {
+  const level = identificationLevel.value
+  if (!level) return ''
+  if (level.source !== 'claim') return 'engine'
+  return level.engineLevel ? `claim, the engine read ${level.engineLevel}` : 'claim'
+})
+
 const summary = computed(() => {
   const level = identificationLevel.value
   return level ? `${level.level} · ${level.name}` : ''
@@ -36,8 +45,16 @@ const summary = computed(() => {
       }"
     >
       <div class="level-head">
-        <BaseLevelTag :level="identificationLevel.level" :role="focusedAssignment.role" />
+        <BaseLevelTag
+          :level="identificationLevel.level"
+          :role="focusedAssignment.role"
+          :tooltip="identificationLevel.tooltip"
+        />
         <span class="level-name">{{ identificationLevel.name }}</span>
+      </div>
+      <div class="level-line muted" data-testid="level-source">
+        <span class="level-key">source</span>
+        <span class="level-value">{{ sourceLine }}</span>
       </div>
       <div v-if="identificationLevel.evidence" class="level-line" data-testid="level-evidence">
         <span class="level-key">why</span>

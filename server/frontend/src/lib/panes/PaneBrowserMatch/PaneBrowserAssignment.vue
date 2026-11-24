@@ -38,7 +38,7 @@ import {
   tierName,
   tierRank
 } from '@/lib/tiers'
-import { isLevel, levelRank } from '@/lib/levels'
+import { isShownLevel, levelFilterOptions, levelRank, readerLevel } from '@/lib/levels'
 import { queueReason, queueRows, queueTooltip } from '@/lib/verificationQueue'
 import { scrollVirtualRowIntoView } from '@/lib/virtualScroll'
 import {
@@ -144,7 +144,15 @@ const tierChips = computed(() =>
 // tier is: a run from before the level, an imported run and a ledger the batch
 // serves carry none, and a column of empty cells would read as rows judged and
 // found wanting.
-const hasLevels = computed(() => assignments.value.list.some((row) => isLevel(row.level)))
+//
+// The level a row shows is the live claim's where its verdict states one, else
+// the engine's (readerLevel): its own verdict's, else the batch-level verdict
+// reaching it, which the server serves with no level to a sample a level-1
+// claim's window leaves out. So a run with no engine levels still offers the
+// column where a claim states one. Defined below the verdicts it reads.
+const hasLevels = computed(() =>
+  assignments.value.list.some((row) => isShownLevel(shownLevelOf(row)?.level))
+)
 
 // Map ionization_mechanism_id -> readable notation (e.g. "[M+H]+", "[M+Br]-"), for
 // the ledger's ionization column. The assignment carries only the id.
@@ -195,6 +203,19 @@ const conflictFor = (row) => {
 // verdict column's sort run on this, so "Unverified" never lists a row that
 // shows a badge.
 const effectiveVerdictFor = (row) => verdictFor(row) ?? overlayFor(row)
+
+// The level the row shows, and whose it is. An isotopologue reads its M0's
+// verdict, as its badge does, and carries its M0's engine level already.
+const shownLevelOf = (row) =>
+  readerLevel({
+    verdict: effectiveVerdictFor(row),
+    level: row.level,
+    evidence: row.level_evidence,
+    lift: row.level_lift
+  })
+const levelOptions = computed(() =>
+  levelFilterOptions(decoratedRows.value.map((row) => row.shownLevel?.level))
+)
 
 // The verdict filter's choices (single-select), in the Show menu.
 const VERDICT_FILTERS = [
@@ -424,6 +445,8 @@ const { activeTiers, toggleTier, filters, verdictFilter, searchQuery, passes } =
   bucketOf,
   state: view,
   menus: { level: FilterMatchMode.EQUALS },
+  // The menu filters on the level the column draws, a claim's included.
+  valueOf: { level: (row) => row.shownLevel?.level ?? null },
   menuShown: { level: hasLevels },
   view: readsEngineTiers,
   verdictOf: effectiveVerdictFor,
@@ -609,6 +632,7 @@ function isotopologuesOf(parent) {
       listing: null,
       target: null,
       mech: mechById.value.get(child.ionization_mechanism_id) ?? null,
+      shownLevel: shownLevelOf(child),
       isChild: true
     }))
 }
@@ -621,6 +645,7 @@ const decoratedRows = computed(() =>
     .filter((row) => !isIsotopeLine(row))
     .map((row) => {
       const listing = ledgerListing(row.reference_listing)
+      const shownLevel = shownLevelOf(row)
       return {
         ...row,
         tierRank: bucketRank(row.tier, row.role),
@@ -628,8 +653,9 @@ const decoratedRows = computed(() =>
         // last in both directions: "this engine said nothing" is not a
         // position on the scale.
         engineTierRank: row.engine_tier != null ? tierRank(row.engine_tier) : null,
-        // Null rather than a rank where the row carries no level, likewise.
-        levelRank: isLevel(row.level) ? levelRank(row.level) : null,
+        // Null rather than a rank where the row shows no level, likewise.
+        shownLevel,
+        levelRank: shownLevel ? levelRank(shownLevel.level) : null,
         verdictRank: verdictRank(effectiveVerdictFor(row)),
         listing,
         target: targetOf(row.reference_listing, listing),
@@ -947,6 +973,7 @@ const HEADERS = {
     v-model:sortField="sortField"
     v-model:sortOrder="sortOrder"
     :fields="FIELDS"
+    :levelOptions="levelOptions"
     :headers="HEADERS"
     intensityLabel="Intensity"
     v-model:search="searchQuery"
@@ -1256,11 +1283,13 @@ const HEADERS = {
          An isotopologue shows its M0's level, which it carries. -->
     <template #level="{ data }">
       <BaseLevelTag
-        v-if="isLevel(data.level)"
-        :level="data.level"
-        :evidence="data.level_evidence"
-        :lift="data.level_lift"
+        v-if="data.shownLevel"
+        :level="data.shownLevel.level"
+        :evidence="data.shownLevel.evidence"
+        :lift="data.shownLevel.lift"
         :role="data.role"
+        :source="data.shownLevel.source"
+        :engineLevel="data.shownLevel.engineLevel"
       />
     </template>
 

@@ -208,10 +208,11 @@ vi.mock('@/lib/base', async () => ({
   // Says what it was handed, so the level column's tests can read it off; the
   // chip has a spec of its own (base/BaseLevelTag.spec.js).
   BaseLevelTag: {
-    props: ['level', 'evidence', 'lift', 'role', 'tooltip'],
+    props: ['level', 'evidence', 'lift', 'role', 'tooltip', 'source', 'engineLevel'],
     template:
       '<span class="level-tag-stub" :data-level="level" :data-evidence="evidence" ' +
-      ':data-lift="lift" :data-role="role" />'
+      ':data-lift="lift" :data-role="role" :data-source="source" ' +
+      ':data-engine-level="engineLevel" />'
   },
   BaseVerdictBadge: true,
   // Real: the tier column's header renders it, and the provisional-tiers tests
@@ -2746,6 +2747,135 @@ describe('PaneBrowserAssignment identification level column', () => {
 
     expect(select.props('options').map((option) => option.label)).toEqual(LEVELS)
     expect(select.props('optionValue')).toBe('value')
+  })
+
+  // The level a reader is shown is the live claim's where a verdict states
+  // one, else the engine's (docs/dev/identification_claims.md, section 6.1).
+  describe("a live claim's level", () => {
+    const CLAIM = {
+      sample_peak_id: 'p-b',
+      verdict: 'confirmed',
+      evidence_level: 'msms',
+      level: 2,
+      level_letter: 'b',
+      claimed_inchikey: 'XLYOFNOQVPJJNP-UHFFFAOYSA-N',
+      context: { claim: { evidence: 'two fragments fit one structure', lift: 'a standard' } }
+    }
+    const chipOf = (wrapper, id) => cell(wrapper, id).find('.level-tag-stub')
+
+    it("shows the claim's level in place of the engine's, with its lines, source claim", async () => {
+      verdictPeakId = 'p-b'
+      verdictRecord = CLAIM
+      seedLevels()
+      const wrapper = await renderedTable()
+
+      const chip = chipOf(wrapper, 'b')
+      expect(chip.attributes('data-level')).toBe('2b')
+      expect(chip.attributes('data-source')).toBe('claim')
+      expect(chip.attributes('data-engine-level')).toBe('4a')
+      expect(chip.attributes('data-evidence')).toBe('two fragments fit one structure')
+      expect(chip.attributes('data-lift')).toBe('a standard')
+      // A row no verdict reaches reads the engine's, and says so.
+      expect(chipOf(wrapper, 'a').attributes('data-level')).toBe('5a')
+      expect(chipOf(wrapper, 'a').attributes('data-source')).toBe('engine')
+      expect(chipOf(wrapper, 'a').attributes('data-evidence')).toBe('rivals not measured')
+    })
+
+    it("ranks, sorts and filters on the claim's level", async () => {
+      // On row a, whose engine level (5a) would sort it after b and d.
+      verdictPeakId = 'p-a'
+      verdictRecord = { ...CLAIM, sample_peak_id: 'p-a' }
+      seedLevels()
+      const wrapper = await mountPane()
+      const byId = Object.fromEntries(wrapper.vm.rows.map((row) => [row.peak_assignment_id, row]))
+      expect(byId.a.levelRank).toBe(LEVELS.indexOf('2b'))
+
+      wrapper.vm.sortField = 'levelRank'
+      wrapper.vm.sortOrder = 1
+      await wrapper.vm.$nextTick()
+      expect(ids(wrapper)).toEqual(['a', 'b', 'd', 'c'])
+
+      wrapper.vm.filters.level.constraints[0].value = '2b'
+      await wrapper.vm.$nextTick()
+      expect(ids(wrapper)).toEqual(['a'])
+      wrapper.vm.filters.level.constraints[0].value = '5a'
+      await wrapper.vm.$nextTick()
+      expect(ids(wrapper)).toEqual([])
+    })
+
+    it('reads a batch-level claim reaching the row as the claim it is', async () => {
+      overlayRecord = { ...CLAIM, level: 1, level_letter: null }
+      seedLevels()
+      const wrapper = await renderedTable()
+
+      expect(chipOf(wrapper, 'b').attributes('data-level')).toBe('1')
+      expect(chipOf(wrapper, 'b').attributes('data-source')).toBe('claim')
+    })
+
+    // The server serves a level-1 batch claim to a sample its window leaves
+    // out with no level and `outside_window`: the verdict reaches the row, its
+    // level does not.
+    it("reads the engine's level where a batch claim's window leaves the sample out", async () => {
+      overlayRecord = {
+        ...CLAIM,
+        level: null,
+        level_letter: null,
+        claimed_inchikey: null,
+        outside_window: true
+      }
+      seedLevels()
+      const wrapper = await renderedTable()
+
+      expect(chipOf(wrapper, 'b').attributes('data-level')).toBe('4a')
+      expect(chipOf(wrapper, 'b').attributes('data-source')).toBe('engine')
+    })
+
+    it('offers the column on a run with no engine levels where a claim states one', async () => {
+      verdictPeakId = 'p-a'
+      verdictRecord = { ...CLAIM, sample_peak_id: 'p-a' }
+      seed(family({ id: 'a', mz: 100, intensity: 10, formula: 'C6H6' }))
+      const wrapper = await renderedTable()
+
+      expect(wrapper.vm.hasLevels).toBe(true)
+      expect(chipOf(wrapper, 'a').attributes('data-level')).toBe('2b')
+      expect(chipOf(wrapper, 'a').attributes('data-engine-level')).toBeUndefined()
+    })
+
+    it("shows a version-1 claim's bare number, and offers it in the menu", async () => {
+      verdictPeakId = 'p-b'
+      verdictRecord = { ...CLAIM, level: 3, level_letter: null, context: {} }
+      seedLevels()
+      const wrapper = await renderedTable()
+
+      expect(chipOf(wrapper, 'b').attributes('data-level')).toBe('3')
+      const options = levelColumn(wrapper)
+        .findComponent({ name: 'Select' })
+        .props('options')
+        .map((option) => option.value)
+      expect(options).toEqual([...LEVELS.slice(0, 3), '3', ...LEVELS.slice(3)])
+    })
+
+    it("reads the M0's claim on an isotopologue line", async () => {
+      verdictPeakId = 'p-a'
+      verdictRecord = { ...CLAIM, sample_peak_id: 'p-a' }
+      seed(
+        leveled(
+          {
+            id: 'a',
+            mz: 100.1,
+            intensity: 10,
+            formula: 'C6H6',
+            children: [{ sample_peak_mz: 101.1, sample_peak_intensity: 1 }]
+          },
+          '4a'
+        )
+      )
+      const wrapper = await mountPane()
+      wrapper.vm.showIsotopologues = true
+      await wrapper.vm.$nextTick()
+      const child = wrapper.vm.rows.find((row) => row.peak_assignment_id === 'a-c0')
+      expect(child.shownLevel).toMatchObject({ level: '2b', source: 'claim' })
+    })
   })
 
   it('says what the column is on hover, and opens the level help', async () => {

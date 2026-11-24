@@ -23,3 +23,8 @@ what test is missing. **Rivals** lists each other formula with the test that
 put it out &mdash; by mass, by isotopes or by a second channel &mdash; or
 *open*. An isotope line shows its main peak's level. The level never changes
 the tier.
+
+Where a verdict you or a colleague recorded states a level, the chip and the
+**Level** column show that level instead, and the hover says *claim*; with
+none, it says *engine*. A claim recorded before the letters shows its number
+alone.

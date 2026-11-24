@@ -6,14 +6,19 @@ import {
   LEVEL_META,
   LEVEL_RANK,
   RIVAL_TESTS,
+  claimLevelOf,
   heldByNote,
   isLevel,
   isOpenRival,
+  isShownLevel,
+  isVersionOneLevel,
+  levelFilterOptions,
   levelMeta,
   levelRank,
   levelTooltip,
   memberLevelTooltip,
   memberLevelsSummary,
+  readerLevel,
   rivalTestLabel,
   unlistedRivalsLine
 } from '@/lib/levels'
@@ -229,5 +234,113 @@ describe("a batch peak's members' levels", () => {
 
   it('says nothing for a batch peak with no level', () => {
     expect(memberLevelTooltip(null, { '4a': 1 })).toBe('')
+  })
+})
+
+// The level a reader is shown: the live claim's where a verdict states one,
+// else the engine's (docs/dev/identification_claims.md, section 6.1).
+describe('readerLevel and claimLevelOf', () => {
+  const claim = (extra = {}) => ({
+    verdict: 'confirmed',
+    level: 2,
+    level_letter: 'b',
+    context: { claim: { evidence: 'two fragments', lift: 'a standard' } },
+    ...extra
+  })
+  const ENGINE = { level: '4a', evidence: 'rivals out', lift: 'MS/MS' }
+
+  it("reads a live claim's number and letter, with the claim's own lines", () => {
+    expect(readerLevel({ verdict: claim(), ...ENGINE })).toEqual({
+      level: '2b',
+      source: 'claim',
+      evidence: 'two fragments',
+      lift: 'a standard',
+      engineLevel: '4a'
+    })
+  })
+
+  it("reads the engine's where no verdict states a level", () => {
+    for (const verdict of [
+      null,
+      claim({ verdict: 'unsure', level: null, level_letter: null }),
+      claim({ level: undefined })
+    ]) {
+      expect(readerLevel({ verdict, ...ENGINE })).toEqual({
+        ...ENGINE,
+        source: 'engine',
+        engineLevel: '4a'
+      })
+    }
+  })
+
+  it("reads the engine's where a batch claim's window leaves the sample out", () => {
+    const outside = claim({ level: 1, level_letter: null, outside_window: true })
+    expect(claimLevelOf(outside)).toBeNull()
+    expect(readerLevel({ verdict: outside, ...ENGINE }).source).toBe('engine')
+  })
+
+  it('reads level 1 as the scale names it, with no letter', () => {
+    expect(claimLevelOf(claim({ level: 1, level_letter: null }))).toBe('1')
+  })
+
+  it("reads a version-1 claim's bare number, and no level for a letter the scale lacks", () => {
+    expect(claimLevelOf(claim({ level: 3, level_letter: null }))).toBe('3')
+    expect(claimLevelOf(claim({ level: 2, level_letter: 'z' }))).toBeNull()
+    expect(claimLevelOf(claim({ level: 6, level_letter: null }))).toBeNull()
+  })
+
+  it('reads a claim on a row the engine gave no level', () => {
+    expect(readerLevel({ verdict: claim() })).toMatchObject({ level: '2b', engineLevel: null })
+    expect(readerLevel({ level: '6' })).toBeNull()
+    expect(readerLevel()).toBeNull()
+  })
+})
+
+describe("a version-1 claim's level", () => {
+  it('is a bare number of 2 to 5, nothing else', () => {
+    for (const key of ['2', '3', '4', '5']) expect(isVersionOneLevel(key), key).toBe(true)
+    for (const key of ['1', '2b', '6', 2, null, 'constructor']) {
+      expect(isVersionOneLevel(key), String(key)).toBe(false)
+    }
+    expect(isShownLevel('3')).toBe(true)
+    expect(isShownLevel('3a')).toBe(true)
+    expect(isLevel('3')).toBe(false)
+  })
+
+  it("draws in its number's band and says it predates the letters", () => {
+    const meta = levelMeta('4')
+    expect(meta).toMatchObject({ label: '4', number: 4, band: 'formula' })
+    expect(meta.description).toContain("recorded before the scale's letters")
+  })
+
+  it("sorts just before its number's lettered levels", () => {
+    const sorted = ['5a', '3', '2b', '1', '3a', '4'].sort((a, b) => levelRank(a) - levelRank(b))
+    expect(sorted).toEqual(['1', '2b', '3', '3a', '4', '5a'])
+    expect(levelRank('5')).toBeLessThan(levelRank('5a'))
+  })
+
+  it('is offered to a filter only where a row shows one, in its place', () => {
+    expect(levelFilterOptions(['4a', null])).toBe(LEVEL_FILTER_OPTIONS)
+    const values = levelFilterOptions(['3', '3', '4a']).map((option) => option.value)
+    expect(values).toEqual([...LEVELS.slice(0, 3), '3', ...LEVELS.slice(3)])
+  })
+})
+
+describe('levelTooltip source line', () => {
+  it("says a claim's level is the claim's, and what the engine read", () => {
+    expect(levelTooltip({ level: '2b', source: 'claim', engineLevel: '4a' }).split('\n')).toEqual([
+      LEVEL_META['2b'].description,
+      'Source: claim - the live verdict states this level; the engine read 4a'
+    ])
+    expect(levelTooltip({ level: '2b', source: 'claim' })).toContain(
+      'Source: claim - the live verdict states this level'
+    )
+    expect(levelTooltip({ level: '2b', source: 'claim' })).not.toContain('engine read')
+  })
+
+  it("says an engine's level is the engine's", () => {
+    expect(levelTooltip({ level: '4a', source: 'engine' })).toContain(
+      'Source: engine - no live verdict states a level'
+    )
   })
 })
