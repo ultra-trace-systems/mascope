@@ -33,7 +33,11 @@ from mascope_thermo.backend import MS_SCAN_DETECTOR_STATS, open_backend
 from mascope_thermo.calibration import CONVERSION_B, CONVERSION_C
 from mascope_thermo.lib import thermo_available
 from mascope_thermo.scan_filter import parse_scan_filter
-from mascope_tools.alignment.utils import below_local_floor, flag_satellite_peaks
+from mascope_tools.alignment.utils import (
+    SIGNAL_TO_NOISE_THRESHOLD,
+    below_local_floor,
+    flag_satellite_peaks,
+)
 
 
 # Every test here compares OpenTFRaw against the Thermo backend, which needs the
@@ -799,10 +803,6 @@ _CALIBRATION_LABELS = (CONVERSION_B, CONVERSION_C)
 #: The match share (1) a window with a calibration step still has to reach.
 _STEP_MATCH_SHARE = 0.5
 
-#: Peak detection's weak-peak threshold on the instrument's S:N
-#: (``mascope_signal``), which the averaged S:N feeds.
-_WEAK_SN = 3.0
-
 
 def _calibration_step_ppm(path, scans) -> float:
     """The largest move of one frequency's m/z between consecutive ``scans``.
@@ -891,7 +891,7 @@ def _resolution_bounded(thermo_sn: np.ndarray, flagged: np.ndarray) -> np.ndarra
     """Which matched peaks the resolution bound applies to: those at Thermo
     S:N 3 or over that peak detection does not flag as a side lobe or a
     satellite."""
-    return (thermo_sn >= _WEAK_SN) & ~flagged
+    return (thermo_sn >= SIGNAL_TO_NOISE_THRESHOLD) & ~flagged
 
 
 def _averaged_centroid_failures(readings: dict) -> list[str]:
@@ -1022,8 +1022,10 @@ def _averaged_centroid_failures(readings: dict) -> list[str]:
     # 1.5 times the per-scan noise over sqrt(N), and the weak centroids under
     # the floor there cross the threshold under OpenTFRaw only. Asserted where
     # there are enough peaks to be statistically meaningful.
-    t_pass = int(((tsn >= _WEAK_SN) & ~below_local_floor(tm, ti)).sum())
-    o_pass = int(((osn >= _WEAK_SN) & kept_o).sum())
+    t_pass = int(
+        ((tsn >= SIGNAL_TO_NOISE_THRESHOLD) & ~below_local_floor(tm, ti)).sum()
+    )
+    o_pass = int(((osn >= SIGNAL_TO_NOISE_THRESHOLD) & kept_o).sum())
     if t_pass >= 20 and not 0.7 * t_pass <= o_pass <= 1.4 * t_pass:
         failures.append(f"{o_pass} averaged centroids above S:N 3 vs Thermo {t_pass}")
     return failures

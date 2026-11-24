@@ -659,6 +659,14 @@ def _at_isotopologue_line(
     return spared
 
 
+#: Peak detection's weak-peak threshold on a peak's signal-to-noise: a peak
+#: under it is flagged weak. Defined here rather than in ``mascope_signal``
+#: so that the Thermo backend's parity test, which cannot import
+#: ``mascope_signal`` (it depends on ``mascope_thermo``), counts peaks against
+#: the same threshold. ``mascope_signal.peak`` re-exports it.
+SIGNAL_TO_NOISE_THRESHOLD = 3
+
+
 #: The half-width, in ppm of a peak's m/z, of the window an Orbitrap peak is
 #: measured against when its spectrum is dense there (:func:`below_local_floor`).
 #: Wide enough that the comb a few hundred ppm either side of a reagent ion,
