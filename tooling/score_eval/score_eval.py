@@ -32,13 +32,16 @@ import sys
 import numpy as np
 import pandas as pd
 
+from mascope_tools.composition.mass_accuracy import widen_sigma_ppm
+from mascope_tools.composition.robust import robust_spread
+
 
 MZ_PPM = 5.0
 INT_TOL = 0.4  # mascope_tools ISOTOPE_MATCHING_INTENSITY_TOLERANCE
 # Correct matches spread WIDER than the calibration-anchor precision (centroiding +
-# prediction error + the analyte tail). Added in quadrature to the fitted instrument
-# sigma so a tiny fitted sigma doesn't crush legitimate true ions. Instrument-agnostic.
-PRED_SIGMA_PPM = 0.5
+# prediction error + the analyte tail): the fitted instrument sigma is widened by
+# `mass_accuracy.PRED_SIGMA_PPM` in quadrature (`widen_sigma_ppm`), the engine's own
+# constant, so a tiny fitted sigma doesn't crush legitimate true ions.
 
 
 def load_filestore_peaks(
@@ -114,7 +117,7 @@ def fit_mass_accuracy(
     else:
         e = np.asarray(errs)
         mu = float(np.median(e))
-        sigma = max(float(1.4826 * np.median(np.abs(e - mu))), 0.05)  # honest fit
+        sigma = max(robust_spread(e, mu), 0.05)  # honest fit
         res = (mu, sigma, len(errs))
     _cache[filename] = res
     return res
@@ -498,7 +501,7 @@ def main() -> int:
     def _v2_params(filename):
         mu, sigma, _ = cal.get(filename, (0.0, None, 0))
         if a.fit_sigma and sigma is not None:
-            sigma = float(np.hypot(sigma, PRED_SIGMA_PPM))
+            sigma = widen_sigma_ppm(sigma)
             return max(a.match_k * sigma, 1.0), sigma, mu
         return a.ppm, a.sigma_ppm, 0.0
 

@@ -79,6 +79,7 @@ from mascope_tools.composition.corroboration import (
     ratio_reference,
 )
 from mascope_tools.composition.heuristic_filter import element_counts
+from mascope_tools.composition.mass_accuracy import widen_sigma_ppm
 
 
 # Adduct channels ACTUALLY operative in the demo -- the mechanisms that appear in the
@@ -321,7 +322,7 @@ def main() -> int:
         mzs, ints, snrs = mzs[order], ints[order], snrs[order]
         mu, sigma, _ = se.fit_mass_accuracy(a.bundle_dir, f)
         if sigma is not None:
-            sigma = float(np.hypot(sigma, se.PRED_SIGMA_PPM))
+            sigma = widen_sigma_ppm(sigma)
             window = max(6.0 * sigma, 1.0)
         else:
             window, sigma, mu = se.MZ_PPM, None, 0.0
