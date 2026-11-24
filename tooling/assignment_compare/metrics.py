@@ -19,8 +19,9 @@ B's, the reference's, in the ``b_*`` ones. The card adds:
   predicted envelope and separation, read off the ledger
   (:func:`ledger_columns`) or, from a server whose ledger predates those
   columns, through the detail read (:func:`provenance_columns`):
-  ``a_reasons``, ``a_mass_gate_corroborated``, ``a_absent_lines`` and
-  ``a_unseparated``, for the reason coverage, G7, G13 and G14; and
+  ``a_reasons``, ``a_mass_gate_corroborated``, ``a_absent_lines``,
+  ``a_unseparated`` and ``a_series_anchor``, for the reason coverage, G7,
+  G13, G14 and G12's series escape; and
   ``a_detail_failed``, the rows whose detail read failed.
 
 A set that carries an authors' list, the neutral formulas a study's authors
@@ -532,17 +533,32 @@ def g11_formate_pseudo_acids(frame: pd.DataFrame, *, committed: bool = False) ->
     return reading(pct(intensity.loc[pseudo].sum(), intensity.sum()), len(main))
 
 
-def g12_lone_peaks(frame: pd.DataFrame) -> dict:
-    """G12: lone peaks.
+#: The second observations that take a formula-search row out of
+#: ``lone_peak`` (``tiering.lone_peak_reason``), by the tier reason a row that
+#: keeps its tier on one names (``tiering.standing_reasons``). G12 reads the
+#: first three off the ledger's own rows, as the rule does off the run: an
+#: isotopologue row of its own, the channels committing its neutral
+#: (``corroboration_channels``) and what a list calls it
+#: (``reference_listing``). The fourth, a homologous series of the batch, is
+#: in no row but the anchored one's: the run copies the series' record onto
+#: it, and the ledger serves only the reason it raises
+#: (``tier_reason_rules``), so G12 reads that (``a_series_anchor``).
+LONE_PEAK_ESCAPES = ("second_line", "corroborated", "series_anchor", "on_a_list")
+#: The tier reason of a row a series of its batch anchors
+#: (``tiering.REASON_SERIES_ANCHOR``).
+SERIES_ANCHOR = "series_anchor"
 
-    The count of assigned M0 rows from the search with no committed
-    isotopologue row, no second channel committing the neutral and no
-    reference list naming it.
+
+def _search_rows(frame: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
+    """Engine A's assigned M0 rows from the formula search, with which of them
+    nothing in their run saw twice but a series, and which a series anchors.
+
+    :return: The rows; whether each has no isotopologue row of its own, fewer
+        than two channels committing its neutral and no list naming it; and
+        whether its tier reasons cite :data:`SERIES_ANCHOR`.
     """
     mine = _a_assigned_main(frame)
     mine = mine[_column(mine, "a_source") == "untargeted"]
-    if mine.empty:
-        return reading(0, 0)
     iso = frame[(frame["a_role"] == "iso_child") & frame["a_formula"].notna()]
     owners = set(zip(iso["sample_item_id"], _column(iso, "a_owner_id").astype(str)))
     owned = [
@@ -555,8 +571,91 @@ def g12_lone_peaks(frame: pd.DataFrame) -> dict:
     listed = _column(mine, "a_listing").map(
         lambda v: isinstance(v, Mapping) and bool(v)
     )
-    lone = ~pd.Series(owned, index=mine.index) & (channels < 2) & ~listed
-    return reading(int(lone.sum()), len(mine))
+    lone = ~pd.Series(owned, index=mine.index, dtype=bool) & (channels < 2) & ~listed
+    series = _column(mine, "a_series_anchor").map(_true).astype(bool)
+    return mine, lone, series
+
+
+def g12_lone_peaks(frame: pd.DataFrame) -> dict:
+    """G12: lone peaks.
+
+    The count of assigned M0 rows from the search with no committed
+    isotopologue row, no second channel committing the neutral, no reference
+    list naming it and no series of its batch anchoring it: the four escapes
+    of the tiering rule (:data:`LONE_PEAK_ESCAPES`). A row only the series
+    saw twice is not counted here but in :func:`series_lifted`.
+    """
+    mine, lone, series = _search_rows(frame)
+    if mine.empty:
+        return reading(0, 0)
+    return reading(int((lone & ~series).sum()), len(mine))
+
+
+#: The series-lifted lone peaks' readings beside G12, after their count: key,
+#: label, unit. ``same``, ``other`` and ``silent`` split the rows, over the
+#: samples with a reference run, by what the reference commits on the peak:
+#: the same formula through the same adduct, any other reading, nothing.
+SERIES_LIFTED_METRICS = (
+    ("G12_series", "G12 exempt: lone peaks a batch series lifts", "count"),
+    ("G12_series_same", "  lifted: the reference gives the same formula", "%"),
+    ("G12_series_other", "  lifted: the reference reads the peak otherwise", "%"),
+    ("G12_series_silent", "  lifted: the reference commits nothing", "%"),
+    (
+        "G12_yardstick_same",
+        "  beside them, the other assigned search rows: the same formula",
+        "%",
+    ),
+    (
+        "G12_yardstick_other",
+        "  beside them, the other assigned search rows: read otherwise",
+        "%",
+    ),
+    (
+        "G12_yardstick_silent",
+        "  beside them, the other assigned search rows: nothing committed",
+        "%",
+    ),
+)
+
+
+def _reference_split(rows: pd.DataFrame, referenced: bool) -> dict[str, dict]:
+    """The share of ``rows`` on which the reference commits the same formula,
+    another reading, and nothing, over the samples that carry a reference
+    run; not read where no sample of the frame does (``referenced``)."""
+    if not referenced:
+        return {key: reading() for key in ("same", "other", "silent")}
+    ref = with_reference(rows)
+    same = ref["verdict"] == SAME_FORMULA
+    silent = ~ref["b_role"].isin(REFERENCE_SPEAKS)
+    return {
+        "same": _share(same),
+        "other": _share(~same & ~silent),
+        "silent": _share(silent),
+    }
+
+
+def series_lifted(frame: pd.DataFrame) -> dict[str, dict]:
+    """The series-lifted lone peaks: the rows G12 would count but for a
+    homologous series of their batch (decision of MAS-1255).
+
+    Their count over the assigned search rows, and how the reference reads
+    them beside how it reads the run's other assigned search rows, the
+    yardstick (:data:`SERIES_LIFTED_METRICS`). Readings, never gated. Empty
+    where the frame holds no such row, so a card whose runs read no series,
+    the control's, is the card it was.
+    """
+    mine, lone, series = _search_rows(frame)
+    lifted = lone & series
+    if not lifted.any():
+        return {}
+    referenced = not with_reference(frame).empty
+    theirs = _reference_split(mine[lifted], referenced)
+    others = _reference_split(mine[~lifted], referenced)
+    return {
+        "G12_series": reading(int(lifted.sum()), len(mine)),
+        **{f"G12_series_{key}": one for key, one in theirs.items()},
+        **{f"G12_yardstick_{key}": one for key, one in others.items()},
+    }
 
 
 def _recorded_count(frame: pd.DataFrame, column: str, hit) -> dict:
@@ -712,7 +811,8 @@ def provenance_columns(provenance: Mapping | None) -> dict:
         corroboration), ``a_absent_lines`` (how many asked lines of its
         predicted envelope are absent, None without the record) and
         ``a_unseparated`` (whether its peak is unseparated with no separated
-        partner, None without the record).
+        partner, None without the record) and ``a_series_anchor`` (whether a
+        tier reason of its cites :data:`SERIES_ANCHOR`, G12's fourth escape).
     """
     if not isinstance(provenance, Mapping):
         return {
@@ -720,6 +820,7 @@ def provenance_columns(provenance: Mapping | None) -> dict:
             "a_mass_gate_corroborated": None,
             "a_absent_lines": None,
             "a_unseparated": None,
+            "a_series_anchor": None,
         }
     reasons = provenance.get("tier_reasons")
     gate = provenance.get("mass_gate") or {}
@@ -743,6 +844,11 @@ def provenance_columns(provenance: Mapping | None) -> dict:
             if isinstance(separation, Mapping)
             else None
         ),
+        "a_series_anchor": isinstance(reasons, list)
+        and any(
+            isinstance(reason, Mapping) and reason.get("rule") == SERIES_ANCHOR
+            for reason in reasons
+        ),
     }
 
 
@@ -765,7 +871,7 @@ def _missing(value) -> bool:
 def ledger_columns(row: Mapping) -> dict:
     """The card's columns from one committed ledger row's flattened records.
 
-    The same four values :func:`provenance_columns` derives from the row's
+    The same values :func:`provenance_columns` derives from the row's
     provenance, read off the columns the server flattens from it
     (:data:`LEDGER_RULE_RECORDS`), so a run is one paged read rather than one
     detail read per row. A row with no record reads as one with an empty
@@ -783,6 +889,8 @@ def ledger_columns(row: Mapping) -> dict:
         "a_mass_gate_corroborated": _true(corroborated),
         "a_absent_lines": None if _missing(absent) else int(absent),
         "a_unseparated": None if _missing(unseparated) else _true(unseparated),
+        "a_series_anchor": isinstance(rules, (list, tuple, np.ndarray))
+        and SERIES_ANCHOR in list(rules),
     }
 
 
@@ -1032,6 +1140,11 @@ TRUTH_METRICS = (
     ),
 )
 
+#: Every row the card can print, with its label and unit: :data:`METRICS`,
+#: the series-lifted readings beside G12 (:data:`SERIES_LIFTED_METRICS`) and
+#: the authors' lists' (:data:`TRUTH_METRICS`).
+CARD_ROWS = METRICS + SERIES_LIFTED_METRICS + TRUTH_METRICS
+
 #: The readings that read the reference run: a set with none is not marked on
 #: them, where a set whose runs predate a record is marked "not read".
 REFERENCE_METRICS = frozenset(
@@ -1048,6 +1161,7 @@ REFERENCE_METRICS = frozenset(
         "G5",
         "G6",
         "G6_assigned",
+        *(key for key, _, _ in SERIES_LIFTED_METRICS if key != "G12_series"),
     }
 )
 
@@ -1169,6 +1283,7 @@ def card_readings(
         "G11": g11_formate_pseudo_acids(frame),
         "G11_committed": g11_formate_pseudo_acids(frame, committed=True),
         "G12": g12_lone_peaks(frame),
+        **series_lifted(frame),
         "G13": g13_absent_lines(frame),
         "G14": g14_unseparated(frame),
         **{f"level_{level}": level_share(frame, level) for level in CARD_LEVELS},

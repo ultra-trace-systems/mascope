@@ -1301,6 +1301,16 @@ DECISION_LABELS = {
 }
 
 
+#: What a table that holds the series-lifted lone peaks says of them, under it.
+SERIES_NOTE = (
+    "G12 counts an assigned search row nothing saw twice: no isotope line of "
+    "its own, no second channel, no list, no series of its batch. A row a "
+    "series alone saw twice is the series' lift, which G12 exempts as the "
+    "tiering rule does; the lines under G12 count those rows and how the "
+    "reference reads them (the same formula, another reading, nothing), beside "
+    "how it reads the run's other assigned search rows. Readings, never gated."
+)
+
 #: What a card with an authors' list says of it, under the sets' lines.
 TRUTH_NOTE = (
     "Authors' lists: each engine's monoisotopic formulas read against the "
@@ -1315,9 +1325,9 @@ TRUTH_NOTE = (
 #: (:func:`card_vocabulary`).
 CARD_WORDS = frozenset(
     word.lower()
-    for text in [label for _, label, _ in metrics.METRICS + metrics.TRUTH_METRICS]
+    for text in [label for _, label, _ in metrics.CARD_ROWS]
     + list(metrics.DECOY_LABELS.values())
-    + [TRUTH_NOTE, BATCH_ARM_NOTE, BATCH_ARM_COVERS]
+    + [TRUTH_NOTE, BATCH_ARM_NOTE, BATCH_ARM_COVERS, SERIES_NOTE]
     + list(DECISION_LABELS.values())
     + [
         "after the batch pass rows that moved by decision they cite peaks role "
@@ -1723,13 +1733,13 @@ def unit_of(key: str) -> str:
     """A reading's unit: ``%``, ``count`` or ``ppm``."""
     if key.startswith("decoy "):
         return "count" if key.rsplit(" ", 1)[-1] in metrics.DECOY_COUNTS else "%"
-    rows = metrics.METRICS + metrics.TRUTH_METRICS
+    rows = metrics.CARD_ROWS
     return {key: unit for key, _, unit in rows}.get(key, "count")
 
 
 def label_of(key: str) -> str:
     """A reading's label, as the card's row names it."""
-    labels = {key: label for key, label, _ in metrics.METRICS + metrics.TRUTH_METRICS}
+    labels = {key: label for key, label, _ in metrics.CARD_ROWS}
     if key in labels:
         return labels[key]
     if key.startswith("decoy "):
@@ -1996,6 +2006,8 @@ def card_markdown(card: dict, names: list[str] | None = None) -> str:
                 # sets it holds for, and where a set is held to one of its own.
                 row += f" {describe_target(target_for(thresholds, key, None, None))} |"
         lines.append(row)
+    if metrics.SERIES_LIFTED_METRICS[0][0] in keys:
+        lines += ["", SERIES_NOTE]
     lines += batch_arm_lines(card, names)
     baseline = card.get("baseline")
     if baseline is not None:
@@ -2053,6 +2065,8 @@ def batch_arm_lines(card: dict, names: list[str]) -> list[str]:
                 ):
                     cells.append(format_value(one.get("value"), unit) if one else "-")
             lines.append(f"| {label_of(key)} | " + " | ".join(cells) + " |")
+        if metrics.SERIES_LIFTED_METRICS[0][0] in keys:
+            lines += ["", SERIES_NOTE]
         kinds = list(DECISION_LABELS)
         lines += [
             "",
@@ -2170,6 +2184,7 @@ RULE_RECORD_COLUMNS = [
     "a_mass_gate_corroborated",
     "a_absent_lines",
     "a_unseparated",
+    "a_series_anchor",
     "a_detail_failed",
 ]
 
