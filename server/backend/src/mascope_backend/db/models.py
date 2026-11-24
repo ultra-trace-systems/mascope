@@ -3812,6 +3812,14 @@ class BatchPeakStage(Base):
     #: The batch run the stage's latest run recorded itself as, if any. No
     #: foreign key: runs are pruned, and the stage's standing outlives them.
     batch_peak_run_id: Mapped[Optional[str]] = mapped_column(String(16))
+    #: The samples the stage's latest finished run could not read, each as
+    #: ``{"sample_item_id", "peaks_read"}``: whether its peak list read as the
+    #: run ended. A stage that skipped samples is current all the same; one of
+    #: them whose peak list did not read then and reads now makes it stale
+    #: (``batch_skipped``). Null where the run read every sample.
+    skipped_samples: Mapped[Optional[list]] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
 
     __table_args__ = (
         CheckConstraint("state IN ('current', 'running', 'stale')", name="state_valid"),

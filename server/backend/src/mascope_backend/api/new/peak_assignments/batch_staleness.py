@@ -52,7 +52,11 @@ REASON_IMPORT = "import"
 #: A person's pin on a batch peak, or its release (``batch_curation.py``).
 REASON_CURATION = "curation"
 REASON_INTERRUPTED = "interrupted"
+#: A step that skipped samples without saying which (``count_unread``).
 REASON_PARTIAL = "partial"
+#: A sample the stage skipped, whose peak list did not read then, reads now
+#: (``batch_skipped``).
+REASON_READ_AGAIN = "read_again"
 REASON_CONSENSUS = "consensus"
 #: An earlier stage ran again: ``upstream:<stage>``.
 REASON_UPSTREAM = "upstream"
@@ -83,7 +87,22 @@ STAGE_OF_KEY: dict[str, BatchStage] = {
 }
 
 
+#: The key a step's outcome data names the samples it could not read under,
+#: beside their count ``samples_failed`` (:func:`count_unread`).
+SAMPLES_UNREAD = "samples_unread"
+
+
 # --- pure parts -------------------------------------------------------------------
+
+
+def count_unread(counts: dict, sample_item_id: str) -> None:
+    """Count a sample a step could not read and skipped, and name it: the
+    stage records the samples it skipped and is current with them
+    (``batch_skipped``). A sample skipped twice in one step is named once."""
+    counts["samples_failed"] = counts.get("samples_failed", 0) + 1
+    named = counts.setdefault(SAMPLES_UNREAD, [])
+    if sample_item_id not in named:
+        named.append(sample_item_id)
 
 
 def stages_from(first: BatchStage | str) -> tuple[BatchStage, ...]:
@@ -200,7 +219,9 @@ async def stage_states(session, sample_batch_id: str) -> dict[str, BatchPeakStag
 
 __all__ = [
     "BatchStage",
+    "SAMPLES_UNREAD",
     "STAGE_OF_KEY",
+    "count_unread",
     "mark_batch_stale",
     "mark_every_stage_stale",
     "mark_stale",

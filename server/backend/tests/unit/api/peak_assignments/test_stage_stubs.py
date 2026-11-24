@@ -13,9 +13,11 @@ from stage_stubs import _SAMPLE_READERS, stub_sample_reads
 
 #: The modules that read a name apart from a run, each through its own import,
 #: as each did when the service held the name: a stand-in in the service
-#: never reached them, and the stub leaves them as they were.
+#: never reached them, and the stub leaves them as they were. The batch
+#: stages' check of a skipped sample's file reads the real one
+#: (``batch_skipped``): it asks whether the file reads now.
 _APART = {
-    "load_sample_peaks": {"batch_isotopologues", "curation"},
+    "load_sample_peaks": {"batch_isotopologues", "batch_skipped", "curation"},
     "fetch_sample_mechanisms": {"batch_series"},
 }
 

@@ -53,11 +53,34 @@ export function staleWords(reason, status) {
       return 'The consensus was read again since'
     case 'partial':
       return 'It could not read every sample'
+    case 'read_again':
+      return 'A sample it skipped reads again'
     case 'interrupted':
       return 'It was interrupted'
     default:
       return 'Out of date'
   }
+}
+
+/** At most this many skipped samples are named; the rest are counted. */
+export const SKIPPED_NAMES_CAP = 5
+
+/**
+ * The samples a stage could not read and skipped, as one line; null for none
+ * (batch_skipped: the stage is current with them).
+ *
+ * @param {object[]|null} skipped The stage's `skipped_samples` in the status
+ *   read: `sample_item_id` and `sample_item_name` each.
+ */
+export function skippedWords(skipped) {
+  const list = Array.isArray(skipped) ? skipped : []
+  if (!list.length) return null
+  const names = list
+    .slice(0, SKIPPED_NAMES_CAP)
+    .map((entry) => entry?.sample_item_name ?? entry?.sample_item_id ?? 'a sample')
+  const rest = list.length - names.length
+  const named = names.join(', ') + (rest > 0 ? ` and ${rest} more` : '')
+  return `Skipped ${plural(list.length, 'sample')} it could not read: ${named}`
 }
 
 /** Why a pass folded every sample first, in words (batch_stages.fold_reasons). */
@@ -231,6 +254,8 @@ export function passChecklist({ status, run, live = null, percent = null }) {
       row.state = 'stale'
       row.reason = staleWords(standing.get(stage)?.stale_reason, status)
     }
+    const skipped = skippedWords(standing.get(stage)?.skipped_samples)
+    if (skipped) row.skippedSamples = skipped
     return row
   })
 

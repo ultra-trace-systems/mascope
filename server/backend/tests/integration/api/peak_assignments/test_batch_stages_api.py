@@ -6,8 +6,9 @@ staleness rule: a pass runs from the stage it is started at to the end, or
 from the first stage that is not current; a stage that finishes is current
 and leaves every stage after it stale; a fold, also one that lands while a
 stage runs, leaves every stage that ran stale; a stage that raises, is
-cancelled or leaves samples unread is stale and the records it wrote carry
-its version; each step's route starts the pass at its own stage; the ledger
+cancelled is stale and the records it wrote carry its version; a stage that
+names the samples it could not read is current with them, the batch's status
+names them, and one whose peak list reads again marks it stale (MAS-1060); each step's route starts the pass at its own stage; the ledger
 says where every stage stands; a server restart leaves a running stage stale.
 And one pass at a time: while a pass runs, every step's route and a second
 pass are refused, also between two stages; a stage whose end fails is
@@ -29,8 +30,12 @@ from sqlalchemy import select
 from mascope_backend.api.new.peak_assignments import (
     batch_peaks_routes,
     batch_rejudge,
+    batch_skipped,
     batch_stages,
     batch_staleness,
+)
+from mascope_backend.api.new.peak_assignments.batch_assignment_status import (
+    get_batch_assignment_status,
 )
 from mascope_backend.api.new.peak_assignments.batch_fold import rebuild_batch_ledger
 from mascope_backend.api.new.peak_assignments.batch_lock import _acquire_batch_fold_lock
@@ -359,9 +364,12 @@ async def test_a_cancelled_stage_is_stale(folded, stand_ins):
     assert states["search"]["state"] == "not_run"
 
 
-async def test_a_stage_that_left_samples_unread_is_stale_and_the_pass_goes_on(
+async def test_a_stage_that_skipped_unnamed_samples_is_stale_and_the_pass_goes_on(
     folded, stand_ins
 ):
+    """A step that counts samples it could not read without naming them
+    leaves its stage stale, as before MAS-1060: nothing says which to wait
+    for."""
     batch_id = folded["batch_id"]
 
     async def skips_one(call):
@@ -376,11 +384,148 @@ async def test_a_stage_that_left_samples_unread_is_stale_and_the_pass_goes_on(
     states = await _states(batch_id)
     assert states["search"]["state"] == "stale"
     assert states["search"]["stale_reason"] == "partial"
+    assert states["search"]["skipped_samples"] == []
     assert states["series"]["state"] == "current"
     stand_ins["ran"].clear()
     stand_ins["hooks"].clear()
     await _run(batch_id)
     assert stand_ins["ran"] == ORDER[2:]
+
+
+@pytest.fixture
+def peak_files(monkeypatch):
+    """The samples whose peak list reads: none at first, as the folded
+    samples' files exist nowhere; a test puts one back by adding its id."""
+    readable: set[str] = set()
+    asked: list[str] = []
+
+    def peaks_read(sample):
+        asked.append(sample.sample_item_id)
+        return sample.sample_item_id in readable
+
+    monkeypatch.setattr(batch_skipped, "_peaks_read", peaks_read)
+    return {"readable": readable, "asked": asked}
+
+
+def _skips(sample_item_ids):
+    async def hook(call):
+        return {
+            "status": "partial",
+            "message": f"{len(sample_item_ids)} skipped.",
+            "data": {
+                "samples_failed": len(sample_item_ids),
+                "samples_unread": list(sample_item_ids),
+            },
+        }
+
+    return hook
+
+
+async def _status(batch_id) -> dict:
+    return (await get_batch_assignment_status(batch_id))["data"]
+
+
+async def test_a_sample_that_does_not_read_leaves_every_stage_current(
+    folded, stand_ins, peak_files
+):
+    """MAS-1060's Verify: a pass over a batch with a sample whose file cannot
+    be read ends with every stage current and the sample named as skipped; a
+    second pass runs no stage; the sample's file back marks the stage stale,
+    and the next pass reads it."""
+    batch_id, s2 = folded["batch_id"], folded["s2"]
+    stand_ins["hooks"]["search"] = _skips([s2])
+    outcome = await _run(batch_id)
+    assert stand_ins["ran"] == ORDER
+    assert outcome["status"] == "success"
+    states = await _states(batch_id)
+    assert {e["state"] for e in states.values()} == {"current"}
+    assert states["search"]["skipped_samples"] == [
+        {"sample_item_id": s2, "peaks_read": False}
+    ]
+    assert states["series"]["skipped_samples"] == []
+    # The batch's status names it, by name, and the batch is current.
+    status = await _status(batch_id)
+    assert status["state"] == "current"
+    assert status["behind"] == []
+    by = {e["stage"]: e for e in status["stages"]}
+    assert by["search"]["skipped_samples"] == [
+        {
+            "sample_item_id": s2,
+            "peaks_read": False,
+            "sample_item_name": "Batch stages S2",
+        }
+    ]
+
+    # The same sample does not read: nothing to run, from any step.
+    stand_ins["ran"].clear()
+    outcome = await _run(batch_id)
+    assert stand_ins["ran"] == []
+    assert outcome["status"] == "skipped"
+    await _run(batch_id, "co_variation")
+    assert stand_ins["ran"] == ORDER[5:]
+
+    # Its file back: the search is stale, the status says why, and the next
+    # pass runs from it and reads the sample.
+    peak_files["readable"].add(s2)
+    status = await _status(batch_id)
+    assert status["state"] == "behind"
+    assert status["stale_stages"] == ["search"]
+    assert status["behind"] == [
+        {
+            "reason": "stages_stale",
+            "count": 1,
+            "detail": [{"stage": "search", "stale_reason": "read_again"}],
+        }
+    ]
+    stand_ins["hooks"].clear()
+    stand_ins["ran"].clear()
+    await _run(batch_id)
+    assert stand_ins["ran"] == ORDER[2:]
+    states = await _states(batch_id)
+    assert {e["state"] for e in states.values()} == {"current"}
+    assert states["search"]["skipped_samples"] == []
+    stand_ins["ran"].clear()
+    await _run(batch_id)
+    assert stand_ins["ran"] == []
+
+
+async def test_another_sample_unread_is_recorded_and_the_first_read_again(
+    folded, stand_ins, peak_files
+):
+    """The set a stage records is its latest run's: a run that skips another
+    sample records that one, and a sample whose peak list read as the run
+    ended (a failure further in) is never read again."""
+    batch_id, s1, s2 = folded["batch_id"], folded["s1"], folded["s2"]
+    peak_files["readable"].add(s1)
+    stand_ins["hooks"]["search"] = _skips([s1, s2])
+    await _run(batch_id)
+    states = await _states(batch_id)
+    assert states["search"]["state"] == "current"
+    assert sorted(
+        states["search"]["skipped_samples"], key=lambda e: e["sample_item_id"]
+    ) == sorted(
+        [
+            {"sample_item_id": s1, "peaks_read": True},
+            {"sample_item_id": s2, "peaks_read": False},
+        ],
+        key=lambda e: e["sample_item_id"],
+    )
+    peak_files["asked"].clear()
+    stand_ins["ran"].clear()
+    await _run(batch_id)
+    assert stand_ins["ran"] == []
+    # Only the sample whose peak list did not read is read again.
+    assert set(peak_files["asked"]) == {s2}
+
+    # A fold lands, and the search's next run skips the other sample only.
+    await fold_sample_into_batch_peaks(s1)
+    stand_ins["hooks"]["search"] = _skips([s2])
+    await _run(batch_id)
+    states = await _states(batch_id)
+    assert states["search"]["state"] == "current"
+    assert states["search"]["skipped_samples"] == [
+        {"sample_item_id": s2, "peaks_read": False}
+    ]
 
 
 async def test_the_records_a_stage_wrote_carry_its_version(

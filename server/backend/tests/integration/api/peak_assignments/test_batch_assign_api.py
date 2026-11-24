@@ -304,13 +304,17 @@ async def test_a_pass_of_the_real_stages_is_one_batch_run_with_one_snapshot(
         fold_run.batch_peak_run_id
     }
     # Every stage ran inside it. The fixture holds no spectra, so the search
-    # reads neither sample and is stale until it can; the rest are current.
+    # reads neither sample: it skips both, names them, and is current with
+    # them, as every other stage is (MAS-1060).
     stages = _stages(run)
     assert [stages[name]["status"] for name in ORDER] == ["done"] * len(ORDER)
     assert stages["fold"]["status"] == "not_run"
     states = await _states(batch_id)
-    assert states["search"]["stale_reason"] == "partial"
-    assert {e["state"] for n, e in states.items() if n != "search"} == {"current"}
+    assert {e["state"] for e in states.values()} == {"current"}
+    assert states["search"]["skipped_samples"] == [
+        {"sample_item_id": sample_item_id, "peaks_read": False}
+        for sample_item_id in sorted([folded["s1"], folded["s2"]])
+    ]
     # Each step's outcome is kept, with the thresholds or settings it ran on.
     assert len(stages["isotope_lines"]["outcomes"]) == 3  # strip, stamp, judge
     assert stages["search"]["outcomes"][0]["config"]["mz_precision_ppm"] == (

@@ -59,8 +59,11 @@ stale once something has:
   (:func:`mark_stale` from the first);
 - a stage that runs rewrites or records what the stages after it read, so its
   end marks every later stage stale until each runs again;
-- a stage that stops partway, raised, cancelled or with samples it could not
-  read, keeps what it wrote and is marked stale itself;
+- a stage that stops partway, raised or cancelled, keeps what it wrote and is
+  marked stale itself;
+- a stage that could not read some of the batch's samples skipped them and is
+  current with them: its row names them, and one whose file reads again makes
+  it stale (``batch_skipped``, MAS-1060);
 - a consensus recompute that leaves a record behind its batch peak's reading
   keeps the record, marked stale (``batch_peaks.compute_consensus``), and marks
   the stage that wrote it stale.
@@ -173,6 +176,11 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     start_run,
 )
 from mascope_backend.api.new.peak_assignments.batch_series import detect_batch_series
+from mascope_backend.api.new.peak_assignments.batch_skipped import (
+    skipped_in,
+    skipped_record,
+    stage_rows,
+)
 from mascope_backend.api.new.peak_assignments.batch_staleness import (
     REASON_INTERRUPTED,
     REASON_PARTIAL,
@@ -525,15 +533,6 @@ def plan(states: dict[str, str], from_stage: BatchStage | str | None) -> tuple:
     return stages_from(asked)
 
 
-def stopped_partway(outcome: Any) -> bool:
-    """Whether a step's outcome says it left samples it could not read: what
-    it wrote stands, and the stage is stale until it reads them."""
-    data = outcome.get("data") if isinstance(outcome, dict) else None
-    if not isinstance(data, dict):
-        return False
-    return bool(data.get("samples_failed"))
-
-
 def upstream_reason(stage: BatchStage | str) -> str:
     """The stale reason a stage's run leaves on the stages after it."""
     return f"{REASON_UPSTREAM}:{BatchStage(stage).value}"
@@ -651,6 +650,7 @@ async def hand_over(
     run_id: Optional[str],
     stale_reason: Optional[str] = None,
     then: Optional[BatchStage] = None,
+    skipped: Optional[list[dict]] = None,
 ) -> tuple[str, Optional[tuple[int, datetime]]]:
     """Record a stage's run as finished, mark every stage after it stale, and
     begin ``then``, the pass's next stage, in the same transaction: between
@@ -659,7 +659,8 @@ async def hand_over(
 
     It is current unless something marked it stale after it started (a fold
     that landed while it ran) or the run itself stopped partway
-    (``stale_reason``).
+    (``stale_reason``). ``skipped`` is what it records of the samples it
+    could not read (``batch_skipped.skipped_record``): none clears it.
 
     :return: The state it ends in, and ``then``'s version and start where it
         began.
@@ -680,6 +681,7 @@ async def hand_over(
         moved = row.utc_stale is not None and row.utc_stale >= started
         row.utc_ran = now
         row.batch_peak_run_id = run_id
+        row.skipped_samples = skipped
         if stale_reason is not None:
             row.state = STATE_STALE
             row.stale_reason = stale_reason
@@ -791,6 +793,8 @@ def standing_entries(rows: dict[str, Any]) -> list[dict]:
                 "stale_reason": row.stale_reason if row is not None else None,
                 "utc_ran": _iso(row.utc_ran) if row is not None else None,
                 "utc_stale": _iso(row.utc_stale) if row is not None else None,
+                # What it could not read and skipped (``batch_skipped``).
+                "skipped_samples": list(row.skipped_samples or []) if row else [],
             }
         )
     return entries
@@ -962,16 +966,17 @@ async def _run_stage(
         if then is not None and call.cancelled is not None and await call.cancelled():
             then = None
         # In the guard: a finish that fails leaves the stage stopped, not
-        # running.
+        # running. Samples it skipped by name leave it current with them;
+        # ones counted without names leave it stale (``batch_skipped``).
+        skipped, unnamed = skipped_in(outcomes)
         state, after = await hand_over(
             call.sample_batch_id,
             spec.stage,
             started,
             run_id=call.batch_peak_run_id,
-            stale_reason=(
-                REASON_PARTIAL if any(stopped_partway(o) for o in outcomes) else None
-            ),
+            stale_reason=REASON_PARTIAL if unnamed else None,
             then=then,
+            skipped=await skipped_record(skipped),
         )
     except BaseException:
         await stop_stage(call.sample_batch_id, spec.stage, then=then)
@@ -1465,7 +1470,8 @@ async def plan_pass(
     if reasons:
         return reasons, stages_from(STAGES[0].stage)
     async with async_session() as session:
-        rows = await stage_states(session, sample_batch_id)
+        # A stage one of whose skipped samples reads again is stale here.
+        rows = await stage_rows(session, sample_batch_id)
         last = (
             await last_pass(session, sample_batch_id) if settings is not None else None
         )
@@ -1772,7 +1778,6 @@ __all__ = [
     "standing_entries",
     "stop_if_cancelled",
     "stop_stage",
-    "stopped_partway",
     "upstream_reason",
     "with_version",
     "check_no_run_in_flight",

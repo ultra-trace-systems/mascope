@@ -256,6 +256,9 @@ function stateWords(row) {
                 <span v-if="row.reason" class="stage-note" data-testid="stage-reason">
                   {{ row.reason }}
                 </span>
+                <span v-if="row.skippedSamples" class="stage-note" data-testid="stage-skipped">
+                  {{ row.skippedSamples }}
+                </span>
               </span>
             </li>
           </ul>

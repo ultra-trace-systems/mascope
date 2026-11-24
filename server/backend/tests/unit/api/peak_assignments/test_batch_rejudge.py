@@ -10,6 +10,9 @@ in the stage suites (``test_batch_series_api.py``,
 
 from types import SimpleNamespace
 
+import pytest
+
+from mascope_backend.api.new.peak_assignments import batch_rejudge
 from mascope_backend.api.new.peak_assignments.batch_known_species import (
     ROW_BEFORE_KEY,
     restore_row,
@@ -30,6 +33,7 @@ from mascope_backend.api.new.peak_assignments.batch_rejudge import (
     judged_targets,
     new_tier,
 )
+from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.judging_loop import raise_to_floors
 
 
@@ -293,3 +297,25 @@ def test_the_judging_says_what_it_measured_kept_and_could_not_keep():
         " 1 of them had no recorded measurement to keep, and every reading of "
         "them was measured again."
     )
+
+
+@pytest.mark.asyncio
+async def test_a_sample_that_cannot_be_judged_again_is_counted_and_named(monkeypatch):
+    """The others are judged; it is counted and named, as its stage records
+    the samples it skipped (MAS-1060)."""
+
+    async def judged(sample_batch_id, sample_item_id, config, **kwargs):
+        if sample_item_id == "s-2":
+            raise FileNotFoundError("its peak file has moved")
+        return {"samples_judged": 1, "members_moved": 2}
+
+    monkeypatch.setattr(batch_rejudge, "rejudge_sample", judged)
+    counts = await batch_rejudge.rejudge_samples(
+        "sb-1",
+        {"s-1": frozenset(), "s-2": frozenset(), "s-3": frozenset()},
+        PeakAssignmentConfig(),
+    )
+    assert counts["samples_judged"] == 2
+    assert counts["members_moved"] == 4
+    assert counts["samples_failed"] == 1
+    assert counts["samples_unread"] == ["s-2"]

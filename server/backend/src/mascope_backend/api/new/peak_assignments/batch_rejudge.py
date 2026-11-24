@@ -62,6 +62,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     _recompute_consensus,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import touch_ledger
+from mascope_backend.api.new.peak_assignments.batch_staleness import count_unread
 from mascope_backend.api.new.peak_assignments.batch_untargeted import Annotation
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.fold_view import fold_run_id
@@ -340,7 +341,7 @@ async def rejudge_samples(
                 f"Judging sample '{sample_item_id}' again after a batch stage "
                 f"failed: {exc}"
             )
-            counts["samples_failed"] += 1
+            count_unread(counts, sample_item_id)
     if progress is not None and order:
         await progress(1.0)
     return dict(counts)

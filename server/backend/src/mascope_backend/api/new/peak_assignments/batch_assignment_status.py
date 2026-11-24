@@ -28,7 +28,12 @@ runs and the stage rows record:
     the pass ran on, whether they were saved since or the pass ran on a
     step's own settings in their place (MAS-1014);
   - ``engine_changed``: the engine version is not the pass's;
-  - ``stages_stale``: a stage stale for a reason the others do not name.
+  - ``stages_stale``: a stage stale for a reason the others do not name,
+    ``read_again`` among them: a sample it skipped reads again
+    (``batch_skipped``).
+
+- ``stages``: where each stage stands, with ``skipped_samples``, the samples
+  it could not read and skipped, by id and name: it is current with them.
 
 - ``needs_fold``: whether the next pass folds every sample first, by the
   pass's own rule (``batch_stages.fold_reasons``), and which conditions hold.
@@ -43,7 +48,9 @@ reason explains it. ``stale_stages`` still lists every stale stage: the next
 pass starts at the first.
 
 The read costs one query per kind of thing it reads, never one per sample,
-so a batch of thousands of samples answers at once.
+so a batch of thousands of samples answers at once. It reads the peak list of
+each sample a current stage skipped whose peak list did not read then, and
+of no other: none in a batch whose stages read every sample.
 """
 
 from __future__ import annotations
@@ -62,6 +69,7 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     current_run,
     running_run,
 )
+from mascope_backend.api.new.peak_assignments.batch_skipped import stage_rows
 from mascope_backend.api.new.peak_assignments.batch_stages import (
     STAGES,
     batch_samples,
@@ -80,7 +88,6 @@ from mascope_backend.api.new.peak_assignments.batch_staleness import (
     REASON_IMPORT,
     STATE_RUNNING,
     STATE_STALE,
-    stage_states,
 )
 from mascope_backend.api.new.peak_assignments.config import (
     IN_APP_ENGINE,
@@ -450,7 +457,7 @@ async def get_batch_assignment_status(sample_batch_id: str) -> dict:
         ).scalar_one()
         current = await current_run(session, sample_batch_id)
         running = await running_run(session, sample_batch_id)
-        rows = await stage_states(session, sample_batch_id)
+        rows = await stage_rows(session, sample_batch_id)
         last = await last_pass(session, sample_batch_id)
         newest = await _newest_pass(session, sample_batch_id)
         library = await library_read(session, sample_batch_id)
