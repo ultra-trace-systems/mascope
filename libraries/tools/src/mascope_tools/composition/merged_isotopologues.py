@@ -68,6 +68,7 @@ from mascope_tools.composition.diagnostic_isotopologues import (
     predict_diagnostic_isotopologues,
 )
 from mascope_tools.composition.line_model import height_within
+from mascope_tools.composition.robust import MAD_TO_SIGMA
 
 
 #: The lines a merged row is read against: the 13C line, then the diagnostic
@@ -100,10 +101,6 @@ WINDOW_SIGMAS = 4.0
 #: The fewest members a row needs for its spread to count in the batch's mass
 #: scatter: the median of fewer is mostly one of them.
 SCATTER_MIN_MEMBERS = 5
-
-#: The median absolute deviation of a normal sample times this is its standard
-#: deviation (1 / Phi^-1(3/4)).
-MAD_TO_SIGMA = 1.4826
 
 #: A share's verdicts over the batch.
 VERDICT_ISOTOPOLOGUE = "isotopologue"
