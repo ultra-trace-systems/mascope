@@ -3564,7 +3564,10 @@ The newest five runs before the current one are kept, so the history holds the l
 The current run is the live ledger; picking an earlier one shows the *Batch peaks* ledger
 and the chart as that run left them, read-only - verdicts and curation act on the current
 run, so the Verdict column waits until you go back to it. The bar then says *Viewing run
-#N · read-only*, and its button is **Back to current**. A run that fails, or a pass that
+#N · read-only*, and its button is **Back to current**. The notice over the ledger names
+the run as Run history does, by its number and its label: *Showing the ledger as run #4,
+Assignment from a stage (Detect series), left it, read-only.* A run Run history no longer
+lists is named by its label alone. A run that fails, or a pass that
 is cancelled, is kept and marked, and never becomes current. The same history is one call away in the SDK
 (`mascope.batch_peaks.runs(batch_id)`, and `list(batch_id, run_id=...)` for the species
 table as an earlier run left it). A sample folded in again or a batch peak curated by hand
