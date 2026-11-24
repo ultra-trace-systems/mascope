@@ -382,11 +382,32 @@ belongs to the whole list, and its species are neutral formulas:
   - `license` is one of the licence tags the Stage A gate knows.
   - Every entry in `references` carries a DOI or an ISBN.
 - **A species** may add a `name`, its own `reference`, an `evidence` grade
-  (`standard`, `ms2` or `formula`), `conditions` and a `note`.
+  (`standard`, `ms2` or `formula`), `conditions`, a `note` and a
+  `one_structure` mark.
   - Its own `reference` is a DOI, for a list compiled from several papers.
-  - Only the name, that DOI and the list's `tags` reach the database.
-    Everything else stays in the file, because the identities Stage A matches
-    are copied into the provenance of every row they match.
+  - Only the name, that DOI, the `one_structure` mark and the list's `tags`
+    reach the database. Everything else stays in the file, because the
+    identities Stage A matches are copied into the provenance of every row they
+    match.
+- **`one_structure` marks a formula with one plausible structure** in the
+  chemistry the list covers, as trifluoroacetic acid's and sulfuric acid's
+  are. It cites the work that says so, written as a header reference is: a
+  `citation` and its `doi` or `isbn`.
+
+    ```json
+    {
+      "formula": "C2HF3O2",
+      "name": "Trifluoroacetic acid",
+      "one_structure": {"citation": "A. Author et al., ... 2025.", "doi": "10.1234/example"}
+    }
+    ```
+
+    A peak whose formula the run pinned, at
+    [identification level](../how-it-works/peak-assignment.md#identification-level)
+    4a, then reads 2b: the structure named, with the list and the work. A
+    marked species needs a `name`, and its formula is listed once in its list:
+    an isomer beside it would say the formula has two. The checks hold a
+    shipped list to all three. A mark that cites no DOI or ISBN is not loaded.
 - **`tags` say how a reader should take the list's compounds**, from a fixed
   vocabulary the checks hold a list to. The one tag is `background`: the
   cyclic siloxanes and caprolactam carry it, because they are a background of

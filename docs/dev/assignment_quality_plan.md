@@ -34,7 +34,8 @@ added step 5.9. Step 5.10 comes from the instrument's own centroid flags
 (a census of 2026-10-23), not from the review. Step 5.8, the
 identification level, was re-cut on 2026-11-17 into seven steps (5.8 to
 5.8g; MAS-73 and MAS-939 to MAS-944) when the scale peaky and Mascope
-share was settled (decision 38, MAS-938).
+share was settled (decision 38, MAS-938); 5.8b's context list became
+5.8b2 (MAS-1262) on 2026-11-24, after the environments.
 Every planned step is an
 issue in the Linear project Assignment quality plan (MAS-37 to MAS-73,
 MAS-410 and MAS-443; step 5.3 is MAS-68, measured; decisions 29 and 31
@@ -134,7 +135,8 @@ table below names each step's PR, its merge date and one line on its state.
 | 5.6 - the import contract: a verdict on batch rows, the engine tier where the user looks | - |  | built: `engine_tier` and `engine_claim` on a batch import row, kept on the batch peak where its consensus names the row's identity; an Engine tier column, an Engine disagrees filter and an Engine tier view of the strip, off by default; the mechanism table documented as a catalogue; no run or gate number moves; MAS-71; the member rows, the ledger CSV and a sample shown from the batch ledger carry the verdict too (M0 rows reading the consensus only), MAS-727 |
 | 5.7 - experiment: the file's own locks as calibrants, read against the calibration node's residuals | - |  | planned; after 3.5; feeds 4.3 and the axis-fingerprint project; the labelled sets wait for a release carrying the reference's #77 |
 | 5.8 - the identification level: the scale, the row contract, and the formula levels 5a, 5b, 4a and 4b | - |  | built (decision 38, `identification_level.py`): every committed row of a run states a level beside its tier, read after 4.15 from facts the run records - 5b on an absent line, a plausibility under the P1 floor or an unseparated peak; 5a where a rival on the measured shortlist (Stage A's candidates and grid rivals where the search measured the peak, 4.15's where it ran) passed no named test, or where the shortlist was not measured or the stored cap cut a rival (`rivals_past_cap`); else 4b where the cross-channel pass left the split open, 4a where it is pinned. Each rival is named with its test (mass at the tie margin, a committed tracking line it cannot make or its own absent line, a second channel; none on a TOF) or open, a prior or plausibility only noted. `peak_assignment.level` beside the tier; the inspector's chip, evidence, lift and rivals; a level column and filter in both ledgers, the batch ledger's the members' level until 5.8c; the ledger export, the SDK frames and the batch import's `engine_level`; no tier moves; the level readings are the bench card's; MAS-73 |
-| 5.8b - level 3 from the run's context and channel: 3c, 3b by ionization, 3a on two routes, 2b on a one-structure formula | - |  | planned 2026-11-17 (decision 38); after 5.8; MAS-939 |
+| 5.8b - level 3 from the run's context and channel: 3c, 3b by ionization, 3a on two routes, 2b on a one-structure formula | - |  | in review: on a row at 4a, 3b where the run's reagent profile's class table names the row's channel (`ReagentProfile.ionization_classes`, each entry cited; a nitrate `[M-H]-` "an acid of this formula"), 2b where a list identity of the row carries a cited `one_structure` mark (a species key of the list format, written onto its record's `xrefs`); a row earning both shows 2b and names the class; level rules version 3; the shipped profiles and lists carry no entries yet (PKY-39), so no set's reading moves; 3c and 3a moved to 5.8b2 (the plan owner's call of 2026-11-24, MAS-1259: the lists' `applies_to_contexts` are regimes the run's chemistry context does not speak, and the join is the environment); MAS-939 |
+| 5.8b2 - level 3 from a context list: 3c on a list the run's environment selected, 3a on two routes | - |  | planned 2026-11-24 (MAS-1259), split from 5.8b; after list selection by environment (MAS-342, `sample_filters_and_metadata.md` 4.6) and 5.8b; an `always_active` list raises nothing; MAS-1262 |
 | 5.8c - the batch's level and its isotope checks: a halogen lock, stamped lines and the label twin on 5a and 4b, 5b on a stamped halogen line | - |  | planned 2026-11-17 (decision 38); after 5.8b; MAS-940 |
 | 5.8d - the co-variation lifts: 4 and 3d through a series, 3a on an anchored homologue, the uronium pair, a TOF second channel | - |  | planned 2026-11-17 (decision 38); after 5.8c and 4.21's null model (MAS-903), whose bar cleared on one reagent only on 2026-11-23 (#3476); MAS-941 |
 | 5.8e - MS/MS levels: 4a on a reagent release, 3b on one loss, 2b on fragments, 2a on a library spectrum | - |  | planned 2026-11-17 (decision 38); after 5.8f and the MS2 project's per-row evidence and its decision on what it may move (MAS-391, MAS-393); MAS-942 |
@@ -3660,7 +3662,7 @@ the same air (5.8g). No step moves a tier.
 ### 5.8b Level 3 from the run's context and channel
 
 - **What.** On a row at 4a, three letters of level 3 and one of level 2,
-  from what a run records:
+  from what a run records (3c and 3a moved to 5.8b2 on 2026-11-24, below):
   - **3c, context list:** a curated, cited list whose tags match the run's
     resolved context (3.6: the context the dataset or batch names; the
     list tags of 2.5a and 2.5b) holds a compound of the neutral formula.
@@ -3711,7 +3713,60 @@ the same air (5.8g). No step moves a tier.
   the certified list as the run's context, every certified component
   reads 3c or 3a. No tier moves.
 - **Bench.** Every set; the tiers must not move; the level readings move.
+- **Decided 2026-11-24 by the plan owner (MAS-1259, option 1).** 3c and
+  3a move to a step of their own, 5.8b2. A list's `applies_to_contexts`
+  holds regimes (`monoterpene_ox`, `biogenic_soa`), which decision 16 of
+  [`sample_filters_and_metadata.md`](sample_filters_and_metadata.md)
+  keeps apart from the run's chemistry contexts (`chamber`,
+  `ambient-air`), and neither the source row nor a row records them; a
+  chemistry context also does not name the precursor a chamber oxidised.
+  The join is the environment: a context list is a curated, cited list
+  the run's environment selected through its regimes, as list selection
+  by environment records it on the run (MAS-336, MAS-342). This step
+  ships 3b, 2b and the order between level 2 and level 3, and its Verify
+  is the fixture part of the line above.
 - **Size.** M. After 5.8, on its module. MAS-939.
+
+### 5.8b2 Level 3 from a context list
+
+- **What.** On a row at 4a, the two letters 5.8b left (the plan owner's
+  call of 2026-11-24, MAS-1259):
+  - **3c, context list:** a list the run's environment selected through
+    its regimes holds a compound of the neutral formula. A list read for
+    another reason raises nothing: no environment in play (an untagged
+    sample reads every list), an `always_active` list, a list declaring no
+    regimes, a structure database. The row names the compounds, the list
+    and the regimes.
+  - **3a, data and list agree:** a 3c row that also has two routes, a
+    second channel committing its neutral.
+  - The order of point 4: 3a wherever its definition holds, else 3c, then
+    3d, then 3b; 2b over every letter of 3, as 5.8b built. A nitrate
+    `[M-H]-` row on a context list reads 3c with "an acid" in its
+    evidence line.
+- **Why.** The scale's 3c is "consistent with a compound the study
+  expects", and only the environment says what the study expects: a list
+  names regimes, and the environment registry maps a sample's environment
+  to a chemistry context and the regimes it reads
+  ([`sample_filters_and_metadata.md`](sample_filters_and_metadata.md) 2.6
+  and 4.6). A background list (contaminants, cyclic siloxanes,
+  caprolactam) says the opposite of an expected compound, so it raises
+  nothing.
+- **Where.** The level module; the run snapshot list selection by
+  environment adds (the environments, the regimes, every list read);
+  the inspector's evidence line naming the list and its regimes;
+  `test_identification_level.py` (a selected list at 3c, the same list
+  with no environment in play at 4a, an `always_active` list at 4a, a
+  list declaring no regimes at 4a, a CompTox-only listing at 4a, a 3c row
+  with a second channel at 3a, a nitrate `[M-H]-` row on a context list
+  at 3c with "an acid" in its evidence line, a 4b row never at 3).
+- **Verify.** On the chamber sets with their environment named (G, H)
+  the rows at 3c are the selected lists' compounds at 4a, each naming its
+  list and regimes; with no environment named none reaches 3c; on the
+  cylinder sets, with an environment selecting the certified list, every
+  certified component reads 3c or 3a. No tier moves.
+- **Bench.** Every set; the tiers must not move; the level readings move.
+- **Size.** M. After list selection by environment (MAS-342) and 5.8b.
+  MAS-1262.
 
 ### 5.8c The batch's level and its isotope checks
 

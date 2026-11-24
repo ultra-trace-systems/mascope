@@ -2060,6 +2060,7 @@ async def level(ctx: RunContext) -> None:
         lines=ctx.lines,
         tiering=ctx.tiering,
         resolution=ctx.resolution,
+        profile=ctx.resolved_profile.profile,
     )
     levels = ctx.tiering[LEVEL_SUMMARY]
     runtime.logger.info(

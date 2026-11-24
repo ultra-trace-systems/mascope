@@ -145,7 +145,7 @@ async def test_the_level_is_stated_off_the_loop():
         config=SimpleNamespace(stage_b_confidence=False),
         searched_mechanisms=[],
         instrument_type="orbi",
-        resolved_profile=SimpleNamespace(context=None),
+        resolved_profile=SimpleNamespace(context=None, profile=None),
         lines=None,
         tiering={},
         resolution=None,

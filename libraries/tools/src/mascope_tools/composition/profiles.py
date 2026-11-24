@@ -43,7 +43,11 @@ from typing import Mapping
 
 from mascope_tools.composition.heuristic_filter import element_counts
 from mascope_tools.composition.known_window import KnownWindow
-from mascope_tools.composition.mechanism_notation import mechanism_key
+from mascope_tools.composition.mechanism_notation import (
+    MechanismNotationError,
+    mechanism_key,
+    standard_notation,
+)
 
 
 #: Ratio-window keys. ``C`` is the carbon-equivalent count (C + Si: silicon is a
@@ -147,6 +151,122 @@ DEFAULT_MATCH_TOLERANCE_PPM = 15.0
 
 _RANGE_TOKEN = re.compile(r"^(\^?\[?\d*[A-Z][a-z]?\]?)(\d+)-(\d+)$")
 
+#: A DOI, as a reference list's are checked (``mascope_reference.peaklist``).
+_DOI = re.compile(r"10\.\d{4,9}/\S+")
+
+
+@dataclass(frozen=True)
+class Citation:
+    """One work an entry of chemistry data rests on.
+
+    The shape a reference list cites its publications in
+    (``mascope_reference.peaklist.REFERENCE_KEYS``): the work as a reader cites
+    it, and the DOI or, for a book, the ISBN that finds it.
+
+    :param citation: The work, as a reader would cite it.
+    :param doi: Its DOI.
+    :param isbn: Its ISBN, for a book.
+    """
+
+    citation: str
+    doi: str | None = None
+    isbn: str | None = None
+
+    def record(self) -> dict:
+        """The citation as a run records it: its keys that hold a value."""
+        return {
+            key: value
+            for key, value in (
+                ("citation", self.citation),
+                ("doi", self.doi),
+                ("isbn", self.isbn),
+            )
+            if value
+        }
+
+    def text(self) -> str:
+        """The citation for a person: the work, and the DOI or ISBN that finds it."""
+        found_by = self.doi or self.isbn
+        return f"{self.citation} ({found_by})" if found_by else self.citation
+
+
+def _isbn_ok(value: str) -> bool:
+    """Whether a string is an ISBN-10 or ISBN-13 with a valid check digit."""
+    digits = re.sub(r"[\s-]", "", value).upper()
+    if re.fullmatch(r"\d{13}", digits):
+        total = sum(int(d) * (3 if i % 2 else 1) for i, d in enumerate(digits))
+        return total % 10 == 0
+    if re.fullmatch(r"\d{9}[\dX]", digits):
+        total = sum(
+            (10 - i) * (10 if d == "X" else int(d)) for i, d in enumerate(digits)
+        )
+        return total % 11 == 0
+    return False
+
+
+def citation_problems(citation: Citation, where: str) -> list[str]:
+    """What keeps a citation from finding its work, one sentence each.
+
+    The bar a reference list's references are held to: a citation, and a DOI
+    or a valid ISBN.
+
+    :param citation: The citation.
+    :param where: What the sentences name it as.
+    :return: The problems; empty when it cites its work.
+    """
+    problems = []
+    if not (citation.citation or "").strip():
+        problems.append(f"{where}: no citation")
+    if not citation.doi and not citation.isbn:
+        problems.append(f"{where}: neither a DOI nor an ISBN")
+    if citation.doi and not _DOI.fullmatch(citation.doi):
+        problems.append(f"{where}: '{citation.doi}' is not a DOI")
+    if citation.isbn and not _isbn_ok(citation.isbn):
+        problems.append(f"{where}: '{citation.isbn}' is not a valid ISBN")
+    return problems
+
+
+@dataclass(frozen=True)
+class IonizationClass:
+    """What a channel says of the molecule it ionized: one functional group.
+
+    The identification level's 3b by ionization (step 5.8b of the assignment
+    quality plan; ``docs/dev/assignment_confidence.md``, "P4 design: the
+    identification level", point 4). Some channels ionize only a molecule that
+    carries a group: a nitrate reagent deprotonates a molecule with an acidic
+    hydrogen, a uronium reagent protonates one with a basic site. A row read
+    through such a channel, its formula and split pinned at 4a, may state the
+    class without naming any compound: "an acid of this formula".
+
+    The entries are chemistry as data, authored by peaky's owner with every
+    entry cited (PKY-35, PKY-39), one table per reagent profile
+    (:attr:`ReagentProfile.ionization_classes`).
+
+    :param mechanism: The channel, in the notation the mechanism table stores
+        (``"[M-H]-"``). Read by its key
+        (``mechanism_notation.mechanism_key``), so any spelling of the channel
+        finds it.
+    :param group: The group the ionization says the molecule carries, as a
+        reader says it (``"an acidic hydrogen"``).
+    :param noun: The class of molecule that carries it, which the row states
+        (``"an acid"``, read "an acid of this formula").
+    :param references: The works the entry rests on, at least one.
+    """
+
+    mechanism: str
+    group: str
+    noun: str
+    references: tuple[Citation, ...] = ()
+
+    def record(self) -> dict:
+        """The entry as a run records it beside the level it stated."""
+        return {
+            "mechanism": self.mechanism,
+            "group": self.group,
+            "noun": self.noun,
+            "references": [reference.record() for reference in self.references],
+        }
+
 
 @dataclass(frozen=True)
 class ReagentProfile:
@@ -189,6 +309,12 @@ class ReagentProfile:
         clusters as the source's on their ladder (``reagents.solvent_ladders``).
         Empty for a source that builds none.
     :param aliases: Alternative names a run config may use.
+    :param ionization_classes: The source's class table: per channel, the
+        functional group its ionization says the molecule carries
+        (:class:`IonizationClass`), each entry cited. A channel the table does
+        not name says no group. Empty on every shipped profile until its
+        entries are authored (PKY-39); :func:`ionization_class_problems` holds
+        each entry to its citation.
     """
 
     name: str
@@ -205,6 +331,61 @@ class ReagentProfile:
     mz_precision_ppm: float | None = None
     source_solvents: tuple[str, ...] = ()
     aliases: tuple[str, ...] = ()
+    ionization_classes: tuple[IonizationClass, ...] = ()
+
+
+def ionization_class(
+    profile: ReagentProfile | None, notation: str | None
+) -> IonizationClass | None:
+    """The group a channel of a profile says its molecule carries (level 3b).
+
+    :param profile: The run's reagent profile; None names no table.
+    :param notation: The channel a row was read through, in any spelling of
+        its mechanism.
+    :return: The profile's entry for the channel, or None where its table
+        names none.
+    """
+    if profile is None or not notation:
+        return None
+    key = mechanism_key(notation)
+    for entry in profile.ionization_classes:
+        if mechanism_key(entry.mechanism) == key:
+            return entry
+    return None
+
+
+def ionization_class_problems(profile: ReagentProfile) -> list[str]:
+    """Everything that keeps a profile's class table from being read, one
+    sentence each.
+
+    Each entry names a channel that reads as a mechanism, once; a group and a
+    class; and at least one work, each with a citation and a DOI or a valid
+    ISBN (:func:`citation_problems`).
+
+    :param profile: The profile.
+    :return: The problems in table order; empty when the table may ship.
+    """
+    problems: list[str] = []
+    seen: set[str] = set()
+    for number, entry in enumerate(profile.ionization_classes, start=1):
+        where = f"{profile.name} class {number} ({entry.mechanism})"
+        try:
+            standard_notation(entry.mechanism)
+        except MechanismNotationError:
+            problems.append(f"{where}: '{entry.mechanism}' is not a mechanism")
+        key = mechanism_key(entry.mechanism)
+        if key in seen:
+            problems.append(f"{where}: the channel has an entry already")
+        seen.add(key)
+        if not entry.group.strip():
+            problems.append(f"{where}: no group")
+        if not entry.noun.strip():
+            problems.append(f"{where}: no class")
+        if not entry.references:
+            problems.append(f"{where}: no reference")
+        for index, reference in enumerate(entry.references, start=1):
+            problems.extend(citation_problems(reference, f"{where}, reference {index}"))
+    return problems
 
 
 #: The solvents a positive chemical-ionization source's vapour carries: the

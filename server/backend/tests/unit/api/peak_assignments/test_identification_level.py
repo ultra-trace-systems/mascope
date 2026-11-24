@@ -1,11 +1,14 @@
-"""The identification level a run states of each committed row (step 5.8).
+"""The identification level a run states of each committed row (steps 5.8, 5.8b).
 
 Each formula sub-level from the facts that earn it, each rival test, what is
 not read as an exclusion, the isotopologue and hand rows, and the mapping's
-version pinned.
+version pinned; and on a row at 4a, 3b by its channel's class and 2b on a
+cited one-structure mark, read on fixture entries.
 """
 
 from __future__ import annotations
+
+import dataclasses
 
 import pytest
 
@@ -194,8 +197,8 @@ class TestTheScale:
     def test_the_rules_version_is_pinned(self):
         # A fact, a rule or the order of the rules that changes bumps this, and
         # a test that pins it is where the bump is noticed. The run records it.
-        assert LEVEL_RULES_VERSION == 2
-        assert apply_levels(measured(*[m0()]))["level_rules_version"] == 2
+        assert LEVEL_RULES_VERSION == 3
+        assert apply_levels(measured(*[m0()]))["level_rules_version"] == 3
         assert "level_mapping_version" not in level(m0())
 
     def test_the_vocabulary_is_the_shared_scale(self):
@@ -995,9 +998,7 @@ class TestFourBAndFourA:
             "plausible decomposition, the ion holding no reagent unit of the "
             "run's channels"
         )
-        assert record["lift"] == (
-            "a context list naming a compound of this formula, or MS/MS"
-        )
+        assert record["lift"] == "a context list for the run's chemistry; MS/MS"
 
     def test_an_n_free_nitrate_ion_is_4a(self):
         # Deprotonated under a nitrate run: no N to hold the cluster's NO3.
@@ -1270,3 +1271,227 @@ class TestTheSurfacesRead:
         ) == {"level_evidence": None, "level_lift": None}
         assert level_fields(None, {IDENTIFICATION_LEVEL: {"level": "4a"}}) == none
         assert level_fields("9z", None) == none
+
+
+# --- Step 5.8b: what the run's chemistry data says of a row at 4a -----------------
+
+
+#: A work an entry cites, as a list's references are written.
+CITED = presets.Citation(
+    "A. Author et al., A study of acids. J. Example 1 (2020) 1-10.",
+    doi="10.1234/example.2020",
+)
+CITED_TEXT = "A. Author et al., A study of acids. J. Example 1 (2020) 1-10. (10.1234/example.2020)"
+
+#: A fixture entry of a class table, as PKY-39 authors the shipped ones: a
+#: nitrate reagent deprotonates a molecule with an acidic hydrogen.
+ACID = presets.IonizationClass("[M-H]-", "an acidic hydrogen", "an acid", (CITED,))
+NITRATE = dataclasses.replace(presets.NO3, ionization_classes=(ACID,))
+NITRATE_CHANNELS = {"im-dep": "[M-H]-", "im-no3": "[M+NO3]-"}
+
+
+def acid_row(formula: str = "C5H8O4", ion: str = "C5H7O4-", **kwargs) -> dict:
+    """A deprotonated ion under a nitrate run: N-free, so 4a by its one
+    decomposition."""
+    return m0(formula=formula, ion=ion, mechanism="im-dep", **kwargs)
+
+
+def identity(name: str, source: str = "acids-list", **xrefs) -> dict:
+    """One list identity of a row's formula, as Stage A copies it."""
+    return {
+        "name": name,
+        "source": source,
+        "license": "CC-BY-4.0",
+        "inchikey": None,
+        "source_native_id": name,
+        "xrefs": xrefs,
+    }
+
+
+def marked(name: str = "trifluoroacetic acid", **kwargs) -> dict:
+    """A list identity the list marks as its formula's one plausible structure."""
+    return identity(name, one_structure=CITED.record(), **kwargs)
+
+
+def tfa(*identities: dict, **kwargs) -> dict:
+    """Trifluoroacetic acid deprotonated under a nitrate run, at 4a."""
+    return acid_row(
+        "C2HF3O2",
+        "C2F3O2-",
+        provenance={"reference_identities": list(identities)},
+        **kwargs,
+    )
+
+
+class TestThreeBByIonization:
+    def test_a_nitrate_deprotonated_row_at_4a_reads_3b(self):
+        record = level(acid_row(), notation_by_id=NITRATE_CHANNELS, profile=NITRATE)
+
+        assert record["level"] == "3b"
+        # The class, never a compound, with the work that says it.
+        assert record["evidence"] == (
+            "an acid of this formula: its channel, [M-H]-, says an acidic "
+            f"hydrogen ({CITED_TEXT}); no rival on the measured shortlist; the "
+            "split is pinned: one plausible decomposition, the ion holding no "
+            "reagent unit of the run's channels"
+        )
+        assert record["lift"] == (
+            "a context list for the run's chemistry naming a compound of this "
+            "formula; MS/MS"
+        )
+        assert {
+            "fact": "ionization_class",
+            "record": "resolved_profile",
+            "detail": "[M-H]-: an acidic hydrogen",
+            "entry": ACID.record(),
+        } in record["facts"]
+
+    def test_the_class_is_found_by_any_spelling_of_its_channel(self):
+        legacy = {"im-dep": "-H+", "im-no3": "[M+NO3]-"}
+
+        record = level(acid_row(), notation_by_id=legacy, profile=NITRATE)
+
+        assert record["level"] == "3b"
+        assert "its channel, -H+, says an acidic hydrogen" in record["evidence"]
+
+    def test_a_channel_the_table_does_not_name_says_no_group(self):
+        # Protonation: the nitrate table names deprotonation alone.
+        record = level(m0(), profile=NITRATE)
+
+        assert record["level"] == "4a"
+        assert record["lift"] == "a context list for the run's chemistry; MS/MS"
+        assert all(fact["fact"] != "ionization_class" for fact in record["facts"])
+
+    def test_a_profile_with_no_table_says_no_group(self):
+        record = level(acid_row(), notation_by_id=NITRATE_CHANNELS, profile=presets.NO3)
+
+        assert record["level"] == "4a"
+
+    def test_a_run_with_no_profile_reads_no_class(self):
+        assert level(acid_row(), notation_by_id=NITRATE_CHANNELS)["level"] == "4a"
+
+
+class TestTwoBOnAOneStructureMark:
+    def test_a_one_structure_formula_at_4a_reads_2b(self):
+        record = level(tfa(marked()), notation_by_id=NITRATE_CHANNELS)
+
+        assert record["level"] == "2b"
+        assert record["evidence"] == (
+            "one plausible structure, trifluoroacetic acid, as acids-list marks "
+            f"it, citing {CITED_TEXT}; no rival on the measured shortlist; the "
+            "split is pinned: one plausible decomposition, the ion holding no "
+            "reagent unit of the run's channels"
+        )
+        # Only a person states 1.
+        assert record["lift"].startswith("level 1, in review")
+        assert {
+            "fact": "one_structure",
+            "record": "reference_identities",
+            "detail": "trifluoroacetic acid",
+            "source": "acids-list",
+            "reference": CITED.record(),
+        } in record["facts"]
+
+    def test_two_lists_marking_one_structure_name_it_once(self):
+        record = level(
+            tfa(marked(), marked(source="pfas-list")), notation_by_id=NITRATE_CHANNELS
+        )
+
+        clause, _ = record["evidence"].split("; no rival", 1)
+        assert clause == (
+            "one plausible structure, trifluoroacetic acid, as acids-list, "
+            f"pfas-list marks it, citing {CITED_TEXT}"
+        )
+
+    def test_a_mark_with_no_name_or_list_names_the_formula_and_its_work(self):
+        # A list loaded from a file of its own meets no check: what it does
+        # say is read.
+        bare = {"xrefs": {"one_structure": {"doi": "10.1234/x.1"}}}
+
+        record = level(tfa(bare), notation_by_id=NITRATE_CHANNELS)
+
+        assert record["level"] == "2b"
+        clause, _ = record["evidence"].split("; no rival", 1)
+        assert clause == "one plausible structure, C2HF3O2, citing 10.1234/x.1"
+
+    def test_a_mark_that_cites_no_work_is_not_read(self):
+        unfound = identity("trifluoroacetic acid", one_structure={"citation": "a note"})
+
+        assert level(tfa(unfound), notation_by_id=NITRATE_CHANNELS)["level"] == "4a"
+
+    def test_a_structure_database_listing_reads_nothing(self):
+        # A CompTox-only listing is a candidate, not chemistry data.
+        comptox = identity("trifluoroacetic acid", "comptox", dtxsid="DTXSID0000000")
+
+        record = level(tfa(comptox), notation_by_id=NITRATE_CHANNELS)
+
+        assert record["level"] == "4a"
+        assert all(fact["fact"] != "one_structure" for fact in record["facts"])
+
+    def test_a_row_that_earns_2b_and_3b_shows_2b_and_names_the_class(self):
+        record = level(tfa(marked()), notation_by_id=NITRATE_CHANNELS, profile=NITRATE)
+
+        assert record["level"] == "2b"
+        assert record["evidence"].endswith(
+            "; it earns 3b too: an acid of this formula: its channel, [M-H]-, "
+            f"says an acidic hydrogen ({CITED_TEXT})"
+        )
+        assert {fact["fact"] for fact in record["facts"]} >= {
+            "one_structure",
+            "ionization_class",
+        }
+
+
+class TestNoStructureUnderFourA:
+    def test_a_4b_row_never_reads_a_structure(self):
+        row = tfa(marked())
+        row["provenance"]["cross_channel"] = {
+            "channels": ["[M-H]-"],
+            REASON_AMBIGUOUS_ADDUCT: {"alternative": "C2H2F3NO5", "via": "x"},
+        }
+
+        record = level(row, notation_by_id=NITRATE_CHANNELS, profile=NITRATE)
+
+        assert record["level"] == "4b"
+        assert not {"one_structure", "ionization_class"} & {
+            fact["fact"] for fact in record["facts"]
+        }
+        assert "an acid" not in record["evidence"]
+
+    def test_a_row_with_a_rival_open_reads_no_structure(self):
+        row = tfa(marked(), alternatives=[rival("C3H5F3O", 0.9, "C3H4F3O-")])
+
+        record = level(row, notation_by_id=NITRATE_CHANNELS, profile=NITRATE)
+
+        assert record["level"] == "5a"
+        assert "plausible structure" not in record["evidence"]
+
+    def test_a_refuted_row_reads_no_structure(self):
+        row = tfa(marked())
+        row["provenance"]["plausibility"] = 0.0
+
+        record = level(row, notation_by_id=NITRATE_CHANNELS, profile=NITRATE)
+
+        assert record["level"] == "5b"
+
+
+class TestTheRunStatesTheStructure:
+    def test_the_run_reads_its_profiles_class_and_the_line_shows_it(self):
+        owner = acid_row(row_id="pa-1")
+        child = iso_line("pa-1", "13C")
+
+        summary = apply_levels(
+            measured(owner, child), notation_by_id=NITRATE_CHANNELS, profile=NITRATE
+        )
+
+        assert owner[LEVEL_COLUMN] == "3b"
+        assert child[LEVEL_COLUMN] == "3b"
+        assert summary["levels"] == {"3b": 1}
+        assert summary["isotopologue_levels"] == {"3b": 1}
+
+    def test_a_run_without_its_profile_reads_the_formula_alone(self):
+        owner = acid_row(row_id="pa-1")
+
+        apply_levels(measured(owner), notation_by_id=NITRATE_CHANNELS)
+
+        assert owner[LEVEL_COLUMN] == "4a"
