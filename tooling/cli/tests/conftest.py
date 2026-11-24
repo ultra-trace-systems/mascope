@@ -71,6 +71,37 @@ def cli_runner():
 
 
 @pytest.fixture
+def split_fix():
+    """
+    Split an ownership fix the way a shell does: a function of the fix that
+    returns ``(chown operands, chown -R operands)``, each a path, asserting
+    every command gives them to the image's uid.
+    """
+    import shlex
+
+    from mascope_cli.cmd import init as init_cmd
+
+    def split(fix):
+        uid = str(init_cmd.IMAGE_UID)
+        commands = [[]]
+        for word in shlex.split(fix):
+            if word == "&&":
+                commands.append([])
+            else:
+                commands[-1].append(word)
+        plain, recursive = [], []
+        for command in commands:
+            if command[:4] == ["sudo", "chown", "-R", uid]:
+                recursive += command[4:]
+            else:
+                assert command[:3] == ["sudo", "chown", uid], command
+                plain += command[3:]
+        return plain, recursive
+
+    return split
+
+
+@pytest.fixture
 def open_umask():
     """
     The common 022 umask for one test, put back after it.

@@ -23,6 +23,7 @@ Contains no Typer commands — implementation only.
 """
 
 import os
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -236,7 +237,7 @@ def check_after_sync(
         )
         return
 
-    fix = f"sudo chown -R {owner_uid}:{owner_gid} {env_dir}"
+    fix = f"sudo chown -R {owner_uid}:{owner_gid} {shlex.quote(str(env_dir))}"
     runtime.logger.warning(
         f"Filestore files were written as uid {receiver_uid}, but {env_dir} is "
         f"owned by uid {owner_uid}. Mascope's containers run as the "

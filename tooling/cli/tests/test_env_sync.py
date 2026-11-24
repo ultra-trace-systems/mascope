@@ -735,6 +735,21 @@ def test_check_after_sync_warns_on_a_local_uid_mismatch(monkeypatch, warnings):
     assert "sudo chown -R 1000:1000 /home/dev/.runtime/env/tof1" in warnings[0]
 
 
+def test_the_printed_chown_quotes_an_env_dir_with_a_space(monkeypatch, warnings):
+    monkeypatch.setattr(_ownership, "_on_windows", lambda: False)
+    monkeypatch.setattr(_ownership.os, "getuid", lambda: 1001, raising=False)
+    monkeypatch.setattr(
+        _ownership,
+        "local_env_dir",
+        lambda name: _FakeEnvDir(f"/home/my dev/.runtime/env/{name}", 1000, 1000),
+    )
+
+    _ownership.check_after_sync(None, "tof1")
+
+    fix = warnings[0].split("\n    ", 1)[1].splitlines()[0]
+    assert shlex.split(fix)[-1] == "/home/my dev/.runtime/env/tof1"
+
+
 def test_check_after_sync_skips_a_local_target_that_is_not_there(monkeypatch, warnings):
     monkeypatch.setattr(_ownership, "_on_windows", lambda: False)
     monkeypatch.setattr(

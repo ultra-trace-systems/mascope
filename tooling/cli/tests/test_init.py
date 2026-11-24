@@ -217,6 +217,26 @@ def _secrets(home):
     return home / ".runtime" / "secrets"
 
 
+# The directories the backend image writes to besides the filestore, whose fix
+# is recursive, in the order the check reports them.
+FILESTORE = ".runtime/env/default/filestore"
+WRITTEN_DIRS = (".runtime/env/default/logs", ".runtime/database/backups/prod")
+
+
+@pytest.fixture
+def fix_operands(split_fix):
+    """
+    The paths a warning's fix gives to the image's uid, as a shell splits
+    the command: ``(chown operands, chown -R operands)``.
+    """
+
+    def operands(warning):
+        fix = warning.split("Give them to that uid (", 1)[1].rsplit("), or run", 1)[0]
+        return split_fix(fix)
+
+    return operands
+
+
 @linux_only
 def test_secrets_another_user_made_are_unreadable_to_the_image(
     cli_runner, tmp_path, image_is_another_user
@@ -305,7 +325,7 @@ def test_secrets_are_not_checked_off_linux(
 
 @linux_only
 def test_init_warns_when_the_image_cannot_read_the_secrets(
-    cli_runner, tmp_path, image_is_another_user
+    cli_runner, tmp_path, image_is_another_user, open_umask, fix_operands
 ):
     home = tmp_path / "home"
 
@@ -317,7 +337,160 @@ def test_init_warns_when_the_image_cannot_read_the_secrets(
     assert "WARNING" in result.stderr
     assert "postgres_password.txt" in result.stderr
     assert f"belong to uid {os.getuid()}" in result.stderr
-    assert f"chown {init_cmd.IMAGE_UID} {_secrets(home.resolve())}/*" in result.stderr
+    # The directories it writes to were made by the same user, at the umask.
+    assert "cannot write to them" in result.stderr
+    home = home.resolve()
+    plain, recursive = fix_operands(result.stderr)
+    assert plain == [str(_secrets(home) / name) for name in IMAGE_READ_SECRETS] + [
+        str(home / d) for d in WRITTEN_DIRS
+    ]
+    # The uploads already in the filestore carry the old owner too.
+    assert recursive == [str(home / FILESTORE)]
+
+
+@linux_only
+def test_init_warns_when_the_image_cannot_write_to_its_directories(
+    cli_runner, tmp_path, image_is_this_user, fix_operands
+):
+    # The secrets are the image's own; one directory it writes to is closed.
+    home = tmp_path / "home"
+    _init(cli_runner, home)
+    (home / WRITTEN_DIRS[0]).chmod(0o555)
+
+    result = _init(cli_runner, home)
+
+    assert result.exit_code == 0
+    assert "WARNING" in result.stderr
+    assert "The secrets" not in result.stderr
+    assert f"The directories {home.resolve() / WRITTEN_DIRS[0]} belong to" in (
+        result.stderr
+    )
+    assert fix_operands(result.stderr) == ([str(home.resolve() / WRITTEN_DIRS[0])], [])
+
+
+@linux_only
+def test_the_fix_quotes_a_home_with_a_space(
+    cli_runner, tmp_path, image_is_another_user, open_umask, fix_operands
+):
+    home = (tmp_path / "my home; rm -rf x").resolve()
+
+    result = _init(cli_runner, home)
+
+    plain, recursive = fix_operands(result.stderr)
+    assert plain == [str(_secrets(home) / name) for name in IMAGE_READ_SECRETS] + [
+        str(home / d) for d in WRITTEN_DIRS
+    ]
+    assert recursive == [str(home / FILESTORE)]
+    # Never the Postgres data directory, which the postgres image's user owns,
+    # nor the transfer directory, nor anything recursive over the home.
+    for path in plain + recursive:
+        assert not path.startswith(str(home / ".runtime" / "database" / "prod"))
+        assert not path.startswith(str(home / ".runtime" / "database" / "transfer"))
+        assert path not in (str(home), str(home / ".runtime"))
+
+
+@linux_only
+@pytest.mark.parametrize(
+    ("mode", "same_group", "writable"),
+    [
+        (0o775, True, True),  # the image's group may write to it
+        (0o755, True, False),  # its group may not
+        (0o765, True, False),  # write without search takes no new file
+        (0o757, False, True),  # anyone may write to it
+        (0o776, False, False),  # nor without the others' search bit
+        (0o775, False, False),  # another group's directory
+    ],
+)
+def test_a_directory_of_another_owner_is_written_by_group_or_others(
+    tmp_path, monkeypatch, mode, same_group, writable
+):
+    monkeypatch.setattr(init_cmd, "IMAGE_UID", os.getuid() + 1)
+    monkeypatch.setattr(
+        init_cmd, "IMAGE_GID", os.getgid() if same_group else os.getgid() + 1
+    )
+    logs = tmp_path / WRITTEN_DIRS[0]
+    logs.mkdir(parents=True)
+    logs.chmod(mode)
+
+    unwritable = init_cmd.dirs_unwritable_by_image(tmp_path)
+
+    assert unwritable == (
+        [] if writable else [init_cmd.UnwritableDir(logs, os.getuid(), False)]
+    )
+
+
+@linux_only
+@pytest.mark.parametrize(
+    ("mode", "writable"), [(0o300, True), (0o577, False), (0o277, False)]
+)
+def test_the_owners_bits_decide_for_a_directorys_owner(
+    tmp_path, image_is_this_user, mode, writable
+):
+    backups = tmp_path / WRITTEN_DIRS[1]
+    backups.mkdir(parents=True)
+    backups.chmod(mode)
+    try:
+        unwritable = init_cmd.dirs_unwritable_by_image(tmp_path)
+    finally:
+        backups.chmod(0o700)
+
+    assert unwritable == (
+        [] if writable else [init_cmd.UnwritableDir(backups, os.getuid(), False)]
+    )
+
+
+@linux_only
+def test_a_symlinked_filestore_is_checked_where_it_is(tmp_path, image_is_another_user):
+    # A filestore on a data volume: the link's own bits say nothing.
+    volume = tmp_path / "volume" / "store"
+    volume.mkdir(parents=True)
+    volume.chmod(0o755)
+    link = tmp_path / "home" / FILESTORE
+    link.parent.mkdir(parents=True)
+    link.symlink_to(volume)
+
+    unwritable = init_cmd.dirs_unwritable_by_image(tmp_path / "home")
+
+    assert unwritable == [init_cmd.UnwritableDir(volume, os.getuid(), True)]
+
+
+@linux_only
+def test_a_filestore_of_its_own_is_checked_and_not_the_envs(
+    tmp_path, image_is_another_user
+):
+    own = tmp_path / "store"
+    own.mkdir()
+    own.chmod(0o755)
+    env_store = tmp_path / "home" / ".runtime" / "env" / "site" / "filestore"
+    env_store.mkdir(parents=True)
+    env_store.chmod(0o755)
+    logs = env_store.parent / "logs"
+    logs.mkdir()
+    logs.chmod(0o755)
+
+    unwritable = init_cmd.dirs_unwritable_by_image(tmp_path / "home", "site", own)
+
+    assert unwritable == [
+        init_cmd.UnwritableDir(own, os.getuid(), True),
+        init_cmd.UnwritableDir(logs, os.getuid(), False),
+    ]
+
+
+@linux_only
+def test_a_missing_directory_is_not_reported(tmp_path, image_is_another_user):
+    assert init_cmd.dirs_unwritable_by_image(tmp_path) == []
+
+
+@linux_only
+@pytest.mark.parametrize("platform", ["darwin", "win32"])
+def test_directories_are_not_checked_off_linux(
+    cli_runner, tmp_path, monkeypatch, image_is_another_user, open_umask, platform
+):
+    home = tmp_path / "home"
+    _init(cli_runner, home)
+    monkeypatch.setattr(init_cmd.sys, "platform", platform)
+
+    assert init_cmd.dirs_unwritable_by_image(home) == []
 
 
 @linux_only

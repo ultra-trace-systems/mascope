@@ -936,12 +936,68 @@ def test_build_report_reads_the_secrets_the_image_cannot(monkeypatch, tmp_path):
     assert report.ok is True
 
 
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="the check runs on Linux only"
+)
+def test_build_report_reads_the_directories_the_image_cannot_write_to(
+    monkeypatch, tmp_path
+):
+    # A home another user made, its filestore on a data volume, for the env
+    # the stack runs.
+    monkeypatch.setattr(doctor, "_run", lambda cmd, **k: _completed(returncode=1))
+    monkeypatch.setattr(doctor.init_cmd, "IMAGE_UID", os.getuid() + 1)
+    monkeypatch.setattr(doctor.init_cmd, "IMAGE_GID", os.getgid() + 1)
+    home = tmp_path / "home"
+    env_dir = home / ".runtime" / "env" / "site1"
+    volume = tmp_path / "volume"
+    made = [
+        env_dir / "logs",
+        home / ".runtime" / "database" / "backups" / "prod",
+        home / ".runtime" / "database" / "prod",
+        volume,
+    ]
+    for d in made:
+        d.mkdir(parents=True)
+        d.chmod(0o755)
+    # A filestore of its own (MASCOPE_FILESTORE), not the env's.
+    (env_dir / "filestore").mkdir()
+    (env_dir / "filestore").chmod(0o777)
+    # The default env's directories are not the stack's.
+    (home / ".runtime" / "env" / "default" / "logs").mkdir(parents=True)
+    report = doctor.build_report(
+        mascope_path=str(home),
+        container_specs=[],
+        versioned_specs=[],
+        expected_version=None,
+        disk_specs=[],
+        backups_dir=tmp_path / "backups",
+        min_free_gb=1.0,
+        systemd_dir=tmp_path / "systemd",
+        env_name="site1",
+        filestore=volume,
+    )
+    uid = os.getuid()
+    assert report.dirs_unwritable == [
+        doctor.UnwritableDir(str(volume), uid, True),
+        doctor.UnwritableDir(str(env_dir / "logs"), uid, False),
+        doctor.UnwritableDir(str(made[1]), uid, False),
+    ]
+    # Flagged, not failed: an image built with its own MASCOPE_UID writes as it.
+    assert report.ok is True
+
+
 def test_readable_secrets_read_as_such():
     text = doctor.format_text(_healthy_report())
-    assert "Secrets  readable by uid 1000" in text
+    assert "Secrets  readable by uid 1000, its directories writable" in text
 
 
-def test_secrets_the_image_cannot_read_are_flagged_but_ok():
+def _fix_line(text):
+    """The fix the Secrets rows name for what the images cannot use."""
+    fix = text.split("  fix: ", 1)[1].splitlines()[0]
+    return fix.rsplit(" (an image built with", 1)[0]
+
+
+def test_secrets_the_image_cannot_read_are_flagged_but_ok(split_fix):
     report = _healthy_report()
     report.secrets_unreadable = [
         doctor.UnreadableSecret("/srv/m/.runtime/secrets/postgres_password.txt", 1001),
@@ -952,13 +1008,63 @@ def test_secrets_the_image_cannot_read_are_flagged_but_ok():
     assert text.startswith("[OK]")
     assert (
         "Secrets  postgres_password.txt, jwt_secret_key.txt owned by uid 1001, "
-        "unreadable to uid 1000 the published images run as  UNREADABLE · "
-        "sudo chown 1000 /srv/m/.runtime/secrets/*"
+        "unreadable to uid 1000 the published images run as  UNREADABLE\n"
     ) in text
+    assert split_fix(_fix_line(text)) == (
+        [
+            "/srv/m/.runtime/secrets/postgres_password.txt",
+            "/srv/m/.runtime/secrets/jwt_secret_key.txt",
+        ],
+        [],
+    )
     assert report.to_dict()["secrets_unreadable"] == [
         {"path": "/srv/m/.runtime/secrets/postgres_password.txt", "owner_uid": 1001},
         {"path": "/srv/m/.runtime/secrets/jwt_secret_key.txt", "owner_uid": 1001},
     ]
+
+
+def test_directories_the_image_cannot_write_to_share_the_secrets_fix(split_fix):
+    # A home path with a space: the one fix still splits into exactly the
+    # paths found, the filestore's recursive, and never the Postgres data.
+    home = "/srv/my home"
+    report = _healthy_report()
+    report.secrets_unreadable = [
+        doctor.UnreadableSecret(f"{home}/.runtime/secrets/postgres_password.txt", 1001)
+    ]
+    report.dirs_unwritable = [
+        doctor.UnwritableDir("/data/up loads", 1001, True),
+        doctor.UnwritableDir(f"{home}/.runtime/env/default/logs", 1001, False),
+        doctor.UnwritableDir(f"{home}/.runtime/database/backups/prod", 1001, False),
+    ]
+    assert report.ok is True and report.exit_code == 0
+    text = doctor.format_text(report)
+    assert (
+        f"/data/up loads, {home}/.runtime/env/default/logs, "
+        f"{home}/.runtime/database/backups/prod owned by uid 1001, not writable "
+        "by uid 1000 the published images run as  UNWRITABLE"
+    ) in text
+    plain, recursive = split_fix(_fix_line(text))
+    assert plain == [
+        f"{home}/.runtime/secrets/postgres_password.txt",
+        f"{home}/.runtime/env/default/logs",
+        f"{home}/.runtime/database/backups/prod",
+    ]
+    assert recursive == ["/data/up loads"]
+    assert text.count("fix: ") == 1
+    assert report.to_dict()["dirs_unwritable"][0] == {
+        "path": "/data/up loads",
+        "owner_uid": 1001,
+        "recursive": True,
+    }
+
+
+def test_directories_alone_are_flagged_with_their_fix(split_fix):
+    report = _healthy_report()
+    report.dirs_unwritable = [doctor.UnwritableDir("/m/logs", 1001, False)]
+    text = doctor.format_text(report)
+    assert "UNREADABLE" not in text
+    assert "Secrets  /m/logs owned by uid 1001" in text
+    assert split_fix(_fix_line(text)) == (["/m/logs"], [])
 
 
 def test_a_unit_missing_its_script_is_attention():
@@ -1096,7 +1202,8 @@ def test_format_text_says_when_the_secrets_were_not_checked():
     text = doctor.format_text(report)
     assert text.startswith("[OK]")
     assert (
-        "Secrets  readable by uid 1000 · modes not checked (no secrets directory)"
+        "Secrets  readable by uid 1000, its directories writable · modes not "
+        "checked (no secrets directory)"
     ) in text
 
 
@@ -1160,6 +1267,23 @@ def test_doctor_command_reads_the_disk_check_history(
     assert filestore == Path(prod_main.runtime.meta.filestore)
     assert seen["secrets_dir"] == mascope_home / ".runtime" / "secrets"
     assert seen["backend_container"] == dict(seen["container_specs"])["backend"]
+
+
+def test_doctor_command_checks_the_running_envs_directories(monkeypatch, cli_runner):
+    # The directories the images write to are the stack's env's and its
+    # filestore wherever that is, as compose mounts them.
+    seen = {}
+
+    def fake_build_report(**kwargs):
+        seen.update(kwargs)
+        return _healthy_report()
+
+    monkeypatch.setattr(prod_main.prod_doctor, "build_report", fake_build_report)
+    monkeypatch.setattr(prod_main.runtime.env, "name", "site1")
+    cli_runner.invoke(prod_main.prod_app, ["doctor"])
+    assert seen["env_name"] == "site1"
+    assert seen["filestore"] == Path(prod_main.runtime.meta.filestore)
+    assert seen["filestore"].parent.name == "site1"
 
 
 def test_doctor_command_json(monkeypatch, cli_runner):

@@ -917,7 +917,8 @@ def _ensure_secrets(env_vars: dict[str, str]) -> Optional[str]:
     writes them (see `create_secret`); so is a placeholder the operator later
     writes a secret into, and the others are left at the umask (see
     `create_placeholder`). Last, it warns, without refusing to start, when the
-    image could not read the secrets (see `secrets_unreadable_by_image`).
+    image could not read the secrets or write to the directories it writes to
+    (see `secrets_unreadable_by_image` and `dirs_unwritable_by_image`).
 
     :param env_vars: The compose environment (`_compose_env`), with which the
         compose file in use is read.
@@ -931,7 +932,8 @@ def _ensure_secrets(env_vars: dict[str, str]) -> Optional[str]:
         PLACEHOLDER_SECRETS,
         create_placeholder,
         create_secret,
-        secrets_owner_warning,
+        dirs_unwritable_by_image,
+        image_owner_warning,
         secrets_unreadable_by_image,
     )
 
@@ -957,8 +959,11 @@ def _ensure_secrets(env_vars: dict[str, str]) -> Optional[str]:
                 continue
             missing.append(secret)
     unreadable = secrets_unreadable_by_image(secrets_dir)
-    if unreadable:
-        runtime.logger.warning(secrets_owner_warning(secrets_dir, unreadable))
+    unwritable = dirs_unwritable_by_image(
+        Path(runtime.path()), runtime.env.name, Path(runtime.meta.filestore)
+    )
+    if unreadable or unwritable:
+        runtime.logger.warning(image_owner_warning(secrets_dir, unreadable, unwritable))
     return _missing_secrets_message(missing) if missing else None
 
 
@@ -1977,6 +1982,8 @@ def doctor(
         backend_container=container_specs[0][1],
         disk_history=Path(mascope_path) / prod_doctor.DISK_HISTORY,
         min_days_to_floor=prod_doctor.min_days_to_floor(),
+        env_name=runtime.env.name,
+        filestore=Path(runtime.meta.filestore),
     )
 
     if as_json:
