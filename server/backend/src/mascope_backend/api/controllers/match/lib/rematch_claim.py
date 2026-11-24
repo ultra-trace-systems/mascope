@@ -80,11 +80,20 @@ async def rematch_claim(sample_batch_id: str) -> AsyncIterator[bool]:
 
 async def _release(session, sample_batch_id: str, acquired: bool) -> None:
     """Unlock the claim when it was taken, and close the session whatever
-    the unlock does."""
+    the unlock does.
+
+    An unlock that raises may leave the lock held on the connection, and the
+    pool's reset is a rollback, which does not release a session-level lock:
+    closing alone would pool a connection that keeps the batch claimed. So
+    the connection is invalidated first, and Postgres drops the lock with it.
+    """
     try:
         if acquired:
             await session.execute(
                 select(func.pg_advisory_unlock(*_key(sample_batch_id)))
             )
+    except BaseException:
+        await session.invalidate()
+        raise
     finally:
         await session.close()
