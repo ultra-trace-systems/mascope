@@ -625,8 +625,12 @@ model at two points.
   won the peak, and how many formulas its evidence could not separate, stay as the
   first model ranked them, as the search's ranking does.
   Otherwise the run stays at the first. Either way a row's
-  fit score and its *mass z* are read at the same centre and width. A run whose readings
-  are too few to fit the second model scores and caps at the first.
+  fit score and its *mass z* are read at the same centre and width. Where the centre
+  follows the mass range, the width at a row's m/z is never under 0.03 mDa: below the
+  lowest mass the centre was fitted on, it is held there and may be wrong by an amount
+  nothing measured. On an Orbitrap that widens it below about m/z 50 only, and the fit
+  score reads the same width there as the *mass z*. A run whose readings are too few to
+  fit the second model scores and caps at the first.
 
 The run records its model once, with the version it scored and capped at
 (`measurement_model` in the run's configuration). A formula measured on its own - a

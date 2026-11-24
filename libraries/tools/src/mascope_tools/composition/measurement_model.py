@@ -49,10 +49,10 @@ from mascope_tools.composition.mass_accuracy import (
     MU_SOURCE_FITTED,
     MU_SOURCE_NONE,
     MU_SOURCE_REAGENT,
+    PRED_SIGMA_PPM,
     MassTrend,
     ReagentOffset,
     SampleMassAccuracy,
-    trend_width_floor_ppm,
     unwiden_sigma_ppm,
     widen_sigma_ppm,
 )
@@ -321,6 +321,39 @@ class MeasurementModel:
         trended = self.trend.intercept_ppm + self.trend.offset_mda * 1000.0 / held
         return np.where(known, trended, constant)
 
+    def widths_ppm(self, mz: Iterable[float] | np.ndarray) -> np.ndarray | None:
+        """:attr:`width_ppm` at each m/z, as :meth:`z_of` reads a row there.
+
+        Where the centre follows a trend, the width at an m/z is floored by
+        the trend's absolute floor there (``mass_accuracy.trend_width_floor_ppm``):
+        below the lowest commit the centre is held and may be wrong by an
+        amount nothing measured. A NaN or non-positive m/z is read as unknown
+        and keeps the width, as :meth:`centres_ppm` keeps the constant centre.
+
+        :return: One width per m/z; None where there is no width
+            (:attr:`width_ppm`).
+        """
+        width = self.width_ppm
+        if width is None:
+            return None
+        values = np.asarray(mz, dtype=float)
+        widths = np.full(values.shape, float(width))
+        if self.trend is None:
+            return widths
+        known = np.isfinite(values) & (values > 0)
+        floor = MASS_TREND_ABS_FLOOR_MDA * 1000.0 / np.where(known, values, 1.0)
+        return np.where(known, np.maximum(widths, floor), widths)
+
+    def fit_sigmas_ppm(self, mz: Iterable[float] | np.ndarray) -> np.ndarray | None:
+        """:meth:`widths_ppm` as a fit score that widens its width itself
+        takes them, as :attr:`fit_sigma_ppm` is :attr:`width_ppm`: each with
+        the prediction's spread taken back off, so the score widens it to the
+        width at its line's m/z exactly."""
+        widths = self.widths_ppm(mz)
+        if widths is None:
+            return None
+        return np.sqrt(np.maximum(widths**2 - PRED_SIGMA_PPM**2, 0.0))
+
     def max_abs_centre_ppm(self) -> float:
         """The farthest the centre sits from zero anywhere: the constant
         centre's distance, or the trend's at either end of its coverage. What
@@ -337,12 +370,10 @@ class MeasurementModel:
         """Where a mass error sits in the model, in widths.
 
         Measured from the centre at the row's m/z (:meth:`centre_ppm`), in
-        :attr:`width_ppm`: the same centre and width its fit score was
-        computed at. Where the centre follows a trend, the width is floored by
-        the trend's absolute floor at that m/z
-        (``mass_accuracy.trend_width_floor_ppm``): below the lowest commit the
-        centre is held and may be wrong by an amount nothing measured. The
-        floor passes the width only below about m/z 50 on an Orbitrap.
+        the width at that m/z (:meth:`widths_ppm`): the same centre and width
+        its fit score was computed at. Where the centre follows a trend, the
+        width is floored by the trend's absolute floor at that m/z; the floor
+        passes the width only below about m/z 50 on an Orbitrap.
 
         :return: The distance; None where the model is not the sample's own
             (:attr:`measured`) or the error is unknown.
@@ -353,8 +384,8 @@ class MeasurementModel:
         width = self.width_ppm
         if not np.isfinite(error) or width is None:
             return None
-        if self.trend is not None and mz is not None:
-            width = max(width, trend_width_floor_ppm(mz))
+        if mz is not None:
+            width = float(self.widths_ppm([mz])[0])
         return (error - self.centre_ppm(mz)) / width
 
     # -- the refit --------------------------------------------------------------

@@ -1,5 +1,7 @@
 """The measurement model a run scores and caps at (``measurement_model``)."""
 
+import dataclasses
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -172,6 +174,53 @@ class TestDistance:
         assert model.z_of(1.0, mz) == pytest.approx(
             (1.0 - model.centre_ppm(mz)) / trend_width_floor_ppm(mz)
         )
+
+    def test_widths_are_the_widths_z_of_reads(self):
+        model = refit(trend=TREND)
+        mz = np.array([30.0, 40.0, 61.0, 150.0, 900.0])
+        widths = model.widths_ppm(mz)
+        assert widths == pytest.approx(
+            [(1.0 - model.centre_ppm(m)) / model.z_of(1.0, m) for m in mz]
+        )
+        # The floor passes the width at low m/z only.
+        assert widths[0] == pytest.approx(trend_width_floor_ppm(30.0))
+        assert widths[-1] == pytest.approx(model.width_ppm)
+
+    def test_an_unknown_mz_keeps_the_width(self):
+        model = refit(trend=TREND)
+        assert model.widths_ppm([np.nan, 0.0, -5.0]) == pytest.approx(
+            [model.width_ppm] * 3
+        )
+        assert model.z_of(1.0, 0.0) == pytest.approx(
+            (1.0 - model.centre_ppm(0.0)) / model.width_ppm
+        )
+
+    def test_no_trend_no_floor(self):
+        model = refit()
+        assert model.widths_ppm([30.0, 400.0]) == pytest.approx([model.width_ppm] * 2)
+        assert model.z_of(1.0, 30.0) == pytest.approx(
+            (1.0 - model.scoring_mu_ppm) / model.width_ppm
+        )
+
+    def test_fit_sigmas_widen_back_to_the_widths(self):
+        model = refit(trend=TREND)
+        mz = np.array([30.0, 150.0])
+        sigmas = model.fit_sigmas_ppm(mz)
+        assert [widen_sigma_ppm(s) for s in sigmas] == pytest.approx(
+            list(model.widths_ppm(mz))
+        )
+        assert sigmas[1] == pytest.approx(model.fit_sigma_ppm)
+
+    def test_no_width_no_widths(self):
+        model = dataclasses.replace(
+            refit(trend=TREND),
+            sigma_ppm=None,
+            fallback_sigma_ppm=None,
+            width_floor_ppm=None,
+        )
+        assert model.width_ppm is None
+        assert model.widths_ppm([30.0]) is None
+        assert model.fit_sigmas_ppm([30.0]) is None
 
 
 class TestRefitAdopts:

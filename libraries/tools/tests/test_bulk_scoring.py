@@ -162,6 +162,34 @@ class TestManyEnvelopesScoreAsEachDoesAlone:
         assert together == pytest.approx(alone, abs=ROUNDING, rel=0)
         assert together[0] == 0.0 and together[1] == 0.0
 
+    @pytest.mark.parametrize("with_snr", [True, False], ids=["snr", "no snr"])
+    def test_one_width_per_line(self, with_snr):
+        # A sample whose width follows m/z gives each line its own width; an
+        # envelope scores as alone at its lines' width.
+        rng = np.random.default_rng(5)
+        envelopes = [
+            _random_envelope(rng, int(rng.integers(1, 30))) for _ in range(200)
+        ]
+        widths = rng.uniform(0.3, 5.0, len(envelopes))
+
+        alone = [
+            score_pattern_v2(
+                me, oi, snr if with_snr else None, pr, sigma_ppm=width, k_detect=3.0
+            )
+            for (me, oi, snr, pr), width in zip(envelopes, widths)
+        ]
+        offsets = np.concatenate([[0], np.cumsum([len(e[3]) for e in envelopes])])
+        together = score_patterns_v2(
+            *(np.concatenate([e[part] for e in envelopes]) for part in (0, 1)),
+            np.concatenate([e[2] for e in envelopes]) if with_snr else None,
+            np.concatenate([e[3] for e in envelopes]),
+            offsets,
+            sigma_ppm=np.repeat(widths, np.diff(offsets)),
+            k_detect=3.0,
+        )
+
+        assert together == pytest.approx(alone, abs=ROUNDING, rel=0)
+
     def test_an_empty_envelope_scores_zero_among_the_others(self):
         me, oi, snr, pr = _random_envelope(np.random.default_rng(1), 6)
         oi[0] = 1e5

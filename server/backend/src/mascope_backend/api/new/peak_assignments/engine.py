@@ -1092,10 +1092,11 @@ def score_frame_at(scored_df: pd.DataFrame, model: MeasurementModel) -> pd.Serie
 
     Every ion at once, the fit ``ion_score_v2`` gives each one alone: each
     line's mass error read from the model's centre at the line's predicted
-    m/z, in the model's width (``MeasurementModel.fit_sigma_ppm``, which the
-    fit widens back to ``MeasurementModel.width_ppm``), and its share at the
-    model's tolerance. The mass gate reads a row's distance from the same
-    centre in the same width (``MeasurementModel.z_of``).
+    m/z, in the model's width at that m/z (``MeasurementModel.fit_sigmas_ppm``,
+    which the fit widens back to ``MeasurementModel.widths_ppm``: floored by a
+    trend's absolute floor below its coverage), and its share at the model's
+    tolerance. The mass gate reads a row's distance from the same centre in
+    the same width (``MeasurementModel.z_of``).
 
     :param scored_df: A gated frame, an isotopologue the gate turned away
         already at zero intensity (:func:`score_ions_by_fit`).
@@ -1105,16 +1106,17 @@ def score_frame_at(scored_df: pd.DataFrame, model: MeasurementModel) -> pd.Serie
     if scored_df.empty:
         return pd.Series(dtype=float, index=scored_df.index)
     mz_column = "mz" if "mz" in scored_df.columns else "sample_peak_mz"
-    centres = (
-        model.centres_ppm(pd.to_numeric(scored_df[mz_column], errors="coerce"))
+    # Only a trend makes the centre and the width depend on the line's m/z.
+    mz = (
+        pd.to_numeric(scored_df[mz_column], errors="coerce").to_numpy(float)
         if model.trend is not None and mz_column in scored_df.columns
-        else model.scoring_mu_ppm
+        else None
     )
     return ion_scores_v2(
         scored_df,
         "target_ion_id",
-        sigma_ppm=model.fit_sigma_ppm,
-        mu=centres,
+        sigma_ppm=model.fit_sigma_ppm if mz is None else model.fit_sigmas_ppm(mz),
+        mu=model.scoring_mu_ppm if mz is None else model.centres_ppm(mz),
         tolerance=model.envelope_tolerance,
     )
 

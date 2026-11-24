@@ -9,6 +9,8 @@ distance at the same model. So a row's fit score and its ``mass_z`` are read
 at one centre and one width, whichever version the run ends at.
 """
 
+import math
+
 import pandas as pd
 import pytest
 
@@ -954,3 +956,68 @@ def test_a_frame_is_scored_at_the_centre_its_model_reads_at_each_line():
     assert at_trend.min() > 0.95
     low = frame["target_ion_id"] == "ion-0"
     assert at_constant[low].iloc[0] < at_trend[low].iloc[0] - 0.1
+
+
+def _trend_model() -> MeasurementModel:
+    """A run whose centre follows a 1/mz trend fitted over m/z 100-400."""
+    from mascope_tools.composition.mass_accuracy import MassTrend
+
+    trend = MassTrend(
+        intercept_ppm=0.0,
+        offset_mda=-0.3,
+        sigma_ppm=0.1,
+        points=40,
+        mz_lo=100.0,
+        mz_hi=400.0,
+    )
+    return V1.v2(mu_ppm=0.0, sigma_ppm=0.1, commits=40, source_lines=0, trend=trend)
+
+
+def _lone_line(ion: str, mz: float, error_ppm: float, rel: float = 1.0) -> dict:
+    return {
+        "target_ion_id": ion,
+        "relative_abundance": rel,
+        "mz": mz,
+        "match_mz_error": error_ppm,
+        "sample_peak_intensity": 1e6 * rel,
+    }
+
+
+@pytest.mark.parametrize("widths", [0.5, 1.0, 1.5])
+def test_a_line_below_the_trends_coverage_scores_at_the_width_it_is_capped_at(
+    widths,
+):
+    # Below the lowest commit the trend's absolute floor passes the model's
+    # width, and the mass gate reads the row's distance in the floored width
+    # (``z_of``). A lone line's fit is its mass term, exp(-z^2 / 2): it is
+    # scored at that same distance, not at the model's one width.
+    model = _trend_model()
+    mz = 30.0
+    width = float(model.widths_ppm([mz])[0])
+    assert width > model.width_ppm  # the premise: the floor passes the width
+    error = model.centre_ppm(mz) + widths * width
+    frame = pd.DataFrame([_lone_line("ion-0", mz, error)])
+
+    fit = score_frame_at(frame, model).iloc[0]
+
+    assert model.z_of(error, mz) == pytest.approx(widths)
+    assert fit == pytest.approx(math.exp(-0.5 * widths**2))
+
+
+def test_each_line_is_scored_at_the_width_at_its_own_mz():
+    # Two ions, one below the trend's coverage and one inside it, their lines
+    # listed out of order: each scores in the frame as it does alone.
+    model = _trend_model()
+    lines = [
+        _lone_line("high", 301.0, 0.4, rel=0.3),
+        _lone_line("low", 31.0, -4.0, rel=0.3),
+        _lone_line("high", 300.0, 0.2),
+        _lone_line("low", 30.0, -3.5),
+    ]
+    frame = pd.DataFrame(lines)
+
+    together = score_frame_at(frame, model)
+
+    for ion in ("high", "low"):
+        alone = score_frame_at(frame[frame["target_ion_id"] == ion], model)
+        assert together[alone.index].to_list() == pytest.approx(alone.to_list())

@@ -41,7 +41,7 @@ from mascope_tools.composition.heuristic_filter import (
     score_pattern_v2,
     score_patterns_v2,
 )
-from mascope_tools.composition.mass_accuracy import widen_sigma_ppm
+from mascope_tools.composition.mass_accuracy import PRED_SIGMA_PPM, widen_sigma_ppm
 
 
 def match_score_version() -> int:
@@ -170,7 +170,7 @@ def ion_scores_v2(
     frame: pd.DataFrame,
     by: str,
     *,
-    sigma_ppm: float | None = None,
+    sigma_ppm: float | np.ndarray | None = None,
     mu: float | np.ndarray | None = 0.0,
     tolerance: EnvelopeTolerance | None = None,
 ) -> pd.Series:
@@ -193,7 +193,10 @@ def ion_scores_v2(
         number of ions.
     :param by: The column naming each row's ion. A missing value is an ion of
         its own, as ``groupby(dropna=False)`` makes it.
-    :param sigma_ppm: As :func:`ion_score_v2`.
+    :param sigma_ppm: As :func:`ion_score_v2`; or one width per row of the
+        frame, in its order, for a sample whose width follows m/z
+        (``MeasurementModel.fit_sigmas_ppm`` at each row's m/z). Each is
+        widened as the one width is.
     :param mu: As :func:`ion_score_v2`; or one centre per row of the frame, in
         its order, for a sample whose centre follows m/z
         (``MeasurementModel.centres_ppm`` at each row's m/z).
@@ -261,7 +264,13 @@ def ion_scores_v2(
     n_scans, n_scans_total = _scan_counts(frame)
     if n_scans is not None:
         n_scans, n_scans_total = n_scans[order], n_scans_total[order]
-    sig = widen_sigma_ppm(sigma_ppm) if sigma_ppm is not None else None
+    sig = None if sigma_ppm is None else np.asarray(sigma_ppm, dtype=float)
+    if sig is not None:
+        sig = (
+            widen_sigma_ppm(float(sig))
+            if sig.ndim == 0
+            else np.hypot(np.broadcast_to(sig, (len(frame),))[order], PRED_SIGMA_PPM)
+        )
     scores = score_patterns_v2(
         me,
         oi,

@@ -2332,7 +2332,7 @@ def score_patterns_v2(
     *,
     k_detect: float = DETECT_SNR_K,
     miss_penalty: float = 0.3,
-    sigma_ppm: float | None = None,
+    sigma_ppm: float | np.ndarray | None = None,
     rel_detect_no_snr: float = REL_DETECT_NO_SNR,
     tolerance: EnvelopeTolerance | None = None,
     n_scans: np.ndarray | None = None,
@@ -2356,9 +2356,8 @@ def score_patterns_v2(
         as the one-envelope function scores it.
     :param tolerance: As :func:`score_pattern_v2`, one for every envelope: it
         is the sample's.
-    :param n_scans: As :func:`score_pattern_v2`, laid out as the lines are.
-    :param n_scans_total: As :func:`score_pattern_v2`, laid out as the lines
-        are.
+    :param sigma_ppm: As :func:`score_pattern_v2`, or one per line. It, ``n_scans``
+        and ``n_scans_total`` are as there, laid out as the lines are.
     :raises ValueError: if the arrays do not all have one entry per line, or
         the offsets do not end where they do.
     :return: One score per envelope.
