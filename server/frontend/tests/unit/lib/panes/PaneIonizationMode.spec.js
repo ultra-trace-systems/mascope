@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import { h, inject, provide } from 'vue'
 
 import PaneIonizationMode from '@/lib/panes/PaneIonizationMode.vue'
 
@@ -13,7 +14,9 @@ import PaneIonizationMode from '@/lib/panes/PaneIonizationMode.vue'
 
 const store = vi.hoisted(() => ({
   modes: [],
-  create: null
+  create: null,
+  confirm: null,
+  role: 100
 }))
 
 vi.mock('@/stores', async () => {
@@ -23,7 +26,7 @@ vi.mock('@/stores', async () => {
   store.create = vi.fn()
   return {
     useApp: () => ({
-      auth: { user: { role_id: 100 } },
+      auth: { user: { role_id: store.role } },
       data: {
         instrument: { list: [] },
         target: { collection: { list: [] } },
@@ -35,7 +38,11 @@ vi.mock('@/stores', async () => {
     })
   }
 })
-vi.mock('primevue/useconfirm', () => ({ useConfirm: () => ({ require: vi.fn() }) }))
+vi.mock('primevue/useconfirm', async () => {
+  const { vi } = await import('vitest')
+  store.confirm = vi.fn()
+  return { useConfirm: () => ({ require: store.confirm }) }
+})
 
 const recording = (name) => ({
   props: ['modelValue', 'options', 'placeholder', 'id', 'showClear', 'disabled'],
@@ -119,5 +126,112 @@ describe('PaneIonizationMode create form', () => {
     await create.vm.$emit('click')
     await flushPromises()
     expect(nameField(wrapper).props('modelValue')).toBe('')
+  })
+})
+
+describe('PaneIonizationMode edit confirmation', () => {
+  // The table's rows render here, so a row's edit and save buttons can be
+  // pressed: each row provides itself, and each column renders its body for
+  // that row.
+  const RowScope = {
+    props: ['row'],
+    setup(props, { slots }) {
+      provide('row', props.row)
+      return () => slots.default?.()
+    }
+  }
+  const tableStubs = {
+    ...stubs,
+    DataTable: {
+      props: ['value'],
+      setup(props, { slots }) {
+        return () =>
+          h(
+            'div',
+            props.value.map((row) => h(RowScope, { row }, () => slots.default?.()))
+          )
+      }
+    },
+    Column: {
+      inheritAttrs: false,
+      setup(_, { slots }) {
+        const row = inject('row')
+        return () => slots.body?.({ data: row })
+      }
+    },
+    Button: {
+      name: 'Button',
+      props: ['label', 'disabled', 'icon'],
+      emits: ['click'],
+      template: '<button />'
+    }
+  }
+  const mode = {
+    ionization_mode_id: 'v1',
+    ionization_mode_name: 'Nitrate',
+    ionization_mode_token: 'NO3',
+    ionization_mode_polarity: '-',
+    ionization_mechanism_ids: ['m1'],
+    calibration_collection_id: 'cal',
+    diagnostic_collection_id: 'diag',
+    version: 1
+  }
+  const button = (wrapper, icon) =>
+    wrapper.findAllComponents({ name: 'Button' }).find((b) => b.props('icon') === icon)
+  const field = (wrapper, stub, id) =>
+    wrapper.findAllComponents(stub).find((input) => input.attributes('data-id') === id)
+
+  const confirmed = async (edit) => {
+    store.confirm.mockClear()
+    store.role = 300
+    store.modes.push({ ...mode })
+    const wrapper = mount(PaneIonizationMode, {
+      global: { stubs: tableStubs, directives: { tooltip: {} } }
+    })
+    await flushPromises()
+    await button(wrapper, 'pi pi-pencil').vm.$emit('click')
+    await flushPromises()
+    await edit(wrapper)
+    await flushPromises()
+    await button(wrapper, 'pi pi-check').vm.$emit('click')
+    await flushPromises()
+    store.modes.splice(0, store.modes.length)
+    store.role = 100
+    expect(store.confirm).toHaveBeenCalledTimes(1)
+    return store.confirm.mock.calls[0][0].message
+  }
+
+  it('tells a diagnostic-only edit that analysis batches keep their status', async () => {
+    const message = await confirmed((wrapper) =>
+      field(wrapper, tableStubs.Select, 'edit-diagnostic').vm.$emit('update:modelValue', 'other')
+    )
+    expect(message).toContain('Changing the diagnostic collection makes version 2')
+    expect(message).toContain('Daily acquisition batches')
+    expect(message).toContain('Analysis batches keep their status')
+    expect(message).not.toContain('mechanisms')
+  })
+
+  it('tells a mechanisms edit that every batch is flagged for re-matching', async () => {
+    const message = await confirmed((wrapper) =>
+      wrapper
+        .findAllComponents(tableStubs.MultiSelect)
+        .find((input) => input.attributes('data-placeholder') === 'Select mechanisms')
+        .vm.$emit('update:modelValue', ['m1', 'm2'])
+    )
+    expect(message).toContain('Changing the ionization mechanisms makes version 2')
+    expect(message).toContain('Batches containing them will be flagged for re-matching')
+    expect(message).not.toContain('Analysis batches')
+  })
+
+  it('tells a mechanisms and diagnostic edit that every batch is flagged', async () => {
+    const message = await confirmed(async (wrapper) => {
+      wrapper
+        .findAllComponents(tableStubs.MultiSelect)
+        .find((input) => input.attributes('data-placeholder') === 'Select mechanisms')
+        .vm.$emit('update:modelValue', ['m1', 'm2'])
+      field(wrapper, tableStubs.Select, 'edit-diagnostic').vm.$emit('update:modelValue', 'other')
+    })
+    expect(message).toContain('Changing the ionization mechanisms')
+    expect(message).not.toContain('Analysis batches')
   })
 })
