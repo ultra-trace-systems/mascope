@@ -1,7 +1,10 @@
+from fastapi import HTTPException, status
 from sqlalchemy import (
+    delete,
     func,
     select,
 )
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
@@ -11,9 +14,58 @@ from mascope_backend.api.models.attribute_templates.attribute_template_pydantic_
     AttributeTemplateSortColumn,
     AttributeTemplateUpdateBody,
 )
-from mascope_backend.db import AttributeTemplate, async_session
+from mascope_backend.api.new.metadata.service import (
+    resolve_template_fields,
+    template_field_keys,
+)
+from mascope_backend.db import AttributeTemplate, AttributeTemplateField, async_session
 from mascope_backend.db.id import gen_id
 from mascope_backend.socket.records.service import emit_record_reload
+
+
+async def _records(session: AsyncSession, templates) -> list[dict]:
+    """The templates as the API returns them, each with the keys of the
+    registry fields it selects, in order, under ``fields``."""
+    keys = await template_field_keys(
+        session, [t.attribute_template_id for t in templates]
+    )
+    return [
+        {**t.to_dict(), "fields": keys.get(t.attribute_template_id, [])}
+        for t in templates
+    ]
+
+
+async def _select_fields(
+    session: AsyncSession, template_id: str, keys: list[str]
+) -> None:
+    """Make the registry fields the template selects these, in this order.
+
+    :raises HTTPException: 422 for an unknown key, or a retired field the
+        template did not already select (``resolve_template_fields``).
+    """
+    kept = set(
+        (
+            await session.execute(
+                select(AttributeTemplateField.metadata_field_id).where(
+                    AttributeTemplateField.attribute_template_id == template_id
+                )
+            )
+        ).scalars()
+    )
+    fields = await resolve_template_fields(session, keys, kept)
+    await session.execute(
+        delete(AttributeTemplateField).where(
+            AttributeTemplateField.attribute_template_id == template_id
+        )
+    )
+    session.add_all(
+        AttributeTemplateField(
+            attribute_template_id=template_id,
+            metadata_field_id=field.metadata_field_id,
+            position=position,
+        )
+        for position, field in enumerate(fields)
+    )
 
 
 @api_controller()
@@ -66,12 +118,13 @@ async def get_attribute_templates(
             stmt = stmt.offset(page * limit).limit(limit)
         result = await session.execute(stmt)
         attribute_templates = result.scalars().all()
+        records = await _records(session, attribute_templates)
 
     # Step 4: Return results
     return {
         "message": "Attribute templates retrieved successfully.",
         "results": total,
-        "data": [template.to_dict() for template in attribute_templates],
+        "data": records,
     }
 
 
@@ -100,10 +153,11 @@ async def get_attribute_template(attribute_template_id: str):
             raise NotFoundException(
                 f"AttributeTemplate with ID '{attribute_template_id}' not found"
             )
+        (record,) = await _records(session, [template])
     # Step 3: Return attribute template details
     return {
         "message": f"Attribute template '{template.name}' retrieved successfully.",
-        "data": template.to_dict(),
+        "data": record,
     }
 
 
@@ -137,10 +191,16 @@ async def create_attribute_template(template_data: AttributeTemplateCreateBody):
             template=template_dicts,
         )
         session.add(new_template)
+        await session.flush()
+        if template_data.fields:
+            await _select_fields(
+                session, new_template.attribute_template_id, template_data.fields
+            )
 
         # Step 3: Commit and refresh
         await session.commit()
         await session.refresh(new_template)
+        (record,) = await _records(session, [new_template])
 
     # Step 4: Emit the event to inform the clients about the new template
     await emit_record_reload(record_type="template")
@@ -148,7 +208,7 @@ async def create_attribute_template(template_data: AttributeTemplateCreateBody):
     # Step 5: Return created template
     return {
         "message": f"Attribute template '{new_template.name}' created successfully.",
-        "data": new_template.to_dict(),
+        "data": record,
     }
 
 
@@ -183,9 +243,22 @@ async def update_attribute_template(
                 f"AttributeTemplate with ID '{attribute_template_id}' not found"
             )
 
-        # Step 2: Update the template's properties with the new data.
-        for key, value in template_data.dict(exclude_unset=True).items():
+        # Step 2: Update the template's properties with the new data. The
+        # registry fields it selects are rows of their own, replaced only when
+        # the body names them.
+        changes = template_data.model_dump(exclude_unset=True)
+        fields = changes.pop("fields", None)
+        for key, value in changes.items():
             setattr(template, key, value)
+        if fields is not None:
+            await _select_fields(session, attribute_template_id, fields)
+        await session.flush()
+        (record,) = await _records(session, [template])
+        if not template.template and not record["fields"]:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Template is empty: it needs a label or a metadata field.",
+            )
 
         # Step 3: Commit the changes to the database.
         await session.commit()
@@ -196,7 +269,7 @@ async def update_attribute_template(
     # Step 5: Return the updated template as a dictionary.
     return {
         "message": f"Attribute template '{template.name}' updated successfully.",
-        "data": template.to_dict(),
+        "data": record,
     }
 
 

@@ -3445,6 +3445,96 @@ class AttributeTemplate(Base):
     template: Mapped[Optional[dict]] = mapped_column(JSON)
 
 
+#: The types a metadata registry field may have. ``enum`` takes one of its
+#: allowed values, ``tags`` any number of them.
+METADATA_FIELD_TYPES = ("text", "number", "datetime", "enum", "tags")
+
+
+class MetadataField(Base):
+    """A typed field of the acquisition metadata registry.
+
+    One registry per deployment of Mascope, not per workspace: a filter across
+    instruments needs "site" to be one field (``docs/dev/
+    sample_filters_and_metadata.md``, section 4.4). ``key`` is the stable name
+    values are stored under, and never changes once made; ``label`` is what a
+    person reads. ``allowed_values`` is the list an ``enum`` field picks from
+    and a ``tags`` field draws on; an empty list on a ``tags`` field leaves its
+    values open, as the shipped ``environment`` field has them until the
+    environment registry fills it.
+
+    ``system`` marks a field Mascope ships: its key, type and allowed values
+    are Mascope's, and it is neither deleted nor retired. A field in use is
+    retired (``retired_utc``) rather than deleted, so the values written under
+    it keep their meaning; a retired field is left out of the forms that offer
+    fields.
+    """
+
+    __tablename__ = "metadata_field"
+
+    metadata_field_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    key: Mapped[str] = mapped_column(String(64), unique=True)
+    label: Mapped[str] = mapped_column(String(128))
+    type: Mapped[str] = mapped_column(String(16))
+    unit: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    allowed_values: Mapped[Optional[list]] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    system: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )
+    created_utc: Mapped[dt] = mapped_column(
+        TIMESTAMP(timezone=True), default=lambda: dt.now(timezone.utc)
+    )
+    modified_utc: Mapped[dt] = mapped_column(
+        TIMESTAMP(timezone=True), default=lambda: dt.now(timezone.utc)
+    )
+    retired_utc: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "type IN (" + ", ".join(f"'{t}'" for t in METADATA_FIELD_TYPES) + ")",
+            name="type_known",
+        ),
+        CheckConstraint(
+            "allowed_values IS NULL OR type IN ('enum', 'tags')",
+            name="allowed_values_for_a_choice",
+        ),
+    )
+
+
+class AttributeTemplateField(Base):
+    """A registry field an attribute template shows, in the order it shows them.
+
+    An attribute template is a named selection of registry fields to show in a
+    form, beside the free-form labels (``AttributeTemplate.template``) that
+    stay batch annotations. The field's foreign key restricts deletion: a field
+    a template selects is in use, and is retired instead.
+    """
+
+    __tablename__ = "attribute_template_field"
+
+    attribute_template_id: Mapped[str] = mapped_column(
+        String(16),
+        ForeignKey(
+            "attribute_template.attribute_template_id",
+            ondelete="CASCADE",
+            # The convention's name passes Postgres' 63 characters.
+            name="fk_attribute_template_field_attribute_template",
+        ),
+        primary_key=True,
+    )
+    metadata_field_id: Mapped[str] = mapped_column(
+        String(16),
+        ForeignKey("metadata_field.metadata_field_id", ondelete="RESTRICT"),
+        primary_key=True,
+        index=True,
+    )
+    position: Mapped[int] = mapped_column(Integer)
+
+
 class InstrumentFunction(Base):
     """Instrument function parameters."""
 
@@ -4241,6 +4331,8 @@ __all__ = [
     "BatchPeakStage",
     "BatchPeakRunAnchor",
     "AttributeTemplate",
+    "AttributeTemplateField",
+    "MetadataField",
     "Instrument",
     "InstrumentFunction",
     "ReferenceSource",
