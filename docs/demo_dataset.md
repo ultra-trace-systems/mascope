@@ -272,6 +272,18 @@ read the batch ledger those runs build then run in CI instead of skipping. A
 sample ingested on that stack is assigned as it arrives. The UI stays the
 demo's: the frontend reads `peak_assignment` under `[meta]`, not the variable.
 
+The e2e job then runs the two specs of the assignment views a second time,
+`inspector-card` and `batch-assign`, which skip on the demo's UI. It recreates
+the frontend container alone with a third file,
+`.github/docker-compose.demo.assignment.yaml`, which publishes the runtime the
+image was built with and `peak_assignment` on
+(`.github/scripts/frontend_runtime.py` derives it). The rest of the stack stays
+as the first run left it. `MASCOPE_E2E_REQUIRE_ASSIGNMENT=1` makes either spec
+fail where it would skip, so a frontend that came up without the views fails
+the step. The bundle ships no assignment runs, so the inspector spec makes its
+own: it copies a demo sample into a scratch workspace, assigns the copy and
+deletes the workspace afterwards.
+
 **The fetch has the last word, not the cache.** `demo_init` runs the same fetch
 either way. It uses a copy that is already there only when every checksum in
 its manifest verifies; with no copy, or one that fails, it downloads the

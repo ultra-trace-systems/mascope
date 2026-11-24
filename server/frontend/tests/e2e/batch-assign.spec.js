@@ -1,4 +1,4 @@
-import { test, expect } from './fixtures'
+import { test, expect, skipUnlessRequired } from './fixtures'
 
 /**
  * Assign batch: on a batch with samples and no batch peaks yet, the empty
@@ -13,7 +13,9 @@ import { test, expect } from './fixtures'
  * The assignment views are the peak-assignment feature's. A stack whose
  * frontend runs with it off (the demo's default, and CI's demo stack, which
  * switches it on for the backend alone) shows no Targets/Assignments switch,
- * and the test skips there.
+ * and the test skips there. CI runs it a second time on a frontend recreated
+ * with the views on (.github/docker-compose.demo.assignment.yaml), with
+ * MASCOPE_E2E_REQUIRE_ASSIGNMENT set: there it fails where it would skip.
  */
 
 /** Two samples of the demo data, from the first batch that has two. */
@@ -70,7 +72,7 @@ test.describe('Assign batch', () => {
       .waitFor({ state: 'visible', timeout: 15_000 })
       .then(() => true)
       .catch(() => false)
-    test.skip(!switchShown, 'The assignment views are off on this stack')
+    skipUnlessRequired(!switchShown, 'The assignment views are off on this stack')
     await modeSwitch.getByText('Assignments').click()
 
     const control = page.getByTestId('assign-status')

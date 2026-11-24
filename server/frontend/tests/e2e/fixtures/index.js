@@ -48,7 +48,21 @@ export const test = base.extend({
       patch: async (path, data) =>
         (await raise(await context.patch(`/api${path}`, { data }), 'PATCH', path)).json(),
       /** DELETE an /api path (used by cleanup hooks). */
-      delete: async (path) => raise(await context.delete(`/api${path}`), 'DELETE', path)
+      delete: async (path) => raise(await context.delete(`/api${path}`), 'DELETE', path),
+      /** Send a request and return `{ status, body }` whatever the status, for
+       *  a test that reads a refusal (a 403, a 409) rather than failing on it. */
+      attempt: async (method, path, data) => {
+        const response = await context.fetch(`/api${path}`, { method, data })
+        const text = await response.text()
+        const parse = () => {
+          try {
+            return text ? JSON.parse(text) : null
+          } catch {
+            return text
+          }
+        }
+        return { status: response.status(), body: parse() }
+      }
     }
 
     await use(api)
@@ -95,6 +109,23 @@ export async function openWorkspace(page, name) {
   await page.reload()
   await page.locator('#instrument-selector').waitFor({ state: 'attached', timeout: 30_000 })
   await page.getByRole('option', { name }).click()
+}
+
+/**
+ * Skip the test, saying why, where `condition` holds: or fail it, with the
+ * same reason, where MASCOPE_E2E_REQUIRE_ASSIGNMENT is set (`env.requireAssignment`).
+ * For the specs that need the assignment views and what they read, which a
+ * stack may lack: skipped on the plain demo stack, required on CI's second
+ * run, which is there to run them.
+ */
+export function skipUnlessRequired(condition, reason) {
+  if (!condition) return
+  if (env.requireAssignment) {
+    throw new Error(
+      `${reason}; MASCOPE_E2E_REQUIRE_ASSIGNMENT is set, so this fails instead of skipping`
+    )
+  }
+  test.skip(true, reason)
 }
 
 export { expect, env }
