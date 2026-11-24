@@ -581,12 +581,25 @@ query against the batch's samples reads it.
 
 **A sample that was never folded** is not waiting and not provisional. The
 status read's `new_samples` holds it too, but the waiting set leaves it
-out. Three ways lead there:
+out. Four ways lead there:
 
 - the ingest peak ceiling skipped it (`peak_assignment_ingest_max_peaks`,
   in `service.auto_assign_sample_peaks`);
 - its fold raised, which that function logs and swallows;
-- it was ingested with `peak_assignment_on_ingest` off.
+- it was ingested with `peak_assignment_on_ingest` off;
+- the engine refuses it: `sample_inputs.ineligible_reason` gives a reason,
+  and `batch_fold._fold_sample_peaks_without_run` logs it and writes
+  nothing. The reason is a blank (`instrument_function_id` is None, as the
+  converter records blanks on ingest) or an m/z calibration that is not
+  verified (ingest records one when a calibration is withheld or fails).
+  Both land in acquisition batches as a matter of course.
+
+The first three can be folded by a person; the fourth cannot. A run of its
+own is refused on the same check (the per-sample route answers 422 with
+`SAMPLE_INELIGIBLE_CODE`), and **Assign batch** with `fold="always"` skips
+it again in `backfill_sample_batch_peaks`. So the design names the two
+kinds apart: **not folded** (the first three) and **refused** (the
+fourth).
 
 A pass does not fold it either: `fold="auto"` folds only on
 `batch_stages.fold_reasons`, which looks at the batch, never at a sample
@@ -599,9 +612,20 @@ the two apart:
   batch** does not today: the ceiling skipped it on purpose, a fold that
   raised would likely raise again in the pass, and with ingest off the
   trigger is off (8.3);
-- it carries words of its own, before and after a pass: *Not folded on
-  arrival* (8.6), with the two ways to fold it a person has today: a run of
-  its own, or **Assign batch** with every sample folded (`fold="always"`).
+- it carries words of its own, before and after a pass (8.6). A sample not
+  folded reads *Not folded on arrival*, with the two ways to fold it a
+  person has today: a run of its own, or **Assign batch** with every sample
+  folded (`fold="always"`). A refused sample reads its reason and no remedy
+  that would not work: *Blank sample: no peaks to assign*, or *m/z
+  calibration not verified: recalibrate the sample, or accept its fit, to
+  assign it*. Once its
+  calibration is verified (a recalibration, or an operator's acceptance
+  of a fit under `quality_gate: "enforce"`) it is an ordinary not-folded sample, and the two
+  ways reach it;
+- the batch's *N not folded* counts the not-folded samples only, the ones
+  a person can act on. Refused samples are left out of every count: a blank
+  is expected in an acquisition batch, and its own sample says why it has
+  no rows.
 
 What its rows carry, against what the batch will say after the pass:
 
@@ -773,10 +797,17 @@ site, which only a prod job can read.
   own, or **Assign batch** with every sample folded. It says the same after
   a pass, which does not fold it. Served as `folded: false` beside
   `provisional`.
+- **On a refused sample** (8.2: a blank, or an m/z calibration not
+  verified): its reason in place of the provisional line, *Blank sample: no
+  peaks to assign* or *m/z calibration not verified: recalibrate the
+  sample, or accept its fit, to assign it*, and neither way to fold it. Served as `folded: false` with
+  `refused` set to the reason `ineligible_reason` gives, read on the status
+  read, not stored.
 - **On the batch** (the batch assignment status of MAS-1015,
   `BatchAssignControl.vue` and `stores/batchAssign.js`): *5 samples waiting
   for the batch stages · next pass after 5*, or *by 14:30*, and *2 not
-  folded* where the batch has samples that were never folded, beside **Update
+  folded* where the batch has samples a person can fold (refused samples
+  are not counted), beside **Update
   assignment**, which runs the pass now. While a pass started on its own
   runs: *Assigning on its own · 5 samples arrived*, in place of *Another user
   is assigning this batch*. When the trigger holds after a failed pass: *Held
@@ -810,6 +841,12 @@ site, which only a prod job can read.
   purpose. The sample is not folded (8.2): it does not count, it does not
   hold the trigger, the pass does not fold it, and it reads *Not folded on
   arrival* until a person folds it.
+- **The engine refuses a sample** (a blank, or an m/z calibration not
+  verified; `sample_inputs.ineligible_reason`). Neither the fold, nor a run
+  of its own, nor `fold="always"` writes its rows. It is never folded and
+  never counted (8.2); it reads its reason with no remedy, or, for the
+  calibration, that a recalibration or an accepted fit lets the sample be
+  assigned.
 - **A restart between a fold and its pass.** Nothing is lost: the count, the
   timer's start and the quiet period are read from the database (8.3), and
   the first sweep after the start finds the batch due. A pass interrupted by
