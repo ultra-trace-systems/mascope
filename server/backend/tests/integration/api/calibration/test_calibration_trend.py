@@ -19,7 +19,7 @@ from urllib.parse import quote
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete
+from sqlalchemy import delete, event, text
 
 from mascope_backend.api.controllers.calibration import calibration_trend
 from mascope_backend.api.models.dataset.config import acquisition_workspace_name
@@ -1250,3 +1250,286 @@ async def test_a_change_is_placed_when_its_version_was_fitted(
     ]
     assert bins["changes"] == files["changes"]
     assert bins["collections"] == files["collections"]
+
+
+# --- The look back is read off the collection indexes (MAS-949) ---
+
+#: Clear of every other test's files, so a look back from here reads these.
+_H0 = datetime(2032, 1, 1, tzinfo=timezone.utc)
+_HISTORY = 400
+_POSITIVE = 5
+_V3 = "c" * 64
+
+
+@pytest_asyncio.fixture
+async def history(async_session_factory):
+    """Two TOF instruments with a history of negative files: one whose files
+    are fitted with one collection, its first version and then its second,
+    and one whose files name no collection, fitted before records did. The
+    first also has a few positive files, which name none. ANALYZEd, so the
+    planner prices the looks on the rows as they are."""
+    named, unnamed = (f"trend-history-{gen_id(6).lower()}" for _ in range(2))
+    collection_id = gen_id(16)
+    unnamed_record = _record(None, None)
+    del unnamed_record["quality"]["collection"]
+    async with async_session_factory() as session:
+        for i in range(_HISTORY):
+            at = _H0 + timedelta(hours=i)
+            sha = _V1 if i < _HISTORY // 2 else _V2
+            for name, record in (
+                (named, _record(collection_id, sha)),
+                (unnamed, unnamed_record),
+            ):
+                session.add(
+                    SampleFile(
+                        sample_file_id=gen_id(16),
+                        filename=f"{name}_{i}.h5",
+                        instrument=name,
+                        instrument_type="tof",
+                        datetime=at.replace(tzinfo=None),
+                        datetime_utc=at,
+                        length=60.0,
+                        range=[10.0, 600.0],
+                        polarity="-",
+                        mz_calibration=copy.deepcopy(record),
+                    )
+                )
+        for i in range(_POSITIVE):
+            at = _H0 + timedelta(hours=i, minutes=30)
+            session.add(
+                SampleFile(
+                    sample_file_id=gen_id(16),
+                    filename=f"{named}_pos_{i}.h5",
+                    instrument=named,
+                    instrument_type="tof",
+                    datetime=at.replace(tzinfo=None),
+                    datetime_utc=at,
+                    length=60.0,
+                    range=[10.0, 600.0],
+                    polarity="+",
+                    mz_calibration=copy.deepcopy(unnamed_record),
+                )
+            )
+        await session.commit()
+        # Statistics are written in the transaction: committed, or lost.
+        await session.execute(text("ANALYZE sample_file"))
+        await session.commit()
+    yield {
+        "named": named,
+        "unnamed": unnamed,
+        "collection": collection_id,
+        "start": _H0 + timedelta(hours=_HISTORY),
+    }
+    async with async_session_factory() as session:
+        await session.execute(
+            delete(SampleFile).where(SampleFile.instrument.in_([named, unnamed]))
+        )
+        await session.commit()
+
+
+async def _looks(
+    async_engine, async_session_factory, instrument, start, versions, polarity="-"
+):
+    """What ``_before_the_window`` answers for ``polarity``, and the statements
+    it sends, each with its parameters, in the order sent."""
+    sent = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        sent.append((statement, parameters))
+
+    event.listen(async_engine.sync_engine, "before_cursor_execute", capture)
+    try:
+        async with async_session_factory() as session:
+            answer = await calibration_trend._before_the_window(
+                session, instrument, polarity, start, versions
+            )
+    finally:
+        event.remove(async_engine.sync_engine, "before_cursor_execute", capture)
+    return answer, [(s, p) for s, p in sent if "FROM sample_file" in s]
+
+
+def _literal(value) -> str:
+    """``value`` as SQL, for the arguments of an EXECUTE."""
+    if isinstance(value, datetime):
+        value = value.isoformat()
+    if isinstance(value, str):
+        return "'" + value.replace("'", "''") + "'"
+    return str(value)
+
+
+async def _plans(async_engine, statement: str, parameters: tuple) -> dict[str, str]:
+    """The plan of ``statement``, for its parameters (``custom``) and for any
+    (``generic``), with sequential scans priced out.
+
+    On a table of a few thousand rows the planner would read one instrument's
+    files in a sequential scan and sort them, which on a server's table it
+    would not; priced out, it is left the indexes, the walks back on the time
+    indexes included. The generic plan is the one a prepared statement is
+    given after a few runs, planned for no value of its parameters: an
+    expression that held a parameter would not be the index's expression to
+    it, where the custom plan has the value in its place. SET LOCAL ends with
+    the transaction.
+    """
+    async with async_engine.begin() as conn:
+        await conn.exec_driver_sql("SET LOCAL enable_seqscan = off")
+        custom = (await conn.exec_driver_sql(f"EXPLAIN {statement}", parameters)).all()
+        await conn.exec_driver_sql(f"PREPARE trend_look AS {statement}")
+        await conn.exec_driver_sql("SET LOCAL plan_cache_mode = force_generic_plan")
+        arguments = ", ".join(_literal(value) for value in parameters)
+        generic = (
+            await conn.exec_driver_sql(f"EXPLAIN EXECUTE trend_look({arguments})")
+        ).all()
+        await conn.exec_driver_sql("DEALLOCATE trend_look")
+    return {
+        "custom": "\n".join(row[0] for row in custom),
+        "generic": "\n".join(row[0] for row in generic),
+    }
+
+
+_VERSION_INDEX = "ix_sample_file_instrument_polarity_collection_version"
+_COLLECTION_INDEX = "ix_sample_file_instrument_polarity_collection"
+#: The index each statement ``_before_the_window`` sends for two versions of
+#: two collections reads, in the order sent: per version, per collection id,
+#: and once.
+_LOOK_INDEXES = [_VERSION_INDEX] * 2 + [_COLLECTION_INDEX] * 3
+
+
+def _plan_lines(plan: str, label: str) -> list[str]:
+    """The plan's ``Index Cond`` or ``Filter`` lines."""
+    return [line for line in plan.splitlines() if line.strip().startswith(label)]
+
+
+async def _assert_index_reads(async_engine, sent, indexes):
+    """Each statement's plans read its index, in order, with no sort, and
+    read it on the polarity: the instrument's entries of the other polarity
+    are not fetched, to check the polarity on their rows."""
+    assert len(sent) == len(indexes), sent
+    for (statement, parameters), index in zip(sent, indexes):
+        plans = await _plans(async_engine, statement, parameters)
+        for kind, plan in plans.items():
+            assert f"Index Scan Backward using {index}" in plan, (kind, plan)
+            assert "Sort" not in plan, (kind, plan)
+            (cond,) = _plan_lines(plan, "Index Cond:")
+            assert "polarity" in cond, (kind, plan)
+            filters = _plan_lines(plan, "Filter:")
+            assert not any("polarity" in line for line in filters), (kind, plan)
+
+
+@pytest.mark.asyncio
+async def test_a_new_version_and_collection_are_each_one_index_read(
+    async_engine, async_session_factory, history
+):
+    """A version of a collection in use that no earlier file was fitted with,
+    and a collection none was: each look is read off its index, not walked
+    back over the instrument's history."""
+    (seen, last, recorded), sent = await _looks(
+        async_engine,
+        async_session_factory,
+        history["named"],
+        history["start"],
+        [
+            {"id": history["collection"], "isotopes_sha256": _V3},
+            {"id": gen_id(16), "isotopes_sha256": _V1},
+        ],
+    )
+
+    assert (seen, last, recorded) == (set(), {history["collection"]: _V2}, True)
+    await _assert_index_reads(async_engine, sent, _LOOK_INDEXES)
+
+
+@pytest.mark.asyncio
+async def test_a_collection_common_elsewhere_is_one_index_read_where_it_is_new(
+    async_engine, async_session_factory, history
+):
+    """An instrument whose earlier files name no collection, looking for one
+    the table is full of on another instrument: the statistics, the whole
+    table's, call it common, and a walk back would read the whole history;
+    each look is read off its index all the same, and finds none."""
+    (seen, last, recorded), sent = await _looks(
+        async_engine,
+        async_session_factory,
+        history["unnamed"],
+        history["start"],
+        [
+            {"id": history["collection"], "isotopes_sha256": _V1},
+            {"id": gen_id(16), "isotopes_sha256": _V2},
+        ],
+    )
+
+    assert (seen, last, recorded) == (set(), {}, False)
+    await _assert_index_reads(async_engine, sent, _LOOK_INDEXES)
+
+
+@pytest.mark.asyncio
+async def test_a_polarity_whose_files_name_none_reads_none_of_the_others(
+    async_engine, async_session_factory, history
+):
+    """The instrument's positive files name no collection, its negative ones
+    all do: the looks for the positive polarity find none, and each reads
+    its index on the polarity, not every negative entry with the polarity
+    checked on its row."""
+    (seen, last, recorded), sent = await _looks(
+        async_engine,
+        async_session_factory,
+        history["named"],
+        history["start"],
+        [
+            {"id": history["collection"], "isotopes_sha256": _V2},
+            {"id": gen_id(16), "isotopes_sha256": _V1},
+        ],
+        polarity="+",
+    )
+
+    assert (seen, last, recorded) == (set(), {}, False)
+    await _assert_index_reads(async_engine, sent, _LOOK_INDEXES)
+
+
+@pytest.mark.asyncio
+async def test_a_version_in_use_is_seen_and_its_collection_named(
+    async_session_factory, history
+):
+    """The versions the history was fitted with are seen, the first one also
+    behind the second, and the collection is named by its latest."""
+    async with async_session_factory() as session:
+        answer = await calibration_trend._before_the_window(
+            session,
+            history["named"],
+            "-",
+            history["start"],
+            [
+                {"id": history["collection"], "isotopes_sha256": _V1},
+                {"id": history["collection"], "isotopes_sha256": _V2},
+            ],
+        )
+
+    assert answer == (
+        {(history["collection"], _V1), (history["collection"], _V2)},
+        {history["collection"]: _V2},
+        True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_models_declare_the_indexes_the_migration_builds(async_engine):
+    """The schema here is built from the models: their indexes are the
+    migration's, predicate included, which the drift test does not compare
+    (``tests/migrations/test_sample_file_collection_indexes.py``)."""
+    path_id = "(mz_calibration #>> '{quality,collection,id}'::text[])"
+    path_sha = "(mz_calibration #>> '{quality,collection,isotopes_sha256}'::text[])"
+    named = f" WHERE ({path_id} IS NOT NULL)"
+    async with async_engine.connect() as conn:
+        rows = (
+            await conn.exec_driver_sql(
+                "SELECT indexname, indexdef FROM pg_indexes "
+                "WHERE tablename = 'sample_file' AND indexname LIKE '%collection%'"
+            )
+        ).all()
+    assert {name: definition.split(" USING ")[1] for name, definition in rows} == {
+        _VERSION_INDEX: (
+            f"btree (instrument, polarity, ({path_id}), ({path_sha}), datetime_utc)"
+            f"{named}"
+        ),
+        _COLLECTION_INDEX: (
+            f"btree (instrument, polarity, ({path_id}), datetime_utc){named}"
+        ),
+    }

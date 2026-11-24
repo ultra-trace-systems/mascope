@@ -36,9 +36,11 @@ from sqlalchemy import (
     Uuid,
     event,
     func,
+    literal_column,
     or_,
     select,
     text,
+    type_coerce,
     update,
 )
 from sqlalchemy import inspect as sa_inspect
@@ -1047,6 +1049,45 @@ def range_bounds(mz_range) -> tuple[float | None, float | None]:
     return None, None
 
 
+def _record_path(record, path: str):
+    """SQL for the text at ``path`` of a calibration record, NULL where the
+    record holds none there.
+
+    The path is written into the SQL, not sent as a parameter as a JSON
+    subscript is: an expression index is used only by a statement whose
+    expression is the index's, and a parameter is not that expression to the
+    plan a prepared statement is given after a few runs.
+    """
+    return type_coerce(record.op("#>>")(literal_column(f"'{path}'")), String)
+
+
+def record_collection_id(record):
+    """SQL for the id of the collection a calibration record's fit was offered
+    (``quality.collection.id``), NULL where it names none.
+
+    :param record: The record's column, ``SampleFile.mz_calibration``.
+    """
+    return _record_path(record, "{quality,collection,id}")
+
+
+def record_collection_sha(record):
+    """SQL for the isotope hash of that collection version
+    (``quality.collection.isotopes_sha256``), NULL where it names none.
+
+    :param record: The record's column, ``SampleFile.mz_calibration``.
+    """
+    return _record_path(record, "{quality,collection,isotopes_sha256}")
+
+
+def record_names_a_collection(record):
+    """SQL for whether a calibration record names the collection its fit was
+    offered: the predicate of the indexes over the collection.
+
+    :param record: The record's column, ``SampleFile.mz_calibration``.
+    """
+    return record_collection_id(record).is_not(None)
+
+
 class SampleFile(Base):
     """
     Represents raw acquisition files.
@@ -1208,6 +1249,32 @@ class SampleFile(Base):
             sample_file_id,
         ),
         Index("ix_sample_file_processing_updated_utc", processing_updated_utc),
+        # The calibration trend's look back before its window
+        # (`calibration_trend._before_the_window`), one index read per look:
+        # whether an earlier file of the instrument was fitted with a version
+        # of a collection, the latest one fitted with a collection, and
+        # whether any names one. Only the records that name a collection are
+        # indexed. The expressions are the trend's own, written once above.
+        # Both hold the polarity every look filters on: without it, on a TOF
+        # that runs both, a look for one polarity reads every entry of the
+        # other's that matches the rest, to check the polarity on its row.
+        Index(
+            "ix_sample_file_instrument_polarity_collection_version",
+            instrument,
+            polarity,
+            record_collection_id(mz_calibration.column),
+            record_collection_sha(mz_calibration.column),
+            datetime_utc,
+            postgresql_where=record_names_a_collection(mz_calibration.column),
+        ),
+        Index(
+            "ix_sample_file_instrument_polarity_collection",
+            instrument,
+            polarity,
+            record_collection_id(mz_calibration.column),
+            datetime_utc,
+            postgresql_where=record_names_a_collection(mz_calibration.column),
+        ),
     )
 
     @validates("range")
