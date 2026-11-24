@@ -7,7 +7,9 @@ import { createPinia, setActivePinia } from 'pinia'
 // not kept to the Admin section. It sits in a Data section of its own, after
 // API Access Tokens and before Admin, with its own help text. The Reference
 // lists dialog sits beside it, open to everyone too: the lists are the
-// deployment's, not a workspace's.
+// deployment's, not a workspace's. The Metadata fields dialog, the registry
+// of typed fields, sits there too, for the global editor role or higher: they
+// are the ones who define a field.
 
 const mocks = vi.hoisted(() => ({ app: null, peakAssignment: false }))
 
@@ -34,7 +36,8 @@ vi.mock('@/lib/dialogs', () => {
     DialogMfaSetup: dialog('DialogMfaSetup'),
     DialogMfaReauth: dialog('DialogMfaReauth'),
     DialogDeletedDatasets: dialog('DialogDeletedDatasets'),
-    DialogReferenceLists: dialog('DialogReferenceLists')
+    DialogReferenceLists: dialog('DialogReferenceLists'),
+    DialogMetadataFields: dialog('DialogMetadataFields')
   }
 })
 vi.mock('@/lib/dialogs/useMfaReauth', async () => {
@@ -114,6 +117,22 @@ describe('UserSettingsPane', () => {
     expect(wrapper.find('.DialogDeletedDatasets').exists()).toBe(false)
   })
 
+  it('opens the Metadata fields dialog for an editor', async () => {
+    mocks.app.auth.user.role_id = 200
+    const wrapper = mountPane()
+    const button = wrapper.findAll('button').find((b) => b.text() === 'Metadata fields')
+    expect(button, 'no Metadata fields button').toBeDefined()
+    expect(button.attributes('data-icon')).toContain('ph-tag')
+    expect(wrapper.find('.DialogMetadataFields').exists()).toBe(false)
+    await button.trigger('click')
+    expect(wrapper.find('.DialogMetadataFields').exists()).toBe(true)
+  })
+
+  it('offers a guest no Metadata fields button', () => {
+    const wrapper = mountPane()
+    expect(wrapper.findAll('button').map((b) => b.text())).not.toContain('Metadata fields')
+  })
+
   it('puts the buttons in a Data section with its own help, not in Account', () => {
     mocks.app.auth.user.role_id = 400
     const wrapper = mountPane()
@@ -125,11 +144,13 @@ describe('UserSettingsPane', () => {
     const data = section('Data')
     expect(data.findAll('button').map((b) => b.text())).toEqual([
       'Deleted datasets',
-      'Reference lists'
+      'Reference lists',
+      'Metadata fields'
     ])
     expect(data.element.dataset.help).toContain('<b>Data</b>')
     expect(data.element.dataset.help).toContain('Deleted datasets lists a record')
     expect(data.element.dataset.help).toContain('Reference lists shows the compound lists')
+    expect(data.element.dataset.help).toContain('Metadata fields, for editors')
 
     const account = section('Account')
     expect(account.text()).not.toContain('Deleted datasets')

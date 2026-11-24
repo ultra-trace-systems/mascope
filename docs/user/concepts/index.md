@@ -167,6 +167,36 @@ Renaming a mode, or changing its token or the instrument it belongs to,
 changes no result and makes no version. Each peak assignment run records the
 version it searched under.
 
+## Sample metadata: annotations and registry fields
+
+Two kinds of metadata describe a sample:
+
+- **Batch annotations** say what a sample is in one study: its stage, group or
+  replicate. They are free-form labels with text values, set on the samples of
+  a batch of your own, and only that batch sees them. An **attribute
+  template** is a named list of such labels that you pick when you add
+  samples.
+- **Registry fields** say what was physically measured: the site, the
+  environment, the inlet, the campaign. Each is a typed field with a stable
+  key, a label, a type (text, number, date and time, one of a list, or tags),
+  a unit for a number, and the values a list or tags field allows. There is
+  one registry for the whole deployment, so "site" means the same field on
+  every instrument. An attribute template can also select registry fields, in
+  the order a form shows them.
+
+The registry is shared reference data. Anyone signed in can read it; the
+global editor role or higher manages it in **Settings** › **Data** ›
+**Metadata fields**: add a field, edit it, retire it or restore it. A field's
+key never changes once it is made. A field in use, one that an attribute
+template selects, cannot be deleted or change its type: retire it instead. A
+retired field keeps its key and stays where it is used, but no new template
+can select it. Mascope ships one field, **Environment**, a tags field that
+says what was sampled; it cannot be deleted or retired, and its values are
+Mascope's.
+
+Recording registry values for a sample's raw file is not part of Mascope yet;
+the registry defines the fields that record will use.
+
 ## Matching and match scores
 
 **Matching** links the targets attached to a batch to the peaks detected in each

@@ -8,6 +8,7 @@ import {
 } from './modules/batchPeak'
 import { useInstrument } from './modules/instrument'
 import { useIonizationMechanism, useIonizationMode } from './modules/ionization'
+import { useMetadataField } from './modules/metadataField'
 import {
   useMatchCollection,
   useMatchIon,
@@ -39,6 +40,7 @@ export const useData = () => ({
   },
   instrument: useInstrument(),
   template: useTemplate(),
+  metadataField: useMetadataField(),
   batch: useBatch(),
   batchPeak: useBatchPeakLedger(),
   batchPeakVerification: useBatchPeakVerification(),

@@ -19,10 +19,21 @@ const props = defineProps({
 })
 
 const visible = defineModel('visible')
+
+// The registry fields the template selects travel with the copy, but for a
+// retired one: the server adds no retired field to a new template.
+const copiedFields = () => {
+  const retired = new Set(
+    app.data.metadataField.list.filter((field) => field.retired).map((field) => field.key)
+  )
+  return (props.original.fields ?? []).filter((key) => !retired.has(key))
+}
+
 const updated = reactive({
   name: 'new template',
   type: props.original.type,
-  template: props.original.template.map((field) => ({ key: genId(8, false), ...field }))
+  template: props.original.template.map((field) => ({ key: genId(8, false), ...field })),
+  fields: copiedFields()
 })
 const title = computed(() => `Create new template based on '${props.original.name}'`)
 
@@ -48,6 +59,7 @@ function init(active) {
     key: genId(8, false),
     ...field
   }))
+  updated.fields = copiedFields()
 }
 </script>
 
