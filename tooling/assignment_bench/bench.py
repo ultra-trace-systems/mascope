@@ -2,7 +2,7 @@
 
     bench.py init <manifest> [--ref REF] [--rebuild] [--checkout DIR] [--keep-running] [--wait]
     bench.py reference --pin vX.Y.Z [--reinstall] [--jobs N] [--set NAME ...] [--wait]
-    bench.py run <ref> [--sets A,D,...] [--decoys] [--batch] [--baseline] [--post PR] [--fresh] [--no-wait] [--jobs N] [--budget-min M] [--workers N]
+    bench.py run <ref> [--sets A,D,...] [--decoys] [--batch] [--baseline] [--post PR] [--fresh] [--no-wait] [--jobs N] [--budget-min M] [--run-limit-min M] [--workers N]
     bench.py baseline [CARD]
     bench.py review [--sets A,D,...] [--top N] | --record SHEET [--recalibrate] [--wait]
     bench.py post <ref> --pr N
@@ -2422,6 +2422,14 @@ def main(argv: list[str] | None = None) -> int:
         help=f"minutes a set may take (default {bench_run.BUDGET_MIN:g})",
     )
     p_run.add_argument(
+        "--run-limit-min",
+        type=float,
+        default=None,
+        help="minutes one run may take from its start before it is left out as "
+        f"stalled (default {bench_run.RUN_LIMIT_MIN:g}, "
+        f"{bench_run.RUN_LIMIT_DECOYS_MIN:g} with --decoys)",
+    )
+    p_run.add_argument(
         "--workers",
         type=int,
         default=bench_run.WORKERS,
@@ -2530,6 +2538,11 @@ def _main(args) -> int:
                 save_state=lambda state: save_state(home, state),
                 jobs=getattr(args, "jobs", bench_run.JOBS),
                 budget_s=getattr(args, "budget_min", bench_run.BUDGET_MIN) * 60,
+                run_limit_s=(
+                    None
+                    if getattr(args, "run_limit_min", None) is None
+                    else args.run_limit_min * 60
+                ),
                 workers=getattr(args, "workers", bench_run.WORKERS),
             )
             if args.command == "baseline":

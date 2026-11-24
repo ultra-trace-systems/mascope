@@ -1741,7 +1741,7 @@ def test_baseline_makes_a_card_of_develop_the_baseline(rig, capsys):
         ),
         (
             lambda rig: rig.server.ends.update({("S1", None): ("failed", "x")}),
-            "samples were left out (set Db: 1 sample(s) failed)",
+            "samples were left out (set Db: 1 sample(s) failed: its run failed (1))",
         ),
         (
             lambda rig: rig.server.ends.update(
@@ -2115,6 +2115,14 @@ def test_a_run_that_leaves_the_listing_or_cannot_be_read_fails_its_sample(rig):
     log = (rig.card_dir() / "run.log").read_text()
     assert "S1: failed: lost:" in log and "the run left the listing" in log
     assert "S2: failed: failed: unreadable the runs of a sample answered 404" in log
+    assert json.loads((rig.card_dir() / "run.json").read_text())["sets"]["Db"][
+        "causes"
+    ] == {
+        "failed": {
+            "its run left the listing": 1,
+            "its runs could not be read: the runs of a sample answered 404": 1,
+        }
+    }
 
 
 def test_a_sample_whose_runs_cannot_be_read_before_it_runs_is_failed(rig):

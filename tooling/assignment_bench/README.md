@@ -207,6 +207,34 @@ box in the caller's own session, one run at a time. In order:
    samples still queued launch no run, and the cleanup follows within
    one poll (10 s), or within a request's 2-minute timeout should the
    server hang.
+   - **A server that fails a request.** An assign request the server does
+     not answer, or answers 5xx, is sent again: 6 tries in all, 10 s apart,
+     about a minute. What refuses a request here, Postgres out of
+     connections or a backend restarting, passes in seconds. Then the sample
+     is left out as `failed` at once. A 4xx is not sent again: the sample is
+     refused, `ineligible` for the server's `sample_ineligible`, else
+     `failed`. A poll of the sample's runs that gets no answer or a 5xx is a
+     missed poll; 6 in a row fail the sample. A 409, another run of the
+     sample in flight, is asked again within the run limit.
+   - **The run limit.** A run that has not ended `--run-limit-min` minutes
+     after its 202 is left out as `stalled`, with the status it was left at,
+     and the set goes on without it. The server can leave a run `running`
+     for ever: when Postgres refuses a connection the run needs, the call
+     that would mark it failed can be refused too (#3607), and only a
+     restart of the backend ends it. The default is 20 minutes, and 60 with
+     `--decoys`: twice the slowest completed run in the bench's logs on
+     2026-11-24, rounded up to 10 minutes. Over 725 sets of every card the
+     bench had made, the slowest control run took 9.9 minutes; with the
+     decoy arms the logs time a sample's control and its three decoy runs
+     together, and the slowest of those took 29.0 minutes, which bounds one
+     run of it. A busy sample, a 409, waits for at most the same limit.
+   - **The causes.** A sample left out as `failed` or `stalled` is counted
+     in `run.json` by its cause (`sets.<set>.causes`), in words that name no
+     sample, run or host: the server's status and message for a request it
+     refused (`the assign request answered 500: sorry, too many clients
+     already`), or the status a stalled run was left at. The console and the
+     PR comment's left-out list say the same. The run log names each sample
+     with the whole answer.
 7. **The checks.** A sample is read only where its newest completed in-app
    run is the one this run made (with `--batch`, one of the runs the batch
    arm made after it, with the control still listed) and its newest
@@ -240,7 +268,7 @@ box in the caller's own session, one run at a time. In order:
     and filestore.
 
 It exits 0 when the card passes its gate with no sample left out, 1 when
-the gate fails or something was left out or a decoy run failed, and 2 when
+the gate fails or something was left out or a decoy run failed or stalled, and 2 when
 no card was written: refused by the scrub, nothing could be read, or a step
 could not go on. A run that was stopped exits 128 and the signal: 143 for
 SIGTERM, 129 for SIGHUP, which is also what a run whose starter went away
@@ -349,7 +377,7 @@ engine inputs takes seconds and holds nothing up ("A card without a run").
 |---|---|---|
 | `card.md`, `card.json`, `card_<set>.md`, `card_<set>.json` | the card (`tooling/assignment_compare/README.md`, "What the card writes") | yes, scrubbed |
 | `diff.md`, `diff.json` | with `--baseline`: the readings that moved since develop's baseline, and which card that was | yes, scrubbed |
-| `run.json` | the run: the ref and its commit, develop's head, the migration, the engine digest and its parts (`engine`), the pin, per set the samples read and left out by reason, the minutes it took and each decoy arm's outcomes, the verdict, the baseline, whether it became the baseline, and for a reused card the card it reuses (`reused`). With `--batch`: `batch`, the dump's and the restore's seconds under `migration`, and per set its arm (`sets.<set>.batch`, "The batch arm") | yes, scrubbed |
+| `run.json` | the run: the ref and its commit, develop's head, the migration, the engine digest and its parts (`engine`), the pin, per set the samples read and left out by reason, the causes of those failed or stalled (`causes`, only on a set that has any), the minutes it took and each decoy arm's outcomes, the verdict, the baseline, whether it became the baseline, and for a reused card the card it reuses (`reused`). With `--batch`: `batch`, the dump's and the restore's seconds under `migration`, and per set its arm (`sets.<set>.batch`, "The batch arm") | yes, scrubbed |
 | `run.log` | every step, and each sample by id with what became of its runs and why | no: it names samples |
 | `work/` | the comparison's input: the sets with their sample ids, the deny list | no |
 
@@ -487,9 +515,9 @@ reverse; for a request with the batch arm, a card whose arm is off on a set
 does not count. A
 sample left out because `init` left it with a problem, it has no reference at
 the pin, or the server called it ineligible counts the same on every run. One
-that failed, was not the newest run, met a moved reference or ran over its
-set's budget does not, nor does a decoy run that failed, was cancelled or was
-lost.
+that failed, stalled past the run limit, was not the newest run, met a
+moved reference or ran over its set's budget does not, nor does a decoy run
+that failed, was cancelled, was lost or stalled.
 
 When there is such a card, the run:
 

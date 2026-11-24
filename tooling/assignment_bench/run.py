@@ -1,6 +1,6 @@
 """``bench run``: a ref's in-app engine on the bench sets, beside the pinned reference.
 
-    bench.py run <ref> [--sets A,D,...] [--decoys] [--batch] [--baseline] [--post PR] [--no-wait] [--jobs N] [--budget-min M] [--workers N]
+    bench.py run <ref> [--sets A,D,...] [--decoys] [--batch] [--baseline] [--post PR] [--no-wait] [--jobs N] [--budget-min M] [--run-limit-min M] [--workers N]
     bench.py baseline [CARD]
 
 The command the bench exists for (step 6.5 of the assignment quality plan).
@@ -18,7 +18,8 @@ One run, behind the bench's lock:
    plan's default run config, an assign request with no config: the engine's
    own defaults. With ``--decoys`` it then runs the decoy arms of the set's
    instrument class (step 5.2) against that run as their control. It waits for
-   every run, within a time budget per set.
+   every run, within a time budget per set, and stops waiting on one run
+   that has not ended within its limit (``--run-limit-min``).
 4. It runs ``compare_runs.py --card --gate`` (``--decoy``) over the sets read,
    one card per set and one pooled, against the reference's runs; one that
    writes nothing for half an hour is taken for hung and stopped. With
@@ -147,8 +148,21 @@ WORKERS = 8
 #: grows with the rows it reads, so it has no budget of its own.
 COMPARE_STALL_MIN = 30.0
 
-#: How often a request that found the server busy or unreachable is sent again.
+#: How often a request that found the server busy or unreachable is sent again,
+#: :data:`POLL_S` apart: six tries over about a minute, since what refuses a
+#: request here (Postgres out of connections, a backend restarting) passes in
+#: seconds (MAS-1253).
 TRANSIENT_TRIES = 6
+
+#: Minutes one run may go from its 202 without ending before the bench stops
+#: waiting on it and leaves it ``stalled``, without and with the decoy arms: a
+#: run whose failure the server could not record stays ``running`` (#3607).
+#: Twice the slowest completed run the bench's logs held on 2026-11-24, rounded
+#: up: 9.9 min for a control run, and 29.0 min for a sample's control and
+#: three decoy runs together, the logs' bound on one run with the arms
+#: (MAS-1253, README "The run limit").
+RUN_LIMIT_MIN = 20.0
+RUN_LIMIT_DECOYS_MIN = 60.0
 
 #: ``run.json``'s format.
 SUMMARY_FORMAT = 1
@@ -160,9 +174,15 @@ LEFT_OUT = (
     "reference_moved",
     "ineligible",
     "failed",
+    "stalled",
     "not_latest",
     "over_budget",
 )
+
+#: Why a sample is left off, where the cause is worth a line of its own on
+#: the card: ``run.json`` counts the causes (``sets.<set>.causes``), in words
+#: that name no sample, run or host.
+CAUSED = ("failed", "stalled")
 
 #: What a run writes that may leave the box, every one scrubbed.
 OUTPUTS = ("diff.md", "diff.json", "run.json")
@@ -174,10 +194,10 @@ WRITTEN = ("pass", "fail", "written")
 #: read it: a card that left one out for these is no card to reuse. The
 #: other reasons (not ready, no reference at the pin, ineligible) come from
 #: the bench's state and the engine's code, which the engine digest holds.
-PASSING = ("reference_moved", "failed", "not_latest", "over_budget")
+PASSING = ("reference_moved", "failed", "stalled", "not_latest", "over_budget")
 
 #: A decoy arm's outcomes that another run of the same inputs might not have.
-PASSING_DECOY = ("failed", "cancelled", "lost", "over_budget", "stopped")
+PASSING_DECOY = ("failed", "cancelled", "lost", "stalled", "over_budget", "stopped")
 
 #: The paths of a ref's tree that cannot move its card, which the engine
 #: digest leaves out: everything else counts, so a new folder counts until
@@ -220,7 +240,16 @@ class RunError(RuntimeError):
 
 
 class TransientError(RuntimeError):
-    """The server did not answer, or answered 5xx: the same request may pass later."""
+    """The server did not answer, or answered 5xx: the same request may pass later.
+
+    :ivar answer: What came back, in words that name no sample, run or host:
+        ``answered 500: <the server's message>`` or ``did not answer
+        (<the error's kind>)``. The message itself also holds the route.
+    """
+
+    def __init__(self, message: str, answer: str | None = None):
+        super().__init__(message)
+        self.answer = answer or message
 
 
 # ------------------------------------------------------------ engine digest
@@ -511,9 +540,14 @@ class TokenApi:
                 method, f"{self.base}{path}", timeout=120, **kwargs
             )
         except self._requests.RequestException as error:
-            raise TransientError(f"{method} {path}: {error}") from None
+            raise TransientError(
+                f"{method} {path}: {error}",
+                f"did not answer ({type(error).__name__})",
+            ) from None
         if r.status_code >= 500:
-            raise TransientError(f"{method} {path}: {r.status_code}")
+            said = server_message(r)
+            answer = f"answered {r.status_code}" + (f": {said}" if said else "")
+            raise TransientError(f"{method} {path}: {answer}", answer)
         return r
 
     def assign(self, sample: str, config: dict | None) -> Launch:
@@ -555,6 +589,32 @@ class TokenApi:
             raise RunError(f"the assignment status of a batch answered {r.status_code}")
         data = _json(r).get("data")
         return data if isinstance(data, dict) else {}
+
+
+def server_message(response, limit: int = 160) -> str:
+    """The server's own words in an answer: its ``error``, ``detail`` or
+    ``message``, else the start of its text, on one line and cut to
+    ``limit`` characters."""
+    body = _json(response)
+    said = next(
+        (
+            body[key]
+            for key in ("error", "detail", "message")
+            if isinstance(body.get(key), str) and body[key].strip()
+        ),
+        None,
+    )
+    if said is None and not body:
+        said = getattr(response, "text", None) or ""
+    said = " ".join(str(said or "").split())
+    return said if len(said) <= limit else said[: limit - 3] + "..."
+
+
+def answer_of(error: Exception) -> str:
+    """What came back for a request that failed, naming no sample, run or
+    host (:class:`TransientError`'s ``answer``; a :class:`RunError` says
+    only its status)."""
+    return getattr(error, "answer", None) or str(error)
 
 
 def _json(response) -> dict:
@@ -690,11 +750,20 @@ class SetPlan:
     samples: list[str] = field(default_factory=list)
     reference: dict[str, str] = field(default_factory=dict)
     left_out: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
+    causes: dict[str, dict[str, int]] = field(default_factory=dict)
 
-    def leave_out(self, reason: str, sample: str, why: str) -> None:
+    def leave_out(
+        self, reason: str, sample: str, why: str, cause: str | None = None
+    ) -> None:
+        """Leave ``sample`` off for ``reason``: ``why`` for the run log, and
+        for a reason of :data:`CAUSED`, ``cause`` for ``run.json``."""
         if sample in self.samples:
             self.samples.remove(sample)
         self.left_out.setdefault(reason, []).append((sample, why))
+        if reason in CAUSED:
+            tally = self.causes.setdefault(reason, {})
+            key = cause or "unknown"
+            tally[key] = tally.get(key, 0) + 1
 
     def counts(self) -> dict[str, int]:
         return {r: len(self.left_out[r]) for r in LEFT_OUT if self.left_out.get(r)}
@@ -795,14 +864,20 @@ class Outcome:
 
     :ivar status: ``completed``, ``failed``, ``cancelled``, ``refused``
         (the request was refused, or a decoy the engine refused at run time),
-        ``lost`` (the run left the listing), ``over_budget``, or ``stopped``
-        (the bench stopped waiting: Ctrl-C, or another sample's job broke).
+        ``lost`` (the run left the listing), ``stalled`` (the run, or the
+        sample's turn, did not end within the run limit; ``code`` is the
+        status it was left at), ``over_budget``, or ``stopped`` (the bench
+        stopped waiting: Ctrl-C, or another sample's job broke).
+    :ivar cause: Why it did not complete, in words that name no sample, run
+        or host, for ``run.json`` (:data:`CAUSED`); ``detail`` is for the run
+        log.
     """
 
     status: str
     run_id: str | None = None
     code: str | None = None
     detail: str | None = None
+    cause: str | None = None
 
 
 def migrate(
@@ -1077,6 +1152,9 @@ class BenchRun:
     :ivar compare: Makes the card (:class:`CompareRuns`, a fake in the tests).
     :ivar api_of: The run's API, from the bench's URL and SDK token.
     :ivar workers: The ref's backend's uvicorn workers.
+    :ivar run_limit_s: Seconds one run may take from its 202 before the bench
+        stops waiting on it; None for :data:`RUN_LIMIT_MIN`, or
+        :data:`RUN_LIMIT_DECOYS_MIN` on a run with the decoy arms.
     :ivar stall_s: Seconds the comparison may write nothing before it is stopped.
     :ivar tool: The bench and comparison folders the card is made with, for
         the engine digest (:func:`tool_digest`).
@@ -1091,6 +1169,7 @@ class BenchRun:
     api_of: Callable[[str, str], RunApi] = TokenApi
     jobs: int = JOBS
     budget_s: float = BUDGET_MIN * 60
+    run_limit_s: float | None = None
     workers: int = WORKERS
     stall_s: float = COMPARE_STALL_MIN * 60
     tool: tuple[Path, ...] = TOOL
@@ -1100,6 +1179,12 @@ class BenchRun:
     stamp: Callable[[], str] = lambda: datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 
     # ------------------------------------------------------------------ run
+
+    def run_limit(self, decoys: bool = False) -> float:
+        """Seconds one run may take from its 202 (:attr:`run_limit_s`)."""
+        if self.run_limit_s is not None:
+            return self.run_limit_s
+        return (RUN_LIMIT_DECOYS_MIN if decoys else RUN_LIMIT_MIN) * 60
 
     def run(
         self,
@@ -1453,7 +1538,10 @@ class BenchRun:
                     runs = self._runs(api, sample)
                 except (TransientError, RunError) as error:
                     p.leave_out(
-                        "failed", sample, f"its runs could not be read: {error}"
+                        "failed",
+                        sample,
+                        f"its runs could not be read: {error}",
+                        f"its runs could not be read: {answer_of(error)}",
                     )
                     continue
                 why = reference_problem(
@@ -1525,20 +1613,21 @@ class BenchRun:
         before = p.snapshot()
         start = self.clock()
         deadline = start + self.budget_s
+        limit = self.run_limit(decoys)
         lock = threading.Lock()
         done = [0]
 
         def work(sample: str, stop: threading.Event):
-            control = self._one(api, sample, DEFAULT_CONFIG, deadline, stop)
+            control = self._one(api, sample, DEFAULT_CONFIG, deadline, stop, limit)
             outcomes: dict[str, Outcome] = {}
             copy = None
             if control.status == "completed":
                 for arm in arms:
                     outcomes[arm_name(arm)] = self._one(
-                        api, sample, {"decoy": arm}, deadline, stop
+                        api, sample, {"decoy": arm}, deadline, stop, limit
                     )
                 if batch and arm_off is None:
-                    copy = self._one(api, sample, DEFAULT_CONFIG, deadline, stop)
+                    copy = self._one(api, sample, DEFAULT_CONFIG, deadline, stop, limit)
             with lock:
                 done[0] += 1
                 runlog.note(
@@ -1567,6 +1656,7 @@ class BenchRun:
             + (f" and {len(arms)} decoy arm(s) each" if arms else "")
             + (" and once more for the batch pass" if batch and arm_off is None else "")
             + f", {self.jobs} at once, within {self.budget_s / 60:.0f} min"
+            + f", each run within {limit / 60:g} min"
         )
         rows = self._pooled(list(p.samples), work)
 
@@ -1590,9 +1680,10 @@ class BenchRun:
                 p.leave_out("ineligible", sample, control.detail or "")
             else:
                 p.leave_out(
-                    "failed",
+                    "stalled" if control.status == "stalled" else "failed",
                     sample,
                     f"{control.status}: {control.code or ''} {control.detail or ''}".strip(),
+                    control.cause or control.status,
                 )
         if over:
             # A set the budget cut short is not a reading of the set: none of
@@ -1618,7 +1709,9 @@ class BenchRun:
             elif arm_off is not None:
                 result["batch"] = self._arm_off(p, arm_off, runlog)
             else:
-                result["batch"] = self._batch_arm(api, p, copies, deadline, runlog)
+                result["batch"] = self._batch_arm(
+                    api, p, copies, deadline, runlog, limit
+                )
             if result["batch"] is not None:
                 result["batch"]["minutes"] = round((self.clock() - arm_start) / 60, 1)
             result["minutes"] = round((self.clock() - start) / 60, 1)
@@ -1660,6 +1753,7 @@ class BenchRun:
         copies: dict[str, Outcome],
         deadline: float,
         runlog: RunLog,
+        limit_s: float | None = None,
     ) -> dict:
         """One pass of the batch stages on the set's batch, then every
         sample's engine again, within the set's budget (MAS-1140).
@@ -1720,7 +1814,7 @@ class BenchRun:
         )
 
         def again(sample: str, stop: threading.Event):
-            outcome = self._one(api, sample, DEFAULT_CONFIG, deadline, stop)
+            outcome = self._one(api, sample, DEFAULT_CONFIG, deadline, stop, limit_s)
             runlog.note(
                 f"set {p.name}: {sample}: after the pass {outcome.status} "
                 f"{outcome.run_id or ''}"
@@ -1846,10 +1940,23 @@ class BenchRun:
         config: dict | None,
         deadline: float,
         stop: threading.Event,
+        limit_s: float | None = None,
     ) -> Outcome:
-        """Launch one run of a sample and wait for it, while the budget lasts
-        and until ``stop`` is set."""
+        """Launch one run of a sample and wait for it, while the budget lasts,
+        until ``stop`` is set, and for at most ``limit_s`` (the run limit,
+        :meth:`run_limit`) from its 202.
+
+        An assign request the server does not answer, or answers 5xx, is sent
+        again, :data:`TRANSIENT_TRIES` times in all and :attr:`poll_s` apart,
+        before the sample fails; a 4xx is refused at once. A 409 (another run
+        of the sample in flight) is asked again for at most ``limit_s`` too.
+        A poll the server does not answer is a missed poll; that many in a
+        row fail the sample. A run still not ended ``limit_s`` after its 202
+        is ``stalled``: the server may never end it (#3607).
+        """
+        limit_s = self.run_limit() if limit_s is None else limit_s
         transient = 0
+        busy_since = None
         while True:
             if self.clock() > deadline:
                 return Outcome("over_budget")
@@ -1860,16 +1967,39 @@ class BenchRun:
             except TransientError as error:
                 transient += 1
                 if transient >= TRANSIENT_TRIES:
-                    return Outcome("failed", code="unreachable", detail=str(error))
+                    return Outcome(
+                        "failed",
+                        code="unreachable",
+                        detail=str(error),
+                        cause=f"the assign request {answer_of(error)}",
+                    )
                 self.sleep(self.poll_s)
                 continue
             if launch.run_id:
                 break
             if launch.busy:
+                busy_since = self.clock() if busy_since is None else busy_since
+                waited = self.clock() - busy_since
+                if waited > limit_s:
+                    return Outcome(
+                        "stalled",
+                        code="busy",
+                        detail=f"another run of the sample was in flight for "
+                        f"{waited / 60:.1f} min",
+                        cause=f"another run of the sample was in flight past "
+                        f"the {limit_s / 60:g} min limit",
+                    )
                 self.sleep(self.poll_s)
                 continue
-            return Outcome("refused", code=launch.code, detail=launch.reason)
+            return Outcome(
+                "refused",
+                code=launch.code,
+                detail=launch.reason,
+                cause=f"the assign request was refused ({launch.code})",
+            )
+        started = self.clock()
         transient = 0
+        status = None
         while True:
             try:
                 runs = api.runs(sample, include_decoys=True)
@@ -1877,12 +2007,20 @@ class BenchRun:
                 transient += 1
                 if transient >= TRANSIENT_TRIES:
                     return Outcome(
-                        "failed", launch.run_id, code="unreachable", detail=str(error)
+                        "failed",
+                        launch.run_id,
+                        code="unreachable",
+                        detail=str(error),
+                        cause=f"its runs could not be read: {answer_of(error)}",
                     )
                 runs = None
             except RunError as error:
                 return Outcome(
-                    "failed", launch.run_id, code="unreadable", detail=str(error)
+                    "failed",
+                    launch.run_id,
+                    code="unreadable",
+                    detail=str(error),
+                    cause=f"its runs could not be read: {error}",
                 )
             if runs is not None:
                 transient = 0
@@ -1896,7 +2034,10 @@ class BenchRun:
                 )
                 if run is None:
                     return Outcome(
-                        "lost", launch.run_id, detail="the run left the listing"
+                        "lost",
+                        launch.run_id,
+                        detail="the run left the listing",
+                        cause="its run left the listing",
                     )
                 status = run.get("status")
                 if status in TERMINAL:
@@ -1907,11 +2048,24 @@ class BenchRun:
                         and error.startswith(DECOY_REFUSAL)
                     ):
                         return Outcome("refused", launch.run_id, "decoy_refused", error)
-                    return Outcome(status, launch.run_id, detail=error)
+                    return Outcome(
+                        status, launch.run_id, detail=error, cause=f"its run {status}"
+                    )
             if self.clock() > deadline:
                 return Outcome("over_budget", launch.run_id)
             if stop.is_set():
                 return Outcome("stopped", launch.run_id)
+            age = self.clock() - started
+            if age > limit_s:
+                return Outcome(
+                    "stalled",
+                    launch.run_id,
+                    code=status or "unread",
+                    detail=f"no end {age / 60:.1f} min after its start, "
+                    f"status {status or 'not read'}",
+                    cause=f"its run did not end within the {limit_s / 60:g} min "
+                    f"limit, status {status or 'not read'}",
+                )
             self.sleep(self.poll_s)
 
     def _check_controls(self, api, plans, results, reference, runlog) -> None:
@@ -1927,7 +2081,10 @@ class BenchRun:
                     runs = self._runs(api, sample)
                 except (TransientError, RunError) as error:
                     p.leave_out(
-                        "failed", sample, f"its runs could not be read: {error}"
+                        "failed",
+                        sample,
+                        f"its runs could not be read: {error}",
+                        f"its runs could not be read: {answer_of(error)}",
                     )
                     continue
                 # The batch arm's runs of the sample follow its control; the
@@ -2222,6 +2379,15 @@ class BenchRun:
                 out["decoys"][arm] = dict(sorted(tally.items()))
             if "batch" in result:
                 out["batch"] = arm_summary(result["batch"])
+        # Why the failed and stalled samples were left out, counted: only on
+        # a set that has any, so a whole set's summary keeps its keys.
+        causes = {
+            reason: dict(sorted(p.causes[reason].items()))
+            for reason in CAUSED
+            if p.causes.get(reason)
+        }
+        if causes:
+            out["causes"] = causes
         return out
 
     def _promote(self, ref, summary, problems, state, out, say) -> dict | None:
@@ -3086,12 +3252,22 @@ def regate(made: dict, baseline: dict | None, cr) -> None:
 
 def run_problems(sets: dict) -> list[str]:
     """What makes a run exit 1 beside a failed gate, read off ``run.json``'s
-    sets: anything left out, a set over its budget among them, and a decoy
-    arm that failed, was cancelled or was lost rather than refused."""
+    sets: anything left out, a set over its budget among them, with the
+    causes ``run.json`` counts for a failed or stalled sample, and a decoy
+    arm that failed, was cancelled, was lost or stalled rather than refused."""
     problems = []
     for name, s in sets.items():
+        causes = s.get("causes") or {}
         for reason, n in s["left_out"].items():
-            problems.append(f"set {name}: {n} sample(s) {reason}")
+            why = causes.get(reason) or {}
+            problems.append(
+                f"set {name}: {n} sample(s) {reason}"
+                + (
+                    ": " + "; ".join(f"{k} ({m})" for k, m in why.items())
+                    if why
+                    else ""
+                )
+            )
         failed = sum(
             n
             for tally in s["decoys"].values()
@@ -3100,6 +3276,11 @@ def run_problems(sets: dict) -> list[str]:
         )
         if failed:
             problems.append(f"set {name}: {failed} decoy run(s) failed")
+        stalled = sum((tally.get("stalled") or 0) for tally in s["decoys"].values())
+        if stalled:
+            problems.append(
+                f"set {name}: {stalled} decoy run(s) stalled, past the run limit"
+            )
         arm = s.get("batch")
         if arm is not None and arm.get("off"):
             problems.append(f"set {name}: no batch arm: {arm.get('why')}")
