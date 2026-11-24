@@ -73,6 +73,11 @@ from mascope_backend.api.new.workspaces.dependencies import (
     where_collection_visible,
 )
 from mascope_backend.db import SampleFile, TargetCollection, async_session
+from mascope_backend.db.models import (
+    record_collection_id,
+    record_collection_sha,
+    record_names_a_collection,
+)
 from mascope_backend.runtime import runtime
 from mascope_sdk.csv_cells import INCOMPLETE_LINE, escape_cell
 
@@ -530,15 +535,15 @@ def on_the_trend():
 
 
 def _collection_id_of():
-    """SQL for a record's collection id, NULL where it names none."""
-    return SampleFile.mz_calibration["quality"]["collection"]["id"].as_string()
+    """SQL for a record's collection id, NULL where it names none: the
+    expression ``sample_file``'s collection indexes hold."""
+    return record_collection_id(SampleFile.mz_calibration)
 
 
 def _collection_sha_of():
-    """SQL for a record's collection isotope hash, NULL where it names none."""
-    return SampleFile.mz_calibration["quality"]["collection"][
-        "isotopes_sha256"
-    ].as_string()
+    """SQL for a record's collection isotope hash, NULL where it names none:
+    the expression ``sample_file``'s collection indexes hold."""
+    return record_collection_sha(SampleFile.mz_calibration)
 
 
 def _sql_number(path: str) -> str:
@@ -797,6 +802,73 @@ SELECT
 )
 
 
+def _earlier_files(instrument: str, polarity: str, start: datetime):
+    """The statement's filters: the instrument's TOF files of one polarity
+    acquired before ``start``."""
+    return (
+        *_instrument_files(instrument, polarity),
+        SampleFile.datetime_utc < start,
+    )
+
+
+def _version_look(instrument: str, polarity: str, start: datetime, key):
+    """The latest earlier file fitted with the collection version ``key``,
+    ``(id, isotope hash)``: a read of
+    ``ix_sample_file_instrument_polarity_collection_version``."""
+    return (
+        select(SampleFile.sample_file_id)
+        .where(
+            *_earlier_files(instrument, polarity, start),
+            _collection_id_of() == key[0],
+            _collection_sha_of() == key[1],
+        )
+        .order_by(SampleFile.datetime_utc.desc())
+        .limit(1)
+    )
+
+
+def _collection_look(instrument: str, polarity: str, start: datetime, collection_id):
+    """The isotope hash of the latest earlier file fitted with the collection:
+    a read of ``ix_sample_file_instrument_polarity_collection``."""
+    return (
+        select(_collection_sha_of())
+        .where(
+            *_earlier_files(instrument, polarity, start),
+            _collection_id_of() == collection_id,
+        )
+        .order_by(SampleFile.datetime_utc.desc())
+        .limit(1)
+    )
+
+
+def _named_look(instrument: str, polarity: str, start: datetime):
+    """
+    An earlier file that names a collection, if any: a read of
+    ``ix_sample_file_instrument_polarity_collection``.
+
+    Which file does not matter. The index holds the instrument and the
+    polarity ahead of the collection id, so the read keeps to this
+    polarity's entries: on a TOF that runs both, the other polarity's are
+    never read. The look is ordered as that index is, by
+    the collection id before the time, so that no other read serves it
+    without sorting every file it keeps. Ordered by the time alone, a walk
+    back on a time index serves it too, and the planner takes that walk
+    where it believes the files that name a collection dense. Its
+    statistics are the whole table's: other instruments' files can make them
+    dense, and on an instrument whose earlier files name none the walk reads
+    every record of its history.
+    """
+    return (
+        select(SampleFile.sample_file_id)
+        .where(
+            *_earlier_files(instrument, polarity, start),
+            record_names_a_collection(SampleFile.mz_calibration),
+        )
+        .order_by(_collection_id_of().desc(), SampleFile.datetime_utc.desc())
+        .limit(1)
+    )
+
+
 async def _before_the_window(
     session,
     instrument: str,
@@ -807,52 +879,32 @@ async def _before_the_window(
     """
     What the files acquired before a window say of the collections in it.
 
-    Each look is one indexed walk back from the window's start, which stops at
-    the first file that answers it: soon for a version or a collection in
-    use, and only at the instrument's first file for one never used before.
+    Each look is one read of an index of the files that name a collection
+    (``SampleFile.__table_args__``), back from the window's start: the
+    version's own entries, the collection's, or the instrument's. A version
+    or a collection never used before finds none at once, rather than
+    walking the instrument's history for it.
 
     :return: The versions in ``collections`` an earlier file was fitted with;
         per collection id of theirs, the isotope hash of the latest earlier
         file fitted with that collection; and whether any earlier file names a
         collection.
     """
-    filters = (
-        *_instrument_files(instrument, polarity),
-        SampleFile.datetime_utc < start,
-    )
     seen, last = set(), {}
     for version in collections:
         key = (version["id"], version["isotopes_sha256"])
-        found = await session.execute(
-            select(SampleFile.sample_file_id)
-            .where(
-                *filters,
-                _collection_id_of() == key[0],
-                _collection_sha_of() == key[1],
-            )
-            .order_by(SampleFile.datetime_utc.desc())
-            .limit(1)
-        )
+        found = await session.execute(_version_look(instrument, polarity, start, key))
         if found.first() is not None:
             seen.add(key)
     for collection_id in {version["id"] for version in collections}:
         found = await session.execute(
-            select(_collection_sha_of())
-            .where(*filters, _collection_id_of() == collection_id)
-            .order_by(SampleFile.datetime_utc.desc())
-            .limit(1)
+            _collection_look(instrument, polarity, start, collection_id)
         )
         sha = found.scalar_one_or_none()
         if sha is not None:
             last[collection_id] = sha
-    recorded = (
-        await session.execute(
-            select(SampleFile.sample_file_id)
-            .where(*filters, _collection_id_of().is_not(None))
-            .order_by(SampleFile.datetime_utc.desc())
-            .limit(1)
-        )
-    ).first() is not None
+    found = await session.execute(_named_look(instrument, polarity, start))
+    recorded = found.first() is not None
     return seen, last, recorded
 
 
