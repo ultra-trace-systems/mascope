@@ -23,7 +23,7 @@ Every user account has a single global role (guest, editor, admin, or owner) set
 
 - **Who can log in and access the application** — all roles can.
 - **User management** — admins can register and manage guests and editors; owners can manage all users including other admins and owners.
-- **Shared reference data** — instrument configurations, ionization modes, target compounds, the metadata field registry, and other system-wide resources. Guests can read; editors and above can create and modify. A registry field in use (an attribute template selects it) is retired rather than deleted, and the field Mascope ships (`environment`) is neither. Note that editing shared reference data is retroactive and instance-wide: changing an ionization mode changes how samples already processed under it are calibrated and matched, and flags every affected batch for recalibration or rematching — in every workspace, not only the editor's own.
+- **Shared reference data** — instrument configurations, ionization modes, target compounds, the metadata field registry, the environment registry, and other system-wide resources. Guests can read; editors and above can create and modify. A registry field in use (an attribute template selects it) is retired rather than deleted, and the field Mascope ships (`environment`) is neither. An environment Mascope ships is retired rather than deleted. Note that editing shared reference data is retroactive and instance-wide: changing an ionization mode changes how samples already processed under it are calibrated and matched, and flags every affected batch for recalibration or rematching — in every workspace, not only the editor's own.
 
   Because a mode is read instance-wide, the calibration and diagnostic collections it names must be readable by the editor setting them, and a collection an ionization mode uses cannot afterwards be narrowed into a single workspace. Otherwise one workspace's private collection would end up governing how every other workspace's samples are matched.
 - **Calibration** — all users can view calibration state. Running one is governed by the instrument workspace, not the global role; see below.
@@ -207,5 +207,6 @@ Each user can generate a personal **access token** for programmatic access (e.g.
 | Register new user accounts                   | Global admin (guests/editors) or owner (any role)   |
 | Manage instrument configs / ionization modes | Global editor role or higher                        |
 | Define, change or retire metadata fields     | Global editor role or higher                        |
+| Define, change or retire environments        | Global editor role or higher                        |
 | Run calibration                              | Admin in the instrument's workspace                 |
 | Access data via Jupyter / SDK                | Access token + same permissions as the user account |

@@ -351,9 +351,9 @@ the backend container instead (see
 [Loading reference chemistry data](https://github.com/ultra-trace-systems/mascope/blob/master/docs/maintaining.md#loading-reference-chemistry-data)).
 Each list becomes its own source, named by its id and versioned by its
 `data_version`, and seeding again loads only the lists whose version changed.
-A list's row is written unbounded, with the radical allowance and the polarity
-its header names, and seeding again brings the row of a list that is already
-loaded up to date with them. A list that says it was measured in `both`
+A list's row is written unbounded, with the radical allowance, the polarity,
+the regimes and the `always_active` its header names, and seeding again brings
+the row of a list that is already loaded up to date with them. A list that says it was measured in `both`
 polarities is recorded as both.
 
 The lists are curated in a JSON format (schema 2). A list's header says what
@@ -435,11 +435,31 @@ belongs to the whole list, and its species are neutral formulas:
   are the one part of this provenance a load records on the list's source row.
 - **`polarity` is recorded on the list's source row**, and Stage A matches the
   list only against samples measured in that polarity (`both` matches either).
-- **`applies_to_contexts` and `always_active` are read, but nothing acts on them
-  yet.** They say which chemistry contexts a list belongs to, and whether it
-  should match in every context; the cyclic siloxanes, for example, are a
-  background of every inlet. Until a source row records them, Stage A matches
-  every loaded list in every context, under that context's ceiling.
+- **`applies_to_contexts` names the list's regimes**: the kinds of chemistry
+  its species come from. The key keeps its old name; its values are regimes,
+  from a fixed vocabulary the checks hold a list to:
+
+  | Regime | What it names |
+  |---|---|
+  | `biogenic_soa` | Secondary organic aerosol from biogenic precursors |
+  | `monoterpene_ox` | Oxidation of monoterpenes |
+  | `ap_ox` | Oxidation of alpha-pinene |
+  | `limonene_ox` | Oxidation of limonene |
+  | `isoprene_ox` | Oxidation of isoprene |
+
+  A sample is tagged with environments, and an environment names regimes
+  from the same vocabulary
+  ([Environments](../concepts/index.md#environments)). That is how a list and
+  a sample will meet: the list's curator says where it applies, and nobody
+  picks lists for a batch.
+- **`"always_active": true` says a list is read for every sample.** The
+  contaminant list, the cyclic siloxanes and caprolactam say it: they are a
+  background of every inlet.
+- **Both are recorded on the list's source row**, by `reference seed` and by
+  `reference sync` of a list file. A list that declares no regimes, and every
+  database and CSV, records neither. Stage A does not select lists by them
+  yet: it matches every loaded list in every context, under that context's
+  ceiling.
 
 The repository's test suite holds every shipped list to these checks, so a list
 that breaks one fails CI instead of loading.
