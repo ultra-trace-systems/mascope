@@ -8,6 +8,7 @@ re-enters it as an assignment nobody made.
 
 import copy
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -959,6 +960,40 @@ class TestWhatStageALosesWithTheClaim:
         kept = drop_ions_claimed_elsewhere(self._frame(), {"p1"}, ion_ids={"ion-1"})
 
         assert kept["sample_peak_id"].tolist() == ["p4"]
+
+    def test_only_an_ion_with_a_row_on_a_claimed_peak_is_read_for_its_m0(self):
+        """Its M0 is one of its rows: an ion none of whose rows is on a
+        claimed peak cannot be claimed, so its family is never read, which on
+        a known set the reference lists swell is most of the ions
+        (MAS-1274)."""
+        from mascope_backend.api.new.peak_assignments import engine
+
+        frame = pd.concat(
+            [
+                self._frame(),
+                pd.DataFrame(
+                    {
+                        "target_ion_id": ["ion-3", "ion-3"],
+                        "target_isotope_formula": ["C7H5O2", "C6[13C]H5O2"],
+                        "sample_peak_id": ["p5", "p6"],
+                        "mz": [121.0295, 122.0329],
+                    }
+                ),
+            ],
+            ignore_index=True,
+        )
+        with patch.object(
+            engine, "monoisotopic_row", wraps=engine.monoisotopic_row
+        ) as read:
+            kept = drop_ions_claimed_elsewhere(frame, {"p2", "p4"})
+
+        assert sorted(
+            call.args[0]["target_ion_id"].iloc[0] for call in read.call_args_list
+        ) == [
+            "ion-1",
+            "ion-2",
+        ]
+        assert kept["sample_peak_id"].tolist() == ["p1", "p3", "p5", "p6"]
 
 
 #: The charge-transfer source's channels, by the mechanism ids the rows carry.
