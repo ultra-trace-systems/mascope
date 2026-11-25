@@ -491,7 +491,7 @@ benches.
     confidence, so 648 wrong winners sit at the top of the uronium set's
     confidence order. No cut on that set then reaches 5 % FDR.
   - *Contested top-1 alone would pass a harmful context.* Combustion's caps
-    still prune decoys, so its contested top-1 (0.890) stays above `none`'s.
+    still prune decoys, so its contested top-1 (0.889) stays above `none`'s.
     Its top-1 over all anchors and its FDR-kept count show the removed truths.
     The decision below reads those two.
   - *Calibration ECE moves for a reason the context is not.* The shipped
