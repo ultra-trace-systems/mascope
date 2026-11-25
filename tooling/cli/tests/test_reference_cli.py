@@ -275,7 +275,7 @@ def test_a_sync_reports_where_the_load_applies(dump, captured_ingest, logged):
         reference_app, ["sync", "custom", str(dump), "--version", "v1", "--yes"]
     )
     assert result.exit_code == 0, result.output
-    assert "info: Where it applies: no regimes." in logged
+    assert "info: Where it applies: no regimes: read for every sample." in logged
 
 
 @pytest.mark.parametrize(

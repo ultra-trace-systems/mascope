@@ -431,6 +431,16 @@ def test_the_selection_the_caller_names_is_recorded(sync_engine, tmp_path):
         assert _selection(conn, "v1") == (None, True)
 
 
+def test_a_loads_report_says_where_the_source_applies():
+    # A source that declares no regimes is read for every sample, and the
+    # report says so rather than reading as "applies nowhere".
+    assert SourceSelection().describe() == "no regimes: read for every sample"
+    assert (
+        SourceSelection(("monoterpene_ox", "biogenic_soa"), True).describe()
+        == "regimes monoterpene_ox, biogenic_soa, always active"
+    )
+
+
 # --- Deactivation ------------------------------------------------------------------
 
 
