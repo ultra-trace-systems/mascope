@@ -49,20 +49,6 @@ UNRESOLVED_MEMBER_DEPTH = 1e-3
 HEIGHT_SUM_SPAN = 0.2
 
 
-# Wiley spectral database:
-# H/C ratio 0.1...6.0 in 99.99% of all formulas.
-DEFAULT_ELEMENTAL_RATIO_RANGE = {
-    "H/C": (0.1, 6.0),
-    "N/C": (0.0, 2.0),
-    "O/C": (0.0, 2.0),
-    "S/C": (0.0, 0.1),
-    "P/C": (0.0, 0.05),
-    "Cl/C": (0.0, 0.05),
-    "Br/C": (0.0, 0.05),
-    "F/C": (0.0, 0.05),
-    "I/C": (0.0, 0.05),
-}
-
 # Carbon-equivalent count (C + Si) below which a chemistry context's Van Krevelen
 # ratio windows say nothing and are not applied. A one- or two-carbon molecule
 # sits outside every ambient window by construction - methane reads H/C 4.0, urea

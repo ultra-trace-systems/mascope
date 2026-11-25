@@ -7,6 +7,8 @@ against - that the identity profile leaves a run exactly as it was before
 profiles existed.
 """
 
+from dataclasses import replace
+
 import pytest
 from pydantic import ValidationError
 
@@ -30,6 +32,7 @@ from mascope_backend.api.new.peak_assignments.profiles import (
 )
 from mascope_backend.api.new.peak_assignments.schemas import ProfilePreviewQueryParams
 from mascope_tools.composition import profiles as presets
+from mascope_tools.composition.heuristic_filter import formula_plausibility
 from mascope_tools.composition.mass_accuracy import MassTrend, unwiden_sigma_ppm
 from mascope_tools.composition.measurement_model import MeasurementModel
 
@@ -405,6 +408,57 @@ class TestTheSkeletonSwitch:
         )
         assert resolved.nox_skeleton is False
         assert resolved.heuristics_config().context_nox_skeleton is False
+
+
+class TestTheWindowsGrade:
+    """Decision MAS-979 (#3188): the context's windows grade the run's formulas."""
+
+    NITRATE = ["[M+NO3]-", "[M-H]-"]
+
+    def test_the_filter_refuses_nothing_on_the_windows(self):
+        resolved = resolve_profile(
+            PeakAssignmentConfig(), self.NITRATE, instrument_type="orbi", polarity="-"
+        )
+        assert resolved.heuristics_config().context_windows_gate is False
+
+    def test_a_context_may_ask_for_the_gate(self):
+        gated = replace(presets.AMBIENT_AIR, windows_gate=True)
+        resolved = replace(
+            resolve_profile(
+                PeakAssignmentConfig(),
+                self.NITRATE,
+                instrument_type="orbi",
+                polarity="-",
+            ),
+            context=gated,
+        )
+        assert resolved.heuristics_config().context_windows_gate is True
+
+    def test_inside_the_block_the_run_grades_in_its_windows(self):
+        resolved = resolve_profile(
+            PeakAssignmentConfig(), self.NITRATE, instrument_type="tof", polarity="-"
+        )
+        assert resolved.context is presets.AMBIENT_AIR
+        stuffed = "C10H20N5O3"  # N/C 0.5 against ambient air's 0.4
+        bare = formula_plausibility(stuffed)
+        with resolved.graded():
+            assert formula_plausibility(stuffed) < bare
+            assert formula_plausibility("C10H16O7") == 1.0
+        assert formula_plausibility(stuffed) == bare
+
+    def test_a_skeleton_run_grades_on_the_skeleton(self):
+        dinitrate = "C5H8N2O8"  # O/C 1.6 as written; a C5 diol skeleton
+        orbitrap = resolve_profile(
+            PeakAssignmentConfig(), self.NITRATE, instrument_type="orbi", polarity="-"
+        )
+        tof = resolve_profile(
+            PeakAssignmentConfig(), self.NITRATE, instrument_type="tof", polarity="-"
+        )
+        with orbitrap.graded():
+            on_the_skeleton = formula_plausibility(dinitrate)
+        with tof.graded():
+            as_written = formula_plausibility(dinitrate)
+        assert on_the_skeleton > as_written
 
 
 class TestOverrides:

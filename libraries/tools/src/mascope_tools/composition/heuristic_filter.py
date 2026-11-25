@@ -3,6 +3,9 @@ Based on 7 Golden Rules by https://bmcbioinformatics.biomedcentral.com/articles/
 """
 
 import math
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from functools import lru_cache
 from typing import Any, Sequence
 
@@ -11,6 +14,7 @@ import polars as pl
 from pyteomics.mass import Composition
 from scipy.spatial.distance import cosine
 
+from mascope_tools.composition import formula_shape
 from mascope_tools.composition.config import (
     CONTEXT_RATIO_MIN_CARBON,
     ENVELOPE_ABUNDANCE_FLOOR,
@@ -340,74 +344,25 @@ def rule_senior(candidates: pl.DataFrame, **kwargs) -> tuple[pl.Series, list[str
 # ---------------------------------------------------------------------------
 # Graded chemical plausibility (Seven Golden Rules, Phase 3 / P1).
 #
-# The rules above (`rule_element_ratio`, `rule_senior`) are BOOLEAN gates: a
-# candidate either passes or is hard-cut. The confidence layer
-# (docs/dev/assignment_confidence.md) needs the same chemistry expressed as a
-# GRADED per-candidate plausibility in [0, 1] so it can *weigh* candidates rather
-# than reject them -- a formula whose ratios sit in the common range is
-# high-probability, one pushing into the distribution's tail is lower-probability,
-# and an impossible structure is ~0.
-#
-# `chemical_plausibility` composes three independent factors (each in [0, 1]), by
-# multiplication, per the confidence-layer design rule that every layer is a
-# likelihood:
-#   1. Senior/RDBE structural feasibility (Rule 2) -- 1.0 feasible, 0.0 impossible.
-#   2. Element-ratio plausibility (Rules 4-5) -- graded across the paper's
-#      common / extended / extreme ratio bands.
-#   3. Heteroatom co-occurrence probability (Rule 6) -- graded against the
-#      multi-element count restrictions.
+# The confidence layer (docs/dev/assignment_confidence.md) needs the chemistry as
+# a GRADED per-candidate plausibility in [0, 1], to *weigh* candidates rather than
+# reject them. `formula_plausibility` multiplies independent factors, each a
+# likelihood: Senior/RDBE feasibility (Rule 2, 1.0 or 0.0), the element ratios
+# (Rules 4-5, graded across the common / extended bands), the heteroatom
+# co-occurrence (Rule 6), and inside a run the chemistry context's windows.
 #
 # INVARIANT: the composite is 0.0 **iff** the neutral graph is provably impossible
-# (`_senior_feasible` is False); otherwise it lies in [PLAUSIBILITY_FLOOR, 1.0]. The
-# graded factors 2-3 multiply, and several of their sub-checks overlap, so without the
-# floor an unusual-but-possible formula collapses orders of magnitude below any single
-# factor's floor and becomes indistinguishable from an impossible one.
-#
-# Conservative / fail-open by design: any element outside the standard tables, a
-# carbon-free formula (X/C ratios undefined), or an unparseable formula scores
-# 1.0 for the affected factor -- unusual chemistry is never wrongly penalised.
-# Numbers are taken verbatim from Kind & Fiehn 2007 (BMC Bioinformatics 8:105),
-# Tables 2 (element ratios) and 3 (element-count restrictions).
+# (`_senior_feasible` is False); otherwise it lies in [PLAUSIBILITY_FLOOR, 1.0]:
+# overlapping graded factors would otherwise multiply an unusual formula down to
+# where it reads as an impossible one. Fail-open: an element outside the tables,
+# a carbon-free formula (X/C undefined) or an unparseable one scores 1.0 for the
+# affected factor. The numbers are Kind & Fiehn 2007 (BMC Bioinformatics 8:105),
+# Tables 2 and 3, rows of the formula-shape table (`formula_shape`), read when a
+# formula is graded, so the table moves every reader at once. The floor is named
+# here too, where the layer's readers have always taken it from.
 # ---------------------------------------------------------------------------
 
-# Floor for the ratio/Rule-6 tapers AND for their product: the plausibility a wildly
-# out-of-range (but not structurally impossible) formula decays to. Non-zero so the graded
-# score is never a hard reject -- that job belongs to the boolean rules / arbitration. It
-# is a single knob, and it caps this layer's authority at 10:1 against the fit score
-# (evidence = fit x plausibility), which is deliberate: the chemistry layer *grades*, it
-# does not gate.
-PLAUSIBILITY_FLOOR = 0.1
-
-# Element/C ratio bands (Kind & Fiehn 2007, Table 2), keyed by the numerator
-# element X (ratio = n_X / n_C). Each entry is
-# (common_min, common_max, extended_min, extended_max): the common range covers
-# ~99.7% of known formulas, the extended range ~99.99%. Only H/C has a meaningful
-# non-zero minimum. A ratio is scored ONLY when both X and C are present, mirroring
-# `rule_element_ratio` (absence of an element is not an "unusual ratio").
-_RATIO_BANDS: dict[str, tuple[float, float, float, float]] = {
-    "H": (0.2, 3.1, 0.1, 6.0),
-    "F": (0.0, 1.5, 0.0, 6.0),
-    "Cl": (0.0, 0.8, 0.0, 2.0),
-    "Br": (0.0, 0.8, 0.0, 2.0),
-    "N": (0.0, 1.3, 0.0, 4.0),
-    "O": (0.0, 1.2, 0.0, 3.0),
-    "P": (0.0, 0.3, 0.0, 2.0),
-    "S": (0.0, 0.8, 0.0, 3.0),
-    "Si": (0.0, 0.5, 0.0, 1.0),
-}
-
-# Multi-element count restrictions (Kind & Fiehn 2007, Table 3, Rule 6): when a
-# combination of heteroatoms co-occurs ABOVE the trigger counts, none of them is
-# expected to exceed the listed cap. Each check is (trigger, caps): trigger maps
-# element -> strict lower bound that must ALL hold for the check to apply; caps
-# maps element -> the count above which the formula becomes improbable.
-_RULE6_CHECKS: list[tuple[dict[str, int], dict[str, int]]] = [
-    ({"N": 1, "O": 1, "P": 1, "S": 1}, {"N": 10, "O": 20, "P": 4, "S": 3}),
-    ({"N": 3, "O": 3, "P": 3}, {"N": 11, "O": 22, "P": 6}),
-    ({"O": 1, "P": 1, "S": 1}, {"O": 14, "P": 3, "S": 3}),
-    ({"P": 1, "S": 1, "N": 1}, {"P": 3, "S": 3, "N": 4}),
-    ({"N": 6, "O": 6, "S": 6}, {"N": 19, "O": 14, "S": 8}),
-]
+PLAUSIBILITY_FLOOR = formula_shape.PLAUSIBILITY_FLOOR
 
 
 def element_counts(formula: str) -> dict[str, int] | None:
@@ -436,7 +391,8 @@ def _taper(value: float, near: float, far: float) -> float:
         return 1.0 - 0.5 * (dist / span)
     # beyond the far edge: 0.5 -> floor over one more span, then flat
     frac = min(1.0, (dist - span) / span)
-    return max(PLAUSIBILITY_FLOOR, 0.5 - (0.5 - PLAUSIBILITY_FLOOR) * frac)
+    floor = formula_shape.PLAUSIBILITY_FLOOR
+    return max(floor, 0.5 - (0.5 - floor) * frac)
 
 
 def element_ratio_plausibility(counts: dict[str, int]) -> float:
@@ -452,7 +408,8 @@ def element_ratio_plausibility(counts: dict[str, int]) -> float:
     if n_c <= 0:
         return 1.0
     score = 1.0
-    for element, (c_min, c_max, e_min, e_max) in _RATIO_BANDS.items():
+    bands = formula_shape.graded_ratio_bands()
+    for element, (c_min, c_max, e_min, e_max) in bands.items():
         n_x = counts.get(element, 0)
         if n_x <= 0:
             continue
@@ -460,7 +417,7 @@ def element_ratio_plausibility(counts: dict[str, int]) -> float:
         upper = _taper(ratio, c_max, e_max)
         lower = _taper(ratio, c_min, e_min) if c_min > 0 else 1.0
         score *= min(upper, lower)
-    return max(PLAUSIBILITY_FLOOR, score)
+    return max(formula_shape.PLAUSIBILITY_FLOOR, score)
 
 
 def heteroatom_probability_plausibility(counts: dict[str, int]) -> float:
@@ -475,15 +432,16 @@ def heteroatom_probability_plausibility(counts: dict[str, int]) -> float:
     product is floored at ``PLAUSIBILITY_FLOOR``. Formulas that trigger no restriction, or
     stay within every cap, score 1.0."""
     tightest: dict[str, int] = {}
-    for trigger, caps in _RULE6_CHECKS:
+    for trigger, caps in formula_shape.CO_OCCURRENCE_CAPS:
         if all(counts.get(el, 0) > thr for el, thr in trigger.items()):
             for el, cap in caps.items():
                 if counts.get(el, 0) > cap:
                     tightest[el] = min(tightest.get(el, cap), cap)
+    floor = formula_shape.PLAUSIBILITY_FLOOR
     score = 1.0
     for el, cap in tightest.items():
-        score *= max(PLAUSIBILITY_FLOOR, cap / counts[el])
-    return max(PLAUSIBILITY_FLOOR, score)
+        score *= max(floor, cap / counts[el])
+    return max(floor, score)
 
 
 def senior_plausibility(counts: dict[str, int] | None) -> float:
@@ -495,27 +453,66 @@ def senior_plausibility(counts: dict[str, int] | None) -> float:
     return 1.0 if _senior_feasible(counts) else 0.0
 
 
-# Pure function of the formula string; cached because arbitration re-evaluates
-# it per candidate per peak across a whole run's ledger.
-@lru_cache(maxsize=65536)
+#: The chemistry context formulas are graded in (:func:`graded_in`): its ratio
+#: windows and whether an organonitrate's skeleton is read. Context-local, as
+#: ``custom_elements.labelled_purity`` is, so concurrent runs each grade in
+#: their own and ``asyncio.to_thread`` carries it. None grades on the universal
+#: bands alone, as a run with no context and every caller outside a run do.
+_GRADED_CONTEXT: ContextVar[tuple | None] = ContextVar("graded_context", default=None)
+
+
+@contextmanager
+def graded_in(
+    windows: Mapping[str, tuple[float, float]], nox_skeleton: bool = False
+) -> Iterator[None]:
+    """Grade formulas in a chemistry context's ratio windows inside the block.
+
+    Every reader of a run's plausibility - the search, both stages'
+    arbitration, the rival sets, the tiers and the identification level -
+    calls :func:`formula_plausibility` with the formula alone, so the run
+    grades every formula in its context once, here, and they agree.
+
+    :param windows: The context's ratio windows; empty grades on the
+        universal bands alone, the identity context ``none`` is.
+    :param nox_skeleton: Read an organonitrate's carbon skeleton too.
+    """
+    key = (tuple(sorted(windows.items())), bool(nox_skeleton)) if windows else None
+    token = _GRADED_CONTEXT.set(key)
+    try:
+        yield
+    finally:
+        _GRADED_CONTEXT.reset(token)
+
+
 def formula_plausibility(formula: str) -> float:
     """Combined graded chemical plausibility in [0, 1] for a single NEUTRAL formula.
 
     0.0 **iff** the Senior/RDBE check (Rule 2) proves the graph impossible; otherwise the
-    element-ratio (Rules 4-5) and heteroatom co-occurrence (Rule 6) factors multiply and
-    the result is floored at ``PLAUSIBILITY_FLOOR``, so a merely unusual formula is never
-    mistaken for an impossible one. Unparseable formulas fail open to 1.0. See the section
-    header for the design; numbers from Kind & Fiehn 2007."""
+    element-ratio (Rules 4-5) and heteroatom co-occurrence (Rule 6) factors multiply, and
+    inside :func:`graded_in` the context's windows with them
+    (:func:`context_window_plausibility`); the result is floored at
+    ``PLAUSIBILITY_FLOOR``, so a merely unusual formula is never mistaken for an
+    impossible one. Unparseable formulas fail open to 1.0. See the section header for
+    the design; numbers from Kind & Fiehn 2007, read off ``formula_shape``."""
+    return _plausibility(formula, _GRADED_CONTEXT.get())
+
+
+# Pure function of the formula and the context; cached because arbitration
+# re-evaluates it per candidate per peak across a whole run's ledger.
+@lru_cache(maxsize=65536)
+def _plausibility(formula: str, context: tuple | None) -> float:
     counts = element_counts(formula)
     if counts is None:
         return 1.0
     if not _senior_feasible(counts):
         return 0.0
-    return max(
-        PLAUSIBILITY_FLOOR,
-        element_ratio_plausibility(counts)
-        * heteroatom_probability_plausibility(counts),
+    score = element_ratio_plausibility(counts) * heteroatom_probability_plausibility(
+        counts
     )
+    if context is not None:
+        windows, nox_skeleton = context
+        score *= context_window_plausibility(counts, dict(windows), nox_skeleton)
+    return max(formula_shape.PLAUSIBILITY_FLOOR, score)
 
 
 # Below this, a candidate's chemistry is weak enough to note in the filter log.
@@ -660,22 +657,69 @@ def nox_skeletons(counts: dict[str, int]) -> list[dict[str, int]]:
     return skeletons
 
 
-def _inside_windows(
-    counts: dict[str, int], windows: dict[str, tuple[float, float]]
-) -> bool:
-    """Whether counts with a carbon backbone sit inside every window."""
+def _window_values(counts: dict[str, int]) -> dict[str, float]:
+    """The four window ratios of counts with a carbon backbone."""
     carbon, hydrogen, dbe = effective_counts(counts)
-    values = {
+    return {
         "H/C": hydrogen / carbon,
         "O/C": counts.get("O", 0) / carbon,
         "N/C": counts.get("N", 0) / carbon,
         "DBE/C": dbe / carbon,
     }
+
+
+def _inside_windows(
+    counts: dict[str, int], windows: dict[str, tuple[float, float]]
+) -> bool:
+    """Whether counts with a carbon backbone sit inside every window."""
+    return _window_factor(counts, windows) >= 1.0
+
+
+def _window_factor(
+    counts: dict[str, int], windows: dict[str, tuple[float, float]]
+) -> float:
+    """Counts with a carbon backbone graded on every window, floored."""
+    values = _window_values(counts)
+    score = 1.0
     for key, (low, high) in windows.items():
         value = values.get(key)
-        if value is not None and not (low <= value <= high):
-            return False
-    return True
+        if value is None:
+            continue
+        span = formula_shape.CONTEXT_WINDOW_SPAN * (high - low)
+        score *= min(_taper(value, high, high + span), _taper(value, low, low - span))
+    return max(formula_shape.PLAUSIBILITY_FLOOR, score)
+
+
+def context_window_plausibility(
+    counts: dict[str, int],
+    windows: dict[str, tuple[float, float]],
+    nox_skeleton: bool = False,
+) -> float:
+    """A chemistry context's ratio windows as a floored factor (#3188).
+
+    1.0 inside every window. Outside one it tapers as the element-ratio bands
+    do: half credit ``formula_shape.CONTEXT_WINDOW_SPAN`` of the window's width
+    past its edge, the floor at twice that, and the product over the windows
+    floored at ``PLAUSIBILITY_FLOOR``, so a window grades and never refuses.
+    With ``nox_skeleton`` the best of the formula's reading and its
+    organonitrate skeletons' (:func:`nox_skeletons`). Below the context's
+    carbon floor the windows say nothing, and the two valence-level checks of
+    :func:`_context_ratios_ok` read 1.0 or the floor; a carbon-free formula
+    reads 1.0.
+
+    :param counts: The neutral's element counts.
+    :param windows: The context's ratio windows.
+    :param nox_skeleton: Whether the run reads the skeleton.
+    :return: The factor, in [``PLAUSIBILITY_FLOOR``, 1].
+    """
+    if not windows:
+        return 1.0
+    carbon, _hydrogen, _dbe = effective_counts(counts)
+    if carbon < CONTEXT_RATIO_MIN_CARBON:
+        ok = _context_ratios_ok(counts, windows)
+        return 1.0 if ok else formula_shape.PLAUSIBILITY_FLOOR
+    readings = [counts, *(nox_skeletons(counts) if nox_skeleton else ())]
+    return max(_window_factor(reading, windows) for reading in readings)
 
 
 def context_skeleton_groups(
@@ -735,7 +779,7 @@ def _context_ratios_ok(
 def rule_context_ratios(
     candidates: pl.DataFrame, **kwargs
 ) -> tuple[pl.Series, list[str]]:
-    """The chemistry context's Van Krevelen windows, as a boolean gate.
+    """The chemistry context's Van Krevelen windows, as a gate a context opts in to.
 
     A matrix prior: ambient air does not produce a C10 neutral with fifteen
     oxygens, and a uronium source does not produce one with eight nitrogens,
@@ -743,10 +787,13 @@ def rule_context_ratios(
     computed on come from ``mascope_tools.composition.profiles``; this rule only
     applies them.
 
-    Off unless a caller supplies ``context_ratio_windows``, so the long-standing
-    composition search and any caller that names no context are untouched. Like
-    every rule here it fails open: an unparseable formula is deferred, never
-    rejected.
+    The windows grade rather than gate (decision MAS-979, #3188): a formula
+    outside them is weighed down by :func:`context_window_plausibility` and
+    refused by nothing. Under a wrong context the gate removed genuine species -
+    glycerol under five of them - and left a decoy as the peak's sole
+    candidate. So this refuses only where the caller asks for the gate
+    (``context_windows_gate``), as a context that needs it may. Like every rule
+    here it fails open: an unparseable formula is deferred, never rejected.
     """
     log_messages: list[str] = []
     if candidates.is_empty():
@@ -754,7 +801,7 @@ def rule_context_ratios(
 
     heuristics_config = kwargs.get("heuristics_config") or HeuristicFilterConfig()
     windows = heuristics_config.context_ratio_windows
-    if not windows:
+    if not windows or not heuristics_config.context_windows_gate:
         return pl.Series([True] * candidates.height, dtype=pl.Boolean), log_messages
 
     mask: list[bool] = []

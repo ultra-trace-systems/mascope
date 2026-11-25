@@ -16,8 +16,8 @@ from mascope_backend.api.new.peak_assignments.cross_channel import (
     REASON_AMBIGUOUS_ADDUCT,
     REASON_AMBIGUOUS_NITROGEN,
     SAME_ION_SETTLED,
+    SETTLED_BY_RADICAL,
     SETTLED_BY_SECOND_CHANNEL,
-    SETTLED_BY_TARGET_LIBRARY,
 )
 from mascope_backend.api.new.peak_assignments.cut_contenders import (
     CONTENDERS_PAST_CAP,
@@ -1137,7 +1137,7 @@ class TestFourBAndFourA:
                     SAME_ION_SETTLED: {
                         "alternative": "C6H9O5",
                         "via": "[M+NH4]+",
-                        "by": SETTLED_BY_TARGET_LIBRARY,
+                        "by": SETTLED_BY_RADICAL,
                     },
                 }
             }
@@ -1147,8 +1147,9 @@ class TestFourBAndFourA:
 
         assert record["level"] == "4a"
         assert record["evidence"].startswith(
-            "no rival on the measured shortlist; the split is pinned by the target "
-            "library: the same ion also reads as C6H9O5 through [M+NH4]+"
+            "no rival on the measured shortlist; the split is pinned by the other "
+            "reading being a radical: the same ion also reads as C6H9O5 through "
+            "[M+NH4]+"
         )
         assert record["facts"][-1]["fact"] == SAME_ION_SETTLED
 

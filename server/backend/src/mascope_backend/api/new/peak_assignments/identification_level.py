@@ -37,8 +37,8 @@ Each committed monoisotopic row is read in order:
 - **5b, refuted or untestable.** Refuted by its isotopes: a line of its
   predicted envelope the detectability gate says the spectrum should show is
   absent (``tiering.REASON_ABSENT_LINE``, step 3.4e). Implausible: its
-  plausibility is under the floor of the P1 layer
-  (``heuristic_filter.PLAUSIBILITY_FLOOR``), a graph no molecule has.
+  plausibility is under the floor of the P1 layer, the formula-shape table's
+  (``formula_shape.PLAUSIBILITY_FLOOR``), a graph no molecule has.
   Untestable: the instrument did not separate its peak from a neighbour
   (``tiering.REASON_UNRESOLVED_PEAK``, step 3.4f), so neither its mass nor its
   height was measured. A stamped line under a halogen-free reading is the
@@ -142,7 +142,6 @@ from mascope_backend.api.new.peak_assignments.cross_channel import (
     SETTLED_BY_PARTNER,
     SETTLED_BY_RADICAL,
     SETTLED_BY_SECOND_CHANNEL,
-    SETTLED_BY_TARGET_LIBRARY,
     carries_label,
     channels_by_neutral,
 )
@@ -181,10 +180,10 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     settled_detail,
 )
 from mascope_reference.peaklist import ONE_STRUCTURE
+from mascope_tools.composition import formula_shape
 from mascope_tools.composition.arbitration import tie_gap as arbitration_tie_gap
 from mascope_tools.composition.heuristic_filter import (
     ISOTOPE_CANDIDATE_LIMIT,
-    PLAUSIBILITY_FLOOR,
     element_counts,
     formula_plausibility,
 )
@@ -786,10 +785,11 @@ def _refuted(row: dict) -> tuple[list[str], list[str], list[dict]]:
     plausibility = _fit(_provenance(row).get("plausibility"))
     if plausibility is None:
         plausibility = float(formula_plausibility(formula))
-    if plausibility < PLAUSIBILITY_FLOOR:
+    floor = formula_shape.PLAUSIBILITY_FLOOR
+    if plausibility < floor:
         evidence.append(
             f"implausible: {formula} has a plausibility of {plausibility:.2f}, "
-            f"under the floor of {PLAUSIBILITY_FLOOR:g} a possible molecule holds"
+            f"under the floor of {floor:g} a possible molecule holds"
         )
         lift.append("another reading of the peak: no molecule has this formula")
         facts.append(_fact("plausibility", "plausibility", f"{plausibility:.4f}"))
@@ -835,7 +835,6 @@ def _split(row: dict, ctx: LevelContext) -> tuple[str, str, str, dict]:
         by = {
             SETTLED_BY_SECOND_CHANNEL: "a second channel",
             SETTLED_BY_PARTNER: "the stronger partner",
-            SETTLED_BY_TARGET_LIBRARY: "the target library",
             SETTLED_BY_RADICAL: "the other reading being a radical",
         }.get(settled.get("by"), "the cross-channel pass")
         return (

@@ -12,6 +12,7 @@ import dataclasses
 
 import pytest
 
+from mascope_tools.composition import formula_shape
 from mascope_tools.composition import profiles as P
 
 
@@ -209,17 +210,24 @@ class TestElementRanges:
         ranges = P.resolve_element_ranges(P.BR, P.URONIUM)
         assert "Cl" not in ranges and "Br" not in ranges
 
-    def test_an_organic_grid_floors_carbon_at_one(self):
+    def test_a_grid_takes_the_tables_carbon_floor(self, monkeypatch):
+        # Open since decision MAS-979: a carbon-free formula is searched, and
+        # the carbon-free signature caps it.
+        assert formula_shape.GRID_CARBON_FLOOR == 0
         for name in ("BR", "UR", "NO3", "IODIDE", "EASYIC_POS", "ESI_POS"):
             profile = P.get_reagent_profile(name)
+            assert profile.min_carbon == formula_shape.GRID_CARBON_FLOOR
             ranges = P.parse_element_ranges(
                 P.resolve_element_ranges(profile, P.NO_CONTEXT)
             )
-            assert ranges["C"][0] == 1
+            assert ranges["C"][0] == 0
 
-    def test_the_carbon_floor_can_be_overridden(self):
+    def test_a_profile_may_set_a_floor_of_its_own_grid(self):
+        floored = dataclasses.replace(P.BR, min_carbon=1)
+        ranges = P.parse_element_ranges(P.resolve_element_ranges(floored, P.NO_CONTEXT))
+        assert ranges["C"][0] == 1
         ranges = P.parse_element_ranges(
-            P.resolve_element_ranges(P.BR, P.NO_CONTEXT, min_carbon=0)
+            P.resolve_element_ranges(floored, P.NO_CONTEXT, min_carbon=0)
         )
         assert ranges["C"][0] == 0
 

@@ -18,19 +18,17 @@ from mascope_backend.api.new.peak_assignments import judging_loop
 from mascope_backend.api.new.peak_assignments.engine import RIVALS_PAST_CAP
 from mascope_backend.api.new.peak_assignments.halogen_twins import (
     ONE_ATOM_RATIO,
-    TWIN_HALOGEN_RATIO_BAND,
     TWIN_OFFSET,
     TWIN_PPM,
     find_twins,
     record_twins,
     reread_twins,
     twin_halogens,
-    twin_heuristics,
     twin_search_config,
 )
 from mascope_tools.composition import profiles as presets
 from mascope_tools.composition.heuristic_filter import (
-    _RATIO_BANDS,
+    apply_heuristic_rules,
     predict_resolved_isotopes,
 )
 from mascope_tools.composition.models import (
@@ -241,15 +239,19 @@ class TestTheTwin:
 class TestTheReread:
     def test_the_search_is_carbon_hydrogen_oxygen_and_one_halogen(self):
         config = twin_search_config(SEARCH, "Cl")
-        assert config.element_count_ranges == "C1-40 H0-80 O0-15 Cl1-1"
+        # The run's own carbon range, open at zero as every grid is now.
+        assert config.element_count_ranges == "C0-40 H0-80 O0-15 Cl1-1"
         assert config.mass_range_ppm == SEARCH.mass_range_ppm
 
-    def test_the_halogens_band_is_opened_to_the_common_range(self):
-        opened = twin_heuristics(HEURISTICS, "Cl")
-        assert TWIN_HALOGEN_RATIO_BAND == _RATIO_BANDS["Cl"][:2]
-        assert opened.carbon_element_ratio_range["Cl/C"] == TWIN_HALOGEN_RATIO_BAND
-        assert opened.context_ratio_windows == HEURISTICS.context_ratio_windows
-        assert HEURISTICS.carbon_element_ratio_range["Cl/C"] == (0.0, 0.05)
+    def test_the_runs_own_filter_admits_the_halogen_at_any_ratio(self):
+        # The re-read used to open Cl/C from 0.05 to 0.8 for itself; since
+        # decision MAS-979 no ratio is a hard bound, so it opens nothing.
+        assert HEURISTICS.carbon_element_ratio_range == {}
+        kept, _ = apply_heuristic_rules(
+            [{"formula": "C6H5Cl"}, {"formula": "CH2Cl2"}, {"formula": "C2HCl3"}],
+            HEURISTICS,
+        )
+        assert [row["formula"] for row in kept] == ["C6H5Cl", "CH2Cl2", "C2HCl3"]
 
     def test_an_unexplained_peak_is_read_as_chlorobenzene_with_its_37cl_line(self):
         frame = peaks()

@@ -24,23 +24,23 @@ What each one is, and what it is not:
   starts being a mass fit absorbing an error into oxygens.
 
 - ``carbon_free`` - no carbon and not one of the small inorganics these sources
-  actually make (:data:`CARBON_FREE_ALLOWLIST`). Deliberately narrow: a curated
-  identity is an authored claim rather than a mass fit, so this is for what an
-  untargeted search writes, and a caller that holds a curated row should not ask.
-  That holds for every signature here and not only this one - each names what a
-  mass search produces - and the tiering applies it to all of them.
+  actually make (:data:`CARBON_FREE_ALLOWLIST`). Deliberately narrow: it names
+  what an untargeted search writes. Both signatures are caps on the compound's
+  composition, so the tiering does not ask them of a row a reference list
+  names, whose identity is a peer-reviewed claim rather than a mass fit; a row
+  only the target library names is asked (``formula_shape.exempt``, decision
+  MAS-979).
 
-  On the assignment gate that leaves it with nothing to name, and the reason is
-  worth stating rather than reading as a clean result: every resolved grid there
-  floors carbon at one, so no untargeted row can BE carbon-free, and every
-  carbon-free row committed on those 43 samples is curated - nitric and iodic
-  acid, sulfuric acid, ammonia, the bromine of the dibromide reagent ion, and
-  trisulfur (written HS3) six times at assigned tier. Asked of those rows anyway,
-  the signature took seven, and the reference confirms none of them - it commits
-  nothing on the trisulfur peaks and reads the dibromide one as its reagent - so
-  what the exemption spares is unmeasured rather than wrong, and it is taken on
-  the principle. What was measured is that nothing untargeted reaches the
-  signature, not that the allowlist is right.
+  On the assignment gate, measured before that decision, it had nothing
+  untargeted to name: every resolved grid there floored carbon at one. The
+  floor is open since (``formula_shape.GRID_CARBON_FLOOR``), so a carbon-free
+  formula the search proposes is graded and held at candidate here rather than
+  refused by the grid. Every carbon-free row committed on those 43 samples was
+  curated - nitric and iodic acid, sulfuric acid, ammonia, the bromine of the
+  dibromide reagent ion, and trisulfur (written HS3) six times at assigned
+  tier. Asked of those rows, the signature took seven, and the reference
+  confirms none of them - it commits nothing on the trisulfur peaks and reads
+  the dibromide one as its reagent.
 
 A formula can carry more than one; :func:`implausible_signatures` returns them
 all and :func:`implausible_signature` the first, in the fixed order of
@@ -67,8 +67,9 @@ while ``ambient-air`` caps DBE/C at 0.75 and floors H/C at 0.7, and ``uronium``
 at 1.1 and 0.4. Those windows apply from ``config.CONTEXT_RATIO_MIN_CARBON``
 carbons up, which is exactly the population this signature misjudged: the C1 and
 C2 acids it took sit BELOW that floor, where the context deliberately says
-nothing, and above it the context has already refused what this would have
-caught.
+nothing, and above it the context grades down what this would have caught: a
+window weighs a formula outside it to the plausibility floor rather than
+refusing it (``heuristic_filter.context_window_plausibility``).
 
 One thing that leaves open, stated rather than closed here: a run under context
 ``none`` has no such window, so a cluster is committable there - and this
@@ -78,6 +79,7 @@ catches the cluster takes the acids with it.
 
 from __future__ import annotations
 
+from mascope_tools.composition import formula_shape
 from mascope_tools.composition.heuristic_filter import (
     effective_counts,
     element_counts,
@@ -91,8 +93,10 @@ CARBON_FREE = "carbon_free"
 #: Every signature, in the order a formula carrying more than one is named by.
 SIGNATURES = (OXYGEN_LATTICE, CARBON_FREE)
 
-#: Oxygens per carbon above which a formula is oxygen-rich for its backbone.
-OXYGEN_LATTICE_RATIO = 1.3
+#: Oxygens per carbon above which a formula is oxygen-rich for its backbone:
+#: the formula-shape table's (``formula_shape.OXYGEN_LATTICE_RATIO``), which
+#: :func:`implausible_signatures` reads.
+OXYGEN_LATTICE_RATIO = formula_shape.OXYGEN_LATTICE_RATIO
 
 #: ...and the absolute oxygen count it takes for that ratio to stop describing
 #: a small organic acid. Five, because four is malonic acid: on the assignment
@@ -110,8 +114,9 @@ OXYGEN_LATTICE_RATIO = 1.3
 #: rows: 3 confirmed, 3 contradicted, 2 split and 20 unjudged. So on the
 #: instruments the gate can judge it is three right and three wrong, not three
 #: against two hundred; a tiering weighing it should read it as a guard whose
-#: cost is known and whose benefit is mostly unmeasured.
-OXYGEN_LATTICE_MIN = 5
+#: cost is known and whose benefit is mostly unmeasured. The table's
+#: (``formula_shape.OXYGEN_LATTICE_MIN``).
+OXYGEN_LATTICE_MIN = formula_shape.OXYGEN_LATTICE_MIN
 
 #: The carbon-free neutrals a chemical-ionization source genuinely presents:
 #: the reagent acids and halides themselves, their dimers and their common
@@ -119,11 +124,10 @@ OXYGEN_LATTICE_MIN = 5
 #: untargeted mass search, is a coincidence of the grid rather than a species.
 #:
 #: The bromine atom is not here, although the dibromide reagent ion reaches a
-#: committed row as one. That row is a curated target's, which no signature
-#: judges; an untargeted grid cannot write it, since every grid floors carbon at
-#: one; and a bare halogen atom is a radical the tiering's odd-electron rule
-#: caps on its own. What it shows is a reagent ion matched as an analyte, which
-#: is the curated library's question and not this list's.
+#: committed row as one. A bare halogen atom is a radical the tiering's
+#: odd-electron rule caps on its own, whoever names it. What it shows is a
+#: reagent ion matched as an analyte, which is the curated library's question
+#: and not this list's.
 CARBON_FREE_ALLOWLIST = frozenset(
     {
         "H2O",
@@ -175,8 +179,8 @@ def _signatures_of(counts: dict[str, int]) -> tuple[str, ...]:
     found = []
     if (
         carbon
-        and oxygen >= OXYGEN_LATTICE_MIN
-        and _ratio(oxygen, carbon) > OXYGEN_LATTICE_RATIO
+        and oxygen >= formula_shape.OXYGEN_LATTICE_MIN
+        and _ratio(oxygen, carbon) > formula_shape.OXYGEN_LATTICE_RATIO
     ):
         found.append(OXYGEN_LATTICE)
     if not carbon and _counts_key(counts) not in _ALLOWED_CARBON_FREE:

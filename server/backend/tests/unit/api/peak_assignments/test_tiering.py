@@ -79,6 +79,7 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     separated,
     separation_reach,
 )
+from mascope_tools.composition import formula_shape
 from mascope_tools.composition import profiles as presets
 from mascope_tools.composition.envelope_tolerance import EnvelopeTolerance
 
@@ -105,6 +106,10 @@ SERIES_BLOCK = {
     "depth": 1,
     "root_formula": "C5H10O6",
 }
+
+
+#: The provenance of a row a reference list names (``engine.named_by_a_list``).
+LISTED = {"reference_identities": [{"name": "a listed compound"}]}
 
 
 def row(
@@ -243,15 +248,22 @@ class TestTheRadicalRule:
         run(rows)
         assert tier_of(rows, "pa-1") == "candidate"
 
-    def test_a_curated_row_is_exempt(self):
-        # The rule doubts an ELECTION - the finder's prior choosing a radical
-        # reading of an ion over a closed-shell one. A curated row was matched
-        # to an identity somebody authored, and real radical anions are exactly
-        # what such a library holds.
-        rows = [row("pa-1", RADICAL, source="database")]
+    @pytest.mark.parametrize(
+        "named", [LISTED, {}], ids=["a reference list", "the target library"]
+    )
+    def test_whoever_names_it_it_is_capped(self, named):
+        # Decision MAS-979: a cap on the ion, asked of every row. A list's row
+        # used to be exempt; the target library's row still shows its match.
+        rows = [
+            row("pa-1", RADICAL, source="database", compound="tc-1", provenance=named)
+        ]
         run(rows)
-        assert tier_of(rows, "pa-1") == "assigned"
-        assert REASON_ODD_ELECTRON not in rules_on(rows, "pa-1")
+        assert tier_of(rows, "pa-1") == "candidate"
+        assert REASON_ODD_ELECTRON in rules_on(rows, "pa-1")
+        assert (rows[0]["assigned_formula"], rows[0]["target_compound_id"]) == (
+            RADICAL,
+            "tc-1",
+        )
 
     def test_a_closed_shell_neutral_is_untouched(self):
         rows = [row("pa-1", PLAIN, channels=SEEN_TWICE)]
@@ -336,14 +348,13 @@ class TestAClusterWithNothingToHoldOnTo:
         run(rows, notation_by_id=CHANNELS)
         assert tier_of(rows, "pa-1") == "candidate"
 
-    def test_a_target_library_row_is_exempt(self):
-        # The workspace named the compound for the modes its collection is
-        # attached to: hydrogen bromide on a nitrate source's monitor list is
-        # the cluster somebody chose to watch.
+    def test_a_target_library_row_is_asked_too(self):
+        # It used to be exempt, as the cluster somebody chose to watch; a cap on
+        # the ion is asked of every row (decision MAS-979).
         rows = [cluster("pa-1", "HBr", source="database", compound="compound-7")]
         run(rows, notation_by_id=CHANNELS)
-        assert tier_of(rows, "pa-1") == "assigned"
-        assert REASON_OXYGEN_FREE_CLUSTER not in rules_on(rows, "pa-1")
+        assert tier_of(rows, "pa-1") == "candidate"
+        assert REASON_OXYGEN_FREE_CLUSTER in rules_on(rows, "pa-1")
 
     def test_a_second_channel_does_not_rescue_it(self):
         # What the rule doubts is the ion, not whether the neutral was seen.
@@ -386,8 +397,10 @@ class TestAClusterWithNothingToHoldOnTo:
 def halide(
     row_id: str, formula: str = "BrI", mechanism: str = "m-bromide", **kwargs
 ) -> dict:
-    """A reference list's row read through one of :data:`CHANNELS`."""
+    """A reference list's row read through one of :data:`CHANNELS`: one whose
+    neutral a list names, so the caps on its composition spare it."""
     kwargs.setdefault("source", "database")
+    kwargs.setdefault("provenance", LISTED)
     return cluster(row_id, formula, mechanism, **kwargs)
 
 
@@ -432,11 +445,13 @@ class TestAPolyhalideTheSourceCanMakeToo:
         run(rows, notation_by_id=CHANNELS)
         assert REASON_POLYHALIDE_CLUSTER not in rules_on(rows, "pa-1")
 
-    def test_a_target_library_row_is_exempt(self):
-        rows = [halide("pa-1", compound="compound-7")]
+    def test_a_target_library_row_is_asked_too(self):
+        # Exempt until decision MAS-979; no list names this one, so the
+        # carbon-free signature asks it as well.
+        rows = [halide("pa-1", compound="compound-7", provenance={})]
         run(rows, notation_by_id=CHANNELS)
-        assert tier_of(rows, "pa-1") == "assigned"
-        assert REASON_POLYHALIDE_CLUSTER not in rules_on(rows, "pa-1")
+        assert tier_of(rows, "pa-1") == "candidate"
+        assert {REASON_POLYHALIDE_CLUSTER, "carbon_free"} <= rules_on(rows, "pa-1")
 
     def test_a_second_channel_does_not_rescue_it(self):
         # What the rule doubts is where the ion came from, not whether the
@@ -639,10 +654,18 @@ class TestTheContextPriors:
         assert REASON_CONTEXT_PRIOR not in rules_on(rows, "pa-1")
         assert summary["capped_by_rule"] == {REASON_LONE_PEAK: 1}
 
-    def test_a_list_match_is_not_asked(self):
-        rows = [row("pa-1", self.SULFUR, source="database", compound="dms")]
+    def test_a_row_a_list_names_is_not_asked(self):
+        rows = [row("pa-1", self.SULFUR, source="database", provenance=LISTED)]
         run(rows, context=presets.AMBIENT_AIR)
         assert REASON_CONTEXT_PRIOR not in rules_on(rows, "pa-1")
+        assert tier_of(rows, "pa-1") == "assigned"
+
+    def test_a_row_only_the_target_library_names_is(self):
+        rows = [row("pa-1", self.SULFUR, source="database", compound="dms")]
+        run(rows, context=presets.AMBIENT_AIR)
+        assert REASON_CONTEXT_PRIOR in rules_on(rows, "pa-1")
+        assert tier_of(rows, "pa-1") == "candidate"
+        assert rows[0]["assigned_formula"] == self.SULFUR
 
     def test_a_context_without_the_prior_asks_nothing(self):
         rows = [row("pa-1", self.NITROGEN), line_of("pa-1")]
@@ -745,12 +768,17 @@ class TestTheOrganonitrateSkeleton:
         assert REASON_NOX_SKELETON not in rules_on(rows, "pa-1")
         assert summary["nox_skeleton"] is False
 
-    def test_a_list_match_is_not_asked(self):
-        rows = [
-            row("pa-1", self.DINITRATE, source="database", compound="c-1"),
-        ]
+    def test_a_row_a_list_names_is_not_asked(self):
+        rows = [row("pa-1", self.DINITRATE, source="database", provenance=LISTED)]
         run(rows, context=presets.AMBIENT_AIR, nox_skeleton=True)
         assert REASON_NOX_SKELETON not in rules_on(rows, "pa-1")
+        assert tier_of(rows, "pa-1") == "assigned"
+
+    def test_a_row_only_the_target_library_names_is(self):
+        rows = [row("pa-1", self.DINITRATE, source="database", compound="c-1")]
+        run(rows, context=presets.AMBIENT_AIR, nox_skeleton=True)
+        assert REASON_NOX_SKELETON in rules_on(rows, "pa-1")
+        assert tier_of(rows, "pa-1") == "candidate"
 
 
 class TestOnePeakIsNotEnough:
@@ -1070,27 +1098,60 @@ class TestTheImplausibleFormula:
         assert "carbon_free" in rules_on(rows, "pa-1")
         assert REASON_ODD_ELECTRON not in rules_on(rows, "pa-1")
 
-    def test_a_curated_carbon_free_row_keeps_its_tier(self):
-        # Trisulfur, as a curated library holds it. Every signature names what
-        # a mass search produces, and a curated row was matched to an authored
-        # identity - the radical rule's exemption, for the same reason.
-        rows = [row("pa-1", "HS3", ion="S3-", source="database")]
-        run(rows)
-        assert tier_of(rows, "pa-1") == "assigned"
-        assert rules_on(rows, "pa-1") == {REASON_ON_A_LIST, REASON_NO_CLOSE_RIVAL}
+    def test_a_list_named_carbon_free_compound_is_not_capped_on_its_composition(
+        self,
+    ):
+        # Decision MAS-979: a reference list's name spares a cap on the
+        # compound's composition; the target library's alone does not.
+        listed = [row("pa-1", "H2S3", ion="HS3-", source="database", provenance=LISTED)]
+        targeted = [row("pa-1", "H2S3", ion="HS3-", source="database", compound="c-7")]
+        run(listed)
+        run(targeted)
+        assert tier_of(listed, "pa-1") == "assigned"
+        assert rules_on(listed, "pa-1") == {REASON_ON_A_LIST, REASON_NO_CLOSE_RIVAL}
+        assert tier_of(targeted, "pa-1") == "candidate"
+        assert "carbon_free" in rules_on(targeted, "pa-1")
+        # The target's row still shows its match.
+        assert targeted[0]["assigned_formula"] == "H2S3"
+        assert targeted[0]["target_compound_id"] == "c-7"
 
-    def test_a_curated_oxygen_lattice_keeps_its_tier(self):
+    def test_a_list_named_radical_is_capped_on_its_ion(self):
+        # Trisulfur the radical: spared the carbon-free signature by its list,
+        # not the radical rule.
+        rows = [row("pa-1", "HS3", ion="S3-", source="database", provenance=LISTED)]
+        run(rows)
+        assert tier_of(rows, "pa-1") == "candidate"
+        assert REASON_ODD_ELECTRON in rules_on(rows, "pa-1")
+        assert "carbon_free" not in rules_on(rows, "pa-1")
+
+    def test_a_list_named_oxygen_lattice_keeps_its_tier(self):
         # Peroxyacetyl nitrate has the lattice's shape and is a species these
         # sources are built to see. The same formula found by the untargeted
-        # search is still capped.
-        curated = [row("pa-1", "C2H3NO5", ion="C2H2NO5-", source="database")]
+        # search, or named by the target library alone, is still capped.
+        listed = [
+            row("pa-1", "C2H3NO5", ion="C2H2NO5-", source="database", provenance=LISTED)
+        ]
         found = [row("pa-2", "C2H3NO5", ion="C2H2NO5-")]
-        run(curated)
-        run(found)
-        assert tier_of(curated, "pa-1") == "assigned"
-        assert "oxygen_lattice" not in rules_on(curated, "pa-1")
+        targeted = [
+            row("pa-3", "C2H3NO5", ion="C2H2NO5-", source="database", compound="c-1")
+        ]
+        for rows in (listed, found, targeted):
+            run(rows)
+        assert tier_of(listed, "pa-1") == "assigned"
+        assert "oxygen_lattice" not in rules_on(listed, "pa-1")
         assert tier_of(found, "pa-2") == "candidate"
         assert "oxygen_lattice" in rules_on(found, "pa-2")
+        assert tier_of(targeted, "pa-3") == "candidate"
+        assert "oxygen_lattice" in rules_on(targeted, "pa-3")
+
+    def test_the_rule_is_the_tables(self, monkeypatch):
+        # Move the radical rule to the composition half and a list spares it.
+        halves = dict(formula_shape.RULE_HALF)
+        halves[REASON_ODD_ELECTRON] = formula_shape.HALF_COMPOSITION
+        monkeypatch.setattr(formula_shape, "RULE_HALF", halves)
+        rows = [row("pa-1", "HS3", ion="S3-", source="database", provenance=LISTED)]
+        run(rows)
+        assert REASON_ODD_ELECTRON not in rules_on(rows, "pa-1")
 
 
 class TestTheNeighboursEnvelope:
@@ -1678,11 +1739,15 @@ class TestTheRunsRecord:
     def test_the_rule_version_is_recorded(self):
         assert run([row("pa-1")])["version"] == TIERING_RULES_VERSION
 
-    def test_the_rule_set_is_16(self):
+    def test_the_rule_set_is_17(self):
         # The number, not the imported constant: a tier is comparable across
         # runs only under the same rules, so the set moves on purpose and this
         # test moves with it.
-        assert run([row("pa-1")])["version"] == 16
+        assert run([row("pa-1")])["version"] == 17
+
+    def test_the_formula_shape_table_is_1(self):
+        # The table the caps read their bands and exemptions from (MAS-979).
+        assert run([row("pa-1")])["formula_shape_version"] == 1
 
     def test_the_thresholds_are_recorded_with_it(self):
         summary = run([row("pa-1")])
@@ -1930,22 +1995,6 @@ class TestAReadingOfTheSameIonThatSomethingSettled:
             "C3H4O through one of the mode's own channels too, but not on a peak "
             "10 times as bright as C3H7NO's, which it would take to doubt the "
             "mode's own reading"
-        )
-
-    def test_the_target_library_says_its_curation_chose(self):
-        rows = [
-            row(
-                "pa-1",
-                "C3H7NO",
-                source="database",
-                compound="tc-1",
-                provenance={"cross_channel": settled("target_library")},
-            )
-        ]
-        run(rows)
-        assert self.detail_of(rows, REASON_SAME_ION_SETTLED) == (
-            "the same ion also reads as C3H4O through [M+NH4]+; this row is a "
-            "compound of the target library, whose curation chose the reading"
         )
 
     def test_a_radical_is_no_rival(self):

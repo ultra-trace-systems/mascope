@@ -488,7 +488,9 @@ class TestTheFamilyAMatchedReadingWouldHave:
         # Acrolein sits outside a context that asks for at least two hydrogens
         # per carbon.
         strict = HeuristicFilterConfig(
-            use_senior=True, context_ratio_windows={"H/C": (2.0, 3.0)}
+            use_senior=True,
+            context_ratio_windows={"H/C": (2.0, 3.0)},
+            context_windows_gate=True,
         )
         (family,) = self._propose([("C3H7NO", "[M+H]+")], heuristics=strict)
         assert family == []

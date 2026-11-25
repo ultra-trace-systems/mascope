@@ -85,9 +85,6 @@ Four things settle it, and a row that one of them settles records which
   So on a mode with one channel of its own, such as protonation in ESI, the
   row's molecule has no partner but its own peak, and a rival the sample shows
   holds the row at candidate however faint it is.
-- **The target library.** The workspace named that compound for the modes its
-  collection is attached to, so which reading the ion is was its curation's
-  decision.
 - **A radical.** A neutral that breaks the nitrogen rule names a radical rather
   than a molecule, and the tiering pass refuses to hold one at the top tier on
   the measurement (``tiering.odd_electron_reason``: the reference engine confirms
@@ -112,8 +109,12 @@ list's formula matched against every sample, and the same arithmetic reaches
 it - dimethylformamide through ``[M+H]+`` is the same ion as acrolein through
 ``[M+NH4]+``. Such a row is given the readings the one family enumerator gives
 its ion (``engine.record_same_ion_readings``) and asked what an election is
-asked. A target library's row carries its family too, and the library's name
-settles which reading of the ion it is (:data:`SETTLED_BY_TARGET_LIBRARY`).
+asked. A target library's row carries its family too and is asked the same:
+the same-ion rule is a cap on the ion (``formula_shape.RULE_HALF``), which the
+formula-shape exemption rule asks of every row, and neither a list nor a target
+decides between readings of one ion (decision MAS-979, MAS-885). A target used
+to settle it, which runs before that decision record as settled by
+``"target_library"``.
 
 A labelled reagent donates no nitrogen, and that is the whole reason to run
 one: the 15N of a ``[M+[15N]O3]-`` reagent is 0.997 Da from an analyte's own
@@ -160,7 +161,6 @@ from typing import NamedTuple
 from mascope_backend.api.new.peak_assignments.engine import (
     CORROBORATION_RULE,
     is_reference_mirror_row,
-    is_target_library_row,
     shows_molecule,
     tier_under_ceiling,
 )
@@ -229,7 +229,6 @@ _LABELLED_ATOM = re.compile(r"\[\d+[A-Z][a-z]?\]")
 SAME_ION_SETTLED = "same_ion_settled"
 SETTLED_BY_SECOND_CHANNEL = "second_channel"
 SETTLED_BY_PARTNER = "partner"
-SETTLED_BY_TARGET_LIBRARY = "target_library"
 SETTLED_BY_RADICAL = "radical"
 
 #: The record a row carries of its channel's ratios to its neutral's other
@@ -522,11 +521,6 @@ def same_ion_question(
     ]
     if not molecules:
         return SAME_ION_SETTLED, {**_named(others[0]), "by": SETTLED_BY_RADICAL}
-    if is_target_library_row(row):
-        return SAME_ION_SETTLED, {
-            **_named(sharpest(row, molecules)),
-            "by": SETTLED_BY_TARGET_LIBRARY,
-        }
     weight = {
         id(reading): weighed(row, channel, reading, partners or {})
         for reading in molecules
@@ -983,7 +977,6 @@ def read_cross_channel(
         "settled": {
             SETTLED_BY_SECOND_CHANNEL: 0,
             SETTLED_BY_PARTNER: 0,
-            SETTLED_BY_TARGET_LIBRARY: 0,
             SETTLED_BY_RADICAL: 0,
         },
         # Stored as `capped_satellites` on runs written by earlier builds. Only
