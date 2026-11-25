@@ -867,9 +867,23 @@ def drop_ions_claimed_elsewhere(
     if not {"target_ion_id", "sample_peak_id"} <= set(match_isotope_df.columns):
         return match_isotope_df
     scope = None if ion_ids is None else {str(ion_id) for ion_id in ion_ids}
+    # An ion's monoisotopic row is one of its rows, so only an ion with a row
+    # on a claimed peak can be claimed: the others are not grouped at all,
+    # which on a known set the reference lists swell is most of them
+    # (MAS-1274).
+    on_claimed = (
+        match_isotope_df["sample_peak_id"]
+        .map(lambda peak: str(peak or ""))
+        .isin(claimed_peak_ids)
+    )
+    touched = match_isotope_df["target_ion_id"].isin(
+        match_isotope_df.loc[on_claimed, "target_ion_id"]
+    )
     claimed_ions = {
         ion_id
-        for ion_id, group in match_isotope_df.groupby("target_ion_id", sort=False)
+        for ion_id, group in match_isotope_df[touched].groupby(
+            "target_ion_id", sort=False
+        )
         if (scope is None or str(ion_id) in scope)
         and str(monoisotopic_row(group).get("sample_peak_id") or "") in claimed_peak_ids
     }
