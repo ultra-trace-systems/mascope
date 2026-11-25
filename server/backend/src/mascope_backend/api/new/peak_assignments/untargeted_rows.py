@@ -482,7 +482,7 @@ def untargeted_matches_to_peak_assignments(
         # Cut at the cap, counting the rival formulas it leaves unstored: the
         # finder's shortlist runs to dozens on a dense peak, and a rival the row
         # does not store is one no reader can see tested.
-        cut = {"assigned_formula": format_formula(formula), "provenance": {}}
+        cut = dict(assigned_formula=format_formula(formula), source=SOURCE_UNTARGETED)
         alternatives = cap_alternatives(cut, alternatives, max_alternatives)
 
         # Chemical plausibility (Seven Golden Rules) is stage-agnostic and the headline
@@ -513,7 +513,7 @@ def untargeted_matches_to_peak_assignments(
             # with the v2 fit and the re-score below measured it with the same
             # one, so there is no second number to name (decision 12).
             "score_version": SCORE_VERSION,
-            **cut["provenance"],
+            **cut.get("provenance", {}),
         }
         # What the finder's detectability gate judged this reading's absent
         # lines against. Recorded because it is the difference between a fit

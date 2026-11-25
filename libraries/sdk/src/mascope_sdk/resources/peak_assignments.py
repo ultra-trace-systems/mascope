@@ -754,6 +754,15 @@ class PeakAssignmentsResource(BaseResource):
         formulas whose fit ties the hit's and that only their plausibility put
         behind it, measured as the rivals are and read by the identification
         level alone (``fit_tied_unlisted`` counts those past the first ten).
+        A row whose stored ``alternatives`` the run's cap cut carries
+        ``provenance.rivals_past_cap``: how many rival formulas the cap left
+        out. A formula the search found carries beside it
+        ``formula_only_past_cap``, how many of those are the search's
+        shortlist names, which carry no measurement of their own, and
+        ``contenders_past_cap``, the formulas of the others: other readings'
+        lines on the peak. Its ``rival_set`` counts under
+        ``contenders_not_held`` the ones of those no frame measured there. The
+        identification level counts both counts as rivals not tested.
         A list hit of a run that searched carries ``provenance.grid_rivals``:
         the closed-shell formulas the search could not separate from it on its
         own scale, the first few by name, its fit on that scale, how many

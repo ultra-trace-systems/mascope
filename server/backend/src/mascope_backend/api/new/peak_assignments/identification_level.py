@@ -58,7 +58,11 @@ Each committed monoisotopic row is read in order:
   reads 5a with "rivals not measured" and the lift "measure the shortlist",
   since the level does not assume an exclusion it did not see. Nor does it
   assume one of a rival the set does not name, or, on an untargeted winner, a
-  formula the cap on stored alternatives left out (``engine.RIVALS_PAST_CAP``).
+  formula the cap on stored alternatives left out that the set does not hold:
+  a formula-only entry of the shortlist, which no pass measured
+  (``cut_contenders.FORMULA_ONLY_PAST_CAP``), or a losing contender no frame measured
+  on the peak (``rival_set.CONTENDERS_NOT_HELD``). A contender the cap cut and
+  the set holds is one of its rivals, named or counted past its ten.
 - **4, every rival excluded.** Each rival is out on a named test:
 
   - ``mass``: its fit at the run's width, mass and isotope pattern together,
@@ -142,15 +146,21 @@ from mascope_backend.api.new.peak_assignments.cross_channel import (
     carries_label,
     channels_by_neutral,
 )
+from mascope_backend.api.new.peak_assignments.cut_contenders import (
+    FORMULA_ONLY_PAST_CAP,
+)
 from mascope_backend.api.new.peak_assignments.engine import (
     GRID_RIVALS,
     MEASURED_SHORTLIST,
-    RIVALS_PAST_CAP,
     formula_identity,
     ion_identity,
 )
 from mascope_backend.api.new.peak_assignments.mass_gate import SpectrumLines
-from mascope_backend.api.new.peak_assignments.rival_set import FIT_TIED, RIVAL_SET
+from mascope_backend.api.new.peak_assignments.rival_set import (
+    CONTENDERS_NOT_HELD,
+    FIT_TIED,
+    RIVAL_SET,
+)
 from mascope_backend.api.new.peak_assignments.row_terms import (
     ROLE_ISO_CHILD,
     ROLE_M0,
@@ -197,8 +207,11 @@ from mascope_tools.composition.profiles import (
 #: its lift names a context list for the run's chemistry. 4 (MAS-975): a list
 #: row's shortlist holds the grid formulas its fit alone could not separate,
 #: which only plausibility held back, and its unlisted rivals count the ions
-#: the formula search left unscored past its candidate limit.
-LEVEL_RULES_VERSION = 4
+#: the formula search left unscored past its candidate limit. 5 (MAS-1185):
+#: an untargeted winner's unlisted rivals count, of the formulas the cap on
+#: its stored alternatives cut, the formula-only entries and the contenders
+#: its rival set does not hold, not every formula cut.
+LEVEL_RULES_VERSION = 5
 
 #: The provenance key a committed row's level is recorded under.
 IDENTIFICATION_LEVEL = "identification_level"
@@ -404,7 +417,8 @@ def shortlist(row: dict) -> tuple[list[Rival] | None, int]:
     :return: The rivals, best fit first per ion, or None where the shortlist
         was not measured; and how many rivals the row knows of and does not
         list (past the set's named ones, or, on an untargeted winner, past the
-        stored cap, whose formula-only entries no pass measured).
+        stored cap and outside the set: its formula-only entries, which no
+        pass measured, and a contender no frame measured on the peak).
     """
     provenance = _provenance(row)
     source = row.get("source")
@@ -460,7 +474,11 @@ def shortlist(row: dict) -> tuple[list[Rival] | None, int]:
     unlisted = int(record.get("rivals_unlisted") or 0)
     unlisted += int(record.get("fit_tied_unlisted") or 0) + unscored_rivals(row)
     if source == SOURCE_UNTARGETED:
-        unlisted += int(provenance.get(RIVALS_PAST_CAP) or 0)
+        # The rivals the cap cut that the set does not hold: the formula-only
+        # entries no pass measured, and a contender no frame measured on the
+        # peak. A cut contender the set holds is listed or counted above.
+        unlisted += int(provenance.get(FORMULA_ONLY_PAST_CAP) or 0)
+        unlisted += int(record.get(CONTENDERS_NOT_HELD) or 0)
     winner_ion = ion_identity(row.get("ion_formula"))
     best: dict[tuple, Rival] = {}
     for rival in found:

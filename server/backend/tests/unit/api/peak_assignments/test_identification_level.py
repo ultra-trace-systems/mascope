@@ -19,6 +19,10 @@ from mascope_backend.api.new.peak_assignments.cross_channel import (
     SETTLED_BY_SECOND_CHANNEL,
     SETTLED_BY_TARGET_LIBRARY,
 )
+from mascope_backend.api.new.peak_assignments.cut_contenders import (
+    CONTENDERS_PAST_CAP,
+    FORMULA_ONLY_PAST_CAP,
+)
 from mascope_backend.api.new.peak_assignments.engine import (
     GRID_RIVALS,
     MEASURED_SHORTLIST,
@@ -54,7 +58,10 @@ from mascope_backend.api.new.peak_assignments.mass_gate import (
     TRACKING_UNTRACKED,
     SpectrumLines,
 )
-from mascope_backend.api.new.peak_assignments.rival_set import RIVAL_SET
+from mascope_backend.api.new.peak_assignments.rival_set import (
+    CONTENDERS_NOT_HELD,
+    RIVAL_SET,
+)
 from mascope_backend.api.new.peak_assignments.tiering import (
     REASON_ABSENT_LINE,
     REASON_NO_CLOSE_RIVAL,
@@ -197,8 +204,8 @@ class TestTheScale:
     def test_the_rules_version_is_pinned(self):
         # A fact, a rule or the order of the rules that changes bumps this, and
         # a test that pins it is where the bump is noticed. The run records it.
-        assert LEVEL_RULES_VERSION == 4
-        assert apply_levels(measured(*[m0()]))["level_rules_version"] == 4
+        assert LEVEL_RULES_VERSION == 5
+        assert apply_levels(measured(*[m0()]))["level_rules_version"] == 5
         assert "level_mapping_version" not in level(m0())
 
     def test_the_vocabulary_is_the_shared_scale(self):
@@ -436,16 +443,76 @@ class TestFiveA:
         row = m0(
             source="untargeted",
             alternatives=[rival("C7H16O5", 0.2)],
-            provenance={RIVALS_PAST_CAP: 2, MEASURED_SHORTLIST: []},
+            provenance={
+                RIVALS_PAST_CAP: 2,
+                FORMULA_ONLY_PAST_CAP: 2,
+                MEASURED_SHORTLIST: [],
+            },
         )
 
         record = level(row)
 
         assert record["level"] == "5a"
         assert record["rivals_unlisted"] == 2
+        assert row["provenance"][RIVALS_PAST_CAP] == 2
         assert "two rivals past the stored shortlist, not tested" in record["evidence"]
         assert "one rival out: one by mass" in record["evidence"]
         assert "measure the rivals past the stored shortlist" in record["lift"]
+
+    def test_a_contender_past_the_cap_its_rival_set_holds_is_tested_there(self):
+        # The cap cut two losing contenders, other readings' lines on the
+        # peak. The rival set measured both and they are out by mass, so
+        # every rival was tested: the row reads 4 where it read 5a, and the
+        # count of what the cap cut still says two.
+        row = m0(
+            source="untargeted",
+            alternatives=[],
+            provenance={
+                RIVALS_PAST_CAP: 2,
+                CONTENDERS_PAST_CAP: ["C4H6O3", "C7H16O5"],
+                MEASURED_SHORTLIST: [],
+                RIVAL_SET: {
+                    "fit_score": 0.9,
+                    "rivals": [
+                        {"formula": "C4H6O3", "fit_score": 0.3, "monoisotopic": False},
+                        {"formula": "C7H16O5", "fit_score": 0.2, "monoisotopic": True},
+                    ],
+                    "rivals_unlisted": 0,
+                },
+            },
+        )
+
+        record = level(row)
+
+        assert record["level"] == "4a"
+        assert "rivals_unlisted" not in record
+        assert tests_of(record) == {"C4H6O3": "mass", "C7H16O5": "mass"}
+        assert row["provenance"][RIVALS_PAST_CAP] == 2
+
+    def test_a_contender_past_the_cap_its_rival_set_lacks_is_unlisted(self):
+        # A cut contender no frame measured on the peak, as the set counts
+        # it (`rival_set.CONTENDERS_NOT_HELD`): nothing tested it.
+        row = m0(
+            source="untargeted",
+            alternatives=[],
+            provenance={
+                RIVALS_PAST_CAP: 1,
+                CONTENDERS_PAST_CAP: ["C4H6O3"],
+                MEASURED_SHORTLIST: [],
+                RIVAL_SET: {
+                    "fit_score": 0.9,
+                    "rivals": [],
+                    "rivals_unlisted": 0,
+                    CONTENDERS_NOT_HELD: 1,
+                },
+            },
+        )
+
+        record = level(row)
+
+        assert record["level"] == "5a"
+        assert record["rivals_unlisted"] == 1
+        assert "one rival past the stored shortlist, not tested" in record["evidence"]
 
     def test_a_formula_only_rival_the_pass_did_not_measure_is_open(self):
         row = m0(

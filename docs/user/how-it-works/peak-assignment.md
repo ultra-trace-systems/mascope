@@ -1407,7 +1407,12 @@ flowchart TD
   default; until then such a peak reads 5a with *rivals not measured* too, since the
   level does not assume an exclusion it did not see.
   Nor does it assume one of a rival the run stored no entry for: a run keeps at most
-  *Max alternatives* per peak, and the rivals past it count as untested.
+  *Max alternatives* per peak, and the rivals past it count as untested where nothing
+  measured them. On a peak the formula search elected, the rivals past it are of two
+  kinds. The search's own shortlist names carry no fit, so they count as untested. The
+  other readings whose isotope lines sit on the peak were measured there, among the
+  peak's rivals, so the level tests them as it tests any rival, and counts one as
+  untested only where the run measured it on no line of the peak.
 - **A rival is out** on a named test: by **mass** (its fit at the run's width, mass and
   isotope pattern together, below the committed formula's by more than the tie margin of
   the arbitration, or no adduct of the run puts it on the peak at all); by **isotopes** (a
