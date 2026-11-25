@@ -503,6 +503,12 @@ repo); `<BUNDLE>` is the working bundle directory the tooling accumulates into.
    filestore) and `expected/` goldens, preserving the `seed/` block. `<BUNDLE>`
    now holds `raw/ + seed/ + snapshot/ + expected/ + manifest.json`.
 
+   Capture before anything else runs against the rebuilt app. A test suite
+   can leave collections behind, and a snapshot captured after it ran ships
+   them: bundle 1.4.4's carries one, `plans fb2c08`. Run the suites on the
+   restored snapshot instead (`mascope demo --local <BUNDLE>`), which is also
+   what CI loads.
+
    Before writing `expected/`, this checks that the demo database actually
    covers the manifest's whole `raw` set and **refuses to write goldens** that
    would not, naming the files that are missing (`build_bundle.check_raw_coverage`).
@@ -726,3 +732,79 @@ is the acquisition computer's name.
    ```sh
    MASCOPE_SDK_CONTRACT=1 uv run pytest libraries/sdk/tests/test_contract.py -k Ms2 -rs -v
    ```
+
+### F. The uronium seed and the scan counts (1.5.0)
+
+Bundle 1.5.0 is 1.4.4's raw set rebuilt with a corrected seed, a MINOR
+version because its reference collections changed. Two things are new in it.
+
+**Every Orbitrap peak store carries the scan counts.** 1.4.4's stores were
+detected before peak detection counted, per peak, the scans that hold it
+(`n_scans` beside `n_scans_total`, see
+[peak detection](user/how-it-works/peak-detection.md#scan-presence-orbitrap)),
+so a stack restored from 1.4.4 served both empty. All 165 stores of 1.5.0
+carry them: 156,039 of their 337,759 peaks are missing from some of the
+scans averaged into them. The counts move no m/z and no height. Every
+golden peak the two bundles share keeps its height.
+
+**Nine uronium targets read the right neutral.** Each of the five
+nitrogen-bearing targets below was a lighter oxygenate plus HNCO, read
+through `[M+NH4]+`. NH4+ plus HNCO is protonated urea, so formula arithmetic
+alone cannot tell the two readings apart. The 81 uronium files' other
+channels can. This source spreads a known oxygenate over `[M+H]+`,
+`[M+NH4]+` and the urea adduct `[M+CH4N2O+H]+` at about 1 : 0.3 to 0.4 :
+0.35 to 0.45, and the oxygenates show all three. The ions are flat across
+the files where the pinene products vary 27 to 65 times, so they are
+background, not chamber products
+([#3191](https://github.com/ultra-trace-systems/mascope/issues/3191)):
+
+| m/z | target in 1.4.4 | target in 1.5.0 |
+| --- | --- | --- |
+| 235.1652 | C10H19NO4 `[M+NH4]+` | C9H18O3 `[M+CH4N2O+H]+` |
+| 251.1601 | C10H19NO5 `[M+NH4]+` | C9H18O4 `[M+CH4N2O+H]+` |
+| 237.1809 | C10H21NO4 `[M+NH4]+` | C9H20O3 `[M+CH4N2O+H]+` |
+| 219.1703 | C10H19NO3 `[M+NH4]+` | C9H18O2 `[M+CH4N2O+H]+`, medium confidence |
+| 203.1754 | C10H19NO2 `[M+NH4]+` | C9H18O `[M+CH4N2O+H]+`, low confidence |
+| 171.1492 | C9H15NO `[M+NH4]+` | C9H18N2O `[M+H]+`; its identity is not established |
+| 154.1226 | C9H15NO `[M+H]+` | none |
+| 158.1539 | C9H19NO `[M+H]+` | unchanged |
+| 168.1230 | C6H17NO4 `[M+H]+` and C6H14O4 `[M+NH4]+` | C6H14O4 `[M+NH4]+` |
+
+A target is a compound, read through every mechanism of its mode. The seed
+cannot hold a compound to one mechanism: keeping C9H15NO for m/z 154.1226
+would have kept its `[M+NH4]+` on m/z 171.1492 beside C9H18N2O, so it is
+dropped. The ammonium and nitrate-15N monitors carry the uronium monitor's
+compounds, so all three monitors change together. The `[M+H]+` of every
+compound that left was also the `[M+NH4]+` of a pinene product the monitors
+hold (C10H16O2 to C10H16O5, C10H18O4).
+
+The last row is the same misreading, with a check beyond the files: C6H17NO4
+is no molecule. Six carbons and a nitrogen hold at most 15 hydrogens, so its
+double-bond equivalent is -1, and it is triethylene glycol (C6H14O4) plus
+NH3. The glycol's three channels are in all 81 uronium files, `[M+H]+` :
+`[M+NH4]+` : urea adduct at 1 : 0.6 : 1.4, flat across the files. Neither of
+C6H17NO4's own other channels is in any file. No uronium
+ion is read by two seeded compounds in 1.5.0, where 1.4.4 had six.
+
+**The goldens.** 1.5.0 has 41,425 golden peaks against 1.4.4's 42,424, and
+17,435 ions against 17,394. Every golden row only 1.4.4 has belongs to a
+compound that left (2,904 peaks, 1,055 ions). Every row only 1.5.0 has belongs
+to a compound that arrived (1,905 peaks, 1,096 ions). Of the 2,903 peaks the
+compounds that left had matched, 2,162 are goldens still, of the compound
+that reads them now. The 39,520 shared golden peaks keep their height, and
+their m/z in every file but one. The Uronium RI acquisition's 147 peaks and
+336 MS2 centroids all read 0.0415 ppm lower.
+The calibration now leaves out a file's brightest calibrants (see
+[calibration](user/how-it-works/calibration.md#the-brightest-calibrants-are-left-out)),
+and in this file it fits five lines where it fitted six. No shared ion
+changes category, and the MS2 spectra keep their intensities. The bundle
+reproduces itself: a second rebuild from it matches its goldens file for
+file.
+
+**The tests pick their batch by name.** The server lists datasets and
+batches in no set order, and a rebuild draws new IDs, so which batch a
+listing gives first changes from one bundle to the next. 1.4.4 lists the
+2026 Nitrate-15N batch first, and 1.5.0 the 2026 Uronium RI batch, which
+holds a single sample. The contract suites now take their dataset and
+batch by name, which is the 2025 dataset and its bromide batch on either
+bundle ([#3596](https://github.com/ultra-trace-systems/mascope/issues/3596)).

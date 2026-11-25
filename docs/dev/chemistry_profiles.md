@@ -404,10 +404,11 @@ benches.
   context vs `none` to quantify the layer, and with a *mismatched* context to
   bound the harm of a wrong user choice.
 
-  **Measured 2026-11-13** (step 4.18, MAS-328; develop at `33a82469e`). Sets:
-  the demo bundle 1.4.4's two bench sets, `Db`, bromide negative (`BR`,
-  default context ambient air; 5,660 anchors), and `Du`, uronium positive
-  (`UR`, default uronium; 10,360 anchors). They stand in for the testbed's gate sets (A to
+  **Measured 2026-11-13** (step 4.18, MAS-328; develop at `33a82469e`) on demo
+  bundle 1.4.4, **re-pinned 2026-11-24** on bundle 1.5.0 (MAS-737; develop at
+  `07633eba8`), whose numbers follow. Sets: the demo bundle's two bench sets,
+  `Db`, bromide negative (`BR`, default context ambient air; 5,660 anchors),
+  and `Du`, uronium positive (`UR`, default uronium; 11,281 anchors). They stand in for the testbed's gate sets (A to
   L, `assignment_bench.md` section 4) because the harness needs seeded truth,
   which the gate sets lack. An anchor is a seeded target's monoisotopic peak
   whose true reading the reagent grid holds and the spectrum scores. Its pool
@@ -422,58 +423,72 @@ benches.
   caps kept as the grid, and outside a ratio window the plausibility floor
   (0.1) at once, with no taper.
 
-  596 uronium anchors are left out of every arm. There the seeded reading
+  162 uronium anchors are left out of every arm. There the seeded reading
   loses its own ion's election under `none`, so Stage B keeps it only as a
-  same-ion alternative on the elected row, whatever the context. Eight seeded
-  species make them, each a nitrogen-bearing neutral through `[M+NH4]+` or
-  `[M+H]+` that the election reads as a lighter neutral through the urea
-  adduct or `[M+NH4]+`
-  ([#3191](https://github.com/ultra-trace-systems/mascope/issues/3191)). That
-  is the election rule against the seed, not the context. A context only
-  removes readings, so a truth that wins its election under `none` wins it in
-  every arm that keeps it. Both sets pooled:
+  same-ion alternative on the elected row, whatever the context. Two seeded
+  species make them, C9H19NO and C9H18N2O through `[M+H]+`. Each is a
+  protonated nitrogen base that the election reads as a lighter neutral
+  through `[M+NH4]+` or the urea adduct
+  ([#3414](https://github.com/ultra-trace-systems/mascope/issues/3414)).
+  That is the election rule against the seed, not the context. On bundle
+  1.4.4 eight species made 596. Five of those targets named the wrong neutral,
+  and 1.5.0's seed corrects them
+  ([#3191](https://github.com/ultra-trace-systems/mascope/issues/3191)). A
+  context only removes readings, so a truth that wins its election under
+  `none` wins it in every arm that keeps it. Both sets pooled:
 
   | arm | top-1 | contested top-1 | false winners | kept at 5 % FDR (true) | true readings removed | wrong at confidence >= 0.9 | ECE, candidates / winners |
   |---|---|---|---|---|---|---|---|
-  | `none` | 0.911 | 0.724 | 8.8 % | 14,600 (13,870) | 0 | 3 | 0.081 / 0.153 |
-  | matched | 0.996 | 0.989 | 0.4 % | 16,020 (15,962) | 0 | 0 | 0.207 / 0.247 |
-  | matched, graded | 0.995 | 0.986 | 0.5 % | 16,020 (15,947) | 0 | 0 | 0.150 / 0.246 |
-  | mismatched | 0.988 | 0.979 | 0.7 % | 15,940 (15,830) | 80 | 5 | 0.182 / 0.243 |
-  | mismatched, graded | 0.993 | 0.978 | 0.7 % | 16,020 (15,906) | 0 | 1 | 0.158 / 0.246 |
-  | combustion | 0.889 | 0.890 | 4.8 % | 14,968 (14,243) | 1,619 | 569 | 0.134 / 0.203 |
-  | combustion, graded | 0.990 | 0.969 | 1.0 % | 16,020 (15,859) | 0 | 0 | 0.197 / 0.315 |
+  | `none` | 0.917 | 0.729 | 8.3 % | 15,594 (14,815) | 0 | 3 | 0.071 / 0.143 |
+  | matched | 0.996 | 0.987 | 0.4 % | 16,941 (16,875) | 0 | 0 | 0.194 / 0.230 |
+  | matched, graded | 0.996 | 0.985 | 0.4 % | 16,941 (16,864) | 0 | 0 | 0.142 / 0.230 |
+  | mismatched | 0.988 | 0.977 | 0.7 % | 16,861 (16,742) | 80 | 3 | 0.170 / 0.226 |
+  | mismatched, graded | 0.993 | 0.976 | 0.7 % | 16,941 (16,818) | 0 | 1 | 0.149 / 0.229 |
+  | combustion | 0.880 | 0.889 | 5.2 % | 15,647 (14,865) | 1,862 | 650 | 0.121 / 0.183 |
+  | combustion, graded | 0.990 | 0.967 | 1.0 % | 16,941 (16,769) | 0 | 0 | 0.194 / 0.306 |
 
-  Contested top-1 is read on the 5,139 anchors contested under `none`; a
+  Against bundle 1.4.4, both bundles run at develop `07633eba8`, the
+  readings hold. `none` moves from 0.912 to 0.917 top-1 and from 0.725 to
+  0.729 contested top-1, and the true winners it keeps from 13,872 to 14,815;
+  matched keeps 16,875 against 15,962. The uronium set measures 11,281
+  anchors against 10,360. 434 of the new ones are anchors whose truth no
+  longer loses its election; the rest are the corrected targets' ions and
+  truths that now score. The bromide set's anchors are 1.4.4's own. They move
+  a little all the same (top-1 under `none` 0.965 to 0.963), because the
+  harness scores against the full peak list of each store, and the stores
+  now carry the scan counts (`fit_score.md` section 3.2b).
+
+  Contested top-1 is read on the 5,187 anchors contested under `none`; a
   removed truth counts as a miss. The pooled cut mixes the two sets, so it
   hides where a context fails; per set (top-1 / contested top-1 / true
   winners kept at 5 % FDR / true readings removed):
 
-  | arm | bromide (5,660; 2,618 contested) | uronium (10,360; 2,521 contested) |
+  | arm | bromide (5,660; 2,618 contested) | uronium (11,281; 2,569 contested) |
   |---|---|---|
-  | `none` | 0.965 / 0.925 / 5,464 / 0 | 0.882 / 0.516 / 8,452 / 0 |
-  | matched | 0.994 / 0.986 / 5,624 / 0 | 0.998 / 0.991 / 10,338 / 0 |
-  | matched, caps only | 0.965 / 0.925 / 5,464 / 0 | 0.998 / 0.991 / 10,338 / 0 |
-  | matched, ratios only | 0.994 / 0.986 / 5,624 / 0 | 0.981 / 0.922 / 10,164 / 0 |
-  | mismatched | 0.970 / 0.966 / 5,492 / 80 | 0.998 / 0.991 / 10,338 / 0 |
-  | combustion | 0.961 / 0.947 / 5,441 / 80 | 0.850 / 0.832 / 0 / 1,539 |
-  | combustion, graded | 0.975 / 0.946 / 5,518 / 0 | 0.998 / 0.993 / 10,341 / 0 |
+  | `none` | 0.963 / 0.919 / 5,449 / 0 | 0.894 / 0.535 / 9,375 / 0 |
+  | matched | 0.993 / 0.984 / 5,619 / 0 | 0.998 / 0.990 / 11,256 / 0 |
+  | matched, caps only | 0.963 / 0.919 / 5,449 / 0 | 0.998 / 0.990 / 11,256 / 0 |
+  | matched, ratios only | 0.993 / 0.984 / 5,619 / 0 | 0.984 / 0.929 / 11,098 / 0 |
+  | mismatched | 0.969 / 0.964 / 5,486 / 80 | 0.998 / 0.990 / 11,256 / 0 |
+  | combustion | 0.959 / 0.943 / 5,430 / 80 | 0.840 / 0.835 / 0 / 1,782 |
+  | combustion, graded | 0.973 / 0.942 / 5,507 / 0 | 0.998 / 0.993 / 11,262 / 0 |
 
   Readings:
 
   - *The layer earns its place.* The matched context lifts contested top-1
-    0.724 to 0.989 and cuts the false winners from 8.8 % to 0.4 %, on both
-    sets: bromide 0.925 to 0.986, uronium 0.516 to 0.991. On the bromide set
+    0.729 to 0.987 and cuts the false winners from 8.3 % to 0.4 %, on both
+    sets: bromide 0.919 to 0.984, uronium 0.535 to 0.990. On the bromide set
     the ratio windows carry all of it (caps alone change nothing). On the
-    uronium set the caps carry it (windows alone reach 0.922).
+    uronium set the caps carry it (windows alone reach 0.929).
   - *The harm is the ratio gate's, and only under a wrong context.* No
     matched context removed a true reading. Every one removed elsewhere went
     to a ratio window, never to a cap. The swap removes 80 readings of one
     genuine low-carbon species, glycerol C3H8O3 (H/C 2.67 against uronium's
     2.6). Chamber removes 11 of C4H4O2 (DBE/C 0.75 against 0.7). Combustion
-    and water (H/C to 2.2) remove 1,619: glycerol's 80, and 1,539 on the
-    uronium set (15 % of it), mostly saturated C6 to C9 glycols and glycol
+    and water (H/C to 2.2) remove 1,862: glycerol's 80, and 1,782 on the
+    uronium set (16 % of it), mostly saturated C6 to C9 glycols and glycol
     ethers. A removed truth leaves a decoy alone in its pool, at full
-    confidence, so 567 wrong winners sit at the top of the uronium set's
+    confidence, so 648 wrong winners sit at the top of the uronium set's
     confidence order. No cut on that set then reaches 5 % FDR.
   - *Contested top-1 alone would pass a harmful context.* Combustion's caps
     still prune decoys, so its contested top-1 (0.890) stays above `none`'s.
@@ -481,10 +496,10 @@ benches.
     The decision below reads those two.
   - *Calibration ECE moves for a reason the context is not.* The shipped
     curve maps evidence alone to P(correct). A context removes decoys, which
-    raises the winners' accuracy (0.91 to 1.00) and leaves their evidence,
-    and their mean P (0.76 to 0.75), where it was. The winners' ECE grows
-    0.153 to 0.247 by underconfidence, not by misranking. On these Stage B
-    pools the curve misses by 0.08 to 0.34 in every arm, `none` included,
+    raises the winners' accuracy (0.92 to 1.00) and leaves their evidence,
+    and their mean P (0.77 to 0.77), where it was. The winners' ECE grows
+    0.143 to 0.230 by underconfidence, not by misranking. On these Stage B
+    pools the curve misses by 0.07 to 0.31 in every arm, `none` included,
     against the 0.029 it was fit to on the wider `make_candidates.py` pools.
     Its refit per profile is step 4.3 of the assignment plan.
 
@@ -501,13 +516,13 @@ benches.
      gated, until the curve is fit per profile (step 4.3).
 
   The two measured defaults pass. Ambient air on the uronium set: top-1 0.998
-  against 0.882, true winners kept 10,338 against 8,452, the same as
-  uronium, the set's own default. Uronium on the bromide set: 0.970 against
-  0.965, 5,492 against 5,464, at the cost of the glycerol readings.
+  against 0.894, true winners kept 11,256 against 9,375, the same as
+  uronium, the set's own default. Uronium on the bromide set: 0.969 against
+  0.963, 5,486 against 5,449, at the cost of the glycerol readings.
   Combustion fails as a default for both demo modes: on the bromide set
-  0.961 against 0.965 and 5,441 against 5,464, on the uronium set 0.850
-  against 0.882 and none kept. Water fails on the uronium set alone, with the
-  same numbers there. The ambient-air defaults of `NO3`, `NO3_15N`, `IODIDE`
+  0.959 against 0.963 and 5,430 against 5,449, on the uronium set 0.840
+  against 0.894 and none kept. Water fails on the uronium set alone, with the
+  same numbers there. (Bundle 1.4.4 gave the same verdicts.) The ambient-air defaults of `NO3`, `NO3_15N`, `IODIDE`
   and `EASYIC_*` pass rule 2 on both sets. Rule 1 is unmeasured until the
   bench has a set of each mode.
 
@@ -515,9 +530,9 @@ benches.
   costs genuine low-carbon species: glycerol and C4H4O2 under a wrong
   context. The note's halocarbon example is not in the demo's targets, and
   on the bromide grid it is bounded by the caps, not by a window. The graded
-  stand-in keeps the matched gain (0.995 against 0.996 top-1) and removes no
-  true reading in any arm. In the worst case it turns the 569 confidently
-  wrong winners into none, and the uronium set keeps 10,341 true winners at
+  stand-in keeps the matched gain (0.996 against 0.996 top-1) and removes no
+  true reading in any arm. In the worst case it turns the 650 confidently
+  wrong winners into none, and the uronium set keeps 11,262 true winners at
   5 % FDR where the combustion gate keeps none. So the leaning holds: the
   windows become the graded, floored factor of section 4.2, in a PR of its
   own ([#3188](https://github.com/ultra-trace-systems/mascope/issues/3188)).

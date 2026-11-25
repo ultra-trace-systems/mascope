@@ -324,11 +324,12 @@ sum of its ions' points; only an `isotope:` point is read per line off
 `load_peaks`. **A peak counts once per sample** where lines are read:
 `load_peaks` gives one row per match, so a peak two targets matched appears
 twice, and a tool keeps one row per line and sample before it sums, as A6's
-solver does. An ion formula that names two target ions (in the demo's
-uronium batch six do, `C10H20NO2+` among them: C10H16O2 through `[M+NH4]+`
-and C10H19NO2 through `[M+H]+`, the same peak in every sample, 24 isotope
-formulas between the six) is refused as ambiguous, with the two `compound:`
-keys to ask for instead. `tic` is the samples listing's `tic`, the mean TIC
+solver does. An ion formula that names two target ions is refused as
+ambiguous, with the two `compound:` keys to ask for instead. The demo's
+uronium batch holds no such ion since bundle 1.5.0. Bundle 1.4.4 had six,
+`C10H20NO2+` among them (C10H16O2 through `[M+NH4]+` and C10H19NO2 through
+`[M+H]+`, the same peak in every sample); 1.5.0's corrected seed drops the
+nitrogen-bearing readings (`demo_dataset.md`, section F). `tic` is the samples listing's `tic`, the mean TIC
 per MS1 scan that `mascope_viz` divides by, never notebook 06's sum of peak
 heights. Over one batch the tool reads an `isotope:` key off `load_peaks`'s
 `target_isotope_formula` (which only target-matched peaks carry), an `ion:`

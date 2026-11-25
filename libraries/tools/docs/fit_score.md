@@ -340,6 +340,15 @@ hold move the estimate:
   compound present in only part of the file is read as if the scans that miss it were
   below the floor. 3.5c's paired per-scan ratio is robust to both; the count is not.
 
+**On the demo.** Demo bundle 1.5.0 is the first whose stores carry the counts. On it
+`tooling/score_eval` (v2 scorer) reads top-1 $0.8514$, contested top-1 $0.7339$, ROC-AUC
+$0.9255$ and calibrated ECE $0.0126$ over 17,423 anchors. With the counts ignored, the same
+bundle reads $0.8424$, $0.7179$, $0.9235$ and $0.0145$. So the counts lift top-1 by $0.009$,
+as they did when filled from each raw of bundle 1.4.4 before the stores kept them ($0.8367$
+to $0.8461$, §3.3). The rest of the change from 1.4.4 ($0.8369$, $0.7121$, $0.8959$ and
+$0.0167$ over 16,936 anchors, at the same commit) is 1.5.0's corrected uronium seed
+(`docs/demo_dataset.md`, section F).
+
 ### 3.3 Detectability gate (censoring at the detection limit)
 
 A predicted peak that is **absent** ($o_i = 0$) is only evidence *against* the assignment
