@@ -23,6 +23,7 @@ uv run python tooling/assignment_bench/bench.py run origin/develop --baseline
 uv run python tooling/assignment_bench/bench.py run <your branch> --baseline
 uv run python tooling/assignment_bench/bench.py run <your branch> --post <pr>
 uv run python tooling/assignment_bench/bench.py run <your branch> --post <pr> --fresh
+uv run python tooling/assignment_bench/bench.py run <your branch> --post <pr> --check
 uv run python tooling/assignment_bench/bench.py run <your branch> --batch --sets Db
 uv run python tooling/assignment_bench/bench.py post <your branch> --pr <pr>
 uv run python tooling/assignment_bench/bench.py review
@@ -78,7 +79,8 @@ uv run python tooling/assignment_bench/bench.py status
   card; **`baseline`** shows develop's rolling baseline card. Their section
   below has the detail. A head whose engine inputs a complete card was
   already made of gets that card in seconds, with no run; **`run <ref>
-  --fresh`** runs regardless ("A card without a run", below). **`run <ref>
+  --fresh`** runs regardless, and **`run <ref> --check`** only says whether
+  the head has such a card ("A card without a run", below). **`run <ref>
   --batch`** adds the batch arm: each set's batch assigned by a pass of the
   batch stages, and the samples carded again as the batch left them, beside
   the control ("The batch arm", below). **`run <ref> --post <pr>`** also posts the card on
@@ -570,6 +572,28 @@ card, such as an unknown set, a database that does not answer or a baseline
 of another card format, leaves the ref to a run, which meets the error as
 any run does: in the queue for the lock, and on the PR with `--post`.
 
+### Asking without a run: `--check`
+
+`bench run <ref> --check`, with the request's other options (`--sets`,
+`--decoys`, `--batch`, `--baseline`, `--post <pr>`), makes the same lookup
+and stops before it writes. It prints the head's commit, its engine digest
+and the digest's three parts, then the card a run would be served: its
+folder, the ref and commit it was made of, when, and its verdict as the run
+would read it. It writes no card folder, records nothing, posts nothing,
+takes no lock and queues behind nothing; with `--post` it reads the PR
+only, for the baseline. It exits:
+
+- **0** when such a card exists, whatever its gate says;
+- **1** when the head would run: no card of its digest for the request,
+  develop's head with `--baseline` or `--post`, or a card the scrub now
+  refuses or that cannot be read against the baseline;
+- **2** when it cannot tell, such as an unknown set, a ref it cannot
+  resolve or a database that does not answer. A run would meet the same.
+
+`--check` with `--fresh` is refused. A card still in the queue is not
+complete, so a head waiting behind a run of the same digest exits 1 until
+that run has written its card.
+
 ## Asking for a card on a PR
 
 An agent or a person asks for a card by running the bench on the branch,
@@ -590,6 +614,8 @@ named, `--decoys` adds the arms. A head whose engine inputs a complete card
 was made of gets that card in seconds, posted with a line that says so ("A
 card without a run"): a rebase onto a develop that moved only outside the
 engine, or a docs commit, needs no new run. `--fresh` runs regardless.
+`--check` asks first without queueing: exit 0 names the card, and the same
+command without `--check` posts it in seconds.
 
 **`--decoys` on a PR only when the brief asks.** A brief's `**Bench.**`
 line asks for the arms only where the step changes the scorer, the tiering

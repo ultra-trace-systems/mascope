@@ -2405,6 +2405,13 @@ def main(argv: list[str] | None = None) -> int:
         help="run even when a complete card of the head's engine inputs exists",
     )
     p_run.add_argument(
+        "--check",
+        action="store_true",
+        help="only say whether the head has a complete card of its engine inputs "
+        "for this request (exit 0) or would run (exit 1); writes, posts and "
+        "queues nothing",
+    )
+    p_run.add_argument(
         "--no-wait",
         action="store_true",
         help="refuse rather than wait while another bench command runs",
@@ -2550,6 +2557,11 @@ def _main(args) -> int:
                     return runner.baseline()
                 with home.lock(wait=args.wait, what="baseline"):
                     return runner.baseline(args.card)
+            if args.check and args.fresh:
+                raise BenchError(
+                    "--check asks whether the head would run; --fresh runs it "
+                    "regardless"
+                )
             poster = None
             if args.post is not None:
                 # Before the lock: a fork is refused before anything waits or runs.
@@ -2562,6 +2574,9 @@ def _main(args) -> int:
                 "baseline": args.baseline or poster is not None,
                 "post": poster,
             }
+            if args.check:
+                # No lock: the lookup the reuse makes, stopped before it writes.
+                return runner.check(args.ref, **ask)
             if not args.fresh:
                 # Before the lock: a head whose engine inputs are carded
                 # already gets that card while another run holds the bench.
