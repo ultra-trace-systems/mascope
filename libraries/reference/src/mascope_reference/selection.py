@@ -64,7 +64,7 @@ class SourceSelection:
         if self.applies_to_contexts:
             parts.append("regimes " + ", ".join(self.applies_to_contexts))
         else:
-            parts.append("no regimes")
+            parts.append("no regimes: read for every sample")
         if self.always_active:
             parts.append("always active")
         return ", ".join(parts)
