@@ -707,6 +707,7 @@ async def _seeded_rescore(
     model: MeasurementModel,
     resolution: Callable[[float], float] | None | object = RESOLVE_RESOLUTION,
     named: Mapping[tuple[str, str], frozenset[str]] | None = None,
+    fit_only: Mapping[tuple[str, str], frozenset[str]] | None = None,
 ) -> tuple[dict[tuple[str, str], float | None], SeededFrame | None]:
     """Measure the untargeted stage's readings the way Stage A measures one.
 
@@ -731,11 +732,19 @@ async def _seeded_rescore(
         for, measured in the same pass so a row's rivals are read in the
         frame its own reading is (``rival_set.SeededFrame.placed_for``). A
         seed the search also commits is measured as the reading it commits.
+    :param fit_only: The readings the search named against a list reading by
+        their fit alone (``rival_set.fit_tied_seeds``), placed as ``named``
+        are, which the set records apart (``rival_set.SeededFrame.fit_only``).
     :return: Fit per committed seed, where a seed whose ion the pass could not
         score is absent and its rows fall back to the finder's own number; and
         the frame it scored, None where it scored nothing.
     """
+    fit_only = {
+        seed: peaks for seed, peaks in (fit_only or {}).items() if seed not in seeds
+    }
     named = {seed: peaks for seed, peaks in (named or {}).items() if seed not in seeds}
+    for seed, peaks in fit_only.items():
+        named[seed] = named.get(seed, frozenset()) | peaks
     if not seeds and not named:
         return {}, None
     ion_by_seed, fit_by_ion, _errors, scored_df = await score_seeds(
@@ -753,7 +762,9 @@ async def _seeded_rescore(
             "the rest keep the finder's own fit"
         )
     return fits, (
-        None if scored_df.empty else SeededFrame(scored_df, ion_by_seed, named)
+        None
+        if scored_df.empty
+        else SeededFrame(scored_df, ion_by_seed, named, fit_only)
     )
 
 

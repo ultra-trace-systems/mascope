@@ -33,6 +33,7 @@ from mascope_backend.api.new.peak_assignments.rival_set import (
     RIVALS_KEPT,
     RivalFrames,
     SeededFrame,
+    fit_tied_seeds,
     measure_rival_sets,
     named_rival_seeds,
 )
@@ -682,6 +683,257 @@ class TestAListRowsGridRivals:
         assert row["provenance"]["candidate_density"] == 3
         detail = density_reason(row)["detail"]
         assert "1 of them from the formula search (C8H8O4)" in detail
+
+
+#: A formula whose fit can tie a list row's while its plausibility (0.5) puts
+#: its evidence far under the row's: named by the search by its fit alone.
+TWIN = "C2H4N8O2"
+
+
+def _list_row_with_twin(*, fit_only: bool = True, twin_fit: float = 0.9):
+    """A list row on p1 with a known rival, the grid's evidence rival and the
+    grid's fit-tied twin, each measured as the run measures it."""
+    frame = _stage_a_frame({"C6H12O6": 0.9, "C7H16O5": 0.88})
+    named = {
+        ("C8H8O4", "im-h"): frozenset({"p1"}),
+        (TWIN, "im-h"): frozenset({"p1"}),
+    }
+    seeded = SeededFrame(
+        pd.DataFrame(
+            [
+                _line("g", "C8H8O4", "p1", 0.87),
+                _line("t", TWIN, "p1", twin_fit, ion_formula="C2H5N8O2+"),
+            ]
+        ),
+        {("C8H8O4", "im-h"): "g", (TWIN, "im-h"): "t"},
+        named,
+        {(TWIN, "im-h"): frozenset({"p1"})} if fit_only else {},
+    )
+    row = {
+        **_winner(formula="C6H12O6", source="database"),
+        "provenance": {GRID_RIVALS: {"rivals": []}},
+    }
+    return row, RivalFrames(frame, (seeded,), base=V1)
+
+
+def _the_set_without_the_twin():
+    frame = _stage_a_frame({"C6H12O6": 0.9, "C7H16O5": 0.88})
+    seeded = SeededFrame(
+        pd.DataFrame([_line("g", "C8H8O4", "p1", 0.87)]),
+        {("C8H8O4", "im-h"): "g"},
+        {("C8H8O4", "im-h"): frozenset({"p1"})},
+    )
+    row = {
+        **_winner(formula="C6H12O6", source="database"),
+        "provenance": {GRID_RIVALS: {"rivals": []}},
+    }
+    measure_rival_sets([row], RivalFrames(frame, (seeded,), base=V1), V1)
+    return row
+
+
+class TestAListRowsFitTiedRivals:
+    """MAS-975 (#3285): the grid's formulas a list reading's fit alone could
+    not separate are measured in the frame its other rivals are and recorded
+    apart, for the level; the arbitration and the density read as before."""
+
+    def test_they_are_recorded_apart_and_read_by_no_count(self):
+        row, frames = _list_row_with_twin()
+        before = _the_set_without_the_twin()
+
+        measure_rival_sets([row], frames, V1)
+
+        provenance, expected = row["provenance"], before["provenance"]
+        for key in ("candidate_density", "confidence", "n_candidates", "is_tie"):
+            assert provenance[key] == expected[key], key
+        record = provenance[RIVAL_SET]
+        assert record["rivals"] == expected[RIVAL_SET]["rivals"]
+        assert record["rivals_unlisted"] == expected[RIVAL_SET]["rivals_unlisted"]
+        assert record["fit_tied"] == [
+            {
+                "formula": TWIN,
+                "ion_formula": "C2H5N8O2+",
+                "ionization_mechanism_id": "im-h",
+                "fit_score": 0.9,
+                "mz_error_ppm": 0.2,
+                "monoisotopic": True,
+                "frame": FRAME_SEARCH,
+                "unseparated": False,
+            }
+        ]
+        assert record["fit_tied_unlisted"] == 0
+        # And the tier reason that names the search's rivals names the same.
+        assert density_reason(row) == density_reason(before)
+
+    def test_the_level_lists_one_open(self):
+        row, frames = _list_row_with_twin()
+        measure_rival_sets([row], frames, V1)
+
+        rivals, _ = shortlist(row)
+
+        assert TWIN in {rival.formula for rival in rivals}
+        record = level_of(row, [], LevelContext({}, {"im-h": "[M+H]+"}))
+        [entry] = [e for e in record["rivals"] if e["formula"] == TWIN]
+        assert entry["test"] == "open"
+        assert entry["held_by"] == ["plausibility"]
+
+    def test_named_by_the_evidence_it_is_a_rival_of_the_arbitration(self):
+        # The same reading, not marked fit-only: it competes, as before.
+        row, frames = _list_row_with_twin(fit_only=False)
+
+        measure_rival_sets([row], frames, V1)
+
+        record = row["provenance"][RIVAL_SET]
+        assert TWIN in {entry["formula"] for entry in record["rivals"]}
+        assert "fit_tied" not in record
+        before = _the_set_without_the_twin()["provenance"]["n_candidates"]
+        assert row["provenance"]["n_candidates"] == before + 1
+
+    def test_the_set_names_ten_and_counts_the_rest(self):
+        frame = _stage_a_frame({"C6H12O6": 0.9})
+        twins = [f"C{n}H4N8O2" for n in range(2, 15)]
+        seeded = SeededFrame(
+            pd.DataFrame(
+                [_line(f"t{n}", twin, "p1", 0.9) for n, twin in enumerate(twins)]
+            ),
+            {(twin, "im-h"): f"t{n}" for n, twin in enumerate(twins)},
+            {(twin, "im-h"): frozenset({"p1"}) for twin in twins},
+            {(twin, "im-h"): frozenset({"p1"}) for twin in twins},
+        )
+        row = {
+            **_winner(formula="C6H12O6", source="database"),
+            "provenance": {GRID_RIVALS: {"rivals": []}},
+        }
+
+        measure_rival_sets([row], RivalFrames(frame, (seeded,), base=V1), V1)
+
+        record = row["provenance"][RIVAL_SET]
+        assert len(record["fit_tied"]) == RIVALS_KEPT
+        assert record["fit_tied_unlisted"] == len(twins) - RIVALS_KEPT
+        assert row["provenance"]["candidate_density"] == 1
+
+    def test_one_ion_read_twice_is_listed_once_at_its_best_fit(self):
+        # Two splits of one ion, both named by their fit alone: one rival.
+        frame = _stage_a_frame({"C6H12O6": 0.9})
+        split = ("C2H2N7O2", "im-nh4")
+        seeded = SeededFrame(
+            pd.DataFrame(
+                [
+                    _line(
+                        "b",
+                        split[0],
+                        "p1",
+                        0.9,
+                        mechanism="im-nh4",
+                        ion_formula="C2H5N8O2+",
+                    ),
+                    _line("a", TWIN, "p1", 0.6, ion_formula="C2H5N8O2+"),
+                ]
+            ),
+            {(TWIN, "im-h"): "a", split: "b"},
+            {(TWIN, "im-h"): frozenset({"p1"}), split: frozenset({"p1"})},
+            {(TWIN, "im-h"): frozenset({"p1"}), split: frozenset({"p1"})},
+        )
+        row = {
+            **_winner(formula="C6H12O6", source="database"),
+            "provenance": {GRID_RIVALS: {"rivals": []}},
+        }
+
+        measure_rival_sets([row], RivalFrames(frame, (seeded,), base=V1), V1)
+
+        [entry] = row["provenance"][RIVAL_SET]["fit_tied"]
+        assert (entry["formula"], entry["fit_score"]) == (split[0], 0.9)
+
+    def test_a_fit_only_reading_of_a_rivals_ion_is_not_listed_twice(self):
+        # The known set already measures C7H16O5 on the peak; the search's
+        # reading of the same neutral is no second rival.
+        frame = _stage_a_frame({"C6H12O6": 0.9, "C7H16O5": 0.88})
+        seeded = SeededFrame(
+            pd.DataFrame([_line("t", "C7H16O5", "p1", 0.95)]),
+            {("C7H16O5", "im-h"): "t"},
+            {("C7H16O5", "im-h"): frozenset({"p1"})},
+            {("C7H16O5", "im-h"): frozenset({"p1"})},
+        )
+        row = {
+            **_winner(formula="C6H12O6", source="database"),
+            "provenance": {GRID_RIVALS: {"rivals": []}},
+        }
+
+        measure_rival_sets([row], RivalFrames(frame, (seeded,), base=V1), V1)
+
+        assert "fit_tied" not in row["provenance"][RIVAL_SET]
+
+    def test_the_seeds_named_by_fit_alone_carry_their_peaks(self):
+        search = SimpleNamespace(
+            frame=pd.DataFrame({"sample_peak_id": ["p1", "p2"], "mz": [181.0, 200.0]}),
+            mechanism_id_by_notation={"[M+H]+": "im-h"},
+            election=SimpleNamespace(
+                fit_tied_by_peak={
+                    "p1": ({"formula": TWIN, "ionization_mechanism": "[M+H]+"},),
+                    "p2": (
+                        {"formula": TWIN, "ionization_mechanism": "[M+H]+"},
+                        {"formula": "C8H8O4", "ionization_mechanism": "[M+H]+"},
+                    ),
+                }
+            ),
+        )
+
+        found = fit_tied_seeds(search)
+
+        assert found == {
+            (TWIN, "im-h"): frozenset({"p1", "p2"}),
+            ("C8H8O4", "im-h"): frozenset({"p2"}),
+        }
+
+    def test_a_search_without_an_election_names_none(self):
+        search = SimpleNamespace(
+            frame=pd.DataFrame({"sample_peak_id": [], "mz": []}),
+            mechanism_id_by_notation={},
+            election=None,
+        )
+
+        assert fit_tied_seeds(search) == {}
+
+    @pytest.mark.asyncio
+    async def test_they_are_measured_in_the_seeded_pass_and_marked(self):
+        named = {("C8H8O4", "im-h"): frozenset({"p1"})}
+        fit_only = {
+            (TWIN, "im-h"): frozenset({"p1"}),
+            # A seed the search commits is measured as its reading.
+            ("C5H10O2", "im-h"): frozenset({"p1"}),
+        }
+        score_seeds = AsyncMock(
+            return_value=(
+                {
+                    ("C5H10O2", "im-h"): "w",
+                    ("C8H8O4", "im-h"): "g",
+                    (TWIN, "im-h"): "t",
+                },
+                {"w": 0.9, "g": 0.7, "t": 0.6},
+                {},
+                pd.DataFrame([_line("w", "C5H10O2", "p2", 0.9)]),
+            )
+        )
+        with patch.object(judging_loop, "score_seeds", score_seeds):
+            _fits, frame = await judging_loop._seeded_rescore(
+                SimpleNamespace(sample_item_name="s"),
+                None,
+                {("C5H10O2", "im-h")},
+                model=V1,
+                resolution=None,
+                named=named,
+                fit_only=fit_only,
+            )
+
+        assert score_seeds.await_args.args[1] == {
+            ("C5H10O2", "im-h"),
+            ("C8H8O4", "im-h"),
+            (TWIN, "im-h"),
+        }
+        assert frame.placed_for == {
+            ("C8H8O4", "im-h"): frozenset({"p1"}),
+            (TWIN, "im-h"): frozenset({"p1"}),
+        }
+        assert frame.fit_only == {(TWIN, "im-h"): frozenset({"p1"})}
 
 
 def _isotope_frame() -> pd.DataFrame:

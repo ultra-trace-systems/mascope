@@ -261,7 +261,9 @@ def _seeded_chain(
             "match_score": fit,
         }
 
-    async def rescore(_sample, _params, seeds, *, model, resolution=None, named=None):
+    async def rescore(
+        _sample, _params, seeds, *, model, resolution=None, named=None, fit_only=None
+    ):
         peak_by_mz = {
             round(float(mz), 6): str(peak)
             for peak, mz in zip(peaks["sample_peak_id"], peaks["mz"], strict=True)
@@ -277,7 +279,9 @@ def _seeded_chain(
             ion_by_seed[seed] = ion
             fit = float(row.get("isotopic_pattern_score") or 0.0)
             rows.append(line(ion, seed[0], seed[1], row.get("ion"), peak, fit))
-        for seed, on in (named or {}).items():
+        fit_only = {s: on for s, on in (fit_only or {}).items() if s not in seeds}
+        named = {**(named or {}), **fit_only}
+        for seed, on in named.items():
             if seed[0] not in named_fits or seed in seeds:
                 continue
             fit, ion_formula = named_fits[seed[0]]
@@ -287,8 +291,8 @@ def _seeded_chain(
                 rows.append(line(ion, seed[0], seed[1], ion_formula, peak, fit))
         if not rows:
             return {}, None
-        named = {seed: on for seed, on in (named or {}).items() if seed not in seeds}
-        return {}, SeededFrame(pd.DataFrame(rows), ion_by_seed, named)
+        named = {seed: on for seed, on in named.items() if seed not in seeds}
+        return {}, SeededFrame(pd.DataFrame(rows), ion_by_seed, named, fit_only)
 
     return rescore
 
@@ -1268,8 +1272,18 @@ class TestAListHitMeetsTheGrid:
         "mz_error_ppm": 0.3,
     }
 
+    #: A grid formula whose fit ties the reading's and whose plausibility
+    #: (0.5) puts its evidence far under it (MAS-975).
+    TWIN = {
+        "formula": "C2H4N8O2",
+        "ion": "C2H5N8O2+",
+        "ionization_mechanism": "[M+H]+",
+        "fit_score": 0.9,
+        "mz_error_ppm": 0.4,
+    }
+
     @staticmethod
-    def _kept(rivals):
+    def _kept(rivals, fit_tied=(), unscored=0):
         from mascope_tools.composition.finder import (
             KNOWN_KEPT,
             KNOWN_RIVALS,
@@ -1289,6 +1303,8 @@ class TestAListHitMeetsTheGrid:
                 fit_score=0.9,
                 candidates=4,
                 in_grid=True,
+                fit_tied=tuple(fit_tied),
+                unscored=unscored,
             ),
         }
 
@@ -1334,8 +1350,12 @@ class TestAListHitMeetsTheGrid:
                 _mirror_rows() if stage_a is None else stage_a,
                 pd.DataFrame(rows),
                 # The grid's rival, measured in the frame the reading's own
-                # rivals are, where the search named it.
-                named_fits={"C7H16O5": (0.97, "C7H17O5+")},
+                # rivals are, where the search named it; and the grid's rival
+                # only plausibility held back, where it named one.
+                named_fits={
+                    "C7H16O5": (0.97, "C7H17O5+"),
+                    self.TWIN["formula"]: (0.9, self.TWIN["ion"]),
+                },
             )
         )
 
@@ -1531,6 +1551,55 @@ class TestAListHitMeetsTheGrid:
             "kept_by_library": 0,
             "prior": 2.0,
         }
+
+    @pytest.mark.asyncio
+    async def test_a_rival_only_plausibility_held_back_is_listed_open(self):
+        # MAS-975 (#3285): the grid's formula whose fit ties the reading's is
+        # measured into its rival set apart, read by the level alone.
+        from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+
+        recorder = _Recorder()
+        self._start_with(recorder, [self._kept([], fit_tied=[self.TWIN])])
+        await _run(PeakAssignmentConfig(run_untargeted=True))
+        without = _Recorder()
+        patch.stopall()
+        self._start_with(without, [self._kept([])])
+        await _run(PeakAssignmentConfig(run_untargeted=True))
+
+        def p1(rows):
+            return next(row for row in rows if row["sample_peak_id"] == "p1")
+
+        row, before = p1(recorder.rows), p1(without.rows)
+        [twin] = row["provenance"]["rival_set"]["fit_tied"]
+        assert (twin["formula"], twin["frame"], twin["fit_score"]) == (
+            "C2H4N8O2",
+            "search",
+            0.9,
+        )
+        assert row["provenance"]["grid_rivals"]["fit_tied"] == 1
+        # No density, tier or tier reason reads it; the level does.
+        for key in ("candidate_density", "tier_reasons", "confidence", "is_tie"):
+            assert row["provenance"].get(key) == before["provenance"].get(key), key
+        assert row["tier"] == before["tier"]
+        level = row["provenance"]["identification_level"]
+        assert level["level"] == "5a"
+        [entry] = [e for e in level["rivals"] if e["formula"] == "C2H4N8O2"]
+        assert (entry["test"], entry["held_by"]) == ("open", ["plausibility"])
+        assert before["provenance"]["identification_level"]["level"] != "5a"
+
+    @pytest.mark.asyncio
+    async def test_the_searchs_unscored_candidates_hold_the_level(self):
+        from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+
+        recorder = _Recorder()
+        self._start_with(recorder, [self._kept([], unscored=7)])
+        await _run(PeakAssignmentConfig(run_untargeted=True))
+
+        row = next(row for row in recorder.rows if row["sample_peak_id"] == "p1")
+        assert row["provenance"]["grid_rivals"]["unscored"] == 7
+        level = row["provenance"]["identification_level"]
+        assert (level["level"], level["rivals_unscored"]) == ("5a", 7)
+        assert "7 candidates of the formula search past its limit" in level["evidence"]
 
     @pytest.mark.asyncio
     async def test_a_rival_a_reading_was_held_against_is_recorded(self):

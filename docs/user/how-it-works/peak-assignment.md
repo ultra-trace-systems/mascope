@@ -1395,7 +1395,12 @@ flowchart TD
 - **The shortlist.** The other formulas that fit the peak's mass through the run's
   channels. A peak the target library or a reference list matched carries the list's
   candidates the run competed for it, each with its fit, and the formula search's rivals
-  it could not separate; a run that does not search, or a peak the search could not read,
+  it could not separate. Those include the formulas whose fit ties the list's and that
+  only their chemical plausibility put behind it: plausibility excludes nothing, so they
+  are listed, *open*. The search scores at most 64 formulas a peak, nearest in mass first;
+  where its window held more, the ones it did not score are counted as rivals not tested,
+  and the row reads 5a with *candidates of the formula search past its limit, not
+  scored*. A run that does not search, or a peak the search could not read,
   competed it against the lists' formulas alone, so it reads 5a with *rivals not
   measured*. A peak the formula search elected carries its shortlist measured only where
   the run measured its winners' shortlists, which is a run option that is off by

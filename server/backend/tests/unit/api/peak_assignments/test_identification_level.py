@@ -197,8 +197,8 @@ class TestTheScale:
     def test_the_rules_version_is_pinned(self):
         # A fact, a rule or the order of the rules that changes bumps this, and
         # a test that pins it is where the bump is noticed. The run records it.
-        assert LEVEL_RULES_VERSION == 3
-        assert apply_levels(measured(*[m0()]))["level_rules_version"] == 3
+        assert LEVEL_RULES_VERSION == 4
+        assert apply_levels(measured(*[m0()]))["level_rules_version"] == 4
         assert "level_mapping_version" not in level(m0())
 
     def test_the_vocabulary_is_the_shared_scale(self):
@@ -568,6 +568,116 @@ class TestFiveA:
         row = m0(alternatives=[rival("C7H16O5", 0.88)])
 
         assert "co-varies" in level(row, tof=True)["lift"]
+
+
+#: A formula whose fit can tie a reading's and whose plausibility puts its
+#: evidence far under it: the rival the formula search names by its fit alone.
+IMPLAUSIBLE_TWIN = "C2H4N8O2"
+
+
+def _fit_tied_set(fit: float = 0.9) -> dict:
+    """A list row's rival set with one rival the search named by its fit
+    alone (``rival_set.FIT_TIED``), measured at ``fit`` beside the row's 0.9."""
+    return {
+        "fit_score": 0.9,
+        "rivals": [],
+        "rivals_unlisted": 0,
+        "fit_tied": [
+            {
+                "formula": IMPLAUSIBLE_TWIN,
+                "ion_formula": "C2H5N8O2+",
+                "fit_score": fit,
+                "mz_error_ppm": 0.4,
+                "monoisotopic": True,
+                "frame": "search",
+                "unseparated": False,
+            }
+        ],
+        "fit_tied_unlisted": 0,
+    }
+
+
+class TestAListRowsFitTiedRivals:
+    """MAS-975 (#3285): a grid formula whose fit ties a list row's and whose
+    plausibility puts its evidence under the tie is a rival the level lists,
+    open, and the search's unscored candidates are rivals not tested."""
+
+    def test_one_held_only_by_plausibility_holds_the_row_at_5a(self):
+        assert formula_plausibility(IMPLAUSIBLE_TWIN) == pytest.approx(0.5)
+        without = m0()
+        with_twin = m0(provenance={RIVAL_SET: _fit_tied_set()})
+        tier = with_twin["tier"]
+        density = with_twin["provenance"].get("candidate_density")
+
+        assert level(without)["level"] == "4a"
+        record = level(with_twin)
+
+        assert record["level"] == "5a"
+        [entry] = record["rivals"]
+        assert entry["formula"] == IMPLAUSIBLE_TWIN
+        assert entry["test"] == OPEN
+        assert entry["held_by"] == [HELD_BY_PLAUSIBILITY]
+        assert entry["record"] == "rival_set.fit_tied"
+        assert record["evidence"] == f"one rival left open: {IMPLAUSIBLE_TWIN}"
+        # The level moves no tier and reads no density.
+        apply_levels([with_twin], notation_by_id=MECHANISMS)
+        assert with_twin["tier"] == tier
+        assert with_twin["provenance"].get("candidate_density") == density
+
+    def test_one_the_sets_fit_separates_is_out_by_mass(self):
+        record = level(m0(provenance={RIVAL_SET: _fit_tied_set(fit=0.5)}))
+
+        assert tests_of(record) == {IMPLAUSIBLE_TWIN: TEST_MASS}
+        assert record["level"] == "4a"
+
+    def test_those_past_the_named_ones_are_unlisted(self):
+        blob = _fit_tied_set(fit=0.5)
+        blob["fit_tied_unlisted"] = 2
+
+        record = level(m0(provenance={RIVAL_SET: blob}))
+
+        assert record["level"] == "5a"
+        assert record["rivals_unlisted"] == 2
+        assert "two rivals past the stored shortlist, not tested" in record["evidence"]
+
+    def test_candidates_the_search_left_unscored_are_rivals_not_tested(self):
+        row = m0()
+        row["provenance"][GRID_RIVALS]["unscored"] = 3
+
+        record = level(row)
+
+        assert record["level"] == "5a"
+        assert record["rivals_unlisted"] == 3
+        assert record["rivals_unscored"] == 3
+        assert record["evidence"] == (
+            "three candidates of the formula search past its limit of 64 per "
+            "peak, not scored"
+        )
+        assert record["lift"] == "score the formula search's candidates past its limit"
+        assert shortlist(row) == ([], 3)
+
+    def test_unscored_candidates_join_the_sets_own_unlisted_count(self):
+        row = m0(alternatives=[rival("C7H16O5", 0.2)])
+        row["provenance"][GRID_RIVALS]["unscored"] = 2
+        measured(row)
+        row["provenance"][RIVAL_SET]["rivals_unlisted"] = 1
+
+        record = level(row)
+
+        assert record["rivals_unlisted"] == 3
+        assert record["evidence"].startswith(
+            "one rival past the stored shortlist, not tested; two candidates of "
+            "the formula search past its limit"
+        )
+
+    def test_a_search_row_reads_no_grid_count(self):
+        # The count is the formula search's record of a list row's peak.
+        row = m0(
+            source="untargeted",
+            provenance={MEASURED_SHORTLIST: [], GRID_RIVALS: {"unscored": 4}},
+        )
+
+        assert shortlist(measured(row)[0])[1] == 0
 
 
 class TestTheRivalTests:

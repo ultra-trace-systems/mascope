@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
 import numpy as np
 import pandas as pd
@@ -215,6 +216,7 @@ class TestAKeptReading:
         ]
         # Measured with the hit's other rivals, in the hit's frame: by peak.
         assert election.rivals_by_peak == {"p1": found.rivals}
+        assert election.fit_tied_by_peak == {}
         assert election.matches["mz"].tolist() == [250.5]
         assert (election.released, election.displaced) == (set(), {})
         assert election.summary == {
@@ -226,6 +228,26 @@ class TestAKeptReading:
             "prior": LIST_PRIOR_WEIGHT,
         }
         assert "held_against" not in rows[0]["provenance"][GRID_RIVALS]
+
+    def test_its_fit_tied_rivals_are_handed_on_by_peak(self):
+        # MAS-975: the grid's formulas only plausibility separated from the
+        # reading are measured into its rival set apart, by its peak.
+        rows = [_list_hit("a", "p1"), _list_hit("b", "p3")]
+        twin = {"formula": "C2H4N8O2", "ion": "C2H5N8O2+", "fit_score": 0.9}
+        tied = replace(_rivals("C7H16O5"), fit_tied=(twin,))
+        matches = pd.DataFrame(
+            [_kept_marker(181.0707, tied), _kept_marker(199.0, _rivals("C8H8O4"))]
+        )
+
+        election = settle_list_election(
+            rows, matches, {"a": _reading(181.0707), "b": _reading(199.0)}
+        )
+
+        assert election.fit_tied_by_peak == {"p1": (twin,)}
+        assert election.rivals_by_peak == {
+            "p1": tied.rivals,
+            "p3": _rivals("C8H8O4").rivals,
+        }
 
     def test_the_rival_it_was_held_against_is_recorded_and_counted(self):
         rows = [_list_hit("a", "p1"), _list_hit("b", "p3")]

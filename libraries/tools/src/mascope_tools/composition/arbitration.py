@@ -261,6 +261,7 @@ def unseparated(
     *,
     around: str,
     tie_tol: float = DEFAULT_TIE_TOL,
+    by_fit: bool = False,
 ) -> list[str]:
     """The distinct formulas :func:`candidate_density` counts around one.
 
@@ -273,13 +274,19 @@ def unseparated(
         :func:`arbitrate_candidates` accepts.
     :param around: The formula to count around.
     :param tie_tol: The gap that counts as unresolved.
-    :return: The formulas, best evidence first; just the anchor where it is not
-        among the candidates, and nothing where there are no candidates at all.
+    :param by_fit: Count by the fit alone, before plausibility weighs it: the
+        formulas the spectrum's measurement could not separate, by the same
+        tie rule. A rival held back only by its plausibility is among these
+        and not among the evidence's (the identification level lists it,
+        open). No density is counted this way.
+    :return: The formulas, best evidence (or fit) first; just the anchor where
+        it is not among the candidates, and nothing where there are no
+        candidates at all.
     """
     best_evidence: dict[str, float] = {}
     for candidate in candidates:
         formula, fit = _as_formula_fit(candidate)
-        evidence = fit * formula_plausibility(formula)
+        evidence = fit if by_fit else fit * formula_plausibility(formula)
         if formula not in best_evidence or evidence > best_evidence[formula]:
             best_evidence[formula] = evidence
     if not best_evidence:
