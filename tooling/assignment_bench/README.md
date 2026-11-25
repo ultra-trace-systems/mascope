@@ -29,6 +29,7 @@ uv run python tooling/assignment_bench/bench.py post <your branch> --pr <pr>
 uv run python tooling/assignment_bench/bench.py review
 uv run python tooling/assignment_bench/bench.py review --record <sheet> --recalibrate
 uv run python tooling/assignment_bench/bench.py status
+uv run python tooling/assignment_bench/bench.py inspect
 ```
 
 - **`init <manifest> [--ref REF]`** builds the instance, or brings it up to
@@ -97,6 +98,11 @@ uv run python tooling/assignment_bench/bench.py status
   scored with, develop's baseline card, and the last five cards with their
   ref, commit, verdict, engine digest, and whether each was run or reused
   from another card (`reused <card>`). It needs no runtime home.
+- **`inspect`** looks inside the bench without changing it: the runs by
+  status, the newest card's runs, the tables' sizes, the schema's revision,
+  the env's settings and its filestore. It reads the database in read-only
+  sessions, takes no lock, and prints sets by letter and no other name;
+  "Looking inside the bench" below.
 - `--checkout DIR` names a `corpus checkout` for a manifest that names
   corpus objects. `--keep-running` leaves the backend up. `--wait` queues
   behind the bench commands that hold the lock or wait for it ("One run at
@@ -853,6 +859,68 @@ The folder holds the files, their seed and the manifest, on the box the
 bench lives on. Build from the manifest in that folder: the copy `init`
 keeps in the bench's home is a record of what was built, and its paths do
 not resolve there.
+
+## Looking inside the bench (`inspect`)
+
+`bench.py inspect` is the one way to see what the bench's database and env
+folder hold: a fixed set of reads, for debugging a run or checking what a
+card was made of. It takes no SQL, no table name and no path. A worker has
+no other way in: the agent box refuses `psql` on the bench's database, a
+read of its env folder, and a script run under its env.
+
+What it prints, one line each:
+
+| lines | what |
+|---|---|
+| `env`, `set`, `reference` | the env, slot and API port; each set by letter with its class, files ready and samples; the reference pin and its version string |
+| `settings` | the env's own config layer: the backend workers the bench wrote, or that a layer the bench did not write is there and how many keys it sets (no value); or none |
+| `filestore`, `converter` | the env's filestore, its size and files; the converter's queue, files waiting and quarantined |
+| `lock` | free, or the command that holds the bench's lock, since when and whether its process still runs; the commands waiting |
+| `schema` | the database's alembic revisions, and whether this checkout knows them: at its head, behind it (a run migrates forward), or a revision it does not know (a later build migrated the database) |
+| `runs`, `batch` | every assignment run by engine, arm (control, or the decoy arm) and status; the batch runs by status |
+| `card` | the newest card that ran (a reused card ran nothing, and is named as such): its ref, commit, verdict and the times it ran from and to; its in-app runs made in that window per set and arm by status; and its failed runs by the shape of their error |
+| `going` | while a run holds the lock, its in-app runs since it took it, per set and arm by status, and its failed ones by shape |
+| `storage` | each assignment table (`peak_assignment_run`, `peak_assignment`, `sample_measurement_model`, `assignment_calibration`, `assignment_verification`, `batch_peak_run`, `batch_peak_stage`, `batch_peak`, `batch_peak_run_anchor`) the database holds: its rows, its stored size (TOAST included), its indexes' size, and each JSON column's stored bytes and bytes a row |
+| `ledger` | the ledger rows the newest card's in-app runs wrote, per arm, with their `provenance` and `alternatives` stored bytes and bytes a row, counted exactly |
+
+Some lines are counts and some are estimates:
+
+- **The table rows and JSON sizes are the planner's statistics.** They come
+  from `reltuples` and `pg_stats` as the last `ANALYZE` left them, so a
+  table with none says so. A count over the bench's ledger, tens of millions
+  of rows, takes minutes.
+- **The sizes on disk and the card's ledger lines are exact.** The ledger
+  lines are read through the ledger's index on its run.
+- **An error's shape stands in for its class.** A run keeps its error as its
+  message alone, so the shape is the message's first line, with what is
+  quoted, a path, an id and a number each replaced by a mark. Runs that
+  failed the same way on different samples then share one line.
+
+**Names are scrubbed as a card's are.** Every line goes through the card's
+scrub (`compare_runs.scrub`), with the deny list a card is scrubbed with:
+the instance's names and ids, every sample's file name and id, the
+reference's run ids and the hosts. Every in-app and batch run's id is added
+to that list. A line the scrub refuses is not printed. In its place a line
+says which kind of name it held, never the name, and the command exits 1.
+It exits 0 when every line printed, and 2 when the database could not be
+read; nothing is printed then but why.
+
+**It changes nothing:**
+
+- Every database session is read-only (`default_transaction_read_only`,
+  through libpq's `PGOPTIONS`), so the server refuses a write whatever the
+  query.
+- It writes nothing in the bench's home and signs in nowhere.
+- It reads this checkout's migrations without writing bytecode.
+- It takes neither the bench's lock nor the state's, so it prints while a
+  run holds the bench. It reads the lock's file as the holder wrote it.
+
+**What it does not show.** No row of a run, ledger or sample, so nothing to
+check a card's numbers against row by row (a private bench is the way to
+that). No instrument names either, so it cannot check by hand that a card's
+scrub held against the names the instance stores. That check stays the
+bench's own: every card and every comment is scrubbed again against them
+before it is written or posted ("The scrub", above).
 
 ## The bench's home
 
