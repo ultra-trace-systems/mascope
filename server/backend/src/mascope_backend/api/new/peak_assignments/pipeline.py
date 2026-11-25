@@ -1178,14 +1178,7 @@ async def _propose_on_representatives(ctx: RunContext) -> None:
     ctx.by_persistence = by_persistence
     resolved_profile = ctx.resolved_profile
     ctx.listed_formulas = listed_formula_identities(
-        await sample_inputs._fetch_known_isotopes(
-            sample,
-            ctx.match_params.isotope_abundance_threshold,
-            ctx.mechanism_ids,
-            ctx.searched_mechanisms,
-            known_window=resolved_profile.context.known_window,
-            resolution=ctx.resolution,
-        )
+        await _listed_known(ctx, ctx.searched_mechanisms)
     )
     search_config = resolved_profile.search_config(notations)
     heuristics_config = resolved_profile.heuristics_config()
@@ -1261,15 +1254,23 @@ async def _propose_given(ctx: RunContext) -> None:
 async def _read_lists(ctx: RunContext) -> tuple[frozenset[str], dict]:
     """The neutrals the sample's lists name and the ions they hold, read as
     a run reads its known set (:func:`_propose_given`)."""
-    known = await sample_inputs._fetch_known_isotopes(
+    known = await _listed_known(ctx, ctx.judged_mechanisms)
+    return listed_formula_identities(known), listed_ions(known)
+
+
+async def _listed_known(ctx: RunContext, mechanisms) -> pd.DataFrame:
+    """The known set a run of the sample reads, through ``mechanisms``, for
+    what it lists alone: its ions, not their lines, since nothing here
+    matches them (``sample_inputs._fetch_known_isotopes``)."""
+    return await sample_inputs._fetch_known_isotopes(
         ctx.sample,
         ctx.match_params.isotope_abundance_threshold,
         ctx.mechanism_ids,
-        ctx.judged_mechanisms,
+        mechanisms,
         known_window=ctx.resolved_profile.context.known_window,
         resolution=ctx.resolution,
+        lines=False,
     )
-    return listed_formula_identities(known), listed_ions(known)
 
 
 def _open_given_channels(ctx: RunContext) -> None:

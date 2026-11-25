@@ -1,5 +1,6 @@
 import json
 import os
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -12,6 +13,7 @@ from mascope_backend.api.controllers.target.lib.compute.target_ions_compute impo
     fit_isotope_names,
     generate_target_ions_from_composition,
     group_target_isotopes,
+    ions_at_file,
     lines_at_file,
 )
 from mascope_backend.db import (
@@ -405,6 +407,94 @@ def test_a_files_lines_keep_the_order_the_ions_come_in_whatever_their_ids():
     assert runs[0]["target_isotope_id"].tolist() == [
         f"{ion}-12C.{k}" for ion in ("zz", "aa", "mm") for k in (0, 1)
     ]
+
+
+def _ions(specs) -> pd.DataFrame:
+    """Fine lines of ions given as ``(ion, [(m/z, abundance), ...])``."""
+    return pd.DataFrame(
+        [
+            {
+                "target_ion_id": ion,
+                "target_isotope_id": f"{ion}-{k}",
+                "target_isotope_formula": f"{ion} line {k}",
+                "mz": mz,
+                "relative_abundance": abundance,
+                "ion_label": f"label of {ion}",
+            }
+            for ion, lines in specs
+            for k, (mz, abundance) in enumerate(lines)
+        ]
+    )
+
+
+#: An ion whose two fine lines, each under 0.5, one peak of a 10000
+#: resolving power holds as one line over it; one whose lone line stays
+#: under; one whose brightest line clears 0.5 alone.
+_BORDERLINE = [
+    ("merged", [(100.0, 0.4), (100.002, 0.4), (101.0, 0.2)]),
+    ("lone", [(200.0, 0.4), (202.0, 0.4), (204.0, 0.2)]),
+    ("bright", [(300.0, 0.9), (301.0, 0.1)]),
+]
+
+
+@pytest.mark.parametrize(
+    "file_lines, kept",
+    [
+        (FileLines("LOW", lambda mz: 10000.0), ["merged", "bright"]),
+        # No resolving power: each fine line is a line of its own.
+        (FileLines("HIGH"), ["bright"]),
+    ],
+)
+def test_a_files_ions_are_the_ions_its_lines_keep(file_lines, kept):
+    """The ions ``ions_at_file`` gives are the ions ``lines_at_file`` keeps a
+    line of: one whose brightest fine line is under the threshold keeps one
+    only where a peak of the file holds several of its lines (MAS-1274)."""
+    fine = _ions(_BORDERLINE)
+    assert lines_at_file(fine, file_lines, 0.5)["target_ion_id"].unique().tolist() == (
+        kept
+    )
+    assert ions_at_file(fine, file_lines, 0.5)["target_ion_id"].tolist() == kept
+
+
+def test_a_files_ions_are_one_row_each_with_the_ions_own_columns():
+    """One row per ion, in the order the ions first come in, as
+    ``lines_at_file`` gives their lines, with the ion's own columns and none
+    of a line's: the rows are ions, not lines."""
+    for ids in (["zz", "aa", "mm"], ["mm", "zz", "aa"]):
+        ions = ions_at_file(_fine_lines(ids), FileLines("LOW", lambda mz: 50000.0))
+        assert ions["target_ion_id"].tolist() == ids
+        assert ions["ion_label"].tolist() == [f"label of {ion}" for ion in ids]
+        assert not {
+            "target_isotope_id",
+            "target_isotope_formula",
+            "mz",
+            "relative_abundance",
+        } & set(ions.columns)
+
+
+def test_a_files_ions_resolve_the_lines_of_the_ions_under_the_threshold_alone():
+    """Resolving the lines is the cost: only an ion whose brightest fine line
+    is under the threshold has its lines resolved, and none on a file whose
+    lines are the fine structure."""
+    from mascope_backend.api.controllers.target.lib.compute import (
+        target_ions_compute,
+    )
+
+    fine = _ions(_BORDERLINE)
+    resolving = FileLines("LOW", lambda mz: 10000.0)
+    with patch.object(
+        target_ions_compute, "lines_at_file", wraps=target_ions_compute.lines_at_file
+    ) as resolve:
+        ions_at_file(fine, resolving, 0.5)
+        assert resolve.call_count == 1
+        assert sorted(set(resolve.call_args.args[0]["target_ion_id"])) == [
+            "lone",
+            "merged",
+        ]
+        resolve.reset_mock()
+        ions_at_file(fine, resolving, 0.05)
+        ions_at_file(fine, FileLines("HIGH"), 0.5)
+        resolve.assert_not_called()
 
 
 def test_group_target_isotopes_reads_the_floor_off_the_most_abundant_line():

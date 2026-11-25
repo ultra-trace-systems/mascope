@@ -743,6 +743,44 @@ async def test_a_batch_search_reads_its_lists_at_the_files_resolution():
     mocks["resolution"].assert_awaited_once()
     mocks["known"].assert_awaited_once()
     assert mocks["known"].await_args.kwargs["resolution"] is orbitrap
+    # For the neutrals alone: the reference lists' ions, not their lines,
+    # which nothing here matches (MAS-1274).
+    assert mocks["known"].await_args.kwargs["lines"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_judging_reads_what_its_lists_hold_without_their_lines():
+    """The neutrals and the ions a judging of the batch stages reads off its
+    lists (``pipeline._read_lists``) are read through the mechanisms it
+    judges by, and off the reference lists' ions alone: it matches none of
+    their lines (MAS-1274)."""
+    from mascope_backend.api.new.peak_assignments import pipeline
+
+    judged = [_mechanism("[M-H]-", "im-h"), _mechanism("[M+Br]-", "im-br")]
+    ctx = SimpleNamespace(
+        sample=_sample(),
+        match_params=SimpleNamespace(isotope_abundance_threshold=1e-4),
+        mechanism_ids=["im-h"],
+        judged_mechanisms=judged,
+        searched_mechanisms=judged[:1],
+        resolved_profile=SimpleNamespace(context=SimpleNamespace(known_window=None)),
+        resolution=None,
+    )
+    known = pd.DataFrame(
+        {
+            "target_compound_formula": ["C6H12O6"],
+            "ionization_mechanism_id": ["im-br"],
+            "target_compound_id": [None],
+            "reference_identities": [[{"name": "glucose"}]],
+        }
+    )
+    with patch(f"{_SI}._fetch_known_isotopes", AsyncMock(return_value=known)) as fetch:
+        formulas, ions = await pipeline._read_lists(ctx)
+
+    assert fetch.await_args.args[3] is judged
+    assert fetch.await_args.kwargs["lines"] is False
+    assert formulas == frozenset({"C6H12O6"})
+    assert list(ions) == [("C6H12O6", "im-br")]
 
 
 def test_the_batch_search_s_explained_peaks_are_its_frame():
@@ -1696,6 +1734,8 @@ async def test_a_list_naming_the_neutral_corroborates_a_measured_reading(listed)
             polarity="+",
         ).context.known_window,
         "resolution": None,
+        # Read for what they list, not matched (MAS-1274).
+        "lines": False,
     }
 
 
@@ -2168,6 +2208,8 @@ async def test_a_list_naming_the_neutral_corroborates_a_batch_searchs_reading(
             polarity="+",
         ).context.known_window,
         "resolution": None,
+        # Read for what they list, not matched (MAS-1274).
+        "lines": False,
     }
 
 

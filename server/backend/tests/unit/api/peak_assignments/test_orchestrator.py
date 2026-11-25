@@ -2633,6 +2633,8 @@ class TestResolvedProfile:
             # The run's own reading of its file's resolving power, which the
             # known set's lines are resolved at (MAS-977).
             "file_lines": FileLines("HIGH", resolution),
+            # Stage A matches the lines (MAS-1274).
+            "lines": True,
         }
         snapshot = recorder.recorded_configs()[0]["resolved_profile"]
         assert snapshot["known_window"] == (

@@ -16,15 +16,21 @@ import pytest
 
 from mascope_backend.api.controllers.target.lib.compute.target_ions_compute import (
     FileLines,
+    ions_at_file,
     lines_at_file,
 )
 from mascope_backend.api.new.peak_assignments import sample_inputs
+from mascope_backend.api.new.peak_assignments.engine import (
+    listed_formula_identities,
+    listed_ions,
+)
 from mascope_backend.api.new.peak_assignments.sample_inputs import (
     _build_reference_isotopes_df,
     _fetch_reference_known_isotopes,
 )
 from mascope_reference import KnownComposition, KnownIdentity
 from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS, labelled_purity
+from mascope_tools.composition.line_model import HeightResolution
 from mascope_tools.composition.profiles import KNOWN_WINDOW_CEILING
 
 
@@ -112,6 +118,57 @@ def test_a_files_lines_are_the_fine_lines_resolved_at_its_resolution():
     assert not floored.empty
     assert len(floored) < len(high)
     assert (floored["relative_abundance"] >= floor).all()
+
+
+#: Formulas whose ions' brightest lines span the thresholds below: plain
+#: organics, and the chlorine and bromine clusters whose brightest fine line
+#: holds a share a merged line can pass.
+_SPREAD = [
+    ("C10H16O3", 184.1099),
+    ("C6Cl6", 281.8131),
+    ("CH2Br2", 171.8523),
+    ("C2HBr3", 249.7628),
+    ("C12H4Cl4O2", 319.8965),
+    ("C30H50O", 426.3862),
+]
+
+
+@pytest.mark.parametrize(
+    "file_lines",
+    [
+        FileLines("HIGH"),
+        FileLines("LOW"),
+        FileLines("LOW", lambda mz: 2000.0),
+        FileLines("LOW", lambda mz: 15.0 * mz),
+        FileLines("HIGH", HeightResolution(lambda mz: 40000.0)),
+        FileLines("HIGH", HeightResolution(lambda mz: 1500.0)),
+        FileLines("HIGH", lambda mz: float("nan")),
+    ],
+)
+def test_the_lists_ions_are_the_ones_their_resolved_lines_name(file_lines):
+    """What a reader that matches nothing reads of the reference lists, the
+    neutrals they name and the ions they hold, is the same off their ions
+    (``ions_at_file``) as off their lines resolved at the file
+    (``lines_at_file``), whatever the file and the threshold (MAS-1274)."""
+    known = [_known(formula, mass, [formula]) for formula, mass in _SPREAD]
+    fine = _build_reference_isotopes_df(
+        known, [_mechanism(), _mechanism("m-br", "[M+Br]-")]
+    )
+    merged_over = 0
+    for threshold in (0.0, 1e-4, 0.01, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7):
+        lines = lines_at_file(fine, file_lines, threshold)
+        ions = ions_at_file(fine, file_lines, threshold)
+        expected = lines.drop_duplicates("target_ion_id")
+        assert ions["target_ion_id"].tolist() == expected["target_ion_id"].tolist()
+        for column in ions.columns:
+            assert ions[column].tolist() == expected[column].tolist(), column
+        assert listed_formula_identities(ions) == listed_formula_identities(lines)
+        assert listed_ions(ions) == listed_ions(lines)
+        brightest = fine.groupby("target_ion_id")["relative_abundance"].max()
+        merged_over += int((brightest[ions["target_ion_id"]] < threshold).sum())
+    if file_lines.resolution_type == "LOW":
+        # A merged line kept an ion no fine line of which clears the threshold.
+        assert merged_over
 
 
 def test_empty_when_no_formulas():
@@ -282,6 +339,42 @@ class TestReferenceExpansionCache:
         build.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_a_reader_that_matches_nothing_reads_the_ions_alone(self):
+        """``lines=False`` gives the cached frame's ions, one row each, with
+        none of their lines resolved (``ions_at_file``, MAS-1274)."""
+        built = pd.DataFrame(
+            {
+                "target_ion_id": ["ion-1", "ion-1"],
+                "target_isotope_id": ["iso-1", "iso-2"],
+                "target_isotope_formula": ["C10H15O3-", "[13C]C9H15O3-"],
+                "mz": [183.1026, 184.1060],
+                "relative_abundance": [0.89, 0.11],
+                "target_compound_formula": ["C10H16O3", "C10H16O3"],
+            }
+        )
+        self._patches([(("src-1", "t1"),)] * 2, built)
+        resolving = FileLines("LOW", lambda mz: 1000.0)
+
+        ions = await _fetch_reference_known_isotopes(
+            _orbi_sample(),
+            0.0,
+            [_mechanism()],
+            known_window=None,
+            file_lines=resolving,
+            lines=False,
+        )
+        lines = await _fetch_reference_known_isotopes(
+            _orbi_sample(), 0.0, [_mechanism()], known_window=None, file_lines=resolving
+        )
+
+        assert ions.to_dict("records") == [
+            {"target_ion_id": "ion-1", "target_compound_formula": "C10H16O3"}
+        ]
+        # The default reads the lines, resolved at the file.
+        assert lines["mz"].tolist() == pytest.approx([183.1026, 184.1060])
+        assert (lines["resolution"] == "LOW").all()
+
+    @pytest.mark.asyncio
     async def test_no_mechanisms_touches_nothing(self):
         fingerprint, known, build = self._patches([(("src-1", "t1"),)], pd.DataFrame())
 
@@ -339,3 +432,40 @@ class TestReferenceExpansionCache:
             "negative",
             "positive",
         ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lines", [True, False])
+async def test_the_known_set_hands_the_reference_lists_whether_to_resolve(lines):
+    """The target library's lines are resolved either way; the reference
+    lists' only where the reader asks for lines (MAS-1274)."""
+    target = pd.DataFrame(
+        {"target_ion_id": ["t-1"], "mz": [181.0707], "relative_abundance": [1.0]}
+    )
+    with (
+        patch.object(
+            sample_inputs,
+            "_fetch_known_target_isotopes",
+            new_callable=AsyncMock,
+            return_value=target,
+        ) as library,
+        patch.object(
+            sample_inputs,
+            "_fetch_reference_known_isotopes",
+            new_callable=AsyncMock,
+            return_value=pd.DataFrame(),
+        ) as reference,
+    ):
+        known = await sample_inputs._fetch_known_isotopes(
+            _orbi_sample(),
+            1e-4,
+            ["m-deprot"],
+            [_mechanism()],
+            known_window=None,
+            resolution=None,
+            lines=lines,
+        )
+
+    library.assert_awaited_once()
+    assert reference.await_args.kwargs["lines"] is lines
+    assert known["target_ion_id"].tolist() == ["t-1"]
