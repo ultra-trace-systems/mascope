@@ -29,7 +29,7 @@ from mascope_backend.api.new.peak_assignments.config import (
     DEFAULT_PROFILE,
     PeakAssignmentConfig,
 )
-from mascope_tools.composition.heuristic_filter import graded_in
+from mascope_tools.composition.formula_shape import graded_in
 from mascope_tools.composition.measurement_model import MeasurementModel
 from mascope_tools.composition.mechanism_notation import mechanism_key
 from mascope_tools.composition.models import (
@@ -267,8 +267,10 @@ class ResolvedProfile:
 
         A floored factor of the plausibility (decision MAS-979, #3188), read
         by every reader of it inside the block
-        (``heuristic_filter.graded_in``), with the carbon skeleton of an
-        organonitrate where the run reads one.
+        (``formula_shape.graded_in``), with the carbon skeleton of an
+        organonitrate where the run reads one. The neutrals the run's
+        reference lists name are left out once the run has read its lists
+        (``formula_shape.spare_listed``, decision MAS-1280).
 
         :return: The block's context manager.
         """

@@ -779,7 +779,17 @@ BR = ReagentProfile(
     name="BR",
     label="Bromide CIMS",
     polarity="-",
-    element_ranges="C0-40 H0-80 N0-3 O0-18 S0-2 Cl0-2 Br0-2",
+    # No chlorine or bromine in the grid (decision MAS-1280), nor in the
+    # iodide one. They carried Cl0-2 Br0-2 and Cl0-1, ported unchanged from
+    # the reference engine's profiles, where nothing says why. Open, with no
+    # ratio bound on them (decision MAS-979), they read the reagent's own ion
+    # as a halogenated neutral - C20H32O11 + Br- is the same ion as
+    # C20H33BrO11 - H+ - and the bromide demo set lost 39 % of its assigned
+    # rows to such readings. No shipped list or target names an inorganic
+    # halogen the grids would serve. A halogenated organic is read there from a
+    # list, from its twin line (``halogen_twins``: chlorine, in a bromide run),
+    # or once a context opens the element, which is filed apart (#3635).
+    element_ranges="C0-40 H0-80 N0-3 O0-18 S0-2",
     reagent_formula="Br",
     detection=("[M+Br]-",),
     # Carbonate and the dibromide cluster: channels a bromide source produces
@@ -862,8 +872,9 @@ IODIDE = ReagentProfile(
     polarity="-",
     # No iodine in the grid, for the reason the ambient context caps it at 0:
     # 127I is monoisotopic, so covalent iodine reaches a neutral through the
-    # adduct or a curated list, never through a mass fit.
-    element_ranges="C0-40 H0-80 N0-3 O0-20 S0-2 Cl0-1",
+    # adduct or a curated list, never through a mass fit. Nor chlorine or
+    # bromine (decision MAS-1280; see the bromide profile).
+    element_ranges="C0-40 H0-80 N0-3 O0-20 S0-2",
     reagent_formula="I",
     detection=("[M+I]-",),
     # Formate: see the nitrate profile.

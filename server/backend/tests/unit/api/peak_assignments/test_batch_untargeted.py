@@ -35,6 +35,7 @@ from mascope_backend.api.new.peak_assignments.partner_gate import PARTNER_GATE_K
 from mascope_backend.api.new.peak_assignments.pipeline import admitted_targets
 from mascope_backend.api.new.peak_assignments.profiles import (
     NamedContext,
+    ResolvedProfile,
     resolve_profile,
 )
 from mascope_backend.api.new.peak_assignments.row_terms import (
@@ -3001,3 +3002,87 @@ async def test_a_pass_judging_a_sample_again_reads_the_grid_it_asked():
     assert (asked_first, asked_again) == (1, 0)
     assert again["provenance"]["candidate_density"] == 3
     assert again["provenance"]["rival_set"] == first["provenance"]["rival_set"]
+
+
+#: The lists' known set of the sample: dinitrophenol from a reference list, and
+#: glucose from the target library alone.
+_LISTED = pd.DataFrame(
+    {
+        "target_compound_formula": ["C6H4N2O5", "C6H12O6"],
+        "ionization_mechanism_id": ["im-h", "im-h"],
+        "target_compound_id": [None, "tc-glucose"],
+        "reference_identities": [[{"name": "2,4-dinitrophenol"}], None],
+    }
+)
+
+
+@pytest.mark.asyncio
+async def test_a_batch_search_spares_the_neutrals_its_lists_name_the_windows():
+    # Decision MAS-1280: the search grades what it proposes with the
+    # neutrals a reference list names left out of the windows, as a run's
+    # search does once its Stage A has read them; the target library's are
+    # graded like any other.
+    from mascope_tools.composition.formula_shape import graded_run
+
+    seen = []
+
+    def finder(*args, **kwargs):
+        seen.append(graded_run())
+        return pd.DataFrame(), None
+
+    stack, _ = _searching(
+        _sample(),
+        _peaks([("p1", 183.0047, 1.0e6)]),
+        [_mechanism("[M-H]-", "im-h")],
+        finder=finder,
+        known=_LISTED,
+    )
+    with stack:
+        await batch_untargeted._search_sample("si-1", {"p1"}, PeakAssignmentConfig())
+
+    (graded,) = seen
+    assert graded.listed == {"C6H4N2O5"}
+
+
+@pytest.mark.asyncio
+async def test_a_member_is_judged_with_the_neutrals_its_lists_name_out_of_the_windows():
+    # The propagation judges a reading as a run of the member's sample would,
+    # its lists read as that run reads them: the same neutrals spared, from
+    # the election of one reading per peak on. In ambient air's windows the
+    # listed dinitrophenol is graded far down; spared, it keeps its bare
+    # plausibility and is assigned, as a run of the sample assigns it.
+    from mascope_backend.api.new.peak_assignments import pipeline
+    from mascope_tools.composition.formula_shape import graded_in, graded_run
+    from mascope_tools.composition.heuristic_filter import formula_plausibility
+    from mascope_tools.composition.profiles import AMBIENT_AIR
+
+    windows = AMBIENT_AIR.ratio_windows()
+    with graded_in(windows):
+        graded = formula_plausibility("C6H4N2O5")
+    assert graded < 0.5 < formula_plausibility("C6H4N2O5")
+
+    seen = []
+    judge = pipeline.STAGE_FUNCTIONS[pipeline.Stage.JUDGE]
+
+    async def watched(ctx):
+        seen.append(graded_run())
+        await judge(ctx)
+
+    with (
+        patch.dict(pipeline.STAGE_FUNCTIONS, {pipeline.Stage.JUDGE: watched}),
+        patch.object(ResolvedProfile, "graded", lambda self: graded_in(windows)),
+    ):
+        rows, _ = await _measure(
+            _sample(),
+            _peaks([("p1", 183.0047, 1.0e6)]),
+            [_mechanism("[M-H]-", "im-h")],
+            [("bp-1", "C6H4N2O5", "C6H3N2O5-", "im-h", ["p1"])],
+            known=_LISTED,
+        )
+
+    assert seen
+    assert {graded.listed for graded in seen} == {frozenset({"C6H4N2O5"})}
+    row = rows["p1"]
+    assert row["provenance"]["plausibility"] == formula_plausibility("C6H4N2O5")
+    assert row["provenance"]["reference_identities"] == [{"name": "2,4-dinitrophenol"}]
+    assert row["tier"] == TIER_ASSIGNED

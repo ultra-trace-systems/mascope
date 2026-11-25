@@ -130,6 +130,28 @@ class TestWhichHalogens:
             "Br",
         )
 
+    def test_a_bromide_run_reads_chlorine_from_its_twin_though_its_grid_holds_none(
+        self,
+    ):
+        # Decision MAS-1280 closed the halide grids; the twin is the evidence
+        # that still opens chlorine there, one atom of it on the run's C, H, O.
+        grid = presets.resolve_element_ranges(presets.BR, presets.AMBIENT_AIR)
+        assert "Cl" not in presets.parse_element_ranges(grid)
+        reagent = presets.BR.reagent_formula
+        assert twin_halogens(presets.AMBIENT_AIR, reagent_formula=reagent) == ("Cl",)
+        config = twin_search_config(
+            CompositionSearchConfig(
+                ionizations="[M+Br]-", element_count_ranges=grid, mass_range_ppm=3.0
+            ),
+            "Cl",
+        )
+        assert presets.parse_element_ranges(config.element_count_ranges) == {
+            "C": (0, 40),
+            "H": (0, 80),
+            "O": (0, 18),
+            "Cl": (1, 1),
+        }
+
     def test_a_silent_context_leaves_it_to_the_lists(self):
         assert twin_halogens(presets.CHAMBER) == ()
         assert twin_halogens(presets.CHAMBER, ["C6H5Cl", "C7H8"]) == ("Cl",)

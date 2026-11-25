@@ -25,6 +25,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     TIER_BELOW_ASSIGNABILITY,
     TIER_CANDIDATE,
     TIER_UNASSIGNED,
+    ListedIon,
     ReagentOffset,
     base_snr_by_ion,
     build_unassigned_assignments,
@@ -48,9 +49,13 @@ from mascope_backend.api.new.peak_assignments.row_terms import (
     SOURCE_DATABASE,
     SOURCE_UNTARGETED,
 )
+from mascope_backend.api.new.peak_assignments.stage_a_pass import reference_named
 from mascope_backend.api.new.peak_assignments.untargeted_rows import (
     untargeted_matches_to_peak_assignments,
 )
+from mascope_tools.composition.formula_shape import graded_in, graded_run
+from mascope_tools.composition.heuristic_filter import formula_plausibility
+from mascope_tools.composition.profiles import AMBIENT_AIR
 
 
 CANDIDATE = 0.7
@@ -2106,6 +2111,114 @@ def _reference_row(**kwargs) -> dict:
     row = _isotope_row(target_compound_id=None, **kwargs)
     row["reference_identities"] = _REF_IDENTITIES
     return row
+
+
+#: Dinitrophenol: a cited list's compound whose aromatic H/C and DBE/C sit just
+#: outside ambient air's windows.
+_DINITROPHENOL = "C6H4N2O5"
+
+
+def _dinitrophenol(reference: bool) -> dict:
+    """Its Stage A row, from a reference list or from the target library."""
+    fields = dict(
+        target_isotope_id="dnp-mono",
+        target_ion_id="dnp-ion",
+        compound_formula=_DINITROPHENOL,
+        ion_formula="C6H3N2O5-",
+        mz=183.0047,
+        relative_abundance=1.0,
+        sample_peak_id="p1",
+        match_score=0.95,
+        ionization="[M-H]-",
+    )
+    if reference:
+        return _reference_row(**fields)
+    return _isotope_row(target_compound_id="cmp-dnp", **fields)
+
+
+class TestAListedNeutralIsSparedTheWindows:
+    """Decision MAS-1280: Stage A grades a neutral a reference list names on the
+    universal bands alone inside a run's windows, and one only the target
+    library names in them (``formula_shape.GradedRun.listed``)."""
+
+    def test_the_names_are_the_reference_mirrors(self):
+        frame = pd.DataFrame(
+            [
+                _dinitrophenol(reference=True),
+                _isotope_row(
+                    target_isotope_id="glc",
+                    target_ion_id="glc-ion",
+                    target_compound_id="cmp-glc",
+                    compound_formula="C6H12O6",
+                    ion_formula="C6H11O6-",
+                    mz=179.0561,
+                    relative_abundance=1.0,
+                    sample_peak_id="p2",
+                ),
+            ]
+        )
+        assert reference_named(frame) == {_DINITROPHENOL}
+        assert reference_named(pd.DataFrame()) == frozenset()
+        assert reference_named(None) == frozenset()  # a pass that scored no frame
+        ions = {
+            (_DINITROPHENOL, "im-1"): ListedIon("cmp-dnp", _REF_IDENTITIES),
+            ("C6H12O6", "im-1"): ListedIon("cmp-glc", None),
+        }
+        assert reference_named(ions) == {_DINITROPHENOL}
+
+    def test_stage_a_spares_the_neutrals_its_own_frame_lists(self):
+        def plausibility(reference: bool) -> float:
+            [row] = invert_matches_to_peak_assignments(
+                pd.DataFrame([_dinitrophenol(reference)]),
+                "s1",
+                "run1",
+                CANDIDATE,
+                ASSIGNED,
+            )
+            return row["provenance"]["plausibility"]
+
+        bare = round(formula_plausibility(_DINITROPHENOL), 4)
+        with graded_in(AMBIENT_AIR.ratio_windows()):
+            assert plausibility(reference=True) == bare
+            assert plausibility(reference=False) < bare
+            # The run's own block is left as it was: the frame's names are
+            # this pass's alone.
+            assert graded_run().listed == frozenset()
+
+    def test_stage_a_spares_a_target_row_whose_provenance_names_a_list(self):
+        # The lists name the target's neutral only through an ion with no
+        # match, or through one Stage A left out of its frame for reaching no
+        # peak (MAS-1282). Either way the row's provenance carries the lists'
+        # names, and the arbitration spares the names its provenance reads.
+        unmatched = _reference_row(
+            target_isotope_id="dnp-cl-mono",
+            target_ion_id="dnp-cl-ion",
+            compound_formula=_DINITROPHENOL,
+            ion_formula="C6H4N2O5Cl-",
+            mz=218.9814,
+            relative_abundance=1.0,
+            sample_peak_id="",
+            sample_peak_intensity=0.0,
+            ionization="[M+Cl]-",
+        )
+
+        def row(frame, **names) -> dict:
+            [row] = invert_matches_to_peak_assignments(
+                pd.DataFrame(frame), "s1", "run1", CANDIDATE, ASSIGNED, **names
+            )
+            return row
+
+        bare = round(formula_plausibility(_DINITROPHENOL), 4)
+        target = _dinitrophenol(reference=False)
+        with graded_in(AMBIENT_AIR.ratio_windows()):
+            assert row([target])["provenance"]["plausibility"] < bare
+            for spared in (
+                row([target, unmatched]),
+                row([target], reference_identities={_DINITROPHENOL: _REF_IDENTITIES}),
+            ):
+                assert spared["target_compound_id"] == "cmp-dnp"
+                assert spared["provenance"]["reference_identities"] == _REF_IDENTITIES
+                assert spared["provenance"]["plausibility"] == bare
 
 
 class TestReferenceStageAInversion:

@@ -160,6 +160,8 @@ from mascope_backend.api.new.peak_assignments.seeded_scoring import (
 from mascope_backend.api.new.peak_assignments.stage_a_pass import (
     StageAResult,
     _stage_a_first_pass,
+    reference_named,
+    spare_listed_neutrals,
 )
 from mascope_backend.api.new.peak_assignments.tiering import LineGate, ask_absent_line
 from mascope_backend.api.new.peak_assignments.tiers import TIER_ASSIGNED, TIER_CANDIDATE
@@ -567,7 +569,6 @@ class RunContext:
     seeded: Any = None
     unsearched: int = 0
     by_persistence: set[str] = field(default_factory=set)
-    # -- score
     fit_by_seed: dict = field(default_factory=dict)
     seeded_frame: judging_loop.SeededFrame | None = None
     rival_frame: judging_loop.SeededFrame | None = None
@@ -683,10 +684,9 @@ async def resolve(ctx: RunContext) -> None:
         ctx.mechanisms, ctx.secondary_mechanisms, ctx.resolved_profile
     )
     if plan is not None and plan.decoy.swap_adducts:
-        # Swapped after the chemistry is resolved, which reads the mode's own
-        # channels: the profile, the grid and the reagent are the sample's, and
-        # only the adducts read through them are wrong. No secondary channel is
-        # opened beside them.
+        # Swapped after the chemistry is resolved, which reads the mode's own channels:
+        # the profile, the grid and the reagent are the sample's, and only the adducts
+        # read through them are wrong. No secondary channel is opened beside them.
         ctx.mechanisms = list(plan.mechanisms)
         ctx.mechanism_ids = [m.ionization_mechanism_id for m in ctx.mechanisms]
         ctx.secondary_mechanisms = []
@@ -893,6 +893,7 @@ async def _propose_known_set(ctx: RunContext) -> None:
         f"Stage A assigned {len(ctx.stage_a)} of {len(ctx.peaks_df)} peaks from "
         "the known target library"
     )
+    spare_listed_neutrals(ctx.stage_a_scored, ctx.stage_a_absent)
     envelope = ctx.envelope
     if envelope.inherited is not None:
         runtime.logger.info(
@@ -1180,9 +1181,9 @@ async def _propose_on_representatives(ctx: RunContext) -> None:
         return
     ctx.by_persistence = by_persistence
     resolved_profile = ctx.resolved_profile
-    ctx.listed_formulas = listed_formula_identities(
-        await _listed_known(ctx, ctx.searched_mechanisms)
-    )
+    known = await _listed_known(ctx, ctx.searched_mechanisms)
+    ctx.listed_formulas = listed_formula_identities(known)
+    spare_listed_neutrals(known)
     search_config = resolved_profile.search_config(notations)
     heuristics_config = resolved_profile.heuristics_config()
     runtime.logger.info(
@@ -1252,6 +1253,7 @@ async def _propose_given(ctx: RunContext) -> None:
         ctx.listed_formulas, ctx.listed_ions = await kept_measurement.kept_lists(
             ctx, lambda: _read_lists(ctx)
         )
+        spare_listed_neutrals(ctx.listed_ions)
 
 
 async def _read_lists(ctx: RunContext) -> tuple[frozenset[str], dict]:
@@ -1490,7 +1492,7 @@ def _elect_given(ctx: RunContext) -> None:
     # a list's: the measured ion owns the peak its gated line paired to,
     # an isotopologue beside its ion's monoisotopic row, and the rest are
     # its alternatives (``engine.invert_matches_to_peak_assignments``).
-    # Uncalibrated, as a batch decision's measurement always was.
+    # Uncalibrated as a batch decision always was, the run's listed neutrals spared.
     rows = invert_matches_to_peak_assignments(
         frame,
         sample_item_id=sample.sample_item_id,
@@ -1500,6 +1502,7 @@ def _elect_given(ctx: RunContext) -> None:
         max_alternatives=config.max_alternatives,
         instrument=ctx.instrument_type,
         calibration=None,
+        spared=reference_named(ctx.listed_ions),
     )
     judging_loop.raise_to_floors(rows, ctx.floors)
     if ctx.path.rules is Rules.RUN:
@@ -2175,11 +2178,10 @@ STAGE_FUNCTIONS: dict[Stage, Callable[[RunContext], Awaitable[None]]] = {
 async def run_stages(ctx: RunContext) -> RunContext:
     """Run the path's stages in order, from its start to the end.
 
-    Every stage reads labelled ions at the purity the sample's ionization setup
-    carries (``custom_elements.labelled_purity``) on any path, and every stage
-    after the resolve grades in the run's context (``ResolvedProfile.graded``). A
-    round (:data:`ROUND`) runs again from its first stage while the cap stage
-    leaves the judging unsettled.
+    Every stage reads labelled ions at the purity the sample's ionization setup carries
+    (``custom_elements.labelled_purity``) on any path, and every stage after the resolve
+    grades in the run's context (``ResolvedProfile.graded``). A round (:data:`ROUND`)
+    runs again from its first stage while the cap stage leaves the judging unsettled.
 
     :param ctx: The pass, its inputs set; the stages fill the rest.
     :return: The same context, :attr:`RunContext.ran` naming every stage run.

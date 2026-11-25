@@ -125,6 +125,11 @@ discharge, and sets none aside. Then:
 - the profile gives the untargeted stage its element grid, its m/z window on each
   instrument class, and the extra channels a source of its kind produces;
 - the context narrows that grid, never widening it;
+- no profile's grid holds chlorine or bromine. On a bromide or iodide source they
+  would read the reagent's own ion as a halogenated molecule: a molecule seen through
+  `[M+Br]-` has the same mass as that molecule with HBr added, seen through `[M-H]-`.
+  A halogenated compound is read from a list, or from its twin line (*Chlorine and
+  bromine from their twin line*, below);
 - the context also weighs down formulas whose hydrogen, oxygen, nitrogen or
   ring-and-double-bond count per carbon no such sample holds, in the manner of the
   element-ratio rules of [Kind & Fiehn 2007][kf07]: such a formula is still searched,
@@ -323,12 +328,11 @@ not what it stands behind.
 **Chlorine and bromine from their twin line.** A chlorine atom puts a second line 1.997
 Da above its own at a third of its height, a bromine atom one at nearly its full height
 [Meija et al. 2016][mei16]. No other element makes that pair, and the formula search
-cannot use it: its grids hold chlorine on few profiles, its ratio rule refuses one
-chlorine atom under twenty carbons, and on a 15N-nitrate run a chlorinated ion has the
-same mass as a nitrate cluster with two more carbons. So a searched peak, unexplained or
-read as a formula with no halogen, whose twin sits unexplained within 2 ppm of that exact
-offset at about one atom's ratio is searched again over carbon, hydrogen, oxygen and one
-atom of that halogen. Its reading replaces the peak's only where it explains the twin as
+cannot use it: no profile's grid holds chlorine or bromine, and on a 15N-nitrate run a
+chlorinated ion has the same mass as a nitrate cluster with two more carbons. So a
+searched peak, unexplained or read as a formula with no halogen, whose twin sits
+unexplained within 2 ppm of that exact offset at about one atom's ratio is searched again
+over carbon, hydrogen, oxygen and one atom of that halogen. Its reading replaces the peak's only where it explains the twin as
 its own line, clears the run's candidate bar, passes the context's windows and sits on the
 sample's calibration. The twin is then committed as its isotope line, which is the second
 observation the top tier asks for. A halogen is read where the context allows it
@@ -336,8 +340,9 @@ observation the top tier asks for. A halogen is read where the context allows it
 compound carrying it and the context does not exclude it, as uronium does. A
 bromide source's own bromine is never read this way: a peak with one bromine's twin
 there is an analyte clustered with the reagent, which the search reads through the
-mode's own channel. The replaced reading leads the row's alternatives. A certified cylinder's chlorobenzene is
-read this way on a charge-transfer source, whose grid holds no chlorine.
+mode's own channel, and a chlorine twin on a bromide source is read this way. The
+replaced reading leads the row's alternatives. A certified cylinder's chlorobenzene is
+read this way on a charge-transfer source.
 
 **In the launcher.** *Assign sample* offers the two presets, and says what *Auto*
 resolves to for the sample. The formula range and m/z precision fields show the grid and
@@ -804,8 +809,12 @@ each candidate's **chemical plausibility** on `[0, 1]` from the **Seven Golden R
    nitrogen and ring-and-double-bond windows per carbon grade every formula too: full
    credit inside, half a quarter of the window's width past its edge, and the floor of
    0.1 at half its width. Below three carbons the windows say nothing, and a formula
-   without carbon is not judged by them. They used to reject a formula outside them,
-   which under the wrong context removed real compounds, glycerol among them.
+   without carbon is not judged by them. Neither is a compound a reference list the run
+   read names: a cited list naming the compound is stronger evidence than the context's
+   idea of a typical shape. Dinitrophenol is one, its aromatic ring just outside the
+   ambient-air windows. A compound only your target library names is judged by them. The
+   windows used to reject a formula outside them, which under the wrong context removed
+   real compounds, glycerol among them.
 
 Plausibility is **conservative and fail-open**: it *grades* candidates rather than
 hard-rejecting them, and unusual-but-real chemistry (radicals, exotic elements) is never

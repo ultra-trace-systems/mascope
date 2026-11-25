@@ -34,7 +34,10 @@ and a row only the target library names is exempt from nothing
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, replace
 
 
 #: Bumped whenever a row of the table moves: a hard bound, a band, a cap's
@@ -165,6 +168,109 @@ OXYGEN_LATTICE_MIN = 5
 #: windows used to refuse a formula outside them (#3188); they grade it now,
 #: and refuse only where a context opts in (``ChemistryContext.windows_gate``).
 CONTEXT_WINDOW_SPAN = 0.25
+
+
+@dataclass(frozen=True)
+class GradedRun:
+    """The chemistry context a run grades its formulas in (:func:`graded_in`).
+
+    :param windows: The context's ratio windows, as sorted items; empty grades
+        on the universal bands alone, as the identity context ``none`` does.
+    :param nox_skeleton: Whether an organonitrate's carbon skeleton is read.
+    :param listed: The neutrals a reference list the run read names, as
+        formula identities. The windows do not grade them: a cited list naming
+        the compound is stronger evidence than the context's shape prior, as it
+        is against a cap on its composition (decision MAS-1280). A neutral only
+        the target library names is graded like any other.
+    """
+
+    windows: tuple[tuple[str, tuple[float, float]], ...] = ()
+    nox_skeleton: bool = False
+    listed: frozenset[str] = frozenset()
+
+    def grading(self, identity: str) -> tuple | None:
+        """The windows a neutral is graded in, None where none grade it.
+
+        :param identity: The neutral's formula identity.
+        :return: ``(windows, nox_skeleton)``, or None where the context sets
+            no window or a reference list names the neutral.
+        """
+        if not self.windows or identity in self.listed:
+            return None
+        return self.windows, self.nox_skeleton
+
+
+#: The run whose context formulas are graded in. Context-local, as
+#: ``custom_elements.labelled_purity`` is, so concurrent runs each grade in
+#: their own and ``asyncio.to_thread`` carries it. None grades on the
+#: universal bands alone, as every caller outside a run does.
+_GRADED_RUN: ContextVar[GradedRun | None] = ContextVar("graded_run", default=None)
+
+
+@contextmanager
+def graded_in(
+    windows: Mapping[str, tuple[float, float]],
+    nox_skeleton: bool = False,
+    listed: Iterable[str] = (),
+) -> Iterator[None]:
+    """Grade formulas in a chemistry context's ratio windows inside the block.
+
+    Every reader of a run's plausibility - the search, both stages'
+    arbitration, the rival sets, the tiers and the identification level -
+    calls ``heuristic_filter.formula_plausibility`` with the formula alone, so
+    the run grades every formula in its context once, here, and they agree.
+
+    :param windows: The context's ratio windows.
+    :param nox_skeleton: Read an organonitrate's carbon skeleton too.
+    :param listed: The formula identities of the neutrals a reference list the
+        run read names, which the windows leave out (:attr:`GradedRun.listed`).
+        A run learns them when it reads its lists (:func:`spare_listed`).
+    """
+    run = GradedRun(tuple(sorted(windows.items())), bool(nox_skeleton))
+    token = _GRADED_RUN.set(replace(run, listed=frozenset(listed)))
+    try:
+        yield
+    finally:
+        _GRADED_RUN.reset(token)
+
+
+def graded_run() -> GradedRun | None:
+    """The run formulas are graded in here, None outside any run's block."""
+    return _GRADED_RUN.get()
+
+
+def spare_listed(listed: Iterable[str]) -> None:
+    """Leave the neutrals a run's reference lists name out of its windows.
+
+    For the rest of the run's block (:func:`graded_in`), from where the run
+    has read its lists: no-op outside a run's block.
+
+    :param listed: The neutrals' formula identities.
+    """
+    run = _GRADED_RUN.get()
+    if run is not None:
+        _GRADED_RUN.set(replace(run, listed=frozenset(listed)))
+
+
+@contextmanager
+def listed_in(listed: Iterable[str]) -> Iterator[None]:
+    """Grade as the run does inside the block, these neutrals spared.
+
+    For a pass over a known set other than the run's own, such as a
+    neighbour's first pass a thin file pools lines from, whose lists the
+    run's own block does not hold.
+
+    :param listed: The formula identities of the neutrals its lists name.
+    """
+    run = _GRADED_RUN.get()
+    if run is None:
+        yield
+        return
+    token = _GRADED_RUN.set(replace(run, listed=frozenset(listed)))
+    try:
+        yield
+    finally:
+        _GRADED_RUN.reset(token)
 
 
 # --- Carbon-free formulas ----------------------------------------------------

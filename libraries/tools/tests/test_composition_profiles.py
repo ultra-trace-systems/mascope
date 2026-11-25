@@ -190,7 +190,16 @@ class TestElementRanges:
         # Bromide's own grid allows two sulfurs; ambient air allows one.
         ranges = P.parse_element_ranges(P.resolve_element_ranges(P.BR, P.AMBIENT_AIR))
         assert ranges["S"] == (0, 1)
-        assert ranges["Br"] == (0, 2)  # untouched: the cap equals the grid
+        assert ranges["N"] == (0, 3)  # untouched: the context caps it at 3 too
+
+    @pytest.mark.parametrize("profile", [P.BR, P.IODIDE], ids=lambda p: p.name)
+    def test_the_halide_grids_hold_no_halogen(self, profile):
+        # Decision MAS-1280: open, the grids read the reagent's own ion as a
+        # halogenated neutral. A context opens nothing (#3635), so no context
+        # brings one back.
+        for context in P.CHEMISTRY_CONTEXTS.values():
+            ranges = P.parse_element_ranges(P.resolve_element_ranges(profile, context))
+            assert not {"F", "Cl", "Br", "I"} & set(ranges), context.name
 
     def test_the_context_never_widens_the_grid(self):
         for profile in P.REAGENT_PROFILES.values():

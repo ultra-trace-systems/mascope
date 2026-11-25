@@ -41,6 +41,8 @@ from mascope_match.compute import isotopes as match_isotopes
 from mascope_match.params import TofMatchParams
 from mascope_reference import KnownComposition, KnownIdentity
 from mascope_tools.composition.calibration import Calibration
+from mascope_tools.composition.formula_shape import graded_in, graded_run
+from mascope_tools.composition.heuristic_filter import formula_plausibility
 from mascope_tools.composition.line_model import HeightResolution
 from mascope_tools.composition.mass_accuracy import SampleMassAccuracy
 from mascope_tools.composition.measurement_model import MeasurementModel
@@ -465,6 +467,34 @@ async def test_the_first_pass_is_the_same_with_the_ions_left_out(file_lines):
     # The nitrate adducts reach no peak: the curve names it off them alone.
     assert "m-no3" not in set(filtered.scored["ionization_mechanism_id"])
     assert "m-no3" in filtered.curve.notation_by_mechanism
+
+
+@pytest.mark.asyncio
+async def test_the_lists_neutrals_are_spared_the_windows_with_the_ions_left_out():
+    # Decision MAS-1280 spares a neutral a reference list names the context
+    # windows' grade. The lists name the target library's neutral only through
+    # ions that reach no peak, and the windows put it outside them (O/C 0.57).
+    # Stage A's arbitration and the run's spare read those ions among the ones
+    # left out, as the whole frame holds them.
+    file_lines = FileLines("LOW", lambda mz: 3000.0)
+    bare = round(formula_plausibility(_TARGET_FORMULA), 4)
+    passes = {}
+    for filtered in (True, False):
+        with graded_in({"O/C": (0.0, 0.3)}):
+            first = await _first_pass(file_lines, filtered=filtered)
+            stage_a_pass.spare_listed_neutrals(first.scored, first.absent)
+            passes[filtered] = first, graded_run().listed
+    (filtered, spared), (whole, spared_whole) = passes[True], passes[False]
+    assert _rows(filtered) == _rows(whole)
+    (row,) = [
+        r
+        for r in filtered.rows
+        if r.get("target_compound_id") == "tc-1" and r["role"] == "M0"
+    ]
+    assert row["provenance"]["reference_identities"]
+    assert row["provenance"]["plausibility"] == bare
+    assert spared == spared_whole
+    assert {_TARGET_FORMULA, "C6H6O3"} <= spared
 
 
 @pytest.mark.asyncio

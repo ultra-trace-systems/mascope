@@ -7,7 +7,7 @@ envelope lines a thin file's tolerance is pooled from.
 """
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
@@ -19,6 +19,7 @@ from mascope_backend.api.new.peak_assignments.calibration_store import load_cali
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import (
     STAGE_A_FIT_MIN_IONS,
+    ListedIon,
     calibration_meta,
     drop_ions_claimed_elsewhere,
     invert_matches_to_peak_assignments,
@@ -45,10 +46,12 @@ from mascope_backend.api.new.peak_assignments.seeded_scoring import gate_lines
 from mascope_file.name import get_instrument_type
 from mascope_match import compute_match_isotopes
 from mascope_tools.composition.calibration import Calibration
+from mascope_tools.composition.formula_shape import spare_listed
 from mascope_tools.composition.heuristic_filter import SCORE_VERSION
 from mascope_tools.composition.known_window import KnownWindow
 from mascope_tools.composition.mass_accuracy import ReagentOffset, SampleMassAccuracy
 from mascope_tools.composition.measurement_model import MeasurementModel
+from mascope_tools.composition.utils import formula_identity
 
 
 def _record_same_ion_readings(
@@ -253,6 +256,28 @@ def reference_names_with_absent(
     rows = pd.concat([mirror[columns], absent[columns]], ignore_index=True)
     rank = rows["target_ion_id"].astype(str).map(order).to_numpy()
     return reference_names_by_formula(rows.iloc[np.argsort(rank, kind="stable")])
+
+
+def reference_named(
+    known: pd.DataFrame | Mapping[tuple, ListedIon] | None,
+) -> frozenset[str]:
+    """The formula identities of the neutrals a reference list names in ``known``."""
+    if isinstance(known, Mapping):
+        return frozenset(k[0] for k, ion in known.items() if ion.reference_identities)
+    if known is None or "target_compound_formula" not in known.columns:
+        return frozenset()
+    formulas = known.loc[reference_mirror_mask(known), "target_compound_formula"]
+    return frozenset(formula_identity(f) for f in formulas.dropna().unique())
+
+
+def spare_listed_neutrals(
+    *known: pd.DataFrame | Mapping[tuple, ListedIon] | None,
+) -> None:
+    """Leave the neutrals :func:`reference_named` finds in any of ``known`` out of
+    the run's windows: Stage A's frame and the reference ions it left out of it
+    (``StageAKnown.absent``), the batch search's known set, or a person's choice's
+    listed ions."""
+    spare_listed(frozenset().union(*map(reference_named, known)))
 
 
 def _gate_and_fit(
