@@ -54,14 +54,18 @@ def mechanism(notation: str, mechanism_id: str) -> SimpleNamespace:
     )
 
 
-def frame(peaks) -> pd.DataFrame:
-    """A peak list from ``(sample_peak_id, mz, intensity)`` triples."""
-    return pd.DataFrame(
+def frame(peaks, snr: dict | None = None) -> pd.DataFrame:
+    """A peak list from ``(sample_peak_id, mz, intensity)`` triples, each
+    peak's ``signal_to_noise`` from ``snr`` (by peak id) when it is given."""
+    peaks = pd.DataFrame(
         [
             {"sample_peak_id": peak, "mz": mz, "intensity": intensity}
             for peak, mz, intensity in peaks
         ]
     )
+    if snr is not None:
+        peaks["signal_to_noise"] = peaks["sample_peak_id"].map(snr).astype(float)
+    return peaks
 
 
 def protonated(formula: str) -> str:
@@ -160,6 +164,13 @@ def seeded_frame(
                     "match_score": float(fit),
                     "match_mz_error": error.get("mz_error_ppm"),
                     "match_abundance_error": error.get("abundance_error", 0.0),
+                    # The paired peak's S/N, as the matcher carries it from a
+                    # peak list that has one.
+                    **(
+                        {"signal_to_noise": float(observed.signal_to_noise)}
+                        if hasattr(observed, "signal_to_noise")
+                        else {}
+                    ),
                 }
             )
     return pd.DataFrame(rows)
