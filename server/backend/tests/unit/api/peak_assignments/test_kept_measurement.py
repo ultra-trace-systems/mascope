@@ -219,6 +219,23 @@ async def test_without_a_store_every_reading_is_scored():
     assert scorer.listed == [{A}, {A}]
 
 
+async def test_the_readings_rivals_are_kept_and_counted_beside_them():
+    """The rivals a judging measures beside its readings (MAS-1045) are kept
+    as its readings are, and counted beside them, not over them."""
+    kept, scorer = KeptMeasurement(), Scorer()
+    for _ in range(2):
+        await score_kept(_ctx(kept, {A}), scorer, set())
+        ion_by_seed, _, _, frame = await score_kept(
+            _ctx(kept, {A}), scorer, set(), rivals={B, C}
+        )
+    assert scorer.calls == [{A}, {B, C}]
+    assert set(ion_by_seed) == {B, C}
+    assert set(frame["target_compound_formula"]) == {B[0], C[0]}
+    assert kept.counts["si-1"] == Counter(
+        readings_scored=0, readings_kept=1, rivals_scored=0, rivals_kept=2
+    )
+
+
 async def test_a_reading_that_scores_nothing_is_kept_as_nothing():
     kept = KeptMeasurement()
 

@@ -934,34 +934,10 @@ async def test_a_searched_member_reads_the_tier_a_run_of_its_sample_gives():
 # --- a batch decision measured on a member (pipeline.PROPAGATION) ----------------
 
 
-async def _measure(
-    sample,
-    peaks,
-    mechanisms,
-    readings,
-    *,
-    secondary=(),
-    known=None,
-    path=None,
-    resolution=None,
-):
-    """Measure batch decisions on one sample as the propagation does
-    (``batch_untargeted.measure_on_sample``), and keep nothing.
-
-    :param readings: ``(anchor, formula, ion, mechanism id, peaks)`` per
-        decision: its ion a line on each of the peaks, at one fit.
-    :param path: The path; the propagation's unless a test says.
-    :param resolution: The file's resolving power; none unless a test says.
-    :return: The judged rows by peak, and the stand-ins, the seeded scorer's
-        keyword arguments per call among them (``scored``).
-    """
-    from mascope_backend.api.new.peak_assignments import pipeline
-
-    pairings = {
-        (formula, mechanism_id): (f"ion-{anchor}", ion, paired)
-        for anchor, formula, ion, mechanism_id, paired in readings
-    }
-    scored_with = []
+def _scorer(pairings, peaks, scored_with):
+    """The seeded scorer for canned pairings: ``(formula, mechanism id)`` ->
+    ``(ion id, ion, peaks)``, each ion a line on each of its peaks at one fit;
+    each call's keyword arguments appended to ``scored_with``."""
 
     async def score(scored, seeds, params, **kwargs):
         scored_with.append(kwargs)
@@ -985,6 +961,93 @@ async def _measure(
             ),
         )
 
+    return score
+
+
+def _grid(rivals, calls, fit_tied=()):
+    """The grid's rivals of every reading it is asked about
+    (``finder.rivals_of_readings``): ``rivals`` as ``(formula, ion, notation)``,
+    each at the reading's fit; each call's readings and keyword arguments
+    appended to ``calls``."""
+    from mascope_tools.composition.finder import ReadingRivals
+
+    def read(peaks, config, readings, heuristics=None, scoring=None, **kwargs):
+        calls.append((list(readings), kwargs))
+        return [
+            ReadingRivals(
+                density=1 + len(rivals),
+                rivals=tuple(
+                    {
+                        "formula": formula,
+                        "ion": ion,
+                        "ionization_mechanism": notation,
+                        "fit_score": 0.95,
+                        "mz_error_ppm": 0.1,
+                    }
+                    for formula, ion, notation in rivals
+                ),
+                fit_score=0.95,
+                candidates=len(rivals),
+                in_grid=True,
+                fit_tied=tuple(
+                    {
+                        "formula": formula,
+                        "ion": ion,
+                        "ionization_mechanism": notation,
+                        "fit_score": 0.95,
+                        "mz_error_ppm": 0.1,
+                    }
+                    for formula, ion, notation in fit_tied
+                ),
+            )
+            for _ in readings
+        ]
+
+    return read
+
+
+async def _measure(
+    sample,
+    peaks,
+    mechanisms,
+    readings,
+    *,
+    secondary=(),
+    known=None,
+    path=None,
+    resolution=None,
+    grid=None,
+    fit_tied=(),
+):
+    """Measure batch decisions on one sample as the propagation does
+    (``batch_untargeted.measure_on_sample``), and keep nothing.
+
+    :param readings: ``(anchor, formula, ion, mechanism id, peaks)`` per
+        decision: its ion a line on each of the peaks, at one fit.
+    :param path: The path; the propagation's unless a test says.
+    :param resolution: The file's resolving power; none unless a test says.
+    :param grid: The grid's rivals of every reading, ``(formula, ion,
+        notation, mechanism id, peaks)`` each, measured as the readings are;
+        None asks the real grid.
+    :param fit_tied: The grid's formulas only plausibility separated from
+        every reading (``finder.ReadingRivals.fit_tied``), shaped as ``grid``'s.
+    :return: The judged rows by peak, and the stand-ins, the seeded scorer's
+        keyword arguments per call among them (``scored``) and the grid's
+        calls (``grid``).
+    """
+    from mascope_backend.api.new.peak_assignments import pipeline
+
+    pairings = {
+        (formula, mechanism_id): (f"ion-{anchor}", ion, paired)
+        for anchor, formula, ion, mechanism_id, paired in readings
+    }
+    for index, (formula, ion, _, mechanism_id, paired) in enumerate(
+        [*(grid or ()), *fit_tied]
+    ):
+        pairings[(formula, mechanism_id)] = (f"ion-rival-{index}", ion, paired)
+    scored_with = []
+    score = _scorer(pairings, peaks, scored_with)
+
     stack, mocks = _searching(
         sample,
         peaks,
@@ -995,6 +1058,18 @@ async def _measure(
         resolution=resolution,
     )
     mocks["scored"] = scored_with
+    mocks["grid"] = []
+    if grid is not None:
+        stack.enter_context(
+            patch(
+                "mascope_backend.api.new.peak_assignments.given_rivals.rivals_of_readings",
+                _grid(
+                    [(f, ion, notation) for f, ion, notation, _, _ in grid],
+                    mocks["grid"],
+                    [(f, ion, notation) for f, ion, notation, _, _ in fit_tied],
+                ),
+            )
+        )
     annotations = {
         anchor: Annotation(formula, ion, mechanism_id, "M0", None)
         for anchor, formula, ion, mechanism_id, _ in readings
@@ -2602,3 +2677,201 @@ def test_a_judged_row_reads_an_annotation_in_its_formula_mechanism_and_role():
     assert not batch_untargeted.reads_annotation(
         row | {"assigned_formula": "C6H10O5"}, annotation
     )
+
+
+# --- the rivals of a measured reading (MAS-1045) ---------------------------------
+
+#: Two formulas the grid holds for Br2H-'s peak that its evidence cannot tell
+#: from it: ``(formula, ion, notation, mechanism id, peaks)``.
+_CROWD = [
+    ("C5H8O4", "C5H7O4-", "[M-H]-", "im-h", ["p1"]),
+    ("C6H10O5", "C6H9O5-", "[M-H]-", "im-h", ["p1"]),
+]
+
+
+#: A formula the grid holds there whose fit ties Br2H-'s and whose
+#: plausibility separates it (``finder.ReadingRivals.fit_tied``, MAS-975).
+_FIT_TIED = [("CH2N2O5", "CHN2O5-", "[M-H]-", "im-h", ["p1"])]
+
+
+async def _search_crowded(peaks, mechanisms):
+    """The batch search's row on the crowded peak: the finder commits Br2H-
+    and names the crowd against it (``finder.CANDIDATE_RIVALS``), and the
+    search measures them beside it at the sample's model, as a run does
+    (``judging_loop._seeded_rescore``)."""
+    from mascope_backend.api.new.peak_assignments import judging_loop
+
+    rescore = judging_loop._seeded_rescore
+    pairings = {("Br2", "im-h"): ("ion-br2", "Br2H-", ["p1"])}
+    for index, (formula, ion, _, mechanism_id, paired) in enumerate(_CROWD):
+        pairings[(formula, mechanism_id)] = (f"ion-rival-{index}", ion, paired)
+
+    def finder(*args, **kwargs):
+        match = _match(160.8413, "Br2", "Br2H-", "[M-H]-")
+        match["candidate_density"] = 1 + len(_CROWD)
+        match["candidate_rivals"] = [
+            {"formula": formula, "ion": ion, "ionization_mechanism": notation}
+            for formula, ion, notation, _, _ in _CROWD
+        ]
+        return pd.DataFrame([match]), None
+
+    stack, _ = _searching(_sample(), peaks, mechanisms, finder=finder)
+    stack.enter_context(patch.object(judging_loop, "_seeded_rescore", rescore))
+    stack.enter_context(
+        patch.object(judging_loop, "score_seeds", _scorer(pairings, peaks, []))
+    )
+    with stack:
+        (row,), _, _ = await batch_untargeted._search_sample(
+            "si-1", {"p1"}, PeakAssignmentConfig()
+        )
+    return row
+
+
+@pytest.mark.asyncio
+async def test_a_measured_reading_on_a_crowded_peak_takes_its_searchs_density():
+    # MAS-1045: on a peak the grid holds two formulas its evidence cannot tell
+    # from the reading, the batch search's row is held at candidate by the
+    # density rule. The same reading measured on a member is asked the grid
+    # too, its rivals measured beside it as the search's are: one density,
+    # one tier, the same rules capping both.
+    peaks = _peaks([("p1", 160.8413, 1.0e6)])
+    mechanisms = [_mechanism("[M-H]-", "im-h")]
+    searched = await _search_crowded(peaks, mechanisms)
+    measured, mocks = await _measure(
+        _sample(),
+        peaks,
+        mechanisms,
+        [("bp-1", "Br2", "Br2H-", "im-h", ["p1"])],
+        grid=_CROWD,
+        fit_tied=_FIT_TIED,
+    )
+
+    member = measured["p1"]
+    # The search's own rows name no rival by its fit alone, here as in a run.
+    assert "fit_tied" not in member["provenance"]["rival_set"]
+    for row in (searched, member):
+        assert row["provenance"]["candidate_density"] == 3
+        assert row["tier"] == TIER_CANDIDATE
+        assert [rule for rule, caps in _reasons(row) if caps] == [
+            "candidate_density",
+            "lone_peak",
+        ]
+        rivals = row["provenance"]["rival_set"]["rivals"]
+        assert sorted(rival["formula"] for rival in rivals) == ["C5H8O4", "C6H10O5"]
+    assert _reasons(member) == _reasons(searched)
+    # The search's own reading: radicals are among its candidates.
+    ((reading,), kwargs) = mocks["grid"][0]
+    assert (reading.mz, reading.formula, reading.ionization_mechanism) == (
+        160.8413,
+        "Br2",
+        "[M-H]-",
+    )
+    # Ordered among the grid's candidates by its own mass error, as a list's is.
+    assert reading.mz_error_ppm == pytest.approx(0.1)
+    assert kwargs == {"closed_shell_only": False}
+    # The rivals are measured in a pass of their own, once.
+    assert len(mocks["scored"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_measured_lists_reading_reads_its_grid_rivals_as_a_runs_does():
+    # A run puts a list's reading to the search, which counts the grid's
+    # closed-shell rivals into its density and records what it saw
+    # (``engine.GRID_RIVALS``); the identification level then reads the row's
+    # rivals as measured. So does the same reading measured on a member.
+    known = pd.DataFrame(
+        [
+            {
+                "target_compound_formula": "Br2",
+                "ionization_mechanism_id": "im-h",
+                "target_compound_id": "tc-br2",
+                "reference_identities": None,
+            }
+        ]
+    )
+    measured, mocks = await _measure(
+        _sample(),
+        _peaks([("p1", 160.8413, 1.0e6), ("p2", 162.8393, 1.0e6)]),
+        [_mechanism("[M-H]-", "im-h")],
+        [("bp-1", "Br2", "Br2H-", "im-h", ["p1", "p2"])],
+        grid=_CROWD,
+        fit_tied=_FIT_TIED,
+        known=known,
+    )
+
+    row = measured["p1"]
+    assert row["source"] == "database"
+    assert row["provenance"]["candidate_density"] == 3
+    assert row["tier"] == TIER_CANDIDATE
+    assert "candidate_density" in [rule for rule, caps in _reasons(row) if caps]
+    grid = row["provenance"]["grid_rivals"]
+    assert [rival["formula"] for rival in grid["rivals"]] == ["C5H8O4", "C6H10O5"]
+    # What only plausibility separated is measured and recorded apart, and
+    # moves no density (MAS-975), as on a run's list row.
+    (tied,) = row["provenance"]["rival_set"]["fit_tied"]
+    assert tied["formula"] == "CH2N2O5"
+    assert grid["fit_tied"] == 1
+    level = row["provenance"]["identification_level"]
+    assert "rivals not measured" not in level["evidence"]
+    assert sorted(entry["formula"] for entry in level["rivals"]) == [
+        "C5H8O4",
+        "C6H10O5",
+        "CH2N2O5",
+    ]
+    # The grid is asked of the reading's own peak, not of its 81Br line's.
+    assert measured["p2"]["role"] == "iso_child"
+    ((reading,), asked) = mocks["grid"][0]
+    assert reading.mz == 160.8413
+    assert asked == {"closed_shell_only": True}
+
+
+@pytest.mark.asyncio
+async def test_a_rival_the_pass_also_gives_is_measured_as_the_reading_it_gives():
+    # A formula the grid names against one reading that the batch also gives
+    # on another peak is measured once, in the given readings' frame, as a
+    # run measures a named rival its search also commits.
+    measured, mocks = await _measure(
+        _sample(),
+        _peaks([("p1", 160.8413, 1.0e6), ("p2", 300.0, 1.0e6)]),
+        [_mechanism("[M-H]-", "im-h")],
+        [
+            ("bp-1", "Br2", "Br2H-", "im-h", ["p1"]),
+            ("bp-2", "C5H8O4", "C5H7O4-", "im-h", ["p2"]),
+        ],
+        grid=[("C5H8O4", "C5H7O4-", "[M-H]-", "im-h", ["p2"])],
+    )
+
+    assert len(mocks["scored"]) == 1
+    assert measured["p1"]["provenance"]["candidate_density"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("refusal", ["finder", "notation"])
+async def test_a_channel_the_grid_cannot_read_leaves_the_reading_measured(refusal):
+    # A mechanism the finder cannot parse refuses the grid read. The reading
+    # is then measured as before, without the grid's rivals, not left
+    # unmeasured with the rest of its sample.
+    from mascope_tools.composition.exceptions import CompositionFinderException
+    from mascope_tools.composition.mechanism_notation import MechanismNotationError
+
+    error = (
+        CompositionFinderException("Unsupported ionization mechanism")
+        if refusal == "finder"
+        else MechanismNotationError("not in the standard adduct notation")
+    )
+    with patch(
+        "mascope_backend.api.new.peak_assignments.given_rivals.rivals_of_readings",
+        side_effect=error,
+    ):
+        measured, mocks = await _measure(
+            _sample(),
+            _peaks([("p1", 160.8413, 1.0e6)]),
+            [_mechanism("[M-H]-", "im-h")],
+            [("bp-1", "Br2", "Br2H-", "im-h", ["p1"])],
+        )
+
+    row = measured["p1"]
+    assert row["provenance"]["candidate_density"] == 1
+    assert row["tier"] == TIER_CANDIDATE
+    assert [rule for rule, caps in _reasons(row) if caps] == ["lone_peak"]
+    assert len(mocks["scored"]) == 1

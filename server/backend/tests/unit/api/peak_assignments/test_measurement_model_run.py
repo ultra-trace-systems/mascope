@@ -796,6 +796,7 @@ def _ctx(path, *, recorded=False):
         stage_a_absent=pd.DataFrame(),
         seeded_frame=judging_loop.SeededFrame(_frame(1), {}),
         shortlist=None,
+        rival_frame=None,
         confidence_curve=CURVE,
         decoy_plan=None,
         stage_a=[],

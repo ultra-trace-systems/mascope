@@ -45,6 +45,11 @@ and recorded apart, under ``fit_tied`` (MAS-975, #3285): a rival plausibility
 holds back is not excluded, so the level lists it, open. The arbitration and
 the density do not read them, so no confidence, density or tier moves by them.
 
+A batch decision measured on a sample's member (``pipeline.PROPAGATION``) has
+no search to name its rivals: the grid is asked for them instead, as a run's
+search asks it of a list's reading, and they are measured beside the
+readings as a run's named ones are (``given_rivals``, MAS-1045).
+
 Which candidates a reading competes against is still the search's to say: it
 names a rival where its own ranking could not separate the two, at the v1
 model it ranks at (MAS-982 keeps the ranking at v1). What each of them
