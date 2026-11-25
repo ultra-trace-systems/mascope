@@ -75,6 +75,12 @@ reference_source = table(
     # empty for a load that cites none, NULL for a row loaded before rows
     # recorded them.
     column("citations", JSON),
+    # Which samples read the source, as a list's header says
+    # (mascope_reference.selection): the regimes it declares, a JSON array, and
+    # whether it is always active. NULL where the header says neither, as for
+    # every database mirror: none_as_null, so None is SQL NULL, not JSON null.
+    column("applies_to_contexts", JSON(none_as_null=True)),
+    column("always_active", Boolean),
 )
 
 #: One row per (compound, source version). ``xrefs`` is typed JSON so the dict
@@ -140,6 +146,8 @@ SOURCE_INSERT_COLUMNS = (
     "polarity",
     "kind",
     "citations",
+    "applies_to_contexts",
+    "always_active",
 )
 COMPOUND_INSERT_COLUMNS = (
     "reference_source_id",

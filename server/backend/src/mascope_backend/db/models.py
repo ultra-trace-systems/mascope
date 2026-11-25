@@ -3543,6 +3543,49 @@ class AttributeTemplateField(Base):
     position: Mapped[int] = mapped_column(Integer)
 
 
+class Environment(Base):
+    """What a sample was drawn from, as a value of the ``environment`` field.
+
+    One row of the environment registry (``docs/dev/
+    sample_filters_and_metadata.md``, section 4.6): people tag samples with
+    environments, list curators declare regimes in the list headers, and this
+    row joins the two. ``key`` is the value a sample is tagged with, the
+    shipped ``environment`` field's allowed values are the registry's keys,
+    and it never changes once made. ``chemistry_context`` names the shipped
+    chemistry context a sample of the environment is read under, or none.
+    ``regimes`` are the regimes it reads the lists of, from the vocabulary
+    the lists declare theirs in (``mascope_reference.peaklist.REGIMES``).
+
+    ``system`` marks an environment Mascope ships (the starting set, seeded at
+    every start): it may be edited and retired, not deleted. A retired one
+    (``retired_utc``) keeps its key among the field's allowed values, so the
+    values written under it keep their meaning, and is left out of the forms
+    that offer environments.
+    """
+
+    __tablename__ = "environment"
+
+    environment_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    key: Mapped[str] = mapped_column(String(64), unique=True)
+    label: Mapped[str] = mapped_column(String(128))
+    chemistry_context: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    regimes: Mapped[list] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
+    )
+    system: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )
+    created_utc: Mapped[dt] = mapped_column(
+        TIMESTAMP(timezone=True), default=lambda: dt.now(timezone.utc)
+    )
+    modified_utc: Mapped[dt] = mapped_column(
+        TIMESTAMP(timezone=True), default=lambda: dt.now(timezone.utc)
+    )
+    retired_utc: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+
+
 class InstrumentFunction(Base):
     """Instrument function parameters."""
 
@@ -3622,6 +3665,15 @@ class ReferenceSource(Base):
     citations: Mapped[Optional[list]] = mapped_column(
         JSON(none_as_null=True), nullable=True
     )
+    # Which samples read the source, as a list's header says, written at load
+    # (mascope_reference.selection): the regimes its applies_to_contexts names,
+    # and whether it is always active. NULL where the header says neither - a
+    # list that declares no regimes, every database mirror - and on a row
+    # loaded before rows recorded them; none_as_null, as for citations.
+    applies_to_contexts: Mapped[Optional[list]] = mapped_column(
+        JSON(none_as_null=True), nullable=True
+    )
+    always_active: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
 
     # Relationships
     reference_compound = relationship(
@@ -4341,6 +4393,7 @@ __all__ = [
     "AttributeTemplate",
     "AttributeTemplateField",
     "MetadataField",
+    "Environment",
     "Instrument",
     "InstrumentFunction",
     "ReferenceSource",

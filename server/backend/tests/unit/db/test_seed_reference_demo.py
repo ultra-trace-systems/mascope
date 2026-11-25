@@ -26,7 +26,9 @@ CREATE TABLE reference_source (
     allow_radicals BOOLEAN,
     polarity TEXT,
     kind TEXT,
-    citations JSON
+    citations JSON,
+    applies_to_contexts JSON,
+    always_active BOOLEAN
 )
 """
 

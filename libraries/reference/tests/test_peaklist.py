@@ -283,6 +283,19 @@ def test_a_tag_is_one_the_vocabulary_names(tmp_path):
     ]
 
 
+def test_a_regime_is_one_the_vocabulary_names(tmp_path):
+    """An environment selects a list where their regimes meet, so a misspelt
+    regime is one no environment can name, and the list would be left out of
+    every tagged sample."""
+    good = _good(applies_to_contexts=["monoterpene_ox", "biogenic_soa"])
+    assert _problems(tmp_path, good) == []
+    bad = _good(applies_to_contexts=["monoterpene_ox", "monoterpene_OH"])
+    assert _problems(tmp_path, bad) == [
+        "regime 'monoterpene_OH' in applies_to_contexts is not one of "
+        "ap_ox, biogenic_soa, isoprene_ox, limonene_ox, monoterpene_ox"
+    ]
+
+
 def test_a_per_row_reference_is_a_doi(tmp_path):
     data = _good(species=[{"formula": "C10H16O7", "reference": "Author 2020"}])
     assert _problems(tmp_path, data) == [

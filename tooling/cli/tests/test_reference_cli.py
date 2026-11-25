@@ -35,6 +35,7 @@ from mascope_cli.cmd.reference.main import reference_app
 from mascope_cli.runtime import runtime
 from mascope_reference.ingest import SourceKindConflict, SpectrumIngestResult
 from mascope_reference.scope import MIRROR_WINDOW, UNBOUNDED, KnownWindow, SourceScope
+from mascope_reference.selection import UNDECLARED
 
 
 runner = CliRunner()
@@ -123,6 +124,7 @@ def captured_ingest(monkeypatch):
         def __init__(self, scope, citations):
             self.scope = scope
             self.citations = tuple(citations or ())
+            self.selection = UNDECLARED
             self.ingested = 1
             self.skipped = 0
             self.source = "my-list"
@@ -266,6 +268,14 @@ def test_the_publication_the_flags_name_is_recorded(dump, captured_ingest, logge
         {"citation": "A. Author, A paper.", "doi": "10.1234/t.1"}
     ]
     assert "info: Cites: A. Author, A paper. (10.1234/t.1)" in logged
+
+
+def test_a_sync_reports_where_the_load_applies(dump, captured_ingest, logged):
+    result = runner.invoke(
+        reference_app, ["sync", "custom", str(dump), "--version", "v1", "--yes"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "info: Where it applies: no regimes." in logged
 
 
 @pytest.mark.parametrize(
@@ -511,7 +521,9 @@ CREATE TABLE reference_source (
     allow_radicals BOOLEAN,
     polarity TEXT,
     kind TEXT,
-    citations JSON
+    citations JSON,
+    applies_to_contexts JSON,
+    always_active BOOLEAN
 )
 """
 

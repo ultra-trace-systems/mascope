@@ -17,7 +17,12 @@ from sqlalchemy import func, select, update
 
 from mascope_reference.adapters.peaklist import list_citations, list_scope
 from mascope_reference.normalize import canonical_formula, monoisotopic_mass
-from mascope_reference.peaklist import admitted_species, is_odd_electron, list_problems
+from mascope_reference.peaklist import (
+    REGIMES,
+    admitted_species,
+    is_odd_electron,
+    list_problems,
+)
 from mascope_reference.schema import reference_compound, reference_source
 from mascope_reference.scope import MIRROR_WINDOW, UNBOUNDED, SourceScope
 from mascope_reference.seed import catalogue, lists_directory, seed, select_lists
@@ -308,6 +313,78 @@ def test_an_active_lists_citations_are_recorded_without_a_reload(sync_engine):
             pl.id: list(list_citations(pl)) for pl in select_lists(SHIPPED)
         }
     assert not any(o.refreshed for o in seed(sync_engine))
+
+
+def _selections(conn) -> dict[str, tuple]:
+    return {
+        row.name: (row.applies_to_contexts, row.always_active)
+        for row in conn.execute(
+            select(
+                reference_source.c.name,
+                reference_source.c.applies_to_contexts,
+                reference_source.c.always_active,
+            ).where(reference_source.c.is_active.is_(True))
+        )
+    }
+
+
+def _header_facts(peak_list) -> tuple:
+    """What a list's header says, read off the file itself."""
+    data = json.loads(peak_list.path.read_text(encoding="utf-8"))
+    return data.get("applies_to_contexts") or None, data.get("always_active") or None
+
+
+def test_seeding_records_where_each_list_applies(sync_engine):
+    seed(sync_engine, include_optional=True)
+    with sync_engine.connect() as conn:
+        selections = _selections(conn)
+    assert selections == {pl.id: _header_facts(pl) for pl in SHIPPED}
+    # The shipped set has each kind: regimes, always active, and neither.
+    assert selections["monoterpene-hom-kang2021"] == (
+        ["monoterpene_ox", "limonene_ox", "ap_ox", "biogenic_soa"],
+        None,
+    )
+    assert selections["contaminants-keller2008"] == (None, True)
+    assert selections["atmospheric-organics"] == (None, None)
+
+
+def test_an_active_lists_regimes_are_recorded_without_a_reload(sync_engine):
+    seed(sync_engine)
+    # What a row loaded before rows recorded them holds, and a row that says
+    # something the list does not.
+    with sync_engine.begin() as conn:
+        conn.execute(
+            update(reference_source).values(
+                applies_to_contexts=None, always_active=None
+            )
+        )
+        conn.execute(
+            update(reference_source)
+            .where(reference_source.c.name == "atmospheric-organics")
+            .values(applies_to_contexts=[], always_active=False)
+        )
+        compounds = _compounds(conn)
+
+    outcomes = seed(sync_engine)
+
+    assert not any(o.loaded for o in outcomes)
+    refreshed = {o.list_id for o in outcomes if o.refreshed}
+    declaring = {
+        pl.id for pl in select_lists(SHIPPED) if _header_facts(pl) != (None, None)
+    }
+    assert refreshed == declaring | {"atmospheric-organics"}
+    with sync_engine.connect() as conn:
+        assert _selections(conn) == {
+            pl.id: _header_facts(pl) for pl in select_lists(SHIPPED)
+        }
+        assert _compounds(conn) == compounds
+    assert not any(o.refreshed for o in seed(sync_engine))
+
+
+def test_every_regime_a_shipped_list_declares_is_in_the_vocabulary():
+    declared = {r for pl in SHIPPED for r in pl.applies_to_contexts}
+    assert declared
+    assert declared <= set(REGIMES)
 
 
 def test_the_refresh_leaves_an_earlier_inactive_load_alone(sync_engine, tmp_path):

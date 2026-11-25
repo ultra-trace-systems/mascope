@@ -13,6 +13,7 @@ from mascope_backend.api.new.ionization.modes.routes import (
     ionization_mode_router,
 )
 from mascope_backend.api.new.match.records.routes import match_records_router
+from mascope_backend.api.new.metadata.environment_routes import environments_router
 from mascope_backend.api.new.metadata.routes import metadata_router
 from mascope_backend.api.new.notifications.routes import notifications_router
 from mascope_backend.api.new.params import params_router
@@ -127,6 +128,7 @@ routers = [
     sample_items_router,
     attribute_templates_router,
     metadata_router,
+    environments_router,
     target_collections_router,
     target_collection_in_sample_batch_router,
     target_compounds_router,
