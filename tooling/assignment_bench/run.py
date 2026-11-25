@@ -534,7 +534,12 @@ class TokenApi:
             {"Authorization": f"Bearer {token}", "X-Service-Name": "mascope_sdk"}
         )
 
-    def _send(self, method: str, path: str, **kwargs):
+    def _send(self, method: str, path: str, ids: tuple[str, ...] = (), **kwargs):
+        """Send one request; :class:`TransientError` for no answer or a 5xx.
+
+        ``ids`` are the request's own path values (a sample or batch id),
+        which the error's ``answer`` must not repeat (:func:`server_message`).
+        """
         try:
             r = self.session.request(
                 method, f"{self.base}{path}", timeout=120, **kwargs
@@ -545,7 +550,7 @@ class TokenApi:
                 f"did not answer ({type(error).__name__})",
             ) from None
         if r.status_code >= 500:
-            said = server_message(r)
+            said = server_message(r, ids=ids)
             answer = f"answered {r.status_code}" + (f": {said}" if said else "")
             raise TransientError(f"{method} {path}: {answer}", answer)
         return r
@@ -554,6 +559,7 @@ class TokenApi:
         r = self._send(
             "POST",
             f"/api/peak-assignments/sample/{sample}/assign",
+            (sample,),
             json={} if config is None else {"config": config},
         )
         return launch_of(r.status_code, _json(r))
@@ -562,6 +568,7 @@ class TokenApi:
         r = self._send(
             "GET",
             f"/api/peak-assignments/sample/{sample}/runs",
+            (sample,),
             params={"include_decoys": "true"} if include_decoys else None,
         )
         if r.status_code != 200:
@@ -572,29 +579,55 @@ class TokenApi:
 
     def assign_batch(self, batch: str, fold: str) -> Launch:
         r = self._send(
-            "POST", f"/api/batch-peaks/batch/{batch}/assign", json={"fold": fold}
+            "POST",
+            f"/api/batch-peaks/batch/{batch}/assign",
+            (batch,),
+            json={"fold": fold},
         )
         return batch_launch_of(r.status_code, _json(r))
 
     def batch_runs(self, batch: str) -> list[dict]:
-        r = self._send("GET", f"/api/batch-peaks/batch/{batch}/runs")
+        r = self._send("GET", f"/api/batch-peaks/batch/{batch}/runs", (batch,))
         if r.status_code != 200:
             raise RunError(f"the runs of a batch answered {r.status_code}")
         rows = _json(r).get("data")
         return rows if isinstance(rows, list) else []
 
     def assignment_status(self, batch: str) -> dict:
-        r = self._send("GET", f"/api/batch-peaks/batch/{batch}/assignment-status")
+        r = self._send(
+            "GET", f"/api/batch-peaks/batch/{batch}/assignment-status", (batch,)
+        )
         if r.status_code != 200:
             raise RunError(f"the assignment status of a batch answered {r.status_code}")
         data = _json(r).get("data")
         return data if isinstance(data, dict) else {}
 
 
-def server_message(response, limit: int = 160) -> str:
+#: The server's own context before its message on an unhandled error,
+#: ``Unhandled exception on <method> <path>.`` (``process_exception``), which
+#: names the request's path and so its sample.
+_UNHANDLED = re.compile(r"^Unhandled exception on \S+ \S+?\.\s+")
+
+#: The per-error reference the server appends, ``(ref: <8 hex>)``: new on
+#: every error, so a cause that kept it would never add up across samples.
+_REF = re.compile(r"\s*\(ref:[^)]*\)")
+
+#: A path the server may name elsewhere in its message.
+_PATH = re.compile(r"/api/\S*")
+
+
+def server_message(response, limit: int = 160, ids: tuple[str, ...] = ()) -> str:
     """The server's own words in an answer: its ``error``, ``detail`` or
     ``message``, else the start of its text, on one line and cut to
-    ``limit`` characters."""
+    ``limit`` characters.
+
+    The words name no request and no error: the server's ``Unhandled
+    exception on <method> <path>.`` context and its ``(ref: ...)`` are
+    dropped, and any other path the server names and each of ``ids`` (the
+    request's sample or batch) read ``<path>`` and ``<id>``. A sample id is
+    on the scrub's deny list, so a cause that kept one would keep
+    ``run.json`` from being written (MAS-1253).
+    """
     body = _json(response)
     said = next(
         (
@@ -607,7 +640,24 @@ def server_message(response, limit: int = 160) -> str:
     if said is None and not body:
         said = getattr(response, "text", None) or ""
     said = " ".join(str(said or "").split())
+    said = _REF.sub("", _UNHANDLED.sub("", said))
+    said = _PATH.sub("<path>", said)
+    for value in ids:
+        if value:
+            said = said.replace(value, "<id>")
+    said = said.strip()
     return said if len(said) <= limit else said[: limit - 3] + "..."
+
+
+def behind(stalled: Outcome) -> Outcome:
+    """A run of a sample the bench did not launch because an earlier run of
+    it ``stalled``: ``stalled`` too, with code ``behind``, and no wait."""
+    return Outcome(
+        "stalled",
+        code="behind",
+        detail=f"not launched: run {stalled.run_id or '?'} of the sample did not end",
+        cause="not launched: an earlier run of the sample did not end",
+    )
 
 
 def answer_of(error: Exception) -> str:
@@ -1622,12 +1672,27 @@ class BenchRun:
             outcomes: dict[str, Outcome] = {}
             copy = None
             if control.status == "completed":
+                # A run that stalled stays in flight on the server, which
+                # answers 409 to every later run of the sample: launch none,
+                # or each would wait out the limit and the set its budget.
+                stalled = None
                 for arm in arms:
+                    if stalled is not None:
+                        outcomes[arm_name(arm)] = behind(stalled)
+                        continue
                     outcomes[arm_name(arm)] = self._one(
                         api, sample, {"decoy": arm}, deadline, stop, limit
                     )
+                    if outcomes[arm_name(arm)].status == "stalled":
+                        stalled = outcomes[arm_name(arm)]
                 if batch and arm_off is None:
-                    copy = self._one(api, sample, DEFAULT_CONFIG, deadline, stop, limit)
+                    copy = (
+                        behind(stalled)
+                        if stalled is not None
+                        else self._one(
+                            api, sample, DEFAULT_CONFIG, deadline, stop, limit
+                        )
+                    )
             with lock:
                 done[0] += 1
                 runlog.note(
@@ -3279,7 +3344,8 @@ def run_problems(sets: dict) -> list[str]:
         stalled = sum((tally.get("stalled") or 0) for tally in s["decoys"].values())
         if stalled:
             problems.append(
-                f"set {name}: {stalled} decoy run(s) stalled, past the run limit"
+                f"set {name}: {stalled} decoy run(s) stalled, past the run "
+                f"limit or behind a run of the sample that was"
             )
         arm = s.get("batch")
         if arm is not None and arm.get("off"):
