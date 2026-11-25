@@ -198,8 +198,8 @@ class PeakAssignmentRecord(BaseModel):
     engine_tier: str | None = None
     #: The identification level the producing engine itself stated, in the
     #: shared scale, when it said so: an imported run's, beside its
-    #: ``engine_tier``. Absent on in-app rows, whose level is ``level``, and on
-    #: a row derived from the batch ledger.
+    #: ``engine_tier``. Absent on in-app rows, whose level is ``level``; a derived
+    #: row carries its batch peak's where it carries its ``engine_tier``.
     engine_level: str | None = None
     target_compound_id: str | None = None
     target_ion_id: str | None = None

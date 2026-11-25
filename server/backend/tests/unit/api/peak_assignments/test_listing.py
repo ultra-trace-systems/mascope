@@ -253,6 +253,7 @@ class _Anchor:
     consensus_formula = "C10H30O5Si5"
     ionization_mechanism_id = "m-h"
     engine_tier = None
+    engine_level = None
 
 
 def test_a_derived_row_carries_its_entrys_listing():

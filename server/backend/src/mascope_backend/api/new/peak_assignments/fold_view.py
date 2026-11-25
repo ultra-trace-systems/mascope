@@ -31,12 +31,13 @@ about the row, so it stays out of ``target_compound_id``: the ledger and detail
 reads only put what that compound declares on ``reference_listing``
 (:func:`member_target_id`), as the batch ledger does for its consensus.
 
-The engine tier is the anchor's: an import's verdict (``engine_tier``) is kept
-on the batch peak, about the identity its consensus names. A member shows it
-where the member is that reading in its sample - an M0 member whose registry
-entry names the consensus formula through the consensus mechanism - and no
-other row does: an isotope line, a reagent, or a sample that dissents from the
-batch is not what the engine judged (:func:`member_engine_tier`).
+The engine tier and level are the anchor's: an import's verdict
+(``engine_tier``, ``engine_level``) is kept on the batch peak, about the
+identity its consensus names. A member shows them where the member is that
+reading in its sample - an M0 member whose registry entry names the consensus
+formula through the consensus mechanism - and no other row does: an isotope
+line, a reagent, or a sample that dissents from the batch is not what the
+engine judged (:func:`member_engine_tier`, :func:`member_engine_level`).
 """
 
 from __future__ import annotations
@@ -146,15 +147,37 @@ def member_engine_tier(member: Any, anchor: Any, identity: dict) -> Optional[str
     :param anchor: The ``BatchPeak`` it sits in.
     :param identity: The registry entry the member's index names.
     """
+    return (
+        anchor.engine_tier if _reads_engine_verdict(member, anchor, identity) else None
+    )
+
+
+def member_engine_level(member: Any, anchor: Any, identity: dict) -> Optional[str]:
+    """The importing engine's level a member's row shows: the anchor's
+    ``engine_level``, under :func:`member_engine_tier`'s rule. The level is the
+    same verdict's, about the same identity, so it reaches the same row and no
+    other.
+
+    :param member: The sample's ``BatchPeakOccurrence``.
+    :param anchor: The ``BatchPeak`` it sits in.
+    :param identity: The registry entry the member's index names.
+    """
+    return (
+        anchor.engine_level if _reads_engine_verdict(member, anchor, identity) else None
+    )
+
+
+def _reads_engine_verdict(member: Any, anchor: Any, identity: dict) -> bool:
+    """Whether the member is the reading an import's verdict on its anchor is
+    about: an M0 member whose registry entry names the consensus formula
+    through the consensus mechanism."""
     formula = identity.get("formula")
-    if (
-        role_name(member.role) != ROLE_M0
-        or not formula
-        or formula != anchor.consensus_formula
-        or identity.get("ionization_mechanism_id") != anchor.ionization_mechanism_id
-    ):
-        return None
-    return anchor.engine_tier
+    return (
+        role_name(member.role) == ROLE_M0
+        and bool(formula)
+        and formula == anchor.consensus_formula
+        and identity.get("ionization_mechanism_id") == anchor.ionization_mechanism_id
+    )
 
 
 def _engine_verdict_shown():
@@ -210,6 +233,7 @@ def member_row(member: Any, anchor: Any) -> dict:
         "abundance_error": None,
         "tier": tier_name(member.tier) or TIER_UNASSIGNED,
         "engine_tier": member_engine_tier(member, anchor, identity),
+        "engine_level": member_engine_level(member, anchor, identity),
         "target_compound_id": None,
         "target_ion_id": None,
         "owner_peak_assignment_id": fold_assignment_id(owner) if owner else None,

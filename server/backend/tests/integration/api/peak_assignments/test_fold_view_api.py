@@ -358,6 +358,18 @@ async def _give_every_anchor_a_verdict(session_factory, batch_id, engine_tier):
         await session.commit()
 
 
+async def _give_every_anchor_a_level(session_factory, batch_id, engine_level):
+    """What an import's level alone leaves, on every anchor of the batch: a
+    verdict with a level and no tier, as ``perform_batch_import`` writes one."""
+    async with session_factory() as session:
+        await session.execute(
+            update(BatchPeak)
+            .where(BatchPeak.sample_batch_id == batch_id)
+            .values(engine_tier=None, engine_level=engine_level)
+        )
+        await session.commit()
+
+
 async def _read_every_consensus_through(session_factory, batch_id, mechanism_id):
     """Give the registry entry of each anchor's consensus formula another
     mechanism than the anchor's: its members read the consensus formula, but
@@ -648,3 +660,39 @@ async def test_a_sample_folded_without_any_run_is_served(
         by_peak["p2"]["owner_peak_assignment_id"] == by_peak["p1"]["peak_assignment_id"]
     )
     assert by_peak["p3"]["tier"] == "unassigned"
+
+
+async def test_the_derived_ledger_shows_an_imports_level_where_it_shows_its_tier(
+    guest_client, async_session_factory, folded
+):
+    await _delete_runs(async_session_factory, folded["s1"], folded["s2"])
+    await _give_every_anchor_a_level(async_session_factory, folded["batch_id"], "4b")
+    s1, s2 = folded["s1"], folded["s2"]
+
+    rows = {r["sample_peak_id"]: r for r in (await _ledger(guest_client, s1))["data"]}
+    # S1's M0 reads the consensus: the level is about it, with no tier beside it.
+    assert (rows["p1"]["engine_level"], rows["p1"]["engine_tier"]) == ("4b", None)
+    # Its own level is this server's, which a derived row does not carry.
+    assert rows["p1"]["level"] is None
+    # Its isotope line and the unassigned peak are not what the engine judged.
+    assert rows["p2"]["engine_level"] is None
+    assert rows["p3"]["engine_level"] is None
+    # S2's member of the same anchor dissents from the consensus formula.
+    (dissent,) = (await _ledger(guest_client, s2))["data"]
+    assert dissent["engine_level"] is None
+
+    # The detail is the row plus the anchor's: it shows the same level.
+    detail = await guest_client.get(
+        f"/api/peak-assignments/sample/{s1}/assignment/"
+        f"{rows['p1']['peak_assignment_id']}"
+    )
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["data"][0]["engine_level"] == "4b"
+
+    # Through another mechanism the member is not the judged reading.
+    await _read_every_consensus_through(
+        async_session_factory, folded["batch_id"], "another-mech"
+    )
+    rows = {r["sample_peak_id"]: r for r in (await _ledger(guest_client, s1))["data"]}
+    assert rows["p1"]["assigned_formula"] == "C6H12O6"
+    assert rows["p1"]["engine_level"] is None
