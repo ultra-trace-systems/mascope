@@ -7,6 +7,7 @@
     bench.py review [--sets A,D,...] [--top N] | --record SHEET [--recalibrate] [--wait]
     bench.py post <ref> --pr N
     bench.py status
+    bench.py inspect
 
 ``init`` builds the bench instance (env ``bench``) from a sets manifest
 (``manifest.py``; ``manifests/demo.json`` is the public one): it binds the env
@@ -32,6 +33,11 @@ already made of gets that card in seconds, with no run (``--fresh`` runs).
 ``run --post <pr>`` posts the card on the PR as one comment, edited in place
 on a re-run (``post.py``); ``post <ref> --pr N`` posts the newest card of the
 ref's current head without running anything.
+
+``inspect`` looks inside the bench without changing it: the runs by status,
+the newest card's runs, the tables' sizes, the schema's revision, the env's
+settings and filestore, every line scrubbed as a card is, read in read-only
+database sessions and without the lock (``inspection.py``).
 
 Everything the bench keeps lives in its home, ``$MASCOPE_PATH/.runtime/bench``
 (``--home`` or ``MASCOPE_BENCH_HOME`` elsewhere): a copy of the manifest with
@@ -71,6 +77,7 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
+import inspection as bench_inspection  # noqa: E402
 import manifest as bench_manifest  # noqa: E402
 import post as bench_post  # noqa: E402
 import reference as bench_reference  # noqa: E402
@@ -1116,6 +1123,10 @@ class Instance(Protocol):
         """The instance's own names (``names``) and ids (``ids``), which no
         card may hold."""
 
+    def checkout_revisions(self) -> dict:
+        """This checkout's commit and alembic heads and revisions (``sha``,
+        ``heads``, ``revisions``), for ``inspect``."""
+
 
 #: The first line of the env's own config layer when the bench wrote it.
 CONFIG_MARK = (
@@ -1146,6 +1157,7 @@ class DevInstance:
         env: str = DEFAULT_ENV,
         repo: Path = REPO,
         runtime: Path | None = None,
+        read_only: bool = False,
     ):
         if not _ENV_NAME.match(env):
             raise BenchError(
@@ -1155,6 +1167,9 @@ class DevInstance:
         self.env = env
         self.repo = repo
         self._runtime = runtime
+        #: Every database session read-only (``bench inspect``): the server
+        #: refuses a write in it, whatever the query.
+        self.read_only = read_only
         self.api_port: int | None = None
         #: The backend this process started, to reap when it stops.
         self._proc: subprocess.Popen | None = None
@@ -1388,6 +1403,27 @@ class DevInstance:
             )
         found = json.loads(out.stdout.strip().splitlines()[-1])
         return found["heads"], found["revisions"]
+
+    def checkout_revisions(self) -> dict:
+        """This checkout's commit and its alembic heads and revisions, read in
+        its own environment from its own script directory, writing nothing
+        (no bytecode either): what ``bench inspect`` holds the database's
+        revisions against."""
+        out = subprocess.run(
+            ["uv", "run", "--no-sync", "python", "-c", ALEMBIC_PROBE],
+            cwd=self.repo / "server" / "backend",
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if out.returncode != 0:
+            raise BenchError(
+                f"cannot read this checkout's migrations: {out.stderr.strip()[-400:]}"
+            )
+        found = json.loads(out.stdout.strip().splitlines()[-1])
+        sha = self._git("rev-parse", "HEAD").stdout.strip()
+        return {"sha": sha, "heads": found["heads"], "revisions": found["revisions"]}
 
     def migrate(self) -> None:
         """``mascope dev migrate upgrade`` with the worktree's alembic, on the env."""
@@ -1693,10 +1729,18 @@ class DevInstance:
 
     def _query(self, sql: str) -> list[dict]:
         container, user, database = self._db()
+        # libpq's PGOPTIONS sets the session's default before the query runs,
+        # so the server itself refuses a write in a read-only instance's.
+        read_only = (
+            ["-e", "PGOPTIONS=-c default_transaction_read_only=on"]
+            if self.read_only
+            else []
+        )
         out = subprocess.run(
             [
                 "docker",
                 "exec",
+                *read_only,
                 container,
                 "psql",
                 "-U",
@@ -2291,6 +2335,45 @@ class Bench:
         return 0
 
 
+# ------------------------------------------------------------------ inspect
+
+
+def _no_writes(*_args, **_kwargs):
+    raise BenchError("bench inspect writes nothing")
+
+
+def inspect_bench(home: Home, instance: Instance, out=None) -> int:
+    """``bench inspect``: the bench's runs, sizes, schema and settings,
+    scrubbed (``inspection.py``). It reads the state as it is on disk, takes
+    no lock, and gives the scrub's ``BenchRun`` nothing that writes or signs
+    in."""
+    out = out or sys.stdout
+    if not home.state.exists():
+        print("no bench here: run `bench.py init <manifest>`", file=out)
+        return 1
+    state = load_state(home, instance.env)
+    runner = bench_run.BenchRun(
+        home=home,
+        instance=instance,
+        connect=_no_writes,
+        load_state=lambda: load_state(home, instance.env),
+        save_state=_no_writes,
+    )
+    try:
+        env_dir = instance.env_dir
+    except BenchError:
+        env_dir = None
+    return bench_inspection.Inspect(
+        home=home,
+        instance=instance,
+        reader=bench_inspection.Reader(instance._query),
+        runner=runner,
+        state=state,
+        env_dir=env_dir,
+        checkout=instance.checkout_revisions,
+    ).print(out)
+
+
 # ---------------------------------------------------------------------- cli
 
 
@@ -2492,6 +2575,12 @@ def main(argv: list[str] | None = None) -> int:
         "--pr", type=int, required=True, metavar="N", help="the pull request"
     )
     sub.add_parser("status", help="the env, slot, sets, reference pin and last cards")
+    sub.add_parser(
+        "inspect",
+        help="look inside the bench, read-only and without the lock: runs by "
+        "status, the newest card's runs, table sizes, the schema's revision, "
+        "the env's settings and filestore; names scrubbed",
+    )
     args = parser.parse_args(argv)
 
     # A signal or a starter that goes away ends the command through its
@@ -2515,6 +2604,9 @@ def _main(args) -> int:
     try:
         home = Home(args.home or default_home())
         instance = DevInstance(home, env=args.env)
+        if args.command == "inspect":
+            # Every session it opens read-only: the server refuses a write.
+            instance.read_only = True
 
         def connect(base: str) -> Api:
             api = HttpApi(base, home)
@@ -2525,6 +2617,8 @@ def _main(args) -> int:
         bench = Bench(home=home, instance=instance, connect=connect)
         if args.command == "status":
             return bench.status()
+        if args.command == "inspect":
+            return inspect_bench(home, instance)
         if args.command == "post":
             runner = bench_run.BenchRun(
                 home=home,
