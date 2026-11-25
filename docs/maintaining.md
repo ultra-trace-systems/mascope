@@ -3278,8 +3278,9 @@ docker compose exec backend python -m mascope_backend.db.scripts.reference_seed
 - Running it again loads only the lists whose version changed. After an upgrade,
   that is how a revised list reaches the database.
 - Running it again also brings the row of every list already loaded up to date
-  with the window, radical allowance and polarity the list names. Run it once
-  after upgrading to a release that added those fields.
+  with the window, radical allowance and polarity the list names, its
+  publications, and its regimes and `always_active`. Run it once after
+  upgrading to a release that added those fields.
 
 To take a source out without deleting it:
 

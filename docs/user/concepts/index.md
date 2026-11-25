@@ -192,10 +192,53 @@ template selects, cannot be deleted or change its type: retire it instead. A
 retired field keeps its key and stays where it is used, but no new template
 can select it. Mascope ships one field, **Environment**, a tags field that
 says what was sampled; it cannot be deleted or retired, and its values are
-Mascope's.
+the keys of the environment registry, below.
 
 Recording registry values for a sample's raw file is not part of Mascope yet;
 the registry defines the fields that record will use.
+
+### Environments
+
+An **environment** says what a sample was drawn from, such as a boreal forest
+or a chamber experiment. It is a value of the **Environment** field, and one
+row of the environment registry:
+
+- a **key**, the value a sample is tagged with, such as `boreal-forest`. It
+  never changes once made;
+- a **label**, such as "Boreal forest";
+- a **chemistry context**, one of the shipped contexts such as `ambient-air`,
+  or none;
+- its **regimes**: the kinds of chemistry whose reference lists a sample of it
+  is read against, such as `monoterpene_ox`. A reference list declares its
+  regimes in its header, from the same vocabulary
+  ([Reference compound lists](../guides/reference-lists.md#the-lists-that-ship-with-mascope)).
+
+Three parties each speak their own part. People tag samples with
+environments, list curators say which regimes a list applies to, and the
+registry joins the two. A new environment is one row; no list is edited.
+
+```mermaid
+flowchart LR
+  S[Sample] -- tagged with --> E[Environment]
+  E -- names --> R[Regimes]
+  L[Reference list] -- declares --> R
+```
+
+Mascope ships a starting set: **Boreal forest** (ambient air; monoterpene
+oxidation and biogenic SOA), and two chamber experiments, **Chamber:
+monoterpene oxidation** and **Chamber: isoprene oxidation**. Each start adds a
+shipped environment a server lacks and leaves the rest as they are, edits
+included.
+
+The registry is shared reference data, as the fields are. Anyone signed in can
+read it; the global editor role or higher adds, edits, retires and restores an
+environment. A shipped environment can be retired but not deleted. A retired
+environment keeps its key among the field's values, so what was tagged with it
+keeps its meaning. There is no page for the registry in the app yet: it is
+managed through the API, at `/api/environments`.
+
+Tagging a sample, and reading its lists by its environments, are not part of
+Mascope yet. Until they are, every sample is read against every loaded list.
 
 ## Matching and match scores
 
