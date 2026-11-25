@@ -389,8 +389,11 @@ class TestClassTable:
     def test_a_cited_entry_has_no_problems(self):
         isbn = P.Citation("A. Author, A book (2019).", isbn="978-3-95806-596-3")
         entry = P.IonizationClass("[M+H]+", "a basic site", "a base", (isbn,))
+        # An ISBN-10 whose check digit is 10, written X.
+        isbn_10 = P.Citation("B. Author, A book (1990).", isbn="0-8044-2957-X")
+        older = P.IonizationClass("[M+Na]+", "an oxygen", "a polar", (isbn_10,))
 
-        assert P.ionization_class_problems(_with(ACID, entry)) == []
+        assert P.ionization_class_problems(_with(ACID, entry, older)) == []
 
     @pytest.mark.parametrize(
         ("entry", "expected"),
@@ -440,6 +443,16 @@ class TestClassTable:
                     (P.Citation("A work", isbn="978-3-95806-596-4"),),
                 ),
                 "'978-3-95806-596-4' is not a valid ISBN",
+            ),
+            (
+                # Its weighted sum leaves 1 over eleven, not 0.
+                P.IonizationClass(
+                    "[M-H]-",
+                    "an acidic hydrogen",
+                    "an acid",
+                    (P.Citation("A work", isbn="0-8044-2952-X"),),
+                ),
+                "'0-8044-2952-X' is not a valid ISBN",
             ),
         ],
     )
