@@ -2213,6 +2213,80 @@ class TestRunFinalization:
 
         assert mocks["finalize"].await_args.args[:2] == ("run-1", "failed")
 
+    @pytest.mark.asyncio
+    async def test_a_failure_the_run_cannot_record_still_reaches_the_caller(self):
+        """The error that ended the run is the one raised, not the write's.
+
+        When the database refuses the run's failure too, the write's error used
+        to take the place of the engine's: a batch caller counted the run by an
+        error about the database, and the engine's own was never logged.
+        """
+        from asyncpg.exceptions import TooManyConnectionsError
+
+        from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+        from mascope_backend.api.new.peak_assignments.service import _assign_sample
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0)])
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, _stage_a_rows()))
+        mocks["matcher"].side_effect = RuntimeError("matcher exploded")
+        mocks["finalize"].side_effect = TooManyConnectionsError(
+            "sorry, too many clients already"
+        )
+
+        # Undecorated: the background-task wrapper words what reaches a batch
+        # caller itself, and would hide which error it was handed.
+        with pytest.raises(RuntimeError, match="matcher exploded"):
+            await _assign_sample(
+                sample_item_id="si-1",
+                config=PeakAssignmentConfig(run_untargeted=False),
+                process_id="proc-1",
+            )
+
+        assert mocks["finalize"].await_args.args[:2] == ("run-1", "failed")
+
+    @pytest.mark.asyncio
+    async def test_a_cancel_the_run_cannot_record_still_cancels(self):
+        """A cancelled run whose end the database refuses is still cancelled:
+        the write's error must not stand in for the CancelledError, or the
+        cancel would stop propagating."""
+        import asyncio
+
+        from asyncpg.exceptions import TooManyConnectionsError
+
+        from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+        from mascope_backend.api.new.peak_assignments.service import assign_sample_peaks
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0)])
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, _stage_a_rows()))
+        mocks["finalize"].side_effect = TooManyConnectionsError(
+            "sorry, too many clients already"
+        )
+        started = asyncio.Event()
+
+        async def _hang(*args, **kwargs):
+            started.set()
+            await asyncio.Event().wait()
+
+        mocks["matcher"].side_effect = _hang
+
+        task = asyncio.create_task(
+            assign_sample_peaks(
+                sample_item_id="si-1",
+                config=PeakAssignmentConfig(run_untargeted=False),
+                independent_transaction=True,
+                user_id=None,
+                process_id="proc-1",
+            )
+        )
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert mocks["finalize"].await_args.args[:2] == ("run-1", "cancelled")
+
 
 class TestResolvedProfile:
     """The chemistry a run searched under is recorded on the run.

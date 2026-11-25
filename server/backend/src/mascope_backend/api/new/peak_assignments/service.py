@@ -24,7 +24,14 @@ from dataclasses import replace
 from datetime import datetime as dt
 from datetime import timezone
 
+from asyncpg.exceptions import (
+    CannotConnectNowError,
+    InsufficientResourcesError,
+    PostgresConnectionError,
+)
 from sqlalchemy import insert, update
+from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.lib.api_features import api_controller_background_task
@@ -197,12 +204,50 @@ async def _adopt_run(peak_assignment_run_id: str) -> PeakAssignmentRun:
     return run
 
 
+#: The waits, in seconds, between attempts at a run's terminal write while the
+#: database refuses a connection. A run whose end is never written stays
+#: non-terminal, and so blocks its sample until the startup reaper or
+#: retention's grace (hours). The refusals seen in practice ("too many clients
+#: already") pass within a minute, so the write is tried for about that long.
+_FINALIZE_RETRY_DELAYS_S = (1, 2, 4, 8, 15, 30)
+
+
+def _is_connection_error(exc: BaseException) -> bool:
+    """Whether ``exc`` says the database could not be reached, not that the
+    write was wrong: the one kind of failure a later attempt can get past.
+
+    A refusal at connect surfaces as asyncpg's own exception, not wrapped by
+    SQLAlchemy (``TooManyConnectionsError`` is an
+    ``InsufficientResourcesError``); one on a live connection is SQLAlchemy's.
+    """
+    if isinstance(exc, DBAPIError) and exc.connection_invalidated:
+        return True
+    return isinstance(
+        exc,
+        (
+            InsufficientResourcesError,
+            CannotConnectNowError,
+            PostgresConnectionError,
+            OperationalError,
+            InterfaceError,
+            PoolTimeoutError,
+            OSError,
+        ),
+    )
+
+
 async def _finalize_run(
     peak_assignment_run_id: str,
     status: str,
     error: str | None = None,
 ) -> None:
     """Mark a run completed/failed with its completion timestamp.
+
+    Retried while the database refuses a connection
+    (:data:`_FINALIZE_RETRY_DELAYS_S`): the failure that ends a run is often
+    that refusal itself, and a run whose end is lost blocks its sample. The
+    timestamp is the run's end, taken before the first attempt, not the moment
+    the database answered again. Any other error is raised at once.
 
     Deliberately not where the run's ``confidence_calibration`` is recorded:
     the ledger is committed in an earlier transaction, so a run interrupted
@@ -211,17 +256,49 @@ async def _finalize_run(
     the rows instead (see :func:`_run_sample_assignment`), so the two cannot
     disagree whatever status the run ends in.
     """
-    async with async_session() as session:
-        await session.execute(
-            update(PeakAssignmentRun)
-            .where(PeakAssignmentRun.peak_assignment_run_id == peak_assignment_run_id)
-            .values(
-                status=status,
-                error=error,
-                peak_assignment_run_utc_completed=dt.now(timezone.utc),
+    completed = dt.now(timezone.utc)
+    for attempt, delay in enumerate((*_FINALIZE_RETRY_DELAYS_S, None), start=1):
+        try:
+            async with async_session() as session:
+                await session.execute(
+                    update(PeakAssignmentRun)
+                    .where(
+                        PeakAssignmentRun.peak_assignment_run_id
+                        == peak_assignment_run_id
+                    )
+                    .values(
+                        status=status,
+                        error=error,
+                        peak_assignment_run_utc_completed=completed,
+                    )
+                )
+                await session.commit()
+            return
+        except Exception as exc:
+            if delay is None or not _is_connection_error(exc):
+                raise
+            runtime.logger.warning(
+                f"Could not mark peak assignment run '{peak_assignment_run_id}' "
+                f"{status} (attempt {attempt}): {exc!r}; retrying in {delay} s"
             )
+            await asyncio.sleep(delay)
+
+
+async def _end_run(peak_assignment_run_id: str, status: str, error: str) -> None:
+    """Finalize a run that ended on an exception, never raising one of its own.
+
+    The handler that calls this re-raises what ended the run: a write that
+    failed too must not take that error's place, as the error it would put
+    there says nothing about the run, and a batch caller counts the run by it.
+    """
+    try:
+        await _finalize_run(peak_assignment_run_id, status, error=error)
+    except Exception as finalize_error:  # noqa: BLE001 - logged, the cause is raised
+        runtime.logger.error(
+            f"Peak assignment run '{peak_assignment_run_id}' could not be marked "
+            f"{status}: {finalize_error!r}. It stays non-terminal until the "
+            "startup reaper or retention reclaims it."
         )
-        await session.commit()
 
 
 @api_controller_background_task(
@@ -560,19 +637,18 @@ async def _assign_sample(
         # task is already cancelled, and a second cancellation arriving during
         # the finalizer's own awaits must not abort the terminal write.
         await asyncio.shield(
-            _finalize_run(
-                run.peak_assignment_run_id, "cancelled", error="Run was cancelled"
-            )
+            _end_run(run.peak_assignment_run_id, "cancelled", "Run was cancelled")
         )
         runtime.logger.info(
             f"Peak assignment run '{run.peak_assignment_run_id}' was cancelled"
         )
         raise
     except Exception as e:
-        await _finalize_run(run.peak_assignment_run_id, "failed", error=str(e))
+        # Logged first, so the cause is on record whatever the write meets.
         runtime.logger.error(
             f"Peak assignment run '{run.peak_assignment_run_id}' failed: {e}"
         )
+        await _end_run(run.peak_assignment_run_id, "failed", str(e))
         raise
 
 
