@@ -40,16 +40,17 @@ where the ion likely comes from, not whether its formula is right.
 A down arrow on a chip says a rule holds the tier down: hover it for the rule
 and what it did, and open the peak for why.
 
-A run imported from another engine can also carry that engine's own tier. The
-ledger's **Show** menu then offers **Engine tier**, which draws the other
-engine's tier as a second, outlined chip beside Mascope's in the same cell, and
-makes the tier chips count and filter by it, with **not stated** for the
-formulas it gave none. Where the two differ, the peak is worth a look: the other
+A run imported from another engine can also carry that engine's own tier and
+level. The ledger's **Show** menu then offers **Engine tier and level**, which
+draws the other engine's tier as a second, outlined chip beside Mascope's in
+the same cell, and its level the same way in the **Level** cell, and makes the
+tier chips count and filter by its tier, with **not stated** for the formulas
+it gave none. Where the two differ, the peak is worth a look: the other
 engine weighs things Mascope's tier does not. An engine tiers only the peaks it
 committed a formula to, so many rows show one chip. Only Mascope's tier is used
 when peaks are rolled up across a batch. A batch import that carried the
-engine's tiers adds the same switch, **Engine tier and level**, and **Engine
-disagrees**, to the *Batch peaks* ledger.
+engine's tiers or levels adds the same switch, and **Engine disagrees**, to the
+*Batch peaks* ledger.
 
 Beside its tier, a peak can carry a role: **reagent** (an ion the ionization
 source made: of its reagent, the air it ionizes or its calibrant, or by
