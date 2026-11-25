@@ -79,13 +79,21 @@ async def sync_environment_field(session: AsyncSession) -> bool:
     writes nothing. Flushes the session first, so a change it holds counts;
     the caller commits.
 
+    The field row is locked before the keys are read. Two writes at once
+    would otherwise each read the committed keys and their own, and the later
+    commit would drop the other's key (or bring a deleted one back). With the
+    lock the second writer waits here until the first commits, and its read
+    of the keys, a new snapshot under READ COMMITTED, holds the first's change.
+
     :param session: An open session.
     :return: Whether the field changed. False too when the field is missing,
         which only a database the migrations did not make lacks.
     """
     await session.flush()
     field = await session.scalar(
-        select(MetadataField).where(MetadataField.key == ENVIRONMENT_FIELD_KEY)
+        select(MetadataField)
+        .where(MetadataField.key == ENVIRONMENT_FIELD_KEY)
+        .with_for_update()
     )
     if field is None:
         return False
