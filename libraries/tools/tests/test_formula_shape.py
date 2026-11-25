@@ -21,6 +21,7 @@ from mascope_tools.composition.heuristic_filter import (
     _plausibility,
     apply_heuristic_rules,
     element_counts,
+    element_ratio_plausibility,
     formula_plausibility,
     rule_element_ratio,
 )
@@ -132,6 +133,13 @@ class TestEachCriterionComesFromTheTable:
             assert formula_plausibility(stuffed) < 0.1
         finally:
             _plausibility.cache_clear()
+
+    def test_the_floor_ends_each_ratio_band(self, monkeypatch):
+        # H/C 20 is far past the extended band's edge of 6: the taper's floor.
+        counts = element_counts("CH20")
+        assert element_ratio_plausibility(counts) == pytest.approx(0.1)
+        monkeypatch.setattr(formula_shape, "PLAUSIBILITY_FLOOR", 0.01)
+        assert element_ratio_plausibility(counts) == pytest.approx(0.01)
 
     def test_the_co_occurrence_caps(self, monkeypatch):
         # Eleven nitrogens beside two each of P and S trip Rule 6's caps.

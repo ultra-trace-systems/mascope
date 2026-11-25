@@ -154,6 +154,11 @@ class TestARadicalIsNoRivalToAMolecule:
         measure_rival_sets([row], self._frames("C5H9O2", "C4H6O3"), V1)
         assert row["provenance"]["candidate_density"] == 2
 
+    def test_a_radicals_set_holds_another_radical_too(self):
+        row = _winner(formula="C5H9O2")
+        measure_rival_sets([row], self._frames("C5H9O2", "C4H7O3"), V1)
+        assert row["provenance"]["candidate_density"] == 2
+
 
 class TestOnePeakOneSet:
     """Verify 1: one peak's density, ``no_close_rival``, 4.15 share and level

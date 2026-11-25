@@ -70,6 +70,7 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     SEPARATED_THROUGH,
     LineGate,
 )
+from mascope_tools.composition import formula_shape
 from mascope_tools.composition import profiles as presets
 from mascope_tools.composition.heuristic_filter import (
     PLAUSIBILITY_FLOOR,
@@ -307,6 +308,14 @@ class TestFiveB:
 
         assert level(row)["level"] == "4a"
         assert "implausible" not in level(row)["evidence"]
+
+    def test_the_floor_is_the_formula_shape_tables(self, monkeypatch):
+        # A recorded plausibility between two floors is implausible under the
+        # higher one only: the level reads the table's floor, not one of its own.
+        row = m0(provenance={"plausibility": 0.05})
+        assert level(row)["level"] == "5b"
+        monkeypatch.setattr(formula_shape, "PLAUSIBILITY_FLOOR", 0.01)
+        assert level(row)["level"] == "4a"
 
     def test_a_refuted_row_still_lists_its_rivals(self):
         row = m0(
