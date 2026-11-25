@@ -63,6 +63,7 @@ def given_readings_rivals(
     heuristics,
     scoring,
     listed: bool,
+    memo: dict | None = None,
 ) -> list[tuple[dict, ReadingRivals]]:
     """The grid's rivals of given readings, as a run's search names a row's.
 
@@ -82,6 +83,9 @@ def given_readings_rivals(
     :param heuristics: The heuristic filter it applies.
     :param scoring: The sample's scoring at its model.
     :param listed: Whether the rows are the lists' rows a run makes of them.
+    :param memo: What the grid held against readings asked before at the
+        same peaks and model (``kept_measurement.kept_grid``), read again
+        here and filled with what is asked now; None asks every one.
     :return: Each row the grid read, with what it held against it.
     """
     mz_by_peak = dict(
@@ -115,18 +119,24 @@ def given_readings_rivals(
         )
     if not asked:
         return []
-    found = rivals_of_readings(
-        peaks[columns],
-        search_config,
-        [reading for _, reading in asked],
-        heuristics,
-        scoring,
-        closed_shell_only=listed,
-    )
+    memo = {} if memo is None else memo
+    asking = (repr(search_config), repr(heuristics), listed)
+    keys = [(asking, reading) for _, reading in asked]
+    missing = list(dict.fromkeys(key for key in keys if key not in memo))
+    if missing:
+        found = rivals_of_readings(
+            peaks[columns],
+            search_config,
+            [reading for _, reading in missing],
+            heuristics,
+            scoring,
+            closed_shell_only=listed,
+        )
+        memo.update(zip(missing, found, strict=True))
     return [
-        (row, rivals)
-        for (row, _), rivals in zip(asked, found, strict=True)
-        if rivals is not None
+        (row, memo[key])
+        for (row, _), key in zip(asked, keys, strict=True)
+        if memo[key] is not None
     ]
 
 
@@ -140,7 +150,7 @@ async def _ask_grid(
     listed: bool,
 ) -> list[tuple[dict, object]] | None:
     """Ask the grid of one ion family's given readings, off the event loop
-    (CPU-bound, as the search is).
+    (CPU-bound, as the search is), through the pass's kept answers.
 
     :return: What ``given_readings_rivals`` returns; None when the grid cannot
         read the family's channel, whose readings are then measured without
@@ -159,6 +169,7 @@ async def _ask_grid(
             heuristics=heuristics,
             scoring=ctx.scoring,
             listed=listed,
+            memo=kept_measurement.kept_grid(ctx),
         )
     except (CompositionFinderException, MechanismNotationError) as exc:
         runtime.logger.warning(
@@ -172,18 +183,16 @@ async def _ask_grid(
 async def measure_given_rivals(ctx, scorer: kept_measurement.Scorer) -> None:
     """Measure the rivals a run's row on each given reading's peak gets.
 
-    Under a run's rules, on the elect stage's rows: the lists' rows a run
-    makes of the readings (``ctx.stage_a``) and the search's
-    (``ctx.stage_b``), each read through the mechanisms its ion's family is
-    read through (``sample_mechanisms.family_mechanisms``). A list's row
-    records what the grid held against it, as a run's does
-    (``engine.record_grid_rivals``), and hands on the grid formulas only its
-    fit could not separate, recorded apart in its set
-    (``rival_set.SeededFrame.fit_only``, MAS-975). The rivals are measured in one seeded
-    pass at the sample's model, kept for the batch's pass as its readings are
-    (``kept_measurement.score_kept``), each placed only on the peaks it was
-    named for (``rival_set.SeededFrame.placed_for``); the judging reads them
-    from ``ctx.rival_frame`` into each row's rival set.
+    On the elect stage's rows, the lists' (``ctx.stage_a``) and the search's
+    (``ctx.stage_b``), each through its ion family's mechanisms
+    (``sample_mechanisms.family_mechanisms``). A list's row records what the
+    grid held against it (``engine.record_grid_rivals``) and hands on the
+    formulas only its fit could not separate (``SeededFrame.fit_only``,
+    MAS-975), as a run's does. The rivals are measured in one seeded pass at
+    the sample's model, placed only on the peaks they were named for; the
+    grid's answers and that pass are kept through the batch's pass
+    (``kept_measurement.kept_grid``, ``score_kept``), and the judging reads
+    ``ctx.rival_frame`` into each row's rival set.
 
     Only on a path that asks a run's rules (``pipeline.Rules.RUN``): a
     person's choice is asked the spectrum's rules alone, which weigh no
