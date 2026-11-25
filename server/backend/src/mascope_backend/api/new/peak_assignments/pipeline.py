@@ -60,6 +60,7 @@ from mascope_backend.api.new.ionization.modes.versions import (
 from mascope_backend.api.new.match.params import default_match_params
 from mascope_backend.api.new.peak_assignments import (
     batch_lines,
+    given_rivals,
     judging_loop,
     kept_measurement,
     model_readers,
@@ -568,6 +569,7 @@ class RunContext:
     # -- score
     fit_by_seed: dict = field(default_factory=dict)
     seeded_frame: judging_loop.SeededFrame | None = None
+    rival_frame: judging_loop.SeededFrame | None = None
     #: The 4.15 shortlists measured after the elect stage: the frame, the
     #: winners' peaks each with its formulas, and what the pass did.
     shortlist: tuple | None = None
@@ -1451,6 +1453,7 @@ async def elect(ctx: RunContext) -> None:
         ctx.seeded is not None
     ):
         await asyncio.to_thread(_elect_given, ctx)
+        await given_rivals.measure_given_rivals(ctx, score_seeds)
     if ctx.path.rules is Rules.SPECTRUM:
         _elect_persons_choice(ctx)
         return
@@ -1796,7 +1799,7 @@ def _judging_for(ctx: RunContext) -> judging_loop.Judging:
         fragment_ladders=fragment_ladders_for(resolved_profile.profile.name),
         rival_frames=rival_set.RivalFrames(
             ctx.stage_a_scored,
-            (ctx.seeded_frame, None if ctx.shortlist is None else ctx.shortlist[0]),
+            (ctx.seeded_frame, ctx.rival_frame, (ctx.shortlist or (None,))[0]),
             base=ctx.model,
             shortlists=None if ctx.shortlist is None else ctx.shortlist[1],
         ),

@@ -102,8 +102,12 @@ async def _elect(threads: dict, ctx) -> tuple[MagicMock, MagicMock]:
     with (
         patch.object(pipeline, "_elect_given", _recording(threads, "given")) as given,
         patch.object(pipeline, "_elect_rows", _recording(threads, "rows")) as rows,
+        patch.object(
+            pipeline.given_rivals, "measure_given_rivals", AsyncMock()
+        ) as rivals,
     ):
         await pipeline.elect(ctx)
+    ctx.rivals = rivals
     return given, rows
 
 
@@ -131,6 +135,9 @@ async def test_given_readings_are_elected_off_the_loop():
     _off_the_loop(threads, "given", "rows")
     given.assert_called_once_with(ctx)
     rows.assert_called_once_with(ctx)
+    # Their rivals are read by the grid on the elected rows, each grid read
+    # off the loop in its own right (``given_rivals.measure_given_rivals``).
+    ctx.rivals.assert_awaited_once_with(ctx, pipeline.score_seeds)
 
 
 @pytest.mark.asyncio

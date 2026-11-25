@@ -224,7 +224,11 @@ def _order(key: tuple) -> tuple[str, str]:
 
 
 async def score_kept(
-    ctx: Any, scorer: Scorer, listed_seeds: Collection[Seed]
+    ctx: Any,
+    scorer: Scorer,
+    listed_seeds: Collection[Seed],
+    *,
+    rivals: Optional[Collection[Seed]] = None,
 ) -> tuple[dict, dict, dict, pd.DataFrame]:
     """The seeded measurement of a stage list pass's given readings
     (``seeded_scoring.score_seeds``), scoring only those the batch's pass has
@@ -241,11 +245,15 @@ async def score_kept(
         peaks its claim stage took.
     :param scorer: The scorer, called with the readings to measure.
     :param listed_seeds: The seeds the sample's lists hold.
+    :param rivals: Measure these instead of the pass's seeds: the rivals of
+        its readings (``pipeline._measure_given_rivals``), counted as
+        ``rivals_scored`` and ``rivals_kept`` beside the readings' counts.
     :return: What the scorer returns for every seed: the ion by seed, the fit
         by ion, the errors by pairing, and the scored frame.
     """
     kept: Optional[KeptMeasurement] = ctx.kept
-    sample, seeds, match_params = ctx.sample, ctx.seeds, ctx.match_params
+    sample, match_params = ctx.sample, ctx.match_params
+    seeds = ctx.seeds if rivals is None else set(rivals)
     listed = set(listed_seeds)
 
     async def measure(chosen: set[Seed]) -> tuple[dict, dict, dict, pd.DataFrame]:
@@ -276,9 +284,14 @@ async def score_kept(
     if missing:
         ion_by_seed, _fits, _errors, scored = await measure(missing)
         _keep(entry, {keys[seed]: ion_by_seed.get(seed) for seed in missing}, scored)
-    kept.counts[sample_item_id] = Counter(
-        readings_scored=len(missing), readings_kept=len(seeds) - len(missing)
-    )
+    if rivals is None:
+        kept.counts[sample_item_id] = Counter(
+            readings_scored=len(missing), readings_kept=len(seeds) - len(missing)
+        )
+    else:
+        kept.counts.setdefault(sample_item_id, Counter()).update(
+            rivals_scored=len(missing), rivals_kept=len(seeds) - len(missing)
+        )
     return _assemble(entry, [keys[seed] for seed in seeds])
 
 

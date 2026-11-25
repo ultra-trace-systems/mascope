@@ -3001,7 +3001,14 @@ the model its fold kept, and a sample neither has assigned at its instrument's w
 its reagent lines' centre. A peak the
 batch ledger already explains is neither searched nor read as a twin. Measuring the
 composition in the other samples does the same: each sample's peak takes the tier an
-assignment run of that sample gives the same reading, not its fit alone. A run finds
+assignment run of that sample gives the same reading, not its fit alone. Its rivals
+are the ones a run weighs: the formulas the search's element ranges hold for the
+peak's mass are scored beside the reading, and those the sample's evidence cannot
+separate from it are measured with it and counted (*rivals left standing*). So on a
+crowded mass the reading is held at *candidate* in every sample, as in the sample the
+search read it in. Where one of the sample's lists holds the ion, its level also
+lists those rivals. The search's reading still reads 5a with *rivals not measured*
+there, as a search's winner does in a run that does not measure its shortlist. A run finds
 such a reading by searching, so it is judged as the search's reading in each sample,
 unless one of that sample's lists holds the ion through that adduct: a run then
 matches it from the list, and it is judged as the list's match. So a reading that
