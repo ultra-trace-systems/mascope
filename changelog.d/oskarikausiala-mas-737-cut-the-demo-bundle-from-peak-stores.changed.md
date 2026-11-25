@@ -9,5 +9,8 @@
   and C6H17NO4 (triethylene glycol's ammonium adduct written as a neutral) are
   gone. 41,425 golden peaks against 42,424 and 17,435 ions against 17,394:
   every row that left or arrived is one of those compounds, and every golden
-  peak the two bundles share keeps its height. 1.4.4 stays registered so a
-  pinned run still resolves.
+  peak the two bundles share keeps its height. The seed now carries the
+  shipped reference lists, so the Docker demo's rebuild reads them as
+  `mascope demo --rebuild` always did, and takes about three times as long;
+  the reproducibility workflow gives it 90 minutes. 1.4.4 stays registered so
+  a pinned run still resolves.
