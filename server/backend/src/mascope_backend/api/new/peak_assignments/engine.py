@@ -24,6 +24,9 @@ from mascope_backend.api.controllers.match.lib.match_score_v2 import ion_scores_
 from mascope_backend.api.controllers.target.lib.compute.target_ions_compute import (
     fit_isotope_names,
 )
+from mascope_backend.api.new.peak_assignments.cut_contenders import (
+    count_untargeted_cut,
+)
 from mascope_backend.api.new.peak_assignments.monoisotopic import (
     monoisotopic_positions,
     monoisotopic_row,
@@ -34,6 +37,7 @@ from mascope_backend.api.new.peak_assignments.row_terms import (
     ROLE_M0,
     ROLE_UNASSIGNED,
     SOURCE_DATABASE,
+    SOURCE_UNTARGETED,
 )
 from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_ASSIGNED,
@@ -1278,6 +1282,9 @@ def cap_alternatives(
     row's own, is not a reading of the row's own ion (``same_ion``) and has no
     entry left in the stored list.
 
+    On an untargeted row it also splits the rivals it cuts into formula-only
+    names and losing contenders (``cut_contenders``).
+
     :param row: The row, whose provenance is updated in place.
     :param entries: The alternatives in the order they rank.
     :param max_alternatives: The run's cap; 0 or None stores none.
@@ -1310,6 +1317,8 @@ def cap_alternatives(
         provenance[RIVALS_PAST_CAP] = int(provenance.get(RIVALS_PAST_CAP) or 0) + len(
             cut
         )
+        if row.get("source") == SOURCE_UNTARGETED:
+            count_untargeted_cut(provenance, entries[cap:], cut)
     return kept or None
 
 

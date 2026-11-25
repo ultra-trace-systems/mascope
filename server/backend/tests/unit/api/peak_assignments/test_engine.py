@@ -14,6 +14,10 @@ import pandas as pd
 import pytest
 
 from mascope_backend.api.controllers.match.lib.match_score_v2 import ion_score_v2
+from mascope_backend.api.new.peak_assignments.cut_contenders import (
+    CONTENDERS_PAST_CAP,
+    FORMULA_ONLY_PAST_CAP,
+)
 from mascope_backend.api.new.peak_assignments.engine import (
     ISOTOPE_FORMULA_LENGTH,
     RIVALS_PAST_CAP,
@@ -2771,6 +2775,9 @@ class TestTheRivalsACapLeavesOut:
 
         assert capped["provenance"][RIVALS_PAST_CAP] == 1
         assert RIVALS_PAST_CAP not in whole["provenance"]
+        # A Stage A row is capped as before the untargeted split.
+        assert FORMULA_ONLY_PAST_CAP not in capped["provenance"]
+        assert CONTENDERS_PAST_CAP not in capped["provenance"]
 
     def test_a_stage_a_row_counts_no_reading_of_its_own_formula_or_ion(self):
         # Past the cap of one: the winner's own formula through another
@@ -2849,6 +2856,128 @@ class TestTheRivalsACapLeavesOut:
         ]
         assert capped["provenance"][RIVALS_PAST_CAP] == 2
         assert RIVALS_PAST_CAP not in whole["provenance"]
+        # Both cut entries are formula-only: no pass measured them.
+        assert capped["provenance"][FORMULA_ONLY_PAST_CAP] == 2
+        assert CONTENDERS_PAST_CAP not in capped["provenance"]
+        assert FORMULA_ONLY_PAST_CAP not in whole["provenance"]
+
+    def test_a_stage_b_row_tells_a_cut_contender_from_a_cut_shortlist_name(self):
+        # Two readings on one peak: the loser, another formula's line there,
+        # is a contender with its own fit; the winner's shortlist names one
+        # more formula. A cap of none cuts both.
+        winner = {
+            "mz": 100.1,
+            "formula": "C5H10O2",
+            "ion": "C5H11O2+",
+            "isotope_label": "M0",
+            "ionization_mechanism": "[M+H]+",
+            "mz_error_ppm": 0.5,
+            "intensity_error": 0.05,
+            "other_candidates": "C6H14N",
+        }
+        loser = {
+            "mz": 100.1,
+            "formula": "C4H6O3",
+            "ion": "C4H7O3+",
+            "isotope_label": "13C",
+            "ionization_mechanism": "[M+H]+",
+            "mz_error_ppm": 20.0,
+            "intensity_error": 0.5,
+        }
+        peaks = pd.DataFrame(
+            {"sample_peak_id": ["pA"], "mz": [100.1], "intensity": [5000.0]}
+        )
+
+        [row] = untargeted_matches_to_peak_assignments(
+            pd.DataFrame([winner, loser]),
+            peaks,
+            "sample1",
+            "run1",
+            CANDIDATE,
+            ASSIGNED,
+            max_alternatives=0,
+        )
+
+        assert row["assigned_formula"] == "C5H10O2"
+        assert row["alternatives"] is None
+        provenance = row["provenance"]
+        assert provenance[RIVALS_PAST_CAP] == 2
+        assert provenance[FORMULA_ONLY_PAST_CAP] == 1
+        assert provenance[CONTENDERS_PAST_CAP] == [formula_identity("C4H6O3")]
+
+
+class TestTheUntargetedCutIsSplitByWhatItsEntriesMeasure:
+    """On an untargeted row the cap tells the rivals it cuts apart: a losing
+    contender carries its fit and its isotope label, a shortlist name
+    neither. Rows of every other source are capped as before."""
+
+    def _entries(self):
+        return [
+            {"assigned_formula": "C7H16O5", "fit_score": 0.5, "isotope_label": "M0"},
+            # Formula-only.
+            {"assigned_formula": "C8H8O4"},
+            # A contender: an isotope line of another reading.
+            {"assigned_formula": "C4H6O3", "fit_score": 0.4, "isotope_label": "13C"},
+            # A contender also named by the shortlist: a contender.
+            {"assigned_formula": "C9H10O3", "fit_score": 0.3, "isotope_label": "M0"},
+            {"assigned_formula": "C9H10O3"},
+            # A fit with no label, or a label with no fit, measures nothing.
+            {"assigned_formula": "C3H6O3", "fit_score": 0.3},
+            {"assigned_formula": "C6H10O5", "isotope_label": "M0"},
+            # A measured reading of the row's own ion, and its own formula
+            # through another channel: no rivals at all.
+            {
+                "assigned_formula": "C5H8O5",
+                "same_ion": True,
+                "fit_score": 0.9,
+                "isotope_label": "M0",
+            },
+            {"assigned_formula": "H12C6O6", "fit_score": 0.8, "isotope_label": "M0"},
+        ]
+
+    def test_the_formula_only_and_the_contenders_are_counted_apart(self):
+        row = {"assigned_formula": "C6H12O6", "source": "untargeted", "provenance": {}}
+
+        cap_alternatives(row, self._entries(), 1)
+
+        provenance = row["provenance"]
+        assert provenance[RIVALS_PAST_CAP] == 5
+        assert provenance[FORMULA_ONLY_PAST_CAP] == 3
+        assert provenance[CONTENDERS_PAST_CAP] == ["C4H6O3", "C9H10O3"]
+
+    def test_they_accumulate_over_the_cuts_a_row_meets(self):
+        row = {
+            "assigned_formula": "C6H12O6",
+            "source": "untargeted",
+            "provenance": {
+                RIVALS_PAST_CAP: 2,
+                FORMULA_ONLY_PAST_CAP: 1,
+                CONTENDERS_PAST_CAP: ["C2H4O2", "C9H10O3"],
+            },
+        }
+
+        cap_alternatives(row, self._entries(), 1)
+
+        provenance = row["provenance"]
+        assert provenance[RIVALS_PAST_CAP] == 7
+        assert provenance[FORMULA_ONLY_PAST_CAP] == 4
+        assert provenance[CONTENDERS_PAST_CAP] == ["C2H4O2", "C4H6O3", "C9H10O3"]
+
+    def test_a_cut_of_contenders_alone_counts_no_formula_only_one(self):
+        row = {"assigned_formula": "C6H12O6", "source": "untargeted", "provenance": {}}
+
+        cap_alternatives(row, self._entries()[:3], 2)
+
+        assert row["provenance"][RIVALS_PAST_CAP] == 1
+        assert FORMULA_ONLY_PAST_CAP not in row["provenance"]
+        assert row["provenance"][CONTENDERS_PAST_CAP] == ["C4H6O3"]
+
+    def test_a_row_of_another_source_is_capped_as_before(self):
+        row = {"assigned_formula": "C6H12O6", "source": "database", "provenance": {}}
+
+        cap_alternatives(row, self._entries(), 1)
+
+        assert row["provenance"] == {RIVALS_PAST_CAP: 5}
 
 
 class TestStageACompetesIonsNotFormulas:

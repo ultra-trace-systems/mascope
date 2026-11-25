@@ -58,6 +58,9 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
+from mascope_backend.api.new.peak_assignments.cut_contenders import (
+    CONTENDERS_PAST_CAP,
+)
 from mascope_backend.api.new.peak_assignments.engine import (
     MEASURED_SHORTLIST,
     _float_or_none,
@@ -104,6 +107,13 @@ RIVALS_KEPT = 10
 #: the identification level reads and the arbitration does not. As many are
 #: named as of the rivals, the rest counted under ``fit_tied_unlisted``.
 FIT_TIED = "fit_tied"
+
+#: The block's count, on an untargeted winner, of the losing contenders the
+#: cap on its stored alternatives cut (``cut_contenders.CONTENDERS_PAST_CAP``) that no
+#: frame measured on its peak, so that the set neither names nor counts them.
+#: The identification level counts them as rivals not tested. Absent where
+#: the set holds every one.
+CONTENDERS_NOT_HELD = "contenders_not_held"
 
 #: Where a rival was measured: Stage A's frame, the known set's ions.
 FRAME_KNOWN = "known_set"
@@ -509,6 +519,24 @@ def _shortlist_record(formulas: tuple[str, ...], on_peak: list[Reading]) -> list
     return record
 
 
+def _contenders_not_held(provenance: dict, named: list[Reading]) -> int:
+    """How many of the contenders a row's cap cut (``cut_contenders.CONTENDERS_PAST_CAP``)
+    the frames measured nowhere on its peak.
+
+    A contender the frames measured there is in the set: one of its named
+    rivals, one counted past them under ``rivals_unlisted`` or under
+    ``fit_tied_unlisted``, or a reading of the row's own ion, which is no
+    rival. One they did not - a reading whose line the seeded re-score paired
+    to no peak or to another one, or whose channel the run could not seed - is
+    one the set cannot vouch for.
+    """
+    cut = provenance.get(CONTENDERS_PAST_CAP)
+    if not isinstance(cut, list):
+        return 0
+    measured = {reading.key for reading in named}
+    return sum(1 for key in cut if formula_identity(key) not in measured)
+
+
 def measure_rival_sets(
     rows: list[dict], frames: RivalFrames, model: MeasurementModel
 ) -> dict:
@@ -587,6 +615,9 @@ def measure_rival_sets(
             provenance[RIVAL_SET]["fit_tied_unlisted"] = max(
                 0, len(fit_tied) - RIVALS_KEPT
             )
+        not_held = _contenders_not_held(provenance, named)
+        if not_held:
+            provenance[RIVAL_SET][CONTENDERS_NOT_HELD] = not_held
         if source == SOURCE_UNTARGETED and formulas is not None:
             record = _shortlist_record(formulas, on_peak)
             provenance[MEASURED_SHORTLIST] = record

@@ -16,9 +16,14 @@ import pandas as pd
 import pytest
 
 from mascope_backend.api.new.peak_assignments import judging_loop, rival_set
+from mascope_backend.api.new.peak_assignments.cut_contenders import (
+    CONTENDERS_PAST_CAP,
+    FORMULA_ONLY_PAST_CAP,
+)
 from mascope_backend.api.new.peak_assignments.engine import (
     GRID_RIVALS,
     MEASURED_SHORTLIST,
+    RIVALS_PAST_CAP,
     invert_matches_to_peak_assignments,
 )
 from mascope_backend.api.new.peak_assignments.identification_level import (
@@ -27,6 +32,7 @@ from mascope_backend.api.new.peak_assignments.identification_level import (
     shortlist,
 )
 from mascope_backend.api.new.peak_assignments.rival_set import (
+    CONTENDERS_NOT_HELD,
     FRAME_KNOWN,
     FRAME_SEARCH,
     RIVAL_SET,
@@ -1049,3 +1055,102 @@ class TestASearchReadingsLines:
         assert row["provenance"]["candidate_density"] == 1
         [rival] = row["provenance"][RIVAL_SET]["rivals"]
         assert (rival["formula"], rival["mz_error_ppm"]) == ("C7H8O2", -0.4)
+
+
+def _level(row: dict) -> dict:
+    return level_of(
+        row, [], LevelContext(neutral_channels={}, notation_by_id={"im-h": "[M+H]+"})
+    )
+
+
+class TestTheContendersTheCapCut:
+    """An untargeted winner's losing contenders the cap on its stored
+    alternatives cut (``cut_contenders.CONTENDERS_PAST_CAP``) are rivals of its set
+    where a frame measured them on the peak: the level tests them there, or
+    counts them once past the set's ten. One no frame measured the set cannot
+    vouch for, and it records how many (MAS-1185)."""
+
+    def test_cut_contenders_the_set_measured_are_tested_and_read_4(self):
+        search = SeededFrame(
+            pd.DataFrame(
+                [
+                    _line("w", "C5H10O2", "p1", 0.9),
+                    _line("a", "C4H6O3", "p1", 0.3),
+                    _line("b", "C7H16O5", "p1", 0.2, mz=200.0),
+                ]
+            ),
+            {
+                ("C5H10O2", "im-h"): "w",
+                ("C4H6O3", "im-h"): "a",
+                ("C7H16O5", "im-h"): "b",
+            },
+        )
+        row = _winner()
+        row["alternatives"] = None
+        row["provenance"] |= {
+            RIVALS_PAST_CAP: 2,
+            CONTENDERS_PAST_CAP: ["C4H6O3", "C7H16O5"],
+        }
+        frames = RivalFrames(None, (search,), base=V1, shortlists={"p1": ()})
+
+        measure_rival_sets([row], frames, V1)
+
+        record = row["provenance"][RIVAL_SET]
+        assert CONTENDERS_NOT_HELD not in record
+        assert shortlist(row)[1] == 0
+        assert _level(row)["level"].startswith("4")
+        assert row["provenance"][RIVALS_PAST_CAP] == 2
+
+    def test_a_cut_contender_whose_line_the_gate_dropped_is_not_held(self):
+        # The finder put C6H8O3's line on p1, the seeded re-score paired it
+        # to no peak: the set does not hold it, and the level counts it.
+        ungated = _line("c", "C6H8O3", "p1", 0.88)
+        ungated["sample_peak_intensity"] = 0.0
+        search = SeededFrame(
+            pd.DataFrame([_line("w", "C5H10O2", "p1", 0.9), ungated]),
+            {("C5H10O2", "im-h"): "w", ("C6H8O3", "im-h"): "c"},
+        )
+        row = _winner()
+        row["provenance"] |= {RIVALS_PAST_CAP: 1, CONTENDERS_PAST_CAP: ["C6H8O3"]}
+        frames = RivalFrames(None, (search,), base=V1, shortlists={"p1": ()})
+
+        measure_rival_sets([row], frames, V1)
+
+        assert row["provenance"][RIVAL_SET][CONTENDERS_NOT_HELD] == 1
+        level = _level(row)
+        assert level["level"] == "5a"
+        assert level["rivals_unlisted"] == 1
+        assert "one rival past the stored shortlist, not tested" in level["evidence"]
+
+    def test_cut_contenders_past_the_sets_ten_are_counted_once(self):
+        # Twelve measured rivals, the cap cut the two the set counts past its
+        # ten and one formula-only entry: three unlisted, not five.
+        others = [
+            "C4H6O3", "C6H14O", "C7H16O5", "C8H8O4", "C5H10O5", "C3H6O3",
+            "C7H8O3", "C6H10O5", "C4H8O4", "C5H8O4", "C9H10O3", "C4H8O2",
+        ]  # fmt: skip
+        fits = {formula: round(0.6 - 0.04 * n, 2) for n, formula in enumerate(others)}
+        search = SeededFrame(
+            pd.DataFrame(
+                [_line("w", "C5H10O2", "p1", 0.9)]
+                + [_line(f"o{n}", f, "p1", fits[f]) for n, f in enumerate(others)]
+            ),
+            {("C5H10O2", "im-h"): "w"}
+            | {(f, "im-h"): f"o{n}" for n, f in enumerate(others)},
+        )
+        row = _winner()
+        row["provenance"] |= {
+            RIVALS_PAST_CAP: 3,
+            FORMULA_ONLY_PAST_CAP: 1,
+            CONTENDERS_PAST_CAP: sorted(others[10:]),
+        }
+        frames = RivalFrames(None, (search,), base=V1, shortlists={"p1": ()})
+
+        measure_rival_sets([row], frames, V1)
+
+        record = row["provenance"][RIVAL_SET]
+        assert record["rivals_unlisted"] == 2
+        assert CONTENDERS_NOT_HELD not in record
+        rivals, unlisted = shortlist(row)
+        assert len(rivals) == 10 and unlisted == 3
+        assert _level(row)["rivals_unlisted"] == 3
