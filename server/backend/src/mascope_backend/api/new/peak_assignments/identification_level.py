@@ -49,7 +49,10 @@ Each committed monoisotopic row is read in order:
   every other ion the run measured on the peak, at the model its caps read.
   A Stage A row's is complete where the formula search measured its peak
   (``engine.GRID_RIVALS``); one the search did not measure was competed
-  against the lists' formulas alone. An untargeted winner's is complete only
+  against the lists' formulas alone. There the set also holds the grid's
+  formulas the fit alone could not separate from the reading, which only
+  their plausibility held back (``rival_set.FIT_TIED``), and the ions the
+  search's candidate limit left unscored are counted as rivals not tested. An untargeted winner's is complete only
   where step 4.15 measured its formula-only shortlist
   (``engine.MEASURED_SHORTLIST``), which is off by default; a row without one
   reads 5a with "rivals not measured" and the lift "measure the shortlist",
@@ -108,7 +111,8 @@ Each row records its level under :data:`IDENTIFICATION_LEVEL`: ``level``,
 ``evidence`` (one line naming what earned it), ``lift`` (written from the
 tests it is missing), the ``facts`` read, each named with the record it was
 read from, the ``rivals``, each with the ``test`` that excluded it or
-``open``, and ``rivals_unlisted``. The run records the rules' version
+``open``, and ``rivals_unlisted``, of which ``rivals_unscored`` are the ions
+the formula search did not score. The run records the rules' version
 (``level_rules_version``) and the count per level with its tiering record.
 
 The rules are versioned (:data:`LEVEL_RULES_VERSION`) and bumped when a fact
@@ -146,7 +150,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     ion_identity,
 )
 from mascope_backend.api.new.peak_assignments.mass_gate import SpectrumLines
-from mascope_backend.api.new.peak_assignments.rival_set import RIVAL_SET
+from mascope_backend.api.new.peak_assignments.rival_set import FIT_TIED, RIVAL_SET
 from mascope_backend.api.new.peak_assignments.row_terms import (
     ROLE_ISO_CHILD,
     ROLE_M0,
@@ -169,6 +173,7 @@ from mascope_backend.api.new.peak_assignments.tiering import (
 from mascope_reference.peaklist import ONE_STRUCTURE
 from mascope_tools.composition.arbitration import tie_gap as arbitration_tie_gap
 from mascope_tools.composition.heuristic_filter import (
+    ISOTOPE_CANDIDATE_LIMIT,
     PLAUSIBILITY_FLOOR,
     element_counts,
     formula_plausibility,
@@ -189,8 +194,11 @@ from mascope_tools.composition.profiles import (
 #: it. 2 (MAS-1072): the shortlist is the row's rival set, the rivals its
 #: density counts, at the model its caps read. 3 (MAS-939): a row at 4a reads
 #: 2b on a cited list's one-structure mark and 3b on its channel's class, and
-#: its lift names a context list for the run's chemistry.
-LEVEL_RULES_VERSION = 3
+#: its lift names a context list for the run's chemistry. 4 (MAS-975): a list
+#: row's shortlist holds the grid formulas its fit alone could not separate,
+#: which only plausibility held back, and its unlisted rivals count the ions
+#: the formula search left unscored past its candidate limit.
+LEVEL_RULES_VERSION = 4
 
 #: The provenance key a committed row's level is recorded under.
 IDENTIFICATION_LEVEL = "identification_level"
@@ -413,22 +421,7 @@ def shortlist(row: dict) -> tuple[list[Rival] | None, int]:
         return None, 0
     against = _fit(record.get("fit_score"))
     own = formula_identity(row.get("assigned_formula"))
-    found = [
-        Rival(
-            str(entry["formula"]),
-            entry.get("ion_formula"),
-            _fit(entry.get("fit_score")),
-            against,
-            _fit(entry.get("mz_error_ppm")),
-            bool(entry.get("monoisotopic", True)),
-            True,
-            RIVAL_SET,
-        )
-        for entry in record.get("rivals") or []
-        if isinstance(entry, dict)
-        and entry.get("formula")
-        and formula_identity(entry["formula"]) != own
-    ]
+    found = _set_rivals(record, against, own)
     found += [
         Rival(str(entry["formula"]), None, None, against, None, True, False, RIVAL_SET)
         for entry in measured or []
@@ -465,6 +458,7 @@ def shortlist(row: dict) -> tuple[list[Rival] | None, int]:
             )
         )
     unlisted = int(record.get("rivals_unlisted") or 0)
+    unlisted += int(record.get("fit_tied_unlisted") or 0) + unscored_rivals(row)
     if source == SOURCE_UNTARGETED:
         unlisted += int(provenance.get(RIVALS_PAST_CAP) or 0)
     winner_ion = ion_identity(row.get("ion_formula"))
@@ -477,6 +471,40 @@ def shortlist(row: dict) -> tuple[list[Rival] | None, int]:
         if held is None or _rank(rival) > _rank(held):
             best[key] = rival
     return sorted(best.values(), key=lambda r: (-_rank(r), r.formula)), unlisted
+
+
+def _set_rivals(record: dict, against: float | None, own: str | None) -> list[Rival]:
+    """The rivals a row's rival set names: those the arbitration read, and
+    those the search named by their fit alone (``rival_set.FIT_TIED``), which
+    only plausibility held back and so are rivals all the same."""
+    return [
+        Rival(
+            str(entry["formula"]),
+            entry.get("ion_formula"),
+            _fit(entry.get("fit_score")),
+            against,
+            _fit(entry.get("mz_error_ppm")),
+            bool(entry.get("monoisotopic", True)),
+            True,
+            name,
+        )
+        for key, name in (("rivals", RIVAL_SET), (FIT_TIED, f"{RIVAL_SET}.{FIT_TIED}"))
+        for entry in record.get(key) or []
+        if isinstance(entry, dict)
+        and entry.get("formula")
+        and formula_identity(entry["formula"]) != own
+    ]
+
+
+def unscored_rivals(row: dict) -> int:
+    """How many ions of a list row's peak the formula search left unscored,
+    past its candidate limit (``engine.GRID_RIVALS``, ``unscored``): rivals
+    whose fit nothing measured, so none of them is excluded."""
+    grid = _provenance(row).get(GRID_RIVALS)
+    if row.get("source") != SOURCE_DATABASE or not isinstance(grid, dict):
+        return 0
+    count = grid.get("unscored")
+    return count if isinstance(count, int) and count > 0 else 0
 
 
 def _rank(rival: Rival) -> float:
@@ -1070,6 +1098,50 @@ def _open_lift(row: dict, open_rivals: Sequence[dict], ctx: LevelContext) -> str
     return "; ".join(parts)
 
 
+def _five_a(
+    row: dict, tested: Sequence[dict], unlisted: int, unscored: int, ctx: LevelContext
+) -> tuple[list[str], list[str]] | None:
+    """5a's statement over a measured shortlist: its evidence clauses and its
+    lifts, or None where every rival was tested and excluded.
+
+    :param unlisted: The rivals the row knows of and does not list, the
+        unscored among them.
+    :param unscored: Of those, the ones the formula search left unscored
+        (:func:`unscored_rivals`).
+    """
+    open_rivals = [entry for entry in tested if entry["test"] == OPEN]
+    if not open_rivals and not unlisted:
+        return None
+    clauses = []
+    if open_rivals:
+        named = ", ".join(entry["formula"] for entry in open_rivals[:3])
+        more = len(open_rivals) - 3
+        clauses.append(
+            f"{_plural(len(open_rivals), 'rival')} left open: {named}"
+            + (f" and {more} more" if more > 0 else "")
+        )
+    past = unlisted - unscored
+    if past:
+        clauses.append(
+            f"{_plural(past, 'rival')} past the stored shortlist, not tested"
+        )
+    if unscored:
+        clauses.append(
+            f"{_plural(unscored, 'candidate')} of the formula search past its "
+            f"limit of {ISOTOPE_CANDIDATE_LIMIT} per peak, not scored"
+        )
+    if len(open_rivals) < len(tested):
+        clauses.append(_tested_summary(tested))
+    lifts = []
+    if open_rivals:
+        lifts.append(_open_lift(row, open_rivals, ctx))
+    if past:
+        lifts.append("measure the rivals past the stored shortlist")
+    if unscored:
+        lifts.append("score the formula search's candidates past its limit")
+    return clauses, [part for part in lifts if part]
+
+
 def level_of(row: dict, own_lines: Sequence[dict], ctx: LevelContext) -> dict:
     """The level of one committed monoisotopic row (module docstring).
 
@@ -1107,29 +1179,10 @@ def _level(
     if rivals is None:
         five_a = (["rivals not measured"], ["measure the shortlist"])
     else:
-        open_rivals = [entry for entry in tested if entry["test"] == OPEN]
-        if open_rivals or unlisted:
-            named = ", ".join(entry["formula"] for entry in open_rivals[:3])
-            more = len(open_rivals) - 3
-            clauses = []
-            if open_rivals:
-                clauses.append(
-                    f"{_plural(len(open_rivals), 'rival')} left open: {named}"
-                    + (f" and {more} more" if more > 0 else "")
-                )
-            if unlisted:
-                clauses.append(
-                    f"{_plural(unlisted, 'rival')} past the stored shortlist, "
-                    "not tested"
-                )
-            if len(open_rivals) < len(tested):
-                clauses.append(_tested_summary(tested))
-            lifts = []
-            if open_rivals:
-                lifts.append(_open_lift(row, open_rivals, ctx))
-            if unlisted:
-                lifts.append("measure the rivals past the stored shortlist")
-            five_a = (clauses, [part for part in lifts if part])
+        unscored = unscored_rivals(row)
+        if unscored:
+            record["rivals_unscored"] = unscored
+        five_a = _five_a(row, tested, unlisted, unscored, ctx)
     if evidence:
         if five_a is not None:
             evidence.append(f"it earns 5a too: {'; '.join(five_a[0])}")

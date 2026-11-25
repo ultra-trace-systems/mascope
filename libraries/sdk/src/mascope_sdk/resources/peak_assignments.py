@@ -750,10 +750,16 @@ class PeakAssignmentsResource(BaseResource):
         evidence could not separate it from the row, and the row's own fit, at
         the model the run's caps read (``model_version``). The row's
         ``confidence``, ``is_tie`` and ``candidate_density`` are read off it.
+        On a list hit the set may also hold ``fit_tied``: the search's
+        formulas whose fit ties the hit's and that only their plausibility put
+        behind it, measured as the rivals are and read by the identification
+        level alone (``fit_tied_unlisted`` counts those past the first ten).
         A list hit of a run that searched carries ``provenance.grid_rivals``:
         the closed-shell formulas the search could not separate from it on its
-        own scale, the first few by name, its fit on that scale, and whether
-        the searched element box holds its formula. Where a rival cleared the
+        own scale, the first few by name, its fit on that scale, how many
+        rivals only plausibility held back (``fit_tied``), how many of the
+        window's ions its candidate limit left unscored (``unscored``), and
+        whether the searched element box holds its formula. Where a rival cleared the
         list's prior and the list hit kept its peak all the same, the block
         names that rival under ``held_against``, with ``why``:
         ``unexplained_lines`` (the rival leaves the hit's own tracking isotope

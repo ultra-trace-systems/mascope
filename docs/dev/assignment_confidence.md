@@ -743,7 +743,12 @@ says which statement leads the row, not that one kind of evidence outranks anoth
   anchor whose formula holds at 4, co-varying with it, takes the anchor's formula plus its
   units, since each of its rivals would need an anchor the anchor's own tests excluded (5.8d);
   its letter then follows the split, as on any row. A rival held back only by a prior (3.6)
-  or by plausibility is not excluded; it stays listed. `no_close_rival` is a different
+  or by plausibility is not excluded; it stays listed. On a list's row the formula search
+  names such a rival too: the grid's formulas the fit alone could not separate from the
+  reading are measured into the row's rival set apart from those the evidence could not
+  (`rival_set.fit_tied`, MAS-975), which the density and the arbitration do not read; and
+  the grid's ions its candidate limit (64 per peak, nearest in mass first) left unscored
+  count as rivals not tested (`rivals_unscored`). `no_close_rival` is a different
   statement - that the peak's evidence separated the winner, not that each rival failed a
   test - so the mapping reads the shortlist, not that reason.
 - **4b, ion formula, split open** (5.8). The ion's formula holds, but the ion reads as more

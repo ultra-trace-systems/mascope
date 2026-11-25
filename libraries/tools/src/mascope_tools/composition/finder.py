@@ -128,6 +128,10 @@ class ReadingRivals:
         cleared the list's prior and still did not take it, with why
         (:data:`HELD_BY_LINES` or :data:`HELD_BY_LIBRARY`); None where no rival
         cleared the prior.
+    :param fit_tied: The grid's formulas only their plausibility separated
+        from the reading (``arbitration.unseparated``, ``by_fit``), named as
+        :attr:`rivals` are and counted in no density.
+    :param unscored: The window's ions the candidate limit left unscored.
     """
 
     density: int
@@ -136,6 +140,8 @@ class ReadingRivals:
     candidates: int
     in_grid: bool
     held_against: dict | None = None
+    fit_tied: tuple[dict, ...] = ()
+    unscored: int = 0
 
 
 #: A result row that says a list reading kept its peak. The peak belongs to
@@ -796,16 +802,9 @@ def _score_reading(
         peaks_df,
         scoring,
     )
-    counted = unseparated(
-        [
-            {
-                "formula": candidate.get("formula"),
-                "fit_score": candidate.get("isotopic_pattern_score"),
-            }
-            for candidate in scored
-        ],
-        around=own["formula"],
-    )
+    fits = [(c.get("formula"), c.get("isotopic_pattern_score")) for c in scored]
+    counted = unseparated(fits, around=own["formula"])
+    tied = unseparated(fits, around=own["formula"], by_fit=True)
     best_by_formula: dict[str, dict] = {}
     own_fit = 0.0
     for candidate in scored:
@@ -815,28 +814,37 @@ def _score_reading(
         best_by_formula.setdefault(str(candidate.get("formula")), candidate)
     rivals = ReadingRivals(
         density=len(counted),
-        rivals=tuple(
-            {
-                "formula": formula,
-                "ion": best_by_formula[formula].get("ion"),
-                "ionization_mechanism": best_by_formula[formula].get(
-                    "ionization_mechanism"
-                ),
-                "fit_score": float(
-                    best_by_formula[formula].get("isotopic_pattern_score") or 0.0
-                ),
-                "mz_error_ppm": best_by_formula[formula].get("composition_error_ppm"),
-            }
-            for formula in counted
-            if formula != own["formula"] and formula in best_by_formula
-        ),
+        rivals=_named_rivals(counted, best_by_formula, own["formula"]),
         fit_score=own_fit,
         candidates=len(grid_candidates),
         in_grid=admits(config, own["counts"]),
+        fit_tied=_named_rivals(
+            [f for f in tied if f not in counted], best_by_formula, own["formula"]
+        ),
+        # One ion is one hypothesis, however many splits of it the window held.
+        unscored=len(_ions(grid_candidates) - _ions(scored)),
     )
     return _ScoredReading(
         own=own, scored=scored, isotopes=isotopes, found=found, rivals=rivals
     )
+
+
+def _named_rivals(formulas, best: dict, own: str) -> tuple[dict, ...]:
+    """Rivals as :class:`ReadingRivals` names them, each by its best reading."""
+    return tuple(
+        {
+            "formula": formula,
+            **{key: best[formula].get(key) for key in ("ion", "ionization_mechanism")},
+            "fit_score": float(best[formula].get("isotopic_pattern_score") or 0.0),
+            "mz_error_ppm": best[formula].get("composition_error_ppm"),
+        }
+        for formula in formulas
+        if formula != own and formula in best
+    )
+
+
+def _ions(candidates: list) -> set:
+    return {utils.ion_identity(candidate.get("ion")) for candidate in candidates}
 
 
 @dataclass(frozen=True)

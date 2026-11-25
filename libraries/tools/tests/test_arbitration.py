@@ -13,7 +13,9 @@ from mascope_tools.composition.arbitration import (
     arbitrate_candidates,
     fdr_curve,
     threshold_at_fdr,
+    unseparated,
 )
+from mascope_tools.composition.heuristic_filter import formula_plausibility
 
 
 def test_empty_returns_empty():
@@ -172,3 +174,15 @@ def test_fdr_curve_tie_is_conservative():
     # wrong ordered first within the tie -> after 1 accepted, FDR 1.0
     assert pts[0].fdr == pytest.approx(1.0)
     assert pts[1].fdr == pytest.approx(0.5)
+
+
+def test_unseparated_by_fit_names_a_rival_only_plausibility_separates():
+    # Equal fits; the rival's plausibility (0.5) puts its evidence at half the
+    # reading's, far past the tie. By the fit alone the two tie.
+    assert formula_plausibility("C2H4N8O2") == pytest.approx(0.5)
+    candidates = [("C6H12O6", 0.9), ("C2H4N8O2", 0.9), ("C7H16O5", 0.5)]
+    assert unseparated(candidates, around="C6H12O6") == ["C6H12O6"]
+    assert unseparated(candidates, around="C6H12O6", by_fit=True) == [
+        "C2H4N8O2",
+        "C6H12O6",
+    ]

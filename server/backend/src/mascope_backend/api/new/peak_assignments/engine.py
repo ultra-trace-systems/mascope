@@ -2221,6 +2221,10 @@ def record_grid_rivals(rows: list[dict], measured: list) -> dict:
             ],
             "fit_score": round(float(found.fit_score), 4),
             "grid_candidates": found.candidates,
+            # The rivals only plausibility held back, which the run measures
+            # into the set apart, and the ions the candidate limit left unscored.
+            "fit_tied": len(found.fit_tied),
+            "unscored": found.unscored,
             # Uniqueness is relative to the searched box: a formula outside it
             # only meets the rivals the box builds.
             "in_grid": found.in_grid,
@@ -2310,6 +2314,10 @@ class ListElection:
     :param rivals_by_peak: The grid's rivals of each kept list hit, by its
         peak, which the run measures with the hit's other rivals
         (``rival_set.named_rival_seeds``).
+    :param fit_tied_by_peak: The grid's formulas each kept list hit's fit
+        alone could not separate and its evidence did, by its peak
+        (``finder.ReadingRivals.fit_tied``): measured into its rival set
+        apart, for the identification level (``rival_set.fit_tied_seeds``).
     """
 
     stage_a: list[dict]
@@ -2318,6 +2326,7 @@ class ListElection:
     displaced: dict[str, tuple[dict, dict]]
     summary: dict
     rivals_by_peak: dict[str, tuple[dict, ...]] = field(default_factory=dict)
+    fit_tied_by_peak: dict[str, tuple[dict, ...]] = field(default_factory=dict)
 
 
 def settle_list_election(
@@ -2394,6 +2403,11 @@ def settle_list_election(
             str(row["sample_peak_id"]): found.rivals
             for row, found in zip(kept_rows, kept_measured, strict=True)
             if found is not None and found.rivals
+        },
+        fit_tied_by_peak={
+            str(row["sample_peak_id"]): found.fit_tied
+            for row, found in zip(kept_rows, kept_measured, strict=True)
+            if found is not None and found.fit_tied
         },
         summary={
             "measured": recorded["measured"] + len(displaced),

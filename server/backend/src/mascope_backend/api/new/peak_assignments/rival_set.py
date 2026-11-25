@@ -38,6 +38,13 @@ The readers then read the set and none measures its own:
 - the identification level's exclusions (``identification_level.shortlist``),
   which read the rivals the set names, at the set's fit.
 
+The level reads more of the set than those. A list reading's grid formulas
+that its fit alone could not separate, held back only by their plausibility
+(``finder.ReadingRivals.fit_tied``), are measured in the same seeded frame
+and recorded apart, under ``fit_tied`` (MAS-975, #3285): a rival plausibility
+holds back is not excluded, so the level lists it, open. The arbitration and
+the density do not read them, so no confidence, density or tier moves by them.
+
 Which candidates a reading competes against is still the search's to say: it
 names a rival where its own ranking could not separate the two, at the v1
 model it ranks at (MAS-982 keeps the ranking at v1). What each of them
@@ -93,6 +100,11 @@ RIVAL_SET = "rival_set"
 #: under ``rivals_unlisted``.
 RIVALS_KEPT = 10
 
+#: The block's list of the rivals the search named by their fit alone, which
+#: the identification level reads and the arbitration does not. As many are
+#: named as of the rivals, the rest counted under ``fit_tied_unlisted``.
+FIT_TIED = "fit_tied"
+
 #: Where a rival was measured: Stage A's frame, the known set's ions.
 FRAME_KNOWN = "known_set"
 
@@ -112,11 +124,15 @@ class SeededFrame:
         on those peaks alone, and only where its monoisotopic line paired to
         the peak. A seed not here is a reading the run commits, every gated
         line of which is a contender on its peak.
+    :param fit_only: Of those, the peaks each seed was named for by its fit
+        alone (:func:`fit_tied_seeds`): a rival there that the arbitration
+        does not read, recorded under :data:`FIT_TIED`.
     """
 
     scored: pd.DataFrame
     ion_by_seed: dict[tuple[str, str], str]
     placed_for: Mapping[tuple[str, str], frozenset[str]] = field(default_factory=dict)
+    fit_only: Mapping[tuple[str, str], frozenset[str]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -134,6 +150,8 @@ class Reading:
     :param mz_error_ppm: The line's mass error.
     :param monoisotopic: Whether the line on the peak is the ion's own.
     :param frame: :data:`FRAME_KNOWN` or :data:`FRAME_SEARCH`.
+    :param by_fit: Whether the search named it on this peak by its fit alone
+        (:attr:`SeededFrame.fit_only`).
     """
 
     peak: str
@@ -146,6 +164,7 @@ class Reading:
     mz_error_ppm: float | None
     monoisotopic: bool
     frame: str
+    by_fit: bool = False
 
 
 def m0_by_ion(scored_df: pd.DataFrame) -> dict[str, pd.Series]:
@@ -256,6 +275,7 @@ def _known_lines(frame: pd.DataFrame | None) -> _Lines | None:
                 _str_or_none(mechanism),
                 _float_or_none(error),
                 isotope in mains,
+                False,
             )
         )
     return _Lines(frame, matched.index, readings, FRAME_KNOWN)
@@ -314,6 +334,7 @@ def _seeded_lines(seeded: SeededFrame) -> _Lines | None:
                 str(seed[1]),
                 _float_or_none(error),
                 own_line,
+                str(peak) in seeded.fit_only.get(seed, ()),
             )
         )
     return _Lines(frame, pd.Index(kept), readings, FRAME_SEARCH)
@@ -365,7 +386,17 @@ class RivalFrames:
                 else score_frame_at(lines.frame, model)
             ).reindex(lines.index)
             for reading, fit in zip(lines.readings, fits, strict=True):
-                peak, formula, key, ion_formula, ion, mechanism, error, own = reading
+                (
+                    peak,
+                    formula,
+                    key,
+                    ion_formula,
+                    ion,
+                    mechanism,
+                    error,
+                    own,
+                    by_fit,
+                ) = reading
                 by_peak.setdefault(peak, []).append(
                     Reading(
                         peak,
@@ -378,6 +409,7 @@ class RivalFrames:
                         error,
                         bool(own),
                         lines.name,
+                        bool(by_fit),
                     )
                 )
         self._at.append((model, by_peak))
@@ -419,6 +451,20 @@ def _rivals(own: Reading, on_peak: list[Reading]) -> list[Reading]:
         ):
             best[reading.ion] = reading
     return sorted(best.values(), key=lambda r: (-_evidence(r), -r.fit, r.key))
+
+
+def _fit_tied(own: Reading, rivals: list[Reading], on_peak: list[Reading]) -> list:
+    """The rivals the search named on the peak by their fit alone, each ion
+    once at its best fit, less the ions and neutrals the set already holds."""
+    held = {r.ion for r in rivals} | {own.ion}
+    keys = {r.key for r in rivals} | {own.key}
+    best: dict[tuple, Reading] = {}
+    for reading in on_peak:
+        if not reading.by_fit or reading.ion in held or reading.key in keys:
+            continue
+        if reading.ion not in best or reading.fit > best[reading.ion].fit:
+            best[reading.ion] = reading
+    return sorted(best.values(), key=lambda r: (-r.fit, r.key))
 
 
 def _entry(reading: Reading, counted: set[str]) -> dict:
@@ -500,7 +546,10 @@ def measure_rival_sets(
         ):
             continue
         peak = str(row.get("sample_peak_id"))
-        on_peak = by_peak.get(peak, [])
+        named = by_peak.get(peak, [])
+        # The rivals the search named by their fit alone are the level's; the
+        # arbitration and the density read the rest, as they did without them.
+        on_peak = [reading for reading in named if not reading.by_fit]
         own = _own_reading(row, on_peak)
         if own is None:
             unmeasured += role == ROLE_M0
@@ -530,6 +579,14 @@ def measure_rival_sets(
             "rivals": [_entry(r, counted) for r in rivals[:RIVALS_KEPT]],
             "rivals_unlisted": max(0, len(rivals) - RIVALS_KEPT),
         }
+        fit_tied = _fit_tied(own, rivals, named)
+        if fit_tied:
+            provenance[RIVAL_SET][FIT_TIED] = [
+                _entry(r, set()) for r in fit_tied[:RIVALS_KEPT]
+            ]
+            provenance[RIVAL_SET]["fit_tied_unlisted"] = max(
+                0, len(fit_tied) - RIVALS_KEPT
+            )
         if source == SOURCE_UNTARGETED and formulas is not None:
             record = _shortlist_record(formulas, on_peak)
             provenance[MEASURED_SHORTLIST] = record
@@ -590,3 +647,30 @@ def named_rival_seeds(
     for peak, rivals in (list_rivals or {}).items():
         name(str(peak), rivals)
     return {seed: frozenset(peaks) for seed, peaks in named.items()}
+
+
+def fit_tied_seeds(
+    search, formula_formatter=None
+) -> dict[tuple[str, str], frozenset[str]]:
+    """The readings the search named against a list reading by their fit alone,
+    as seeds, each with the peaks it was named for that way.
+
+    The grid formulas a kept list reading's fit could not separate and its
+    evidence did (``finder.ReadingRivals.fit_tied``,
+    ``engine.ListElection.fit_tied_by_peak``). They are measured in the frame
+    the named rivals are (:func:`named_rival_seeds`), and recorded apart under
+    :data:`FIT_TIED`. No reading is named on one peak both ways: the finder
+    names a formula by its fit only where the evidence did not name it.
+
+    :param search: The search's outcome (``pipeline.SearchProposal``): the
+        frame it was handed, its channels and its list election.
+    :param formula_formatter: How a formula is stored.
+    :return: Seed -> the peaks it was named for by its fit alone.
+    """
+    return named_rival_seeds(
+        pd.DataFrame(),
+        search.frame,
+        mechanism_id_by_notation=search.mechanism_id_by_notation,
+        formula_formatter=formula_formatter,
+        list_rivals=getattr(search.election, "fit_tied_by_peak", None),
+    )

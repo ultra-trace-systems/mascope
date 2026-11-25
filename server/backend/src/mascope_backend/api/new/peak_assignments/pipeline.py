@@ -1386,6 +1386,15 @@ async def score(ctx: RunContext) -> None:
     search = ctx.search
     if search is None or not search.ran:
         return
+    # The readings the search named against a peak's, by evidence and by fit:
+    # each row's rivals, measured in the frame its own reading is (``rival_set``).
+    named = rival_set.named_rival_seeds(
+        search.matches,
+        search.frame,
+        mechanism_id_by_notation=search.mechanism_id_by_notation,
+        formula_formatter=to_custom_element_format,
+        list_rivals=getattr(search.election, "rivals_by_peak", None),
+    )
     ctx.fit_by_seed, ctx.seeded_frame = await judging_loop._seeded_rescore(
         ctx.sample,
         ctx.match_params,
@@ -1396,15 +1405,8 @@ async def score(ctx: RunContext) -> None:
         ),
         model=ctx.model,
         resolution=ctx.resolution,
-        # The readings the search named against a peak's: each row's rivals,
-        # measured in the frame its own reading is (``rival_set``).
-        named=rival_set.named_rival_seeds(
-            search.matches,
-            search.frame,
-            mechanism_id_by_notation=search.mechanism_id_by_notation,
-            formula_formatter=to_custom_element_format,
-            list_rivals=getattr(search.election, "rivals_by_peak", None),
-        ),
+        named=named,
+        fit_only=rival_set.fit_tied_seeds(search, to_custom_element_format),
     )
 
 

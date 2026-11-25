@@ -113,6 +113,85 @@ class TestTheCount:
         assert all(rival["fit_score"] <= found.fit_score for rival in found.rivals)
 
 
+def _readings_peak(formula, *, ionizations="[M+H]+", box, ppm=30.0, sigma=30.0):
+    """One faint peak of ``formula`` through a proton, measured against a box."""
+    mz = calculate_mass(formula=formula) + parse_ionization("[M+H]+").mass
+    config = CompositionSearchConfig(
+        ionizations=ionizations,
+        element_count_ranges=box,
+        mass_range_ppm=ppm,
+        use_unsaturation=True,
+        min_unsaturation=-1000.0,
+        max_unsaturation=10000.0,
+    )
+    return rivals_of_readings(
+        pd.DataFrame({"mz": [mz], "intensity": [100.0], "signal_to_noise": [2.0]}),
+        config,
+        [ListReading(mz, formula, "[M+H]+", 0.0)],
+        None if ionizations != "[M+H]+" else HEURISTICS,
+        PatternScoring(sigma_ppm=sigma, mz_tolerance_ppm=ppm),
+    )
+
+
+class TestTheFitTiedRivals:
+    """MAS-975 (#3285): a grid formula whose fit ties the reading's and whose
+    plausibility puts its evidence under the tie is named apart, for the level,
+    and counted in no density."""
+
+    BOX = "C1-30 H0-60 N0-8 O0-15 S0-2"
+
+    def test_a_rival_only_plausibility_separates_is_named_by_its_fit(self):
+        (found,) = _readings_peak("C8H12O6", box=self.BOX)
+
+        [tied] = found.fit_tied
+        assert tied["formula"] == "C4H8N6O4"
+        assert tied["formula"] not in {rival["formula"] for rival in found.rivals}
+        assert tied["ionization_mechanism"] == "[M+H]+"
+        assert tied["ion"].endswith("+")
+        assert tied["mz_error_ppm"] is not None
+        # Its fit ties the reading's; its evidence does not.
+        fits = [(r["formula"], r["fit_score"]) for r in found.fit_tied + found.rivals]
+        candidates = [("C8H12O6", found.fit_score), *fits]
+        assert tied["formula"] in unseparated(candidates, around="C8H12O6", by_fit=True)
+        assert tied["formula"] not in unseparated(candidates, around="C8H12O6")
+        assert formula_plausibility("C4H8N6O4") < 1.0
+
+    def test_the_density_counts_the_evidence_alone(self):
+        (found,) = _readings_peak("C8H12O6", box=self.BOX)
+
+        assert found.density == 1 + len(found.rivals)
+
+    def test_a_peak_the_fit_resolves_names_none(self):
+        (found,) = _readings_peak("C8H12O6", box=self.BOX, sigma=15.0)
+
+        assert found.fit_tied == ()
+
+
+class TestTheUnscoredCandidates:
+    """The grid scores 64 candidates a peak, nearest in mass first; the ions
+    it did not score are counted, as rivals whose fit nothing measured."""
+
+    def test_a_window_past_the_limit_counts_the_ions_it_left(self):
+        (found,) = _readings_peak(
+            "C20H30O8",
+            ionizations="[M+H]+,[M+Na]+,[M+K]+,[M+NH4]+",
+            box="C1-40 H0-80 N0-10 O0-20 S0-3",
+            ppm=10.0,
+            sigma=5.0,
+        )
+
+        # 90 candidates: the reading and the 63 nearest are scored. The 27
+        # past the limit are 22 ions the scoring did not read; the rest split
+        # an ion another candidate makes, and one ion is one hypothesis.
+        assert found.candidates == 90
+        assert found.unscored == 22
+
+    def test_a_window_under_it_leaves_none(self):
+        (found,) = _measure(UNRESOLVED)
+
+        assert found.unscored == 0
+
+
 class TestWhatIsNoRival:
     def test_a_radical_is_none_when_the_caller_asks_for_closed_shells(self):
         (found,) = _measure(UNRESOLVED, closed_shell_only=True)

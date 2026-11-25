@@ -114,6 +114,26 @@ class TestWhatTheRowSays:
             True,
         )
 
+    def test_the_fit_tied_and_the_unscored_are_counted(self):
+        # MAS-975: what the search saw on its own scale beside the rivals it
+        # named: the rivals only plausibility held back, and the window's ions
+        # its candidate limit left unscored.
+        row = _list_hit()
+        found = ReadingRivals(
+            density=1,
+            rivals=(),
+            fit_score=0.95,
+            candidates=90,
+            in_grid=True,
+            fit_tied=(_rival("C2H4N8O2"), _rival("C2N6O6")),
+            unscored=22,
+        )
+        record_grid_rivals([row], [found])
+        block = row["provenance"][GRID_RIVALS]
+        assert (block["fit_tied"], block["unscored"]) == (2, 22)
+        # Neither is a rival the density counts.
+        assert block["rivals"] == []
+
     def test_only_the_first_few_are_named(self):
         formulas = [f"C{n}H10O2" for n in range(10, 10 + GRID_RIVALS_KEPT + 3)]
         row = _list_hit()
