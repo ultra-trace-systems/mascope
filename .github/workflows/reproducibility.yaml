@@ -103,6 +103,14 @@ jobs:
           # HTTP / `docker exec`, never a host DB connection, so a throwaway
           # value is enough to let collection succeed.
           POSTGRES_PASSWORD_FILE: ${{ github.workspace }}/test_postgres_password.txt
+          # Seconds the pipeline gets to settle (the test's default is 2700).
+          # Since bundle 1.5.0 the seed carries the shipped reference lists, as
+          # the rebuild the goldens come from does, and peak assignment reads
+          # them for every sample: two runs that ran out of the 2700 got
+          # through 3.1 and 3.5 files a minute, about 55 minutes for the 165,
+          # where 1.4.4's seed (no lists) settled in 15. 5400 leaves that
+          # about 1.6 times over, inside the job's 120 minutes.
+          MASCOPE_REPRO_TIMEOUT: "5400"
         run: |
           echo "test_postgres_password_for_testing_only" > "$POSTGRES_PASSWORD_FILE"
           uv run pytest server/backend/tests/system/reproducibility/ -v

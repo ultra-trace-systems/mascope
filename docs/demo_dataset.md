@@ -372,6 +372,13 @@ counters stop moving the test looks in `failed_files/` first: a quarantined file
 never produces sample items, so it fails immediately naming them and the usual
 cause, instead of idling out the stall window with a bare "pipeline stalled".
 
+The wait has a deadline as well, `MASCOPE_REPRO_TIMEOUT` (2700 s unless set),
+and the workflow sets it to 5400 s. Since bundle 1.5.0 the seed carries the
+reference lists Mascope ships ([F](#f-the-uronium-seed-and-the-scan-counts-150)),
+and peak assignment reads them for every sample, so a CI runner needs about
+three times as long as on 1.4.4's seed: that settled in 15 minutes, and two
+1.5.0 runs had 141 and 157 of the 165 files done when 45 ran out.
+
 The export seam is
 `mascope_backend.db.scripts.export_goldens.get_golden_peaks` (a plain ORM read);
 the comparison (`compare_peaks`) is shared with `mascope demo verify` and
@@ -800,6 +807,19 @@ and in this file it fits five lines where it fitted six. No shared ion
 changes category, and the MS2 spectra keep their intensities. The bundle
 reproduces itself: a second rebuild from it matches its goldens file for
 file.
+
+**The seed holds the shipped reference lists.** `mascope demo` seeds the
+reference lists Mascope ships on every start, and 1.5.0's seed was dumped
+from an env it had started, so the seed carries them (13 sources, 784
+compounds), where 1.4.4's carried none. A rebuild through `mascope demo
+--rebuild`, the one the goldens come from, read them on both bundles. The
+Docker stack's rebuild (`tooling/demo-init.sh`, which the reproducibility
+workflow runs) seeds no lists of its own: on 1.4.4 it read none, and on 1.5.0
+it reads the seed's, as the goldens were made. The lists move no golden, since
+1.4.4's Docker rebuild matched goldens made with them. They make a rebuild
+slower, because peak assignment reads them for every sample, and the
+workflow gives the test 90 minutes where it gave 45 (see the
+[reproducibility test](#end-to-end-reproducibility-test)).
 
 **The tests pick their batch by name.** The server lists datasets and
 batches in no set order, and a rebuild draws new IDs, so which batch a
