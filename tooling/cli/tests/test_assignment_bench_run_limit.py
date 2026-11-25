@@ -18,8 +18,32 @@ import test_assignment_bench_run as base
 bench = base.bench
 brun = base.brun
 
-#: What Postgres says when it is out of connections, as the server passes it on.
-TOO_MANY = "sorry, too many clients already"
+#: What the bench reads off a 5xx of the server's on a database error.
+DB_FAILED = "Database operation failed."
+
+_refs = iter(range(10**9))
+
+
+def server_error(status, method, path, what="Database operation failed"):
+    """A 5xx as the server answers it (``process_exception`` and
+    ``api_error_body``): its context names the method and the path, and
+    every error has a reference of its own."""
+    ref = f"{next(_refs):08x}"
+    return (
+        status,
+        {
+            "error": f"Unhandled exception on {method} {path}. {what} (ref: {ref}).",
+            "detail": {"error_id": ref + "0" * 24},
+        },
+    )
+
+
+def assign_error(sample, status=500):
+    return server_error(status, "POST", f"/api/peak-assignments/sample/{sample}/assign")
+
+
+def runs_error(sample, status=503):
+    return server_error(status, "GET", f"/api/peak-assignments/sample/{sample}/runs")
 
 
 class _Response:
@@ -45,6 +69,10 @@ class StubBackend:
         self.assign_always: dict[str, tuple] = {}
         #: Per sample, how many of its polls answer 503 first.
         self.poll_failures: dict[str, int] = {}
+        #: Answer 409 to an assign request while a run of the sample is
+        #: pending or running, as the server's claim does
+        #: (``in_flight_run_id``).
+        self.claim = True
         self.sent: list[tuple[str, str]] = []
 
     def request(self, method, url, timeout, **kwargs):
@@ -55,10 +83,13 @@ class StubBackend:
         self.sent.append((method, sample))
         if method == "POST":
             if sample in self.assign_always:
-                return _Response(*self.assign_always[sample])
+                answer = self.assign_always[sample]
+                return _Response(*(answer() if callable(answer) else answer))
             queue = self.assign_answers.get(sample) or []
             if queue:
                 return _Response(*queue.pop(0))
+            if self.claim and self.in_flight(sample):
+                return _Response(409, {"detail": {"code": "assignment_in_flight"}})
             config = (kwargs.get("json") or {}).get("config")
             launch = self.server.assign(sample, config)
             if launch.run_id:
@@ -87,6 +118,13 @@ class StubBackend:
         if path.endswith("/runs"):
             return _Response(200, {"data": self.server.batch_runs(batch)})
         return _Response(200, {"data": self.server.assignment_status(batch)})
+
+    def in_flight(self, sample):
+        with self.server.lock:
+            return any(
+                r["status"] in ("pending", "running")
+                for r in self.server.listing[sample]
+            )
 
     def posts(self, sample):
         return sum(1 for m, s in self.sent if m == "POST" and s == sample)
@@ -128,7 +166,7 @@ def _summary(rig):
 
 
 def test_an_assign_that_answers_500_twice_then_202_runs(rig):
-    rig.backend.assign_answers["S1"] = [(500, {"error": TOO_MANY})] * 2
+    rig.backend.assign_answers["S1"] = [assign_error("S1"), assign_error("S1")]
 
     assert rig.run("topic", sets=["Db"]) == 0
 
@@ -141,7 +179,9 @@ def test_an_assign_that_answers_500_twice_then_202_runs(rig):
 def test_an_assign_that_always_answers_500_fails_its_sample_in_the_retry_time(
     rig, capsys
 ):
-    rig.backend.assign_always["S1"] = (500, {"error": TOO_MANY})
+    # The server's own 5xx: its words name the route, so the sample, and a
+    # reference new on every error.
+    rig.backend.assign_always["S1"] = lambda: assign_error("S1")
 
     assert rig.run("topic", sets=["Db"]) == 1
 
@@ -154,15 +194,47 @@ def test_an_assign_that_always_answers_500_fails_its_sample_in_the_retry_time(
     # the wait on S1 ended on the retries.
     assert rig.clock() == (brun.TRANSIENT_TRIES - 1) * 1.0
     assert rig.compare.calls[0]["manifest"]["sets"]["Db"]["samples"] == ["S2"]
+    # run.json is written: the cause names neither the sample nor the error.
     db = _summary(rig)["sets"]["Db"]
     assert db["left_out"] == {"failed": 1}
     assert db["over_budget"] is False
-    cause = f"the assign request answered 500: {TOO_MANY}"
+    cause = f"the assign request answered 500: {DB_FAILED}"
     assert db["causes"] == {"failed": {cause: 1}}
     printed = capsys.readouterr().out
     assert f"set Db: 1 sample(s) failed: {cause} (1)" in printed
+    assert "refused by the scrub" not in printed
     log = (rig.card_dir() / "run.log").read_text()
-    assert "S1: failed: failed: unreachable POST" in log and TOO_MANY in log
+    assert "S1: failed: failed: unreachable POST" in log and DB_FAILED in log
+
+
+def test_samples_failed_by_the_server_s_5xx_add_up_to_one_cause(rig):
+    # Each error has its own reference and names its own sample: the cause
+    # holds neither, so the two count as one cause.
+    for sample in ("S1", "S2"):
+        rig.backend.assign_always[sample] = lambda s=sample: assign_error(s, 503)
+
+    # No sample left to read: no card, but run.json is written.
+    assert rig.run("topic", sets=["Db"]) == 2
+
+    assert _summary(rig)["sets"]["Db"]["causes"] == {
+        "failed": {f"the assign request answered 503: {DB_FAILED}": 2}
+    }
+
+
+def test_a_5xx_that_names_the_sample_outside_a_path_reads_a_placeholder(rig):
+    rig.backend.assign_always["S1"] = (
+        503,
+        {"error": "Could not claim sample S1. Pool timed out (ref: 0badf00d)."},
+    )
+
+    assert rig.run("topic", sets=["Db"]) == 1
+
+    assert _summary(rig)["sets"]["Db"]["causes"] == {
+        "failed": {
+            "the assign request answered 503: Could not claim sample <id>. "
+            "Pool timed out.": 1
+        }
+    }
 
 
 def test_an_assign_refused_with_a_4xx_is_not_sent_again(rig):
@@ -220,6 +292,21 @@ def test_polls_that_keep_failing_name_the_answer(rig):
     }
 
 
+def test_polls_the_server_fails_name_its_words_not_the_route(rig):
+    real = rig.backend.request
+
+    def fails(method, url, timeout, **kwargs):
+        if method == "GET" and "/S1/" in url and kwargs.get("params"):
+            return _Response(*runs_error("S1"))
+        return real(method, url, timeout, **kwargs)
+
+    rig.backend.request = fails
+    assert rig.run("topic", sets=["Db"]) == 1
+    assert _summary(rig)["sets"]["Db"]["causes"] == {
+        "failed": {f"its runs could not be read: answered 503: {DB_FAILED}": 1}
+    }
+
+
 def test_a_sample_whose_runs_cannot_be_read_before_it_runs_names_the_answer(rig):
     real = rig.backend.request
 
@@ -269,7 +356,7 @@ def test_the_limit_reads_the_last_status_seen_when_the_polls_fail(rig):
         if method == "GET" and "/S2/" in url and kwargs.get("params"):
             polls["n"] += 1
             if polls["n"] > 1 and polls["n"] % 3:
-                return _Response(503, {"error": TOO_MANY})
+                return _Response(*runs_error("S2"))
         return real(method, url, timeout, **kwargs)
 
     rig.backend.request = fails_after_one
@@ -298,11 +385,53 @@ def test_a_decoy_run_the_server_never_ends_is_stalled(rig, capsys):
     assert db["decoys"][arm] == {"completed": 1, "stalled": 1}
     assert db["over_budget"] is False
     assert (
-        "set Db: 1 decoy run(s) stalled, past the run limit" in capsys.readouterr().out
+        "set Db: 3 decoy run(s) stalled, past the run limit or behind a run of "
+        "the sample that was" in capsys.readouterr().out
     )
     assert f"set Db: decoy {arm} stalled" in brun.passing_problems(
         _summary(rig)["sets"]
     )
+
+
+def test_after_a_stalled_run_nothing_more_is_launched_on_its_sample(rig):
+    # The server answers 409 to every run of S1 while its stalled arm stays
+    # running: the arms after it are left stalled at once, not each waited
+    # out to the limit, so the set ends inside its budget (the defaults'
+    # 1:2 ratio of the limit to the budget).
+    arms = [brun.arm_name(a) for a in brun.DECOY_ARMS["orbitrap"]]
+    rig.server.ends[("S1", arms[0])] = None
+
+    code = rig.run(
+        "topic",
+        sets=["Db"],
+        decoys=True,
+        batch=True,
+        run_limit_s=600.0,
+        budget_s=1200.0,
+    )
+
+    assert code == 1
+    db = _summary(rig)["sets"]["Db"]
+    assert db["over_budget"] is False
+    assert db["left_out"] == {}
+    for arm in arms:
+        assert db["decoys"][arm] == {"completed": 1, "stalled": 1}
+    # One control and one arm were sent for S1, nothing after the stall.
+    assert rig.backend.posts("S1") == 2
+    assert rig.clock() < 700.0
+    assert db["batch"]["off"] == "runs_failed"
+    log = (rig.card_dir() / "run.log").read_text()
+    assert f"{arms[1]} stalled (behind: not launched: run " in log
+    assert "for the pass stalled" in log
+
+
+def test_a_stalled_control_launches_nothing_more_on_its_sample(rig):
+    rig.server.ends[("S2", None)] = None
+
+    assert rig.run("topic", sets=["Db"], decoys=True, run_limit_s=30.0) == 1
+
+    assert rig.backend.posts("S2") == 1
+    assert _summary(rig)["sets"]["Db"]["left_out"] == {"stalled": 1}
 
 
 def test_the_default_limit_is_longer_with_the_decoy_arms(rig):
@@ -357,13 +486,13 @@ def test_a_sample_whose_runs_cannot_be_read_after_it_ran_names_the_answer(rig):
     def unreadable(method, url, timeout, **kwargs):
         ran = rig.server.controls("S2")
         if method == "GET" and "/S2/" in url and not kwargs.get("params") and ran:
-            return _Response(503, {"error": TOO_MANY})
+            return _Response(*runs_error("S2"))
         return real(method, url, timeout, **kwargs)
 
     rig.backend.request = unreadable
     assert rig.run("topic", sets=["Db"]) == 1
     assert _summary(rig)["sets"]["Db"]["causes"] == {
-        "failed": {f"its runs could not be read: answered 503: {TOO_MANY}": 1}
+        "failed": {f"its runs could not be read: answered 503: {DB_FAILED}": 1}
     }
 
 
@@ -389,7 +518,8 @@ def test_the_command_line_takes_the_run_limit(tmp_path, monkeypatch):
 
 
 def test_the_server_s_message_is_read_off_its_answer():
-    assert brun.server_message(_Response(500, {"error": TOO_MANY})) == TOO_MANY
+    too_many = "sorry, too many clients already"
+    assert brun.server_message(_Response(500, {"error": too_many})) == too_many
     assert brun.server_message(_Response(500, {"detail": "Internal Server Error"})) == (
         "Internal Server Error"
     )
@@ -399,3 +529,15 @@ def test_the_server_s_message_is_read_off_its_answer():
     assert brun.server_message(_Response(500, {"detail": {"code": "x"}})) == ""
     long = brun.server_message(_Response(500, {"error": "x" * 500}))
     assert len(long) == 160 and long.endswith("...")
+
+
+def test_the_server_s_message_names_no_request_and_no_error():
+    path = "/api/peak-assignments/sample/S1/assign"
+    assert brun.server_message(_Response(*assign_error("S1"))) == DB_FAILED
+    # A route's own context: the path and the id read as placeholders.
+    body = {"error": f"Failed to assign S1 at {path}?x=1. Pool timed out (ref: ab12)."}
+    assert brun.server_message(_Response(503, body), ids=("S1",)) == (
+        "Failed to assign <id> at <path> Pool timed out."
+    )
+    other = {"error": "Bad route /api/other/S9 here (ref: 00ff00ff)."}
+    assert brun.server_message(_Response(500, other)) == "Bad route <path> here."

@@ -228,13 +228,24 @@ box in the caller's own session, one run at a time. In order:
      decoy arms the logs time a sample's control and its three decoy runs
      together, and the slowest of those took 29.0 minutes, which bounds one
      run of it. A busy sample, a 409, waits for at most the same limit.
+     A run that stalled stays in flight on the server, which answers 409
+     to every later run of its sample. So once one run of a sample stalls,
+     the bench launches nothing more on it: its later decoy arms and its
+     run for the batch pass are left `stalled` at once, as `not launched:
+     an earlier run of the sample did not end`, and the set keeps its
+     budget.
    - **The causes.** A sample left out as `failed` or `stalled` is counted
      in `run.json` by its cause (`sets.<set>.causes`), in words that name no
      sample, run or host: the server's status and message for a request it
-     refused (`the assign request answered 500: sorry, too many clients
-     already`), or the status a stalled run was left at. The console and the
-     PR comment's left-out list say the same. The run log names each sample
-     with the whole answer.
+     refused (`the assign request answered 500: Database operation
+     failed.`), or the status a stalled run was left at. The server's
+     message on an unhandled error opens with the request's method and
+     path, which name the sample, and ends with a reference new on every
+     error: the bench drops both, and writes any other path the message
+     holds as `<path>` and the request's sample or batch id as `<id>`.
+     Otherwise the scrub would refuse `run.json`, and no two samples would
+     share a cause. The console and the PR comment's left-out list say the
+     same. The run log names each sample with the whole answer.
 7. **The checks.** A sample is read only where its newest completed in-app
    run is the one this run made (with `--batch`, one of the runs the batch
    arm made after it, with the control still listed) and its newest
