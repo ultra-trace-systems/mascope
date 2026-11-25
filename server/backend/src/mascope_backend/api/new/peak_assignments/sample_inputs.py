@@ -19,6 +19,7 @@ from mascope_backend.api.controllers.samples.lib.samples_peaks import extract_pe
 from mascope_backend.api.controllers.target.lib.compute.target_ions_compute import (
     FileLines,
     generate_target_ions_from_composition,
+    ions_at_file,
     lines_at_file,
 )
 from mascope_backend.api.new.instrument_configs.lib import read_instrument_functions
@@ -294,6 +295,7 @@ async def _fetch_reference_known_isotopes(
     *,
     known_window: KnownWindow | None,
     file_lines: FileLines,
+    lines: bool = True,
 ) -> pd.DataFrame:
     """Reference-database contribution to the Stage A known set.
 
@@ -316,17 +318,42 @@ async def _fetch_reference_known_isotopes(
     :param known_window: The resolved chemistry context's ceiling on every
         source's window, or None where the context sets none.
     :param file_lines: The sample file's resolution, its lines resolved at.
+    :param lines: False for the ions alone, one row each, without their lines
+        (``target_ions_compute.ions_at_file``): what a reader that matches
+        nothing reads (:func:`_fetch_known_isotopes` with ``lines=False``,
+        from :func:`pipeline._listed_known`).
     :return: DataFrame in the known-isotope shape, or empty.
     """
-    if not mechanisms:
+    fine = await _reference_fine_lines(sample, mechanisms, known_window)
+    if fine is None:
         return pd.DataFrame()
+    # Resolved outside the lock: the fine lines are shared, the file's R(m/z)
+    # is this run's.
+    return await asyncio.to_thread(
+        lines_at_file if lines else ions_at_file,
+        fine,
+        file_lines,
+        isotope_abundance_threshold,
+    )
+
+
+async def _reference_fine_lines(
+    sample: Sample,
+    mechanisms: list[SimpleNamespace],
+    known_window: KnownWindow | None,
+) -> pd.DataFrame | None:
+    """The reference lists' fine lines for :func:`_fetch_reference_known_isotopes`,
+    from the cache across runs: None where no mechanism or no active source
+    reads any."""
+    if not mechanisms:
+        return None
 
     async with async_session() as session:
         fingerprint = await known_state_fingerprint(session)
     if not fingerprint:
         # No active reference sources: nothing to expand, and nothing worth a
         # cache slot either.
-        return pd.DataFrame()
+        return None
 
     licenses = reference_license_gate()
     polarity = SAMPLE_POLARITIES.get(sample.polarity)
@@ -359,11 +386,7 @@ async def _fetch_reference_known_isotopes(
             _reference_isotope_cache[cache_key] = reference_isotopes_df
             while len(_reference_isotope_cache) > _REFERENCE_ISOTOPE_CACHE_MAX:
                 _reference_isotope_cache.popitem(last=False)
-    # Resolved outside the lock: the fine lines are shared, the file's R(m/z)
-    # is this run's.
-    return await asyncio.to_thread(
-        lines_at_file, reference_isotopes_df, file_lines, isotope_abundance_threshold
-    )
+    return reference_isotopes_df
 
 
 async def _build_reference_known_isotopes(
@@ -431,6 +454,7 @@ async def _fetch_known_isotopes(
     *,
     known_window: KnownWindow | None,
     resolution: Callable[[float], float] | None | object = RESOLVE_RESOLUTION,
+    lines: bool = True,
 ) -> pd.DataFrame:
     """The known set a run of the sample reads: the target library and the
     reference lists, as one frame (:func:`_combine_known_isotopes`), each
@@ -439,7 +463,13 @@ async def _fetch_known_isotopes(
     Stage A matches it against the sample's peaks. A batch search, which runs
     no Stage A, reads it for the neutrals it names alone
     (:func:`engine.listed_formula_identities`), so that a list corroborates a
-    secondary-channel reading there as it does in a run of the sample.
+    secondary-channel reading there as it does in a run of the sample; and a
+    judging of the batch stages for the ions it holds as well
+    (:func:`engine.listed_ions`). Those readers match nothing, so they read
+    the reference lists' ions without resolving their lines (``lines``
+    False), which are most of the known set's and its cost: the same ions,
+    one row each, the order they come in and every column of theirs kept
+    (``target_ions_compute.ions_at_file``, MAS-1274).
 
     :param sample: Sample model object.
     :param isotope_abundance_threshold: Minimum relative abundance for an
@@ -452,6 +482,9 @@ async def _fetch_known_isotopes(
         reference source's window, or None where the context sets none.
     :param resolution: The file's resolving power as the run read it
         (:func:`_resolution_of`), or :data:`RESOLVE_RESOLUTION` to read it here.
+    :param lines: False for the reference lists' ions without their lines, for
+        a reader that matches nothing. The target library's are resolved
+        either way: they are few.
     :return: The combined frame, empty where neither names anything.
     """
     if resolution is RESOLVE_RESOLUTION:
@@ -466,6 +499,7 @@ async def _fetch_known_isotopes(
         mechanisms,
         known_window=known_window,
         file_lines=file_lines,
+        lines=lines,
     )
     return _combine_known_isotopes(target_isotopes_df, reference_isotopes_df)
 

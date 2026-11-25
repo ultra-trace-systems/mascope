@@ -765,3 +765,60 @@ def lines_at_file(
         else abundance_threshold
     )
     return lines[lines["relative_abundance"] >= threshold].reset_index(drop=True)
+
+
+#: A fine line's own columns, which :func:`ions_at_file` leaves out: what it
+#: returns is the ions, and their lines would be the fine structure's.
+_LINE_COLUMNS = (
+    "target_isotope_id",
+    "target_isotope_formula",
+    "mz",
+    "relative_abundance",
+    "resolution",
+)
+
+
+def ions_at_file(
+    fine: pd.DataFrame, file_lines: FileLines, abundance_threshold: float = 0.0
+) -> pd.DataFrame:
+    """The ions :func:`lines_at_file` keeps a line of, without resolving the
+    lines of most of them.
+
+    An ion keeps a line where one of its lines holds at least the threshold,
+    and its brightest line holds at least its brightest fine line's
+    abundance, whatever the resolving power (``line_model.resolve_lines``):
+
+    - the peak that takes the brightest fine line is led by it, and holds its
+      members' sum, or on a file read by heights the leader's abundance and
+      its near members'; neither is less than the leader's own;
+    - the peak that holds the most is over the floor, a share of itself, so
+      it is a line: joining lines under the floor leaves it as it is, and
+      folding a line under the floor into it adds to its sum, or on a file
+      read by heights leaves it as it was.
+
+    So an ion whose brightest fine line clears the threshold keeps a line,
+    and only the others need their lines resolved: a merged line can clear
+    the threshold where none of its members does.
+
+    :param fine: The fine lines, as :func:`lines_at_file` reads them.
+    :param file_lines: The file whose lines would be resolved.
+    :param abundance_threshold: The least abundance a line keeps.
+    :return: One row per ion kept, in the order the ions first appear in
+        ``fine``, with the ion's own columns and none of a line's.
+    """
+    if fine.empty:
+        return fine.drop(columns=list(_LINE_COLUMNS), errors="ignore")
+    ions = fine["target_ion_id"]
+    brightest = fine["relative_abundance"].astype(float).groupby(ions).transform("max")
+    kept = brightest >= abundance_threshold
+    if file_lines.resolving_power() is not None and not kept.all():
+        # Without a resolving power each fine line is a line of its own, so
+        # an ion whose brightest line is under the threshold keeps none.
+        resolved = lines_at_file(fine[~kept], file_lines, abundance_threshold)
+        kept |= ions.isin(resolved["target_ion_id"].unique())
+    return (
+        fine[kept]
+        .drop_duplicates("target_ion_id")
+        .drop(columns=list(_LINE_COLUMNS), errors="ignore")
+        .reset_index(drop=True)
+    )
