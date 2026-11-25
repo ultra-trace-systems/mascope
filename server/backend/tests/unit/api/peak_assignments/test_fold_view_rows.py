@@ -80,6 +80,7 @@ def _anchor(**overrides):
         consensus_tier="assigned",
         engine_tier=None,
         engine_claim=None,
+        engine_level=None,
         consensus_role=None,
         support_fraction=0.67,
         n_present=3,
@@ -189,6 +190,44 @@ def test_no_engine_tier_where_the_anchor_names_no_consensus_formula():
         engine_tier="candidate", consensus_formula=None, ionization_mechanism_id=None
     )
     assert member_row(_member(candidate=None), bare)["engine_tier"] is None
+
+
+# --- the engine level ---------------------------------------------------------
+
+
+def test_an_m0_member_reading_the_consensus_shows_the_anchors_engine_level():
+    row = member_row(_member(), _anchor(engine_tier="candidate", engine_level="3"))
+    assert (row["engine_tier"], row["engine_level"]) == ("candidate", "3")
+    # A level alone, with no tier beside it, reaches the row all the same.
+    assert member_row(_member(), _anchor(engine_level="4b"))["engine_level"] == "4b"
+
+
+def test_no_engine_level_where_no_import_gave_the_anchor_one():
+    assert member_row(_member(), _anchor())["engine_level"] is None
+
+
+@pytest.mark.parametrize(
+    "member",
+    [
+        pytest.param(dict(role=2, owner_batch_peak_id="bp-0"), id="iso_child"),
+        pytest.param(dict(role=3), id="reagent"),
+        pytest.param(dict(candidate=1), id="dissenting formula"),
+        pytest.param(dict(candidate=None, role=0, tier=0), id="unassigned"),
+    ],
+)
+def test_no_engine_level_on_a_member_that_is_not_the_judged_reading(member):
+    row = member_row(_member(**member), _anchor(engine_level="3"))
+    assert row["engine_level"] is None
+
+
+def test_no_engine_level_where_the_member_reads_the_formula_by_another_mechanism():
+    registry = [{**_REGISTRY[0], "ionization_mechanism_id": "m-na"}, _REGISTRY[1]]
+    anchor = _anchor(engine_level="3", candidates=registry)
+    assert member_row(_member(), anchor)["engine_level"] is None
+
+
+def test_the_detail_carries_the_rows_engine_level():
+    assert member_detail(_member(), _anchor(engine_level="3"))["engine_level"] == "3"
 
 
 def test_an_isotopologue_member_names_its_owner_by_the_owners_derived_id():
