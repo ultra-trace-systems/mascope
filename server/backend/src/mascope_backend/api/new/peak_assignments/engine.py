@@ -1482,6 +1482,34 @@ def _contenders(
     )
 
 
+def base_snr_by_ion(references: pd.DataFrame) -> dict[str, float]:
+    """Each ion's ``provenance.base_snr``: the signal-to-noise of the peak its
+    monoisotopic line paired to, where the file carries a finite, positive one.
+
+    The finder's ``pattern_base_snr`` by its definition, read off the same
+    peak record: the S/N of the one peak a reading explains, which the search
+    writes on every row of its envelope (``untargeted_rows``, an isotopologue
+    a copy of its ion's row). The match frame carries each paired peak's
+    ``signal_to_noise`` from the peak list the finder reads
+    (``sample_inputs.load_sample_peaks``), so a reading measured here, a list's
+    or a given one, records the number the search would have: the series floor
+    reads it on both (``tiering.series_under_floor``).
+
+    :param references: One monoisotopic row per ion (``monoisotopic_positions``).
+    :return: The rounded S/N by ion id; an ion with none is left out.
+    """
+    if "signal_to_noise" not in references.columns:
+        return {}
+    snr = pd.to_numeric(references["signal_to_noise"], errors="coerce").to_numpy(
+        dtype=float
+    )
+    return {
+        str(ion): round(float(value), 2)
+        for ion, value in zip(references["target_ion_id"], snr, strict=True)
+        if np.isfinite(value) and value > 0
+    }
+
+
 def invert_matches_to_peak_assignments(
     match_isotope_df: pd.DataFrame,
     sample_item_id: str,
@@ -1576,6 +1604,9 @@ def invert_matches_to_peak_assignments(
         str(ion): float(mz)
         for ion, mz in zip(references["target_ion_id"], references["mz"], strict=True)
     }
+    # The S/N of each ion's monoisotopic peak, which every row of its envelope
+    # records as the search's rows record theirs (:func:`base_snr_by_ion`).
+    snr_by_ion = base_snr_by_ion(references)
 
     # Arbitration (P2): rank a peak's competing candidates by evidence =
     # fit x chemical plausibility, not fit alone, so a chemically implausible formula
@@ -1807,6 +1838,7 @@ def invert_matches_to_peak_assignments(
                     if formula_identities
                     else {}
                 ),
+                **({"base_snr": snr_by_ion[ion_id]} if ion_id in snr_by_ion else {}),
             },
         }
         assignments.append(assignment)

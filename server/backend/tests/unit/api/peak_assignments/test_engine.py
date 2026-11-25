@@ -22,6 +22,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     TIER_CANDIDATE,
     TIER_UNASSIGNED,
     ReagentOffset,
+    base_snr_by_ion,
     build_unassigned_assignments,
     cap_alternatives,
     evidence_for,
@@ -2616,6 +2617,77 @@ class TestTheCandidateDensityOnAStageARow:
         # The rival has no evidence at all, so nothing ties the commit.
         assert main["provenance"]["candidate_density"] == 1
         assert main["provenance"]["n_candidates"] == 2
+
+
+class TestTheBaseSnrOnAStageARow:
+    """MAS-1272: a reading Stage A's election writes - a list's, or a given one
+    the batch measured - records its peak's S/N as the search's row does
+    (``provenance.base_snr``, the finder's ``pattern_base_snr``): the S/N of the
+    ion's monoisotopic peak, on every row of its envelope, rounded as the
+    search rounds it. A file with none, or one that is not finite and
+    positive, records none, and the series floor fails open on it."""
+
+    @staticmethod
+    def _family(m0_snr, m1_snr=80.0) -> pd.DataFrame:
+        rows = [
+            _isotope_row(
+                target_isotope_id="iso-m0",
+                target_ion_id="ion1",
+                target_compound_id="cmp1",
+                compound_formula="C6H12O6",
+                ion_formula="C6H13O6+",
+                mz=181.0707,
+                relative_abundance=1.0,
+                sample_peak_id="p1",
+            ),
+            _isotope_row(
+                target_isotope_id="iso-m1",
+                target_ion_id="ion1",
+                target_compound_id="cmp1",
+                compound_formula="C6H12O6",
+                ion_formula="C6H13O6+",
+                mz=182.0741,
+                relative_abundance=0.066,
+                sample_peak_id="p2",
+            ),
+        ]
+        frame = pd.DataFrame(rows)
+        if m0_snr is not None:
+            frame["signal_to_noise"] = [m0_snr, m1_snr]
+        return frame
+
+    def _by_peak(self, frame):
+        return {
+            a["sample_peak_id"]: a
+            for a in invert_matches_to_peak_assignments(
+                frame, "sample1", "run1", CANDIDATE, ASSIGNED
+            )
+        }
+
+    def test_every_row_of_the_envelope_records_its_m0_peak_s_snr(self):
+        by_peak = self._by_peak(self._family(3.456))
+        assert by_peak["p1"]["role"] == ROLE_M0
+        assert by_peak["p2"]["role"] == ROLE_ISO_CHILD
+        # The isotopologue records its ion's peak, not its own, as the
+        # search's copy of its ion's row does.
+        assert by_peak["p1"]["provenance"]["base_snr"] == 3.46
+        assert by_peak["p2"]["provenance"]["base_snr"] == 3.46
+
+    @pytest.mark.parametrize("snr", [None, float("nan"), float("inf"), 0.0, -2.0])
+    def test_a_peak_with_no_usable_snr_records_none(self, snr):
+        by_peak = self._by_peak(self._family(snr))
+        for row in by_peak.values():
+            assert "base_snr" not in row["provenance"]
+
+    def test_the_lookup_reads_one_value_per_ion(self):
+        references = pd.DataFrame(
+            {
+                "target_ion_id": ["a", "b", "c"],
+                "signal_to_noise": [12.345, float("nan"), 0.0],
+            }
+        )
+        assert base_snr_by_ion(references) == {"a": 12.35}
+        assert base_snr_by_ion(references.drop(columns="signal_to_noise")) == {}
 
 
 class TestTheRivalsACapLeavesOut:

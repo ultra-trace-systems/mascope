@@ -254,7 +254,14 @@ _FITS = {
 
 
 @pytest.fixture
-def stubbed(monkeypatch):
+def peak_snr():
+    """Sample id -> its peaks' S/N by peak id, where a test gives its peak
+    list one: a sample left out reads a list that carries none."""
+    return {}
+
+
+@pytest.fixture
+def stubbed(monkeypatch, peak_snr):
     """The mode's chemistry and the seeded scorer, canned."""
     scored = []
 
@@ -280,8 +287,11 @@ def stubbed(monkeypatch):
 
     def peaks_of(sample_item_id):
         return frame(
-            (peak_id, _mz(formula), 5000.0)
-            for peak_id, (formula, _) in _peaks().items()
+            (
+                (peak_id, _mz(formula), 5000.0)
+                for peak_id, (formula, _) in _peaks().items()
+            ),
+            snr=peak_snr.get(sample_item_id),
         )
 
     monkeypatch.setattr(batch_series, "_mode_chemistry", chemistry)
@@ -517,6 +527,70 @@ async def test_a_series_lifts_a_bright_member_and_leaves_a_faint_one_a_candidate
     assert s1.batch_peak_id == s2.batch_peak_id
     assert tier_name(s1.tier) == "assigned"
     assert tier_name(s2.tier) == "candidate"
+
+
+async def test_the_pass_holds_a_faint_member_as_the_sample_s_next_run_does(
+    async_session_factory,
+    series_batch,
+    stubbed,
+    peak_snr,
+    only_its_own_stage,
+    monkeypatch,
+):
+    """The series floor acts inside the pass (MAS-1272): the re-judging right
+    after the detection measures the candidate the series confirms as a given
+    reading, which records its peak's S/N as the search's row does, so the
+    member is lifted where its peak is bright and stays a candidate on
+    ``lone_peak`` where it is faint, on the batch ledger right after the pass.
+    The sample's next run reads the same reading as a search row with the
+    same S/N and gives it the same tier."""
+    batch_id, samples = series_batch["batch_id"], series_batch["samples"]
+    snr_of = {samples["S1"]: 20.0, samples["S2"]: 3.5}
+    for sample_item_id, snr in snr_of.items():
+        peak_snr[sample_item_id] = {
+            peak_id: (snr if peak_id == "up-0" else 50.0) for peak_id in _peaks()
+        }
+    await assign_batch(sample_batch_id=batch_id, from_stage="series")
+    after_pass = {
+        name: (await _members(async_session_factory, samples[name]))["up-0"]
+        for name in ("S1", "S2")
+    }
+    assert after_pass["S1"].batch_peak_id == after_pass["S2"].batch_peak_id
+    assert tier_name(after_pass["S1"].tier) == "assigned"
+    assert tier_name(after_pass["S2"].tier) == "candidate"
+
+    confirmed = _step(SOURCES[0], 1)
+
+    def lone_reading(sample_item_id, run_id):
+        return [
+            {
+                "peak_assignment_id": gen_id(32),
+                "peak_assignment_run_id": run_id,
+                "sample_item_id": sample_item_id,
+                "sample_peak_id": "up-0",
+                "sample_peak_mz": _mz(confirmed),
+                "sample_peak_intensity": 5000.0,
+                "role": "M0",
+                "assigned_formula": confirmed,
+                "ion_formula": _ion(confirmed),
+                "ionization_mechanism_id": MECHANISM,
+                "source": "untargeted",
+                "tier": "assigned",
+                "fit_score": 0.95,
+                "mz_error_ppm": 0.1,
+                "isotope_label": None,
+                "owner_peak_assignment_id": None,
+                "provenance": {"base_snr": snr_of[sample_item_id]},
+            }
+        ]
+
+    stub_known_set(monkeypatch, lone_reading)
+    for name in ("S1", "S2"):
+        ctx = await run_sample(samples[name])
+        [row] = [r for r in ctx.judged.rows if r["sample_peak_id"] == "up-0"]
+        assert row["tier"] == tier_name(after_pass[name].tier)
+    rules = {reason["rule"] for reason in row["provenance"]["tier_reasons"]}
+    assert "lone_peak" in rules
 
 
 async def test_a_better_measured_reading_keeps_its_member(
