@@ -16,6 +16,7 @@ environments it made, the shipped ones included, and writes the field's
 values back.
 """
 
+import asyncio
 from datetime import datetime, timezone
 
 import pytest
@@ -315,6 +316,59 @@ async def test_the_fields_values_follow_the_registry(
         json={"allowed_values": [*values, "elsewhere"]},
     )
     assert refused.status_code == 409, refused.text
+
+
+def _environment(key: str) -> Environment:
+    return Environment(
+        environment_id=gen_id(16),
+        key=key,
+        label=key,
+        regimes=[],
+        system=False,
+        created_utc=_NOW,
+        modified_utc=_NOW,
+    )
+
+
+@pytest.mark.asyncio
+async def test_two_writes_at_once_keep_both_keys(made, async_session_factory):
+    # Two sessions each add an environment and write the field's values, the
+    # second while the first has not committed. Without the field's row lock
+    # the second reads only the committed keys and its own, and its commit
+    # drops the first's key.
+    first, second = _environment(_key("race-a")), _environment(_key("race-b"))
+    made.extend([first.environment_id, second.environment_id])
+    async with async_session_factory() as one, async_session_factory() as two:
+        one.add(first)
+        await sync_environment_field(one)
+        two.add(second)
+        waiting = asyncio.create_task(sync_environment_field(two))
+        await asyncio.sleep(0.3)
+        # The second writer waits on the first's lock ...
+        assert not waiting.done()
+        await one.commit()
+        # ... and once the first commits, it reads the first's key too.
+        assert await asyncio.wait_for(waiting, timeout=10)
+        await two.commit()
+    values = await _field_values(async_session_factory)
+    assert {first.key, second.key} <= set(values)
+
+
+@pytest.mark.asyncio
+async def test_two_creates_at_once_through_the_routes(
+    editor_client, made, async_session_factory
+):
+    keys = [_key("race-c"), _key("race-d")]
+    responses = await asyncio.gather(
+        *(
+            editor_client.post("/api/environments", json={"key": key, "label": key})
+            for key in keys
+        )
+    )
+    for response in responses:
+        assert response.status_code == 201, response.text
+        made.append(response.json()["data"]["environment_id"])
+    assert set(keys) <= set(await _field_values(async_session_factory))
 
 
 # ---------------------------------------------------------------------------
