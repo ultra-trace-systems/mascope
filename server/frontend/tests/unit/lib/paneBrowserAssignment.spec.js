@@ -2749,6 +2749,89 @@ describe('PaneBrowserAssignment identification level column', () => {
     expect(select.props('optionValue')).toBe('value')
   })
 
+  // The producing engine's own level, an outlined chip beside this server's
+  // in the Level cell with Show > Engine readings on, as the batch ledger
+  // shows it: an imported run's, or a derived row's from a batch import.
+  describe("the engine's level", () => {
+    const ledger = (wrapper) => wrapper.findComponent({ name: 'AssignmentLedger' })
+    const engineChip = (wrapper, id) => cell(wrapper, id).find('[data-testid="engine-level-chip"]')
+    const seedEngineLevels = ({ own = null } = {}) =>
+      seed(
+        leveled({ id: 'a', mz: 100.1, intensity: 10, formula: 'C6H6' }, own, {
+          engine_level: '4b'
+        }),
+        leveled({ id: 'b', mz: 200.1, intensity: 20, formula: 'C7H8' }, null)
+      )
+
+    it('offers the engine readings, and the Level column, for an engine level alone', async () => {
+      seedEngineLevels()
+      const wrapper = await renderedTable()
+
+      // No level of this server's: the column waits for the engine readings.
+      expect(wrapper.vm.hasLevels).toBe(false)
+      expect(wrapper.vm.hasEngineReadings).toBe(true)
+      expect(levelColumn(wrapper)).toBeUndefined()
+      expect(ledger(wrapper).props('engineReadings')).toBe(false)
+
+      wrapper.vm.engineView = true
+      await wrapper.vm.$nextTick()
+      expect(levelColumn(wrapper)).toBeDefined()
+      expect(ledger(wrapper).props('engineReadings')).toBe(true)
+      const chip = engineChip(wrapper, 'a')
+      expect(chip.attributes('data-level')).toBe('4b')
+      expect(chip.attributes('outlined')).toBeDefined()
+      // A row the engine stated no level for has no chip, and no own one.
+      expect(cell(wrapper, 'b').find('.level-tag-stub').exists()).toBe(false)
+
+      wrapper.vm.engineView = false
+      await wrapper.vm.$nextTick()
+      expect(levelColumn(wrapper)).toBeUndefined()
+    })
+
+    it('is absent from a run that carries no engine level, the view on', async () => {
+      seedLevels()
+      const wrapper = await renderedTable()
+      wrapper.vm.engineView = true
+      await wrapper.vm.$nextTick()
+
+      expect(wrapper.vm.hasEngineReadings).toBe(false)
+      expect(wrapper.findAll('[data-testid="engine-level-chip"]')).toHaveLength(0)
+    })
+
+    it("draws the engine's chip beside this server's level", async () => {
+      seedEngineLevels({ own: '5a' })
+      const wrapper = await renderedTable()
+      // The view off: this server's level alone.
+      expect(cell(wrapper, 'a').findAll('.level-tag-stub')).toHaveLength(1)
+      expect(engineChip(wrapper, 'a').exists()).toBe(false)
+
+      wrapper.vm.engineView = true
+      await wrapper.vm.$nextTick()
+
+      const chips = cell(wrapper, 'a').findAll('.level-tag-stub')
+      expect(chips.map((chip) => chip.attributes('data-level'))).toEqual(['5a', '4b'])
+      expect(chips[1].attributes('data-testid')).toBe('engine-level-chip')
+    })
+
+    it('offers the view in the Show menu for a run with engine levels and no engine tiers', async () => {
+      seedEngineLevels()
+      const wrapper = await mountPane()
+
+      expect(wrapper.find('label[for="engine-tier-view"]').text()).toBe('Engine tier and level')
+    })
+
+    it("names the engine's level, and whether Mascope's agrees", async () => {
+      seedEngineLevels()
+      const wrapper = await mountPane()
+      const tooltip = (level) => wrapper.vm.engineLevelTooltip({ engine_level: '4b', level })
+
+      expect(tooltip(null)).toContain("The producing engine's own level: 4b")
+      expect(tooltip(null)).toContain('Mascope states no level of its own for this row')
+      expect(tooltip('4b')).toContain("It agrees with Mascope's level")
+      expect(tooltip('5a')).toContain("Mascope's level for this row is 5a")
+    })
+  })
+
   // The level a reader is shown is the live claim's where a verdict states
   // one, else the engine's (docs/dev/identification_claims.md, section 6.1).
   describe("a live claim's level", () => {
@@ -2947,7 +3030,7 @@ describe('PaneBrowserAssignment engine-tier view', () => {
   it("is off by default: the strip counts this server's tiers", async () => {
     const wrapper = await mountPane()
 
-    expect(wrapper.find('label[for="engine-tier-view"]').text()).toBe('Engine tier')
+    expect(wrapper.find('label[for="engine-tier-view"]').text()).toBe('Engine tier and level')
     // A chip with nothing in it is not drawn.
     expect(chips(wrapper)).toEqual(['1 assigned', '1 below', '1 unassigned', '1 reagent'])
     expect(wrapper.find('.engine-view-label').exists()).toBe(false)

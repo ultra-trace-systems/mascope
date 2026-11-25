@@ -1460,7 +1460,9 @@ threshold the row stays 5a, and its lift says *more signal*.
 **Where it shows.** The peak inspector shows the level as a chip beside the tier, and its
 **Identification level** section, folded until you open it, shows **why** the row holds it, what **would lift it** and the **rivals**, each
 with its test or *open*. The sample ledger has a **Level** column, with a filter in its
-header. The *Batch peaks* ledger's **Level** column shows the level most of a batch
+header, and on a run imported from another engine that stated levels it shows the
+engine's level as an outlined chip in that column while **Show › Engine tier and level**
+is on. The *Batch peaks* ledger's **Level** column shows the level most of a batch
 peak's members' runs stated for its formula (a tie reads as the weaker level) until the
 batch states one of its own, and a batch import from another engine that carried its
 own levels shows the engine's beside it, as an outlined chip, while **Show › Engine tier
@@ -1577,9 +1579,9 @@ same mark and the same words.
   only* or *persistence only*. Hover it for the rules and what they did; the inspector says
   why at length.
 - **Engine readings.** After an import that carried an engine's own tiers or levels,
-  **Show › Engine tier** draws the engine's tier as a second, outlined chip in the
-  **Tier** cell, and in the batch's ledger its level as an outlined chip in the **Level**
-  cell. They have no columns of their own: Mascope's chip is the one the table sorts,
+  **Show › Engine tier and level** draws the engine's tier as a second, outlined chip in
+  the **Tier** cell, and its level as an outlined chip in the **Level** cell, in both
+  ledgers. They have no columns of their own: Mascope's chip is the one the table sorts,
   filters and rolls up on, and a row whose two chips differ is the one worth opening.
 - **The verdict** shows nothing until someone judges the row; the empty cell is still the
   button that records one.
@@ -1646,9 +1648,10 @@ flowchart LR
   - *The batch's flags*: **Probable blends**, **Flat series**, and **Carrying the
     badge**, which keeps the batch peaks with one kind of badge in **Across the batch**,
     one kind at a time. Click the kind again to drop it.
-  - *Engine readings*, after an import that carried the engine's tiers: **Engine tier**,
-    which shows the engine's own tier as a second chip in the **Tier** cell and counts the
-    chips by it, and in the batch **Engine tier and level** and **Engine disagrees**.
+  - *Engine readings*, after an import that carried the engine's tiers or levels:
+    **Engine tier and level**, which shows the engine's own tier and level as a second
+    chip in the **Tier** and **Level** cells and counts the chips by its tier, and in the
+    batch **Engine disagrees**.
   - **Verdict** narrows the table to one verdict, in both ledgers.
   - **Group by**: *None*, *Compound* or, in the batch's ledger, *Series*
     (*Seeing a group*, below).
@@ -3694,7 +3697,7 @@ makes the tier chips count and filter by the engine's tier, with a **not stated*
 for the formulas it gave no tier; the **Tier** column's own chip, its filter and the sort
 stay on the consensus. **Engine disagrees** keeps the batch peaks whose engine tier
 differs from the consensus tier. Both are off by default. The sample ledger offers
-the same **Engine tier** switch on a run imported with engine tiers. The API and the
+the same **Engine tier and level** switch on a run imported with engine tiers or levels. The API and the
 SDK filter the same way (`engine_tier` and `tier_disagrees` on
 `GET /api/batch-peaks/batch/{id}`, and on `mascope.batch_peaks.list`). A batch peak
 with no engine tier is left out of either answer, because absence is not agreement.
@@ -3703,11 +3706,12 @@ The member rows carry the verdict too. Every row of the ledger export, of
 `GET /api/batch-peaks/batch/{id}/members`, `mascope.batch_peaks.members` and
 `mascope.load_batch_ledger` has its batch peak's `engine_tier` and `engine_claim`
 beside `consensus_tier`, empty where no import gave one. A sample that has no run of its
-own and is shown from the batch ledger shows the engine tier on one row per batch peak:
+own and is shown from the batch ledger shows the engine tier and level on one row per
+batch peak:
 the monoisotopic peak of the sample that reads the batch peak's consensus formula
 through its adduct. That is the reading the engine judged. Its isotope lines, a reagent
 peak, and a sample whose own formula for the peak differs from the consensus show none,
-and the sample ledger's **Engine tier** view and filters read the same rows.
+and the sample ledger's **Engine tier and level** view and filters read the same rows.
 
 A row names its adduct by this server's mechanism id. The mechanism table
 (`mascope.ionization.list()`) is a catalogue of the adducts a deployment can name,

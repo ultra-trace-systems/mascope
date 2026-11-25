@@ -38,7 +38,14 @@ import {
   tierName,
   tierRank
 } from '@/lib/tiers'
-import { isShownLevel, levelFilterOptions, levelRank, readerLevel } from '@/lib/levels'
+import {
+  isLevel,
+  isShownLevel,
+  levelFilterOptions,
+  levelMeta,
+  levelRank,
+  readerLevel
+} from '@/lib/levels'
 import { queueReason, queueRows, queueTooltip } from '@/lib/verificationQueue'
 import { scrollVirtualRowIntoView } from '@/lib/virtualScroll'
 import {
@@ -152,6 +159,27 @@ const tierChips = computed(() =>
 // column where a claim states one. Defined below the verdicts it reads.
 const hasLevels = computed(() =>
   assignments.value.list.some((row) => isShownLevel(shownLevelOf(row)?.level))
+)
+
+// The level the producing engine stated, beside this server's as its tier is
+// beside the tier: an imported run's, and a row derived from the batch ledger
+// where a batch import stated one. Read off the loaded rows, as the engine
+// tier is.
+const hasEngineLevels = computed(() =>
+  assignments.value.list.some((row) => isLevel(row.engine_level))
+)
+
+// Show > Engine readings: the engine's own tier and level as a second,
+// outlined chip in the Tier and Level cells, where a row carries them, as the
+// batch ledger shows them (owner's decision of 2026-11-22: the chip, not
+// columns of their own). Offered where the run carries either.
+const hasEngineReadings = computed(() => hasEngineTiers.value || hasEngineLevels.value)
+const engineReadings = computed(() => engineView.value && hasEngineReadings.value)
+// The Level column, where any row carries a level its cell draws: its own or a
+// claim's, or with the engine readings on, the engine's. The level filter stays
+// on the level the column's first chip shows (`hasLevels`).
+const hasLevelColumn = computed(
+  () => hasLevels.value || (engineReadings.value && hasEngineLevels.value)
 )
 
 // Map ionization_mechanism_id -> readable notation (e.g. "[M+H]+", "[M+Br]-"), for
@@ -878,6 +906,24 @@ const engineTierTooltip = (row) =>
     : `The producing engine's own tier: ${tierName(row.engine_tier)}, where this server's ` +
       `banding of the evidence says ${tierName(row.tier)}`
 
+// Says whose level the outlined chip is, and how it stands against this
+// server's own level for the row, as the inspector's chip does.
+const engineLevelTooltip = (row) => {
+  const own = row.level
+  const against = !isLevel(own)
+    ? 'Mascope states no level of its own for this row'
+    : own === row.engine_level
+      ? "It agrees with Mascope's level"
+      : `Mascope's level for this row is ${own}`
+  return [
+    `The producing engine's own level: ${row.engine_level}`,
+    levelMeta(row.engine_level)?.description,
+    against
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
 // Isotopologues folded under a formula's M0: the count beside the family's
 // caret, and whether they are unfolded under it.
 const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).length
@@ -1005,10 +1051,12 @@ const HEADERS = {
         them, until &times; or Escape closes the lens.
         </p>
         <p>
-        On a run imported from another engine that states tiers of its
-        own, <b>Engine tier</b> makes the tier chips count and filter by
-        that engine's tier, with <b>not stated</b> for the formulas it
-        gave none. The tier column and the sort stay on Mascope's tier.
+        On a run imported from another engine that states tiers or levels
+        of its own, <b>Engine tier and level</b> shows them as a second,
+        outlined chip in the Tier and Level cells, and makes the tier chips
+        count and filter by that engine's tier, with <b>not stated</b> for
+        the formulas it gave none. The tier column and the sort stay on
+        Mascope's tier.
         </p>
         <p>
         Every choice here, the search and the tier chips are kept for this
@@ -1019,9 +1067,9 @@ const HEADERS = {
         { doc: app.ui.help.docUrl('how-it-works/peak-assignment/') }
       )
     "
-    :engineReadings="readsEngineTiers"
+    :engineReadings="engineReadings"
     :engineTierTooltip="engineTierTooltip"
-    :hasLevels="hasLevels"
+    :hasLevels="hasLevelColumn"
     :tierCap="tierCap"
     :familySize="isoCount"
     :familyOpen="familyOpen"
@@ -1162,13 +1210,13 @@ const HEADERS = {
           tooltip="Show the reagent's and the artifacts' peaks, which are not the sample's compounds"
         />
       </div>
-      <div v-if="hasEngineTiers" class="menu-section">
+      <div v-if="hasEngineReadings" class="menu-section">
         <span class="menu-heading">Engine readings</span>
         <LedgerViewToggle
           v-model="engineView"
           id="engine-tier-view"
-          label="Engine tier"
-          tooltip="Show the producing engine's own tier as a second, outlined chip in the Tier cell, and count and filter the tier chips by it"
+          label="Engine tier and level"
+          tooltip="Show the producing engine's own tier and level as a second, outlined chip in the Tier and Level cells, and count and filter the tier chips by its tier"
         />
       </div>
       <LedgerMenuChoice
@@ -1280,7 +1328,8 @@ const HEADERS = {
     </template>
 
     <!-- What earned the level and what would lift it are in the chip's hover.
-         An isotopologue shows its M0's level, which it carries. -->
+         An isotopologue shows its M0's level, which it carries. With Show >
+         Engine readings on, the producing engine's own, outlined beside it. -->
     <template #level="{ data }">
       <BaseLevelTag
         v-if="data.shownLevel"
@@ -1290,6 +1339,14 @@ const HEADERS = {
         :role="data.role"
         :source="data.shownLevel.source"
         :engineLevel="data.shownLevel.engineLevel"
+      />
+      <BaseLevelTag
+        v-if="engineReadings && isLevel(data.engine_level)"
+        class="engine-chip"
+        data-testid="engine-level-chip"
+        :level="data.engine_level"
+        :tooltip="engineLevelTooltip(data)"
+        outlined
       />
     </template>
 

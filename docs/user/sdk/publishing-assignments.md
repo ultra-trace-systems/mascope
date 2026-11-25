@@ -124,10 +124,11 @@ writes with a null score.
 
 An engine whose own rules demote a peak below what its evidence alone earns
 keeps that verdict in `engine_tier`. The API's `tier_disagrees` filter
-returns the rows where the two differ, and the ledger's **Engine tier** view
+returns the rows where the two differ, and the ledger's **Engine tier and level** view
 option counts its tier chips in the engine's words; nothing ranks on
 `engine_tier`. Its identification level goes in `engine_level` beside it,
-read back by `get()` and shown in the peak inspector next to Mascope's level.
+read back by `get()` and shown in the peak inspector next to Mascope's level,
+and in the ledger's **Level** cell with that view on.
 A batch-level import takes the same fields, and a free-text `engine_claim`
 beside them
 ([Importing an engine's batch result](../how-it-works/peak-assignment.md#importing-an-engines-batch-result)).
