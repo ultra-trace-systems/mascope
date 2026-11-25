@@ -927,3 +927,186 @@ def test_the_nightly_baseline_runs_fresh():
         / "bench-baseline.service"
     ).read_text()
     assert "bench.py run origin/develop --baseline --decoys --fresh'" in service
+
+
+# ------------------------------------------------------------ the dry ask
+
+
+def _cards(rig):
+    return sorted(p for p in rig.home.cards.rglob("run.json"))
+
+
+def _check(rig, ref="topic", **kwargs):
+    return rig.runner().check(ref, **kwargs)
+
+
+def test_the_check_names_the_card_a_head_would_be_served_and_writes_nothing(
+    rig, capsys
+):
+    assert rig.run("topic") == 0
+    first = rig.card_dir()
+    _docs_head(rig)
+    rig.instance.calls.clear()
+    cards, state = _cards(rig), rig.state()
+    capsys.readouterr()
+
+    assert _check(rig) == 0
+
+    out = capsys.readouterr().out
+    engine = json.loads((first / "run.json").read_text())["engine"]
+    assert f"topic: {DOCS[:9]}, engine digest {engine['digest'][:12]}" in out
+    for part in ("tree", "tool", "bench"):
+        assert f"  {part} {engine[part][:12]}" in out
+    source = json.loads((first / "run.json").read_text())
+    assert (
+        f"card: {first}, of topic at {BRANCH[:9]}, made {source['finished']}, PASS"
+        in out
+    )
+    # Nothing ran and nothing was written or recorded.
+    assert rig.instance.calls == [] and len(rig.compare.calls) == 1
+    assert _cards(rig) == cards and rig.state() == state
+
+
+def test_the_check_says_a_head_without_a_card_would_run(rig, capsys):
+    assert rig.run("topic") == 0
+    _head(
+        rig,
+        "topic",
+        ENGINE,
+        replace=[("server/backend/src/engine.py", "100644 blob e2")],
+    )
+    capsys.readouterr()
+    assert _check(rig) == 1
+    out = capsys.readouterr().out
+    digest = brun.engine_digest(rig.instance, ENGINE, rig.state(), brun.TOOL)
+    assert f"topic: {ENGINE[:9]}, engine digest {digest['digest'][:12]}" in out
+    assert f"  tree {digest['tree'][:12]}" in out
+    assert "no complete card of it with set(s) Db, Et" in out
+    assert "no card: a run of topic would run" in out
+    assert len(rig.state()["cards"]) == 1
+
+
+def test_the_check_reads_the_request_s_options(rig):
+    assert rig.run("topic", sets=["Db"]) == 0
+    _docs_head(rig)
+    assert _check(rig, sets=["Db"]) == 0
+    assert _check(rig) == 1
+    assert _check(rig, sets=["Db"], decoys=True) == 1
+    assert _check(rig, sets=["Db"], batch=True) == 1
+
+
+def test_the_check_says_develop_s_head_with_baseline_or_post_runs(rig, capsys):
+    rig.instance.revisions[BRANCH] = rig.instance.revisions[DEVELOP]
+    assert rig.run("origin/develop") == 0
+    capsys.readouterr()
+    assert _check(rig, "origin/develop") == 0
+    assert _check(rig, "origin/develop", baseline=True) == 1
+    out = capsys.readouterr().out
+    # The digest is printed either way.
+    assert out.count(f"origin/develop: {DEVELOP[:9]}, engine digest") == 2
+    assert "with --baseline or --post it makes the baseline" in out
+    gh = base_post.FakeGh(head=DEVELOP)
+    poster = post.Poster(gh=gh, number=7)
+    poster.open()
+    assert _check(rig, "origin/develop", post=poster) == 1
+
+
+def test_the_check_with_post_posts_nothing(rig):
+    gh = base_post.FakeGh(head=BRANCH)
+    assert _post(rig, gh) == 0
+    _docs_head(rig)
+    gh.head = DOCS
+    [before] = gh.bench_comments()
+    calls = len(gh.calls)
+    poster = post.Poster(gh=gh, number=7)
+    poster.open()
+    assert _check(rig, post=poster) == 0
+    assert gh.bench_comments() == [before]
+    assert gh.calls[calls:] == [("pull", 7)]
+    assert len(rig.state()["cards"]) == 1
+
+
+def test_the_check_says_a_card_the_scrub_now_refuses_would_run(rig, capsys):
+    assert rig.run("topic") == 0
+    card = rig.card_dir() / "card.md"
+    card.write_text(card.read_text() + "Zeppelin\n")
+    rig.instance.names["names"].append("Zeppelin lab")
+    _docs_head(rig)
+    capsys.readouterr()
+    assert _check(rig) == 1
+    assert "refused by the scrub" in capsys.readouterr().out
+
+
+def test_the_check_that_cannot_tell_says_why(rig, monkeypatch, capsys):
+    assert rig.run("topic") == 0
+    _docs_head(rig)
+
+    def restoring():
+        raise RuntimeError("cannot read the database: it is being restored")
+
+    monkeypatch.setattr(rig.instance, "private_names", restoring)
+    capsys.readouterr()
+    assert _check(rig) == 2
+    assert "cannot tell (RuntimeError: cannot read the database" in (
+        capsys.readouterr().out
+    )
+    assert _check(rig, sets=["Zz"]) == 2
+
+
+def test_the_command_line_checks_while_another_command_holds_the_lock(
+    rig, monkeypatch, capsys
+):
+    assert rig.run("topic") == 0
+    _docs_head(rig)
+    real = brun.BenchRun
+
+    def runner(**kwargs):
+        monkeypatch.setattr(brun, "BenchRun", real)
+        try:
+            return rig.runner()
+        finally:
+            monkeypatch.setattr(brun, "BenchRun", runner)
+
+    monkeypatch.setattr(brun, "BenchRun", runner)
+    argv = ["--home", str(rig.home.root), "run", "topic", "--check"]
+    with rig.home.lock():
+        assert bench.main(argv) == 0
+        assert bench.main(argv + ["--decoys"]) == 1
+        assert bench.main(argv + ["--fresh"]) == 2
+    assert len(rig.state()["cards"]) == 1
+    assert "--fresh runs it regardless" in capsys.readouterr().err
+
+
+def test_the_check_names_a_failed_card_as_one_and_still_exits_0(rig, capsys):
+    # A card of the head exists whatever its gate says: a run would be served it.
+    rig.compare.verdict = "fail"
+    assert rig.run("topic") == 1
+    _docs_head(rig)
+    capsys.readouterr()
+    assert _check(rig) == 0
+    assert capsys.readouterr().out.count(", FAIL\n") == 1
+
+
+def test_the_check_gives_the_verdict_against_the_baseline_a_run_would_read(rig, capsys):
+    rig.compare.edit = _develop_misses
+    rig.instance.revisions[BRANCH] = rig.instance.revisions[DEVELOP]
+    # Gated on its own the card misses; against develop's baseline it passes.
+    assert rig.run("topic") == 1
+    assert rig.run("origin/develop", baseline=True) == 1
+    _docs_head(rig)
+    capsys.readouterr()
+    assert _check(rig) == 0
+    assert _check(rig, baseline=True) == 0
+    out = capsys.readouterr().out
+    assert out.count(", FAIL\n") == 1 and out.count(", PASS\n") == 1
+    assert out.index(", FAIL\n") < out.index(", PASS\n")
+    assert len(rig.compare.calls) == 2
+
+
+def test_the_check_names_a_card_without_a_gate_as_written(rig, capsys):
+    rig.compare.edit = lambda card: card.pop("gate", None)
+    rig.run("topic")
+    _docs_head(rig)
+    capsys.readouterr()
+    assert _check(rig) == 0
+    assert ", WRITTEN\n" in capsys.readouterr().out

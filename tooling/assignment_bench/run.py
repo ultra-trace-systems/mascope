@@ -2625,11 +2625,64 @@ class BenchRun:
             return None
         return self._reuse(ref, post, say, **found)
 
+    def check(
+        self,
+        ref: str,
+        sets: list[str] | None = None,
+        decoys: bool = False,
+        baseline: bool = False,
+        post: bench_post.Poster | None = None,
+        batch: bool = False,
+    ) -> int:
+        """Whether ``ref``'s head would get a card without a run: the lookup
+        :meth:`reuse` makes for the same request, stopped before it writes.
+
+        It prints the head's engine digest and its three parts, then the
+        card a run would be served (its folder, ref, commit, when it was
+        made and its verdict) or why there is none. It writes nothing,
+        posts nothing, takes no lock and queues nothing; of the database it
+        reads the instance's names, as the reuse does for the scrub, and
+        with ``post`` it reads the PR.
+
+        :return: 0 when such a card exists, 1 when the head would run, 2
+            when it cannot tell (an unknown set, a ref it cannot resolve, a
+            database that does not answer): a run would meet the same.
+        """
+        baseline = baseline or post is not None
+
+        def seen(sha: str, engine: dict) -> None:
+            _say(f"{ref}: {sha[:9]}, engine digest {engine['digest'][:12]}")
+            for part in ("tree", "tool", "bench"):
+                _say(f"  {part} {engine[part][:12]}")
+
+        try:
+            found = self._reusable(
+                ref, sets, decoys, baseline, post, _say, batch, seen=seen
+            )
+        except Exception as error:
+            why = " ".join(str(error).split())[-300:]
+            _say(f"cannot tell ({type(error).__name__}: {why})")
+            return 2
+        if found is None:
+            _say(f"no card: a run of {ref} would run")
+            return 1
+        source, was = found["source"], found["source"]["summary"]
+        gate = found["made"].get("gate")
+        verdict = gate["verdict"] if gate else was["card"]["verdict"]
+        _say(
+            f"card: {self.home.cards / source['path']}, of {was['ref']} at "
+            f"{str(was['sha'])[:9]}, made {was.get('finished')}, {verdict.upper()}"
+        )
+        _say(f"a run of {ref} would be served this card without a run")
+        return 0
+
     def _reusable(
-        self, ref, sets, decoys, baseline, post, say, batch=False
+        self, ref, sets, decoys, baseline, post, say, batch=False, seen=None
     ) -> dict | None:
         """What :meth:`reuse` writes as ``ref``'s card, or None when it runs.
 
+        :param seen: Called with the head's commit and its engine digest
+            (:func:`engine_digest`) once they are read, before the lookup.
         :raises: Whatever stops it reading the state, the ref, the baseline
             or the deny list: the caller leaves that to a run.
         """
@@ -2637,13 +2690,15 @@ class BenchRun:
         chosen = choose_sets(state, sets)
         sha = self.instance.resolve(ref)
         develop = self.instance.develop_sha()
+        engine = engine_digest(self.instance, sha, state, self.tool)
+        if seen is not None:
+            seen(sha, engine)
         if baseline and sha == develop:
             say(
                 f"{ref} is develop's head, and with --baseline or --post it makes "
                 "the baseline: it runs"
             )
             return None
-        engine = engine_digest(self.instance, sha, state, self.tool)
         source = self._source(state, engine["digest"], chosen, decoys, batch)
         if source is None:
             say(
