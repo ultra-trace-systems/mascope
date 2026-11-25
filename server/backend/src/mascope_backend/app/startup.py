@@ -9,8 +9,8 @@ Tasks:
 - File system cleanup and setup
 - The deployment's identity, generated on the first start
 - Application state reset (stuck batch recovery, interrupted file processing)
-- Idempotent data initialization (acquisition datasets, the ionization
-  mechanisms, modes and collections Mascope ships)
+- Idempotent data initialization (acquisition datasets, the environments,
+  the ionization mechanisms, modes and collections Mascope ships)
 """
 
 import os
@@ -18,6 +18,9 @@ import shutil
 
 from mascope_backend.api.controllers.dataset.acquisition.service import (
     create_acquisition_datasets,
+)
+from mascope_backend.api.new.metadata.environment_service import (
+    ensure_shipped_environments,
 )
 from mascope_backend.api.new.notifications.service import (
     purge_read_notifications,
@@ -60,6 +63,8 @@ async def init_main_process() -> None:
       of to the admins and owners, each file once
     - Purge notifications read long ago
     - Auto-create missing acquisition datasets for all instruments
+    - Seed the environments Mascope ships, and write the registry's keys as
+      the environment field's values
     - Seed the ionization mechanisms, modes and collections Mascope ships,
       building the target ions of the library's compounds for a mechanism it
       lacked
@@ -118,6 +123,17 @@ async def init_main_process() -> None:
 
         runtime.logger.info("Main process: initializing acquisition datasets")
         await create_acquisition_datasets()
+
+        # Logged and carried, as the ionization seed below: a server without
+        # its starting environments still serves, and the next start tries
+        # again.
+        runtime.logger.info("Main process: seeding the environments Mascope ships")
+        try:
+            await ensure_shipped_environments()
+        except Exception as e:
+            runtime.logger.error(
+                f"Main process: could not seed the shipped environments: {e}"
+            )
 
         # Logged and carried, not raised: without them a server still serves,
         # its runs recording each channel they could not search, and the next

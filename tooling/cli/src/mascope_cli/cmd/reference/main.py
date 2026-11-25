@@ -384,6 +384,7 @@ def sync(
         f"{result.skipped:,} skipped)."
     )
     runtime.logger.info(f"Matched as: {result.scope.describe()}.")
+    runtime.logger.info(f"Where it applies: {result.selection.describe()}.")
     for reference in result.citations:
         runtime.logger.info(f"Cites: {citation_text(reference)}")
     if stage:

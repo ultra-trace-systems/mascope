@@ -42,6 +42,8 @@ Table(
     Column("polarity", String),
     Column("kind", String),
     Column("citations", JSON),
+    Column("applies_to_contexts", JSON),
+    Column("always_active", Boolean),
 )
 
 Table(

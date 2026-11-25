@@ -34,6 +34,14 @@ data, authored by peaky's owner (PKY-35, PKY-39), and it reaches the species'
 record: a row at level 4a whose formula a cited list marks so reads 2b, the
 structure named with the work that marks it (step 5.8b of the assignment
 quality plan).
+
+A list may also say where it applies. ``applies_to_contexts`` names its
+regimes, the kinds of chemistry its species come from, from a fixed vocabulary
+(:data:`REGIMES`), and ``always_active`` says it is read for every sample.
+The key keeps its schema 1 name; a person reads its values as regimes
+(decision 16 of ``docs/dev/sample_filters_and_metadata.md``). The environment
+registry joins a sample's environments to the regimes, and a source row
+records both facts (:mod:`mascope_reference.selection`).
 """
 
 import json
@@ -72,6 +80,18 @@ POLARITIES = frozenset({"positive", "negative", "both"})
 #: list names shows beside its name. Whether they are background in a dataset
 #: is the batch's question; the tag is the list's reading, not a verdict.
 LIST_TAGS = frozenset({"background"})
+
+#: The regimes a list may declare in ``applies_to_contexts``: the kinds of
+#: chemistry a list's species come from, each with what it names. An
+#: environment names regimes from the same vocabulary, which is what lets the
+#: two meet; a new regime is added here, with the list that declares it.
+REGIMES: dict[str, str] = {
+    "biogenic_soa": "Secondary organic aerosol from biogenic precursors",
+    "monoterpene_ox": "Oxidation of monoterpenes",
+    "ap_ox": "Oxidation of alpha-pinene",
+    "limonene_ox": "Oxidation of limonene",
+    "isoprene_ox": "Oxidation of isoprene",
+}
 
 _LIST_KEYS = frozenset(
     {
@@ -414,7 +434,8 @@ def list_problems(
     fits a source name, a label, a version, a licence - one of ``licenses`` when
     given, the tags the Stage A licence gate knows - and at least one reference,
     each with a DOI or a valid ISBN; any ``tags`` it carries are from
-    :data:`LIST_TAGS`. Every species needs a neutral molecular formula with a
+    :data:`LIST_TAGS`, and any regimes it declares from :data:`REGIMES`.
+    Every species needs a neutral molecular formula with a
     non-negative DBE, odd-electron only in a list that allows radicals, and
     agreeing with any radical claim of its own; and each identity is listed
     once - a formula may repeat only as isomers under different names. A
@@ -465,6 +486,12 @@ def list_problems(
     for tag in peak_list.tags:
         if tag not in LIST_TAGS:
             problems.append(f"tag '{tag}' is not one of {', '.join(sorted(LIST_TAGS))}")
+    for regime in peak_list.applies_to_contexts:
+        if regime not in REGIMES:
+            problems.append(
+                f"regime '{regime}' in applies_to_contexts is not one of "
+                f"{', '.join(sorted(REGIMES))}"
+            )
     if peak_list.polarity is not None and peak_list.polarity not in POLARITIES:
         problems.append(
             f"polarity '{peak_list.polarity}' is not one of "

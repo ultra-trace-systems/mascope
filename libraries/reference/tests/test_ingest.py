@@ -23,6 +23,7 @@ from mascope_reference.schema import (
     reference_source,
 )
 from mascope_reference.scope import MIRROR_WINDOW, UNBOUNDED, SourceScope
+from mascope_reference.selection import SourceSelection
 
 
 SDF_TWO = """> <PUBCHEM_COMPOUND_CID>
@@ -359,6 +360,75 @@ def test_the_publications_the_caller_names_are_recorded(sync_engine, tmp_path):
     )
     with sync_engine.connect() as conn:
         assert _citations(conn, "v1") == cited
+
+
+# --- Where a load applies ----------------------------------------------------------
+
+
+def _selection(conn, version: str) -> tuple:
+    row = conn.execute(
+        select(
+            reference_source.c.applies_to_contexts,
+            reference_source.c.always_active,
+        ).where(reference_source.c.version == version)
+    ).one()
+    return row.applies_to_contexts, row.always_active
+
+
+def _list_with(tmp_path: Path, name: str, **header) -> Path:
+    data = {
+        "schema_version": 2,
+        "id": name,
+        "data_version": "v1",
+        "species": [{"formula": "C10H16O7"}],
+        **header,
+    }
+    return _write(tmp_path, f"{name}.json", json.dumps(data))
+
+
+def test_a_list_file_records_its_regimes_and_always_active(sync_engine, tmp_path):
+    regimes = _list_with(
+        tmp_path, "regimes", applies_to_contexts=["monoterpene_ox", "biogenic_soa"]
+    )
+    always = _list_with(tmp_path, "always", always_active=True)
+    result = ingest(sync_engine, PeakListAdapter(), regimes, version="r1")
+    ingest(sync_engine, PeakListAdapter(), always, version="a1")
+
+    assert result.selection == SourceSelection(("monoterpene_ox", "biogenic_soa"))
+    with sync_engine.connect() as conn:
+        assert _selection(conn, "r1") == (["monoterpene_ox", "biogenic_soa"], None)
+        assert _selection(conn, "a1") == (None, True)
+
+
+def test_a_list_that_declares_nothing_keeps_both_null(sync_engine, tmp_path):
+    # An empty array and an explicit false say what a missing key says.
+    path = _list_with(tmp_path, "plain", applies_to_contexts=[], always_active=False)
+    ingest(sync_engine, PeakListAdapter(), path, version="v1")
+    with sync_engine.connect() as conn:
+        assert _selection(conn, "v1") == (None, None)
+
+
+def test_a_database_or_a_csv_declares_no_regimes(sync_engine, tmp_path):
+    csv = _write(tmp_path, "list.csv", "name,formula\nD4,C8H24O4Si4\n")
+    ingest(sync_engine, CustomAdapter(), csv, version="v1", source_name="my-list")
+    sdf = _write(tmp_path, "pubchem.sdf", SDF_TWO)
+    ingest(sync_engine, PubChemAdapter(), sdf, version="v2")
+    with sync_engine.connect() as conn:
+        assert _selection(conn, "v1") == (None, None)
+        assert _selection(conn, "v2") == (None, None)
+
+
+def test_the_selection_the_caller_names_is_recorded(sync_engine, tmp_path):
+    path = _list_with(tmp_path, "named", applies_to_contexts=["isoprene_ox"])
+    ingest(
+        sync_engine,
+        PeakListAdapter(),
+        path,
+        version="v1",
+        selection=SourceSelection(always_active=True),
+    )
+    with sync_engine.connect() as conn:
+        assert _selection(conn, "v1") == (None, True)
 
 
 # --- Deactivation ------------------------------------------------------------------

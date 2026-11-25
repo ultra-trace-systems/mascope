@@ -90,6 +90,7 @@ async def test_a_start_looks_through_failed_files(monkeypatch, tmp_path):
         "reset_interrupted_processing",
         "purge_read_notifications",
         "create_acquisition_datasets",
+        "ensure_shipped_environments",
         "ensure_system_ionization",
     ):
         monkeypatch.setattr(startup, step, AsyncMock())

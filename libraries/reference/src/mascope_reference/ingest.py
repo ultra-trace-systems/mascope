@@ -10,9 +10,11 @@ while older loads stay on disk for reproducibility (``prune=True`` drops them).
 
 The source row also records how the load's compounds may be matched - its
 window, its radical allowance and its polarity (:mod:`mascope_reference.scope`) -
-as the adapter says of the dump unless the caller says otherwise, and the
+as the adapter says of the dump unless the caller says otherwise, the
 publications the source comes from: a list file's own references, or the ones
-the caller gives.
+the caller gives, and which samples read it: a list file's regimes and
+``always_active`` (:mod:`mascope_reference.selection`), null for any other
+dump.
 
 :func:`ingest_spectra` loads a spectral library the same way, into
 ``reference_spectrum``: a versioned load on its own source row, promoted only
@@ -52,6 +54,7 @@ from mascope_reference.schema import (
     reference_spectrum,
 )
 from mascope_reference.scope import SourceScope, scope_of
+from mascope_reference.selection import UNDECLARED, SourceSelection
 from mascope_reference.spectrum import (
     SkippedSpectrum,
     SpectrumRecord,
@@ -95,6 +98,8 @@ class IngestResult:
     scope: SourceScope
     #: The publications the source row records it comes from.
     citations: tuple[dict, ...] = ()
+    #: Which samples the source row records read it.
+    selection: SourceSelection = UNDECLARED
 
 
 @dataclass
@@ -216,6 +221,16 @@ def _citations_of(adapter, path: Path) -> tuple[dict, ...]:
     """
     read = getattr(adapter, "citations", None)
     return () if read is None else tuple(read(path))
+
+
+def _selection_of(adapter, path: Path) -> SourceSelection:
+    """Which samples a load of this dump records read it.
+
+    An adapter whose dump says - a list file's header does - reads it with a
+    ``selection(path)`` method of its own; any other declares nothing.
+    """
+    read = getattr(adapter, "selection", None)
+    return UNDECLARED if read is None else read(path)
 
 
 def _refuse_other_kind(conn: Connection, name: str, kind: str) -> None:
@@ -344,6 +359,7 @@ def ingest(
     progress: Callable[[int], None] | None = None,
     scope: SourceScope | None = None,
     citations: Sequence[dict] | None = None,
+    selection: SourceSelection | None = None,
 ) -> IngestResult:
     """Ingest one source dump as a new versioned load.
 
@@ -371,6 +387,9 @@ def ingest(
         each a reference as :func:`mascope_reference.peaklist.recorded_reference`
         keeps one. Defaults to what the dump names: a list file's references,
         none for anything else.
+    :param selection: Which samples the source row records read the source.
+        Defaults to what the dump declares: a list file's regimes and
+        ``always_active``, nothing for anything else.
     :return: An :class:`IngestResult` summarizing the load.
     :raises FileNotFoundError: If ``path`` does not exist.
     :raises EmptyIngest: If an activating load yielded no usable records. The
@@ -384,6 +403,8 @@ def ingest(
     if scope is None:
         scope = scope_of(adapter, path)
     citations = _citations_of(adapter, path) if citations is None else tuple(citations)
+    if selection is None:
+        selection = _selection_of(adapter, path)
     with engine.begin() as conn:
         source_id = _begin_load(
             conn,
@@ -393,6 +414,7 @@ def ingest(
             kind=COMPOUND_KIND,
             citations=list(citations),
             **scope.row_values(),
+            **selection.row_values(),
         )
         ingested, skipped = _insert_rows(
             conn,
@@ -425,6 +447,7 @@ def ingest(
         skipped=skipped,
         scope=scope,
         citations=citations,
+        selection=selection,
     )
 
 

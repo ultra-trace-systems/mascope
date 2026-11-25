@@ -202,6 +202,15 @@ def test_the_publication_the_flags_name_reaches_the_compound_ingest(
     ]
 
 
+def test_a_compound_load_reports_where_it_applies(
+    monkeypatch, csv_dump, compound_ingest
+):
+    lines: list[str] = []
+    monkeypatch.setattr(script.runtime.logger, "info", lines.append)
+    _run(monkeypatch, "custom", str(csv_dump), "--version", "1", "--name", "my-list")
+    assert "Where it applies: no regimes." in lines
+
+
 def test_the_publication_the_flags_name_reaches_the_spectral_ingest(
     monkeypatch, dump, spectral_ingest
 ):

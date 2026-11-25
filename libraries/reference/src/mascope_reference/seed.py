@@ -16,7 +16,9 @@ A list's source row records how its compounds may be matched: unbounded, with
 the radical allowance and the polarity its header names
 (:func:`mascope_reference.adapters.peaklist.list_scope`). It also records the
 publications the list comes from, its header's references
-(:func:`mascope_reference.adapters.peaklist.list_citations`). A list whose
+(:func:`mascope_reference.adapters.peaklist.list_citations`), and where the
+list applies, its header's regimes and ``always_active``
+(:func:`mascope_reference.adapters.peaklist.list_selection`). A list whose
 version is already active is not loaded again, but its row is brought up to
 date with what the list says, so a deployment whose rows predate those fields,
 or whose list changed them without a new version, only has to run the seed.
@@ -34,11 +36,13 @@ from mascope_reference.adapters.peaklist import (
     PeakListAdapter,
     list_citations,
     list_scope,
+    list_selection,
 )
 from mascope_reference.ingest import DEFAULT_BATCH_SIZE, ingest
 from mascope_reference.peaklist import PeakList, admitted_species, read_peak_list
 from mascope_reference.schema import reference_source
 from mascope_reference.scope import SourceScope
+from mascope_reference.selection import SourceSelection
 
 
 #: Where the shipped lists live inside the package.
@@ -57,8 +61,8 @@ class SeedOutcome:
     #: Radicals a list without ``allow_radicals`` kept out of the load.
     held_back: int = 0
     #: Whether an already-active version's row said something other than the
-    #: list about how its compounds may be matched or what it cites, and was
-    #: brought up to date.
+    #: list about how its compounds may be matched, what it cites or where it
+    #: applies, and was brought up to date.
     refreshed: bool = False
 
 
@@ -123,8 +127,8 @@ def seed(
 
     A list whose version is already the active one is not loaded again, so
     seeding twice changes nothing - which is what lets the demo seed on every
-    start. Its row's window, radical allowance, polarity and citations are
-    brought up to date with the list's all the same. A newer version replaces the older one
+    start. Its row's window, radical allowance, polarity, citations, regimes
+    and ``always_active`` are brought up to date with the list's all the same. A newer version replaces the older one
     the way a re-sync does, and ``prune`` then deletes the load it replaced.
 
     :param engine: Synchronous engine for the target database.
@@ -147,6 +151,7 @@ def seed(
         held_back = len(peak_list.species) - sum(1 for _ in admitted_species(peak_list))
         scope = list_scope(peak_list)
         citations = list_citations(peak_list)
+        selection = list_selection(peak_list)
         if _active_version(engine, peak_list.id) == version:
             outcomes.append(
                 SeedOutcome(
@@ -154,7 +159,9 @@ def seed(
                     version,
                     loaded=False,
                     held_back=held_back,
-                    refreshed=_refresh_row(engine, peak_list.id, scope, citations),
+                    refreshed=_refresh_row(
+                        engine, peak_list.id, scope, citations, selection
+                    ),
                 )
             )
             continue
@@ -187,13 +194,16 @@ def _refresh_row(
     source_name: str,
     scope: SourceScope,
     citations: tuple[dict, ...],
+    selection: SourceSelection,
 ) -> bool:
-    """Write a list's scope and citations on its active row, where it says otherwise.
+    """Write what a list says of itself on its active row, where the row says otherwise.
 
     :param engine: Synchronous engine for the target database.
     :param source_name: The list's id, its source's name.
     :param scope: What the list says of how its compounds may be matched.
     :param citations: The publications the list cites.
+    :param selection: Where the list applies: its regimes and
+        ``always_active``.
     :return: Whether the row changed.
     """
     with engine.begin() as conn:
@@ -204,6 +214,8 @@ def _refresh_row(
                 reference_source.c.allow_radicals,
                 reference_source.c.polarity,
                 reference_source.c.citations,
+                reference_source.c.applies_to_contexts,
+                reference_source.c.always_active,
             )
             .where(reference_source.c.name == source_name)
             .where(reference_source.c.is_active.is_(True))
@@ -211,15 +223,34 @@ def _refresh_row(
         stale = [
             row.reference_source_id
             for row in rows
-            if _scope_or_none(row) != scope or row.citations != list(citations)
+            if _scope_or_none(row) != scope
+            or row.citations != list(citations)
+            or _selection_written(row) != selection.row_values()
         ]
         if stale:
             conn.execute(
                 update(reference_source)
                 .where(reference_source.c.reference_source_id.in_(stale))
-                .values(citations=list(citations), **scope.row_values())
+                .values(
+                    citations=list(citations),
+                    **scope.row_values(),
+                    **selection.row_values(),
+                )
             )
     return bool(stale)
+
+
+def _selection_written(row) -> dict:
+    """The two selection columns exactly as the row holds them.
+
+    Compared as written, not as :class:`SourceSelection` reads them, so a row
+    holding an empty array or a false where the list says nothing is brought
+    onto the nulls a load writes.
+    """
+    return {
+        "applies_to_contexts": row.applies_to_contexts,
+        "always_active": row.always_active,
+    }
 
 
 def _scope_or_none(row) -> SourceScope | None:

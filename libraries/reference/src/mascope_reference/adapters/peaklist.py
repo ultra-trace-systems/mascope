@@ -26,7 +26,8 @@ A list is its own bound, so its source row is written unbounded, with the
 allowance and the polarity its header names (:func:`list_scope`). The row also
 records the publications the list comes from, its header's ``references``
 (:func:`list_citations`), so a list loaded from a file of its own is cited as
-a shipped one is.
+a shipped one is, and where the list applies, its header's regimes and
+``always_active`` (:func:`list_selection`).
 """
 
 from collections.abc import Iterator
@@ -41,6 +42,7 @@ from mascope_reference.peaklist import (
 )
 from mascope_reference.record import ReferenceRecord
 from mascope_reference.scope import POLARITIES, UNBOUNDED, SourceScope
+from mascope_reference.selection import SourceSelection
 
 
 def list_scope(peak_list: PeakList) -> SourceScope:
@@ -73,6 +75,18 @@ def list_citations(peak_list: PeakList) -> tuple[dict, ...]:
     )
 
 
+def list_selection(peak_list: PeakList) -> SourceSelection:
+    """Which samples a list's source row records read it: as its header says.
+
+    :param peak_list: The list, read.
+    :return: The regimes its ``applies_to_contexts`` names and its
+        ``always_active``, each null where the header leaves it out.
+    """
+    return SourceSelection.declared(
+        peak_list.applies_to_contexts, peak_list.always_active
+    )
+
+
 class PeakListAdapter:
     """Adapter for reference list files (JSON, schema 1 or 2)."""
 
@@ -94,6 +108,10 @@ class PeakListAdapter:
     def citations(self, path: Path) -> tuple[dict, ...]:
         """The publications a load of this list file records on its source row."""
         return list_citations(read_peak_list(path))
+
+    def selection(self, path: Path) -> SourceSelection:
+        """Which samples a load of this list file records read it."""
+        return list_selection(read_peak_list(path))
 
     def parse(self, path: Path) -> Iterator[ReferenceRecord]:
         peak_list = read_peak_list(path)

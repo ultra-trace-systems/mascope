@@ -23,7 +23,8 @@ unbounded - and ``--elements``, ``--max-carbon``, ``--max-mass``,
 ``--allow-radicals`` and ``--polarity`` override it, as they do for the CLI.
 It records the publications the source comes from too - a list file's own
 references - and ``--citation`` with ``--doi`` or ``--isbn`` names one in their
-place.
+place, and where the source applies: a list file's regimes
+(``applies_to_contexts``) and ``always_active``, null for anything else.
 
 An MS/MS spectral library loads the same way, its spectra rather than
 compounds, with no window to override:
@@ -199,6 +200,7 @@ def main() -> None:
         f"{result.skipped:,} skipped)."
     )
     runtime.logger.info(f"Matched as: {result.scope.describe()}.")
+    runtime.logger.info(f"Where it applies: {result.selection.describe()}.")
     for reference in result.citations:
         runtime.logger.info(f"Cites: {citation_text(reference)}")
 
