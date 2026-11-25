@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
+from asyncpg.exceptions import TooManyConnectionsError
 from sqlalchemy import delete, select, update
 
 from mascope_backend.api.new.peak_assignments import routes as routes_module
@@ -504,6 +505,46 @@ class TestReclamation:
         async with async_session_factory() as session:
             reloaded = await session.get(PeakAssignmentRun, run.peak_assignment_run_id)
         assert reloaded.status == "failed"
+        assert await in_flight_run_id(assign_batch["measured"]) is None
+
+    @pytest.mark.asyncio
+    async def test_a_run_whose_failure_the_database_first_refuses_is_failed(
+        self, assign_batch, async_session_factory, monkeypatch
+    ):
+        """The incident this replays: Postgres runs out of connections, the
+        engine's next call fails on that, and so do the first attempts at
+        recording the failure. The run has to end failed once the database
+        answers again, not stay 'running' and hold its sample for hours."""
+        run = await create_pending_run(assign_batch["measured"])
+        real_session = service_module.async_session
+        refusals = []
+
+        def _refusing_session():
+            if len(refusals) < 2:
+                refusals.append("refused")
+                raise TooManyConnectionsError("sorry, too many clients already")
+            return real_session()
+
+        async def _engine_refused(ctx):
+            monkeypatch.setattr(service_module, "async_session", _refusing_session)
+            raise TooManyConnectionsError("sorry, too many clients already")
+
+        monkeypatch.setattr(service_module, "run_stages", _engine_refused)
+        monkeypatch.setattr(service_module, "_FINALIZE_RETRY_DELAYS_S", (0,) * 6)
+
+        with pytest.raises(TooManyConnectionsError):
+            await service_module._assign_sample(
+                sample_item_id=assign_batch["measured"],
+                run_id=run.peak_assignment_run_id,
+                process_id="proc-1",
+            )
+
+        assert len(refusals) == 2
+        async with async_session_factory() as session:
+            reloaded = await session.get(PeakAssignmentRun, run.peak_assignment_run_id)
+        assert reloaded.status == "failed"
+        assert "too many clients" in reloaded.error
+        assert reloaded.peak_assignment_run_utc_completed is not None
         assert await in_flight_run_id(assign_batch["measured"]) is None
 
 
