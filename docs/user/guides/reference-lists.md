@@ -407,7 +407,9 @@ belongs to the whole list, and its species are neutral formulas:
     4a, then reads 2b: the structure named, with the list and the work. A
     marked species needs a `name`, and its formula is listed once in its list:
     an isomer beside it would say the formula has two. The checks hold a
-    shipped list to all three. A mark that cites no DOI or ISBN is not loaded.
+    shipped list to all three. A list you load yourself keeps a mark that
+    cites no DOI or ISBN on its record, as it keeps any reference, but no row
+    reads 2b on it.
 - **`tags` say how a reader should take the list's compounds**, from a fixed
   vocabulary the checks hold a list to. The one tag is `background`: the
   cyclic siloxanes and caprolactam carry it, because they are a background of
