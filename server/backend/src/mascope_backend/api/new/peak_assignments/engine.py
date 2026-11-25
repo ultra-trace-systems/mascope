@@ -200,6 +200,14 @@ def is_target_library_row(assignment: dict) -> bool:
     )
 
 
+def named_by_a_list(assignment: dict) -> bool:
+    """Whether a reference list names a ledger row's neutral, which Stage A writes into
+    its provenance whatever won the peak (``reference_identities``): a list's name, not
+    the library's, spares the row its composition caps (``formula_shape.exempt``)."""
+    identities = (assignment.get("provenance") or {}).get(REFERENCE_IDENTITIES_COL)
+    return isinstance(identities, list) and bool(identities)
+
+
 def is_reference_mirror_row(assignment: dict) -> bool:
     """Whether a ledger row was committed for a reference mirror's formula.
 

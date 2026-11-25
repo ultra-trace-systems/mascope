@@ -3,7 +3,7 @@ from dataclasses import asdict, dataclass, field
 
 import numpy as np
 
-from mascope_tools.composition import config
+from mascope_tools.composition import config, formula_shape
 from mascope_tools.composition.envelope_tolerance import EnvelopeTolerance
 
 
@@ -181,10 +181,12 @@ class PatternScoring:
 class HeuristicFilterConfig:
     """Heuristic filter parameters
 
-    carbon_element_ratio_range uses default values from
-    mascope_tools.composition.config.DEFAULT_ELEMENTAL_RATIO_RANGE if not provided,
-    while non_carbon_element_ratio_range defaults to an empty dict, meaning no
-    filtering based on non-carbon element ratios.
+    carbon_element_ratio_range defaults to the hard ratio bounds of the
+    formula-shape table (``formula_shape.hard_ratio_bounds``), which hold none:
+    every ratio is graded or a tier cap (decision MAS-979), and the hard bound
+    on a formula is Senior's (``use_senior``). A caller may still hand it bounds
+    of its own. non_carbon_element_ratio_range defaults to an empty dict,
+    meaning no filtering based on non-carbon element ratios.
 
     Parameter examples:
     carbon_element_ratio_range = {
@@ -205,7 +207,7 @@ class HeuristicFilterConfig:
     )
 
     carbon_element_ratio_range: dict[str, tuple[float, float]] = field(
-        default_factory=lambda: config.DEFAULT_ELEMENTAL_RATIO_RANGE.copy()
+        default_factory=lambda: formula_shape.hard_ratio_bounds()
     )
 
     # Apply the Lewis/Senior structural feasibility cut (Rule 2). Off by default
@@ -218,8 +220,8 @@ class HeuristicFilterConfig:
     # `profiles` ("H/C", "O/C", "N/C", "DBE/C") and evaluated on EFFECTIVE counts
     # rather than raw ones -- see `rule_context_ratios`, which applies them.
     #
-    # Deliberately separate from `carbon_element_ratio_range`, which carries the
-    # universal Wiley bands and is applied per raw element pair: a context window
+    # Deliberately separate from `carbon_element_ratio_range`, which carries
+    # raw-count bounds applied per element pair: a context window
     # is a much tighter statement about one matrix, and reading it through the
     # raw-count rule would reject urea (H/C 4.0) and trichloroacetic acid
     # (H/C 0.5) on ratios neither of them violates. Empty by default, so a caller
@@ -232,6 +234,12 @@ class HeuristicFilterConfig:
     # nitrate is the reagent on an Orbitrap and the context makes
     # organonitrates (`profiles.nox_skeleton_applies`).
     context_nox_skeleton: bool = False
+
+    # Refuse a formula outside the context's windows rather than grade it
+    # (`heuristic_filter.rule_context_ratios`). Off: the windows are a floored
+    # factor of the plausibility (`heuristic_filter.graded_in`), on only where a
+    # context opts in (`profiles.ChemistryContext.windows_gate`).
+    context_windows_gate: bool = False
 
 
 @dataclass

@@ -43,7 +43,9 @@ def groups(formula, windows=AMBIENT):
 def kept(formulas, skeleton):
     frame = pl.DataFrame({"formula": list(formulas)})
     config = HeuristicFilterConfig(
-        context_ratio_windows=AMBIENT, context_nox_skeleton=skeleton
+        context_ratio_windows=AMBIENT,
+        context_nox_skeleton=skeleton,
+        context_windows_gate=True,
     )
     mask, _ = rule_context_ratios(frame, heuristics_config=config)
     return set(frame.filter(mask).get_column("formula").to_list())

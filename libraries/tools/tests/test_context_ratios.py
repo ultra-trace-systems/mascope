@@ -1,18 +1,30 @@
-"""``rule_context_ratios``: the chemistry context's Van Krevelen windows.
+"""The chemistry context's Van Krevelen windows: a floored factor, and a gate on request.
 
-The rule exists because an unconstrained grid fits nitrogen- and oxygen-stuffed
+The windows exist because an unconstrained grid fits nitrogen- and oxygen-stuffed
 formulas to any peak within tolerance - 13-17% of the measured baseline's
-committed formulas carry five or more nitrogens. What it must not do is reject
+committed formulas carry five or more nitrogens. What they must not do is judge
 the small and the halogenated molecules a CIMS source is most sensitive to,
-which is why it reads effective counts and stands down below a carbon floor.
+which is why they read effective counts and stand down below a carbon floor.
+
+Since decision MAS-979 they grade a formula rather than refuse it
+(``context_window_plausibility``, read through ``graded_in``): under a wrong
+context the gate removed genuine species (#3188). ``rule_context_ratios``
+refuses only where a caller opts in to the gate, and the gate's tests below ask
+it so; the factor reads the same windows.
 """
 
 import polars as pl
 import pytest
 
+from mascope_tools.composition import formula_shape
 from mascope_tools.composition import profiles as P
 from mascope_tools.composition.heuristic_filter import (
+    _plausibility,
     apply_heuristic_rules,
+    context_window_plausibility,
+    element_counts,
+    formula_plausibility,
+    graded_in,
     rule_context_ratios,
 )
 from mascope_tools.composition.models import HeuristicFilterConfig
@@ -21,12 +33,78 @@ from mascope_tools.composition.models import HeuristicFilterConfig
 AMBIENT = P.AMBIENT_AIR.ratio_windows()
 
 
-def _kept(formulas, windows=AMBIENT):
-    """The formulas the rule keeps, as a set."""
+def _kept(formulas, windows=AMBIENT, gate=True):
+    """The formulas the rule keeps, as a set: the gate, unless ``gate`` is off."""
     frame = pl.DataFrame({"formula": list(formulas)})
-    config = HeuristicFilterConfig(context_ratio_windows=windows)
+    config = HeuristicFilterConfig(
+        context_ratio_windows=windows, context_windows_gate=gate
+    )
     mask, _ = rule_context_ratios(frame, heuristics_config=config)
     return set(frame.filter(mask).get_column("formula").to_list())
+
+
+def _factor(formula, windows=AMBIENT, nox_skeleton=False):
+    return context_window_plausibility(
+        element_counts(formula), windows, nox_skeleton=nox_skeleton
+    )
+
+
+class TestTheWindowsGrade:
+    """#3188: outside a window a formula's score falls by the floored factor,
+    and nothing is refused."""
+
+    def test_the_rule_refuses_nothing_unless_the_gate_is_asked_for(self):
+        stuffed = ["C10H20N5O3", "C5H10O9", "C4H14O2", "CH2O9"]
+        assert _kept(stuffed, gate=False) == set(stuffed)
+
+    def test_a_formula_inside_every_window_keeps_its_plausibility(self):
+        assert _factor("C10H16O7") == 1.0
+        with graded_in(AMBIENT):
+            assert formula_plausibility("C10H16O7") == _plausibility("C10H16O7", None)
+
+    def test_a_formula_outside_a_window_is_lowered_by_the_floored_factor(self):
+        # N/C 0.5 against the ambient ceiling of 0.4: a quarter of the window's
+        # width past its edge is half credit, so 0.1 past a width of 0.4 is 0.5.
+        assert _factor("C10H20N5O3") == pytest.approx(0.5)
+        bare = _plausibility("C10H20N5O3", None)
+        with graded_in(AMBIENT):
+            graded = formula_plausibility("C10H20N5O3")
+        assert graded == pytest.approx(
+            max(formula_shape.PLAUSIBILITY_FLOOR, bare * 0.5)
+        )
+        assert formula_plausibility("C10H20N5O3") == bare  # the block has ended
+
+    def test_far_outside_a_window_the_factor_is_the_floor_not_zero(self):
+        # O/C 1.8 against a ceiling of 1.5 on a width of 1.5: 0.3 past it,
+        # short of half credit's 0.375. O/C 2.4 is past twice that.
+        assert _factor("C5H10O9") == pytest.approx(0.6)
+        assert _factor("C5H10O12") == pytest.approx(formula_shape.PLAUSIBILITY_FLOOR)
+        with graded_in(AMBIENT):
+            assert formula_plausibility("C5H10O12") >= formula_shape.PLAUSIBILITY_FLOOR
+
+    def test_the_span_is_the_tables(self, monkeypatch):
+        monkeypatch.setattr(formula_shape, "CONTEXT_WINDOW_SPAN", 0.5)
+        # 0.1 past a width of 0.4 is now an eighth of the way to half credit.
+        assert _factor("C10H20N5O3") == pytest.approx(0.75)
+
+    def test_below_the_carbon_floor_the_valence_checks_read_one_or_the_floor(self):
+        assert _factor("CH4N2O") == 1.0
+        assert _factor("CH2O9") == formula_shape.PLAUSIBILITY_FLOOR
+
+    def test_a_carbon_free_formula_is_not_judged(self):
+        assert _factor("HNO3") == 1.0
+
+    def test_no_windows_is_the_identity(self):
+        assert _factor("C10H20N5O3", {}) == 1.0
+        with graded_in({}):
+            assert formula_plausibility("C10H20N5O3") == _plausibility(
+                "C10H20N5O3", None
+            )
+
+    def test_the_skeleton_reading_lifts_an_organonitrate_inside_the_windows(self):
+        # A C5 dinitrate: O/C 1.6 as written, a C5 diol skeleton inside.
+        assert _factor("C5H8N2O8") < 1.0
+        assert _factor("C5H8N2O8", nox_skeleton=True) == 1.0
 
 
 class TestTheWindowsApply:
@@ -115,9 +193,21 @@ class TestInTheFilterChain:
         ]
         kept, _ = apply_heuristic_rules(
             candidates,
-            HeuristicFilterConfig(use_senior=True, context_ratio_windows=AMBIENT),
+            HeuristicFilterConfig(
+                use_senior=True,
+                context_ratio_windows=AMBIENT,
+                context_windows_gate=True,
+            ),
         )
         assert [row["formula"] for row in kept] == ["C10H16O7"]
+
+    def test_without_the_gate_the_chain_keeps_both(self):
+        candidates = [{"formula": "C10H16O7"}, {"formula": "C10H20N5O3"}]
+        kept, _ = apply_heuristic_rules(
+            candidates,
+            HeuristicFilterConfig(use_senior=True, context_ratio_windows=AMBIENT),
+        )
+        assert [row["formula"] for row in kept] == ["C10H16O7", "C10H20N5O3"]
 
     def test_the_default_config_filters_as_it_did_before_contexts(self):
         candidates = [{"formula": "C10H20N5O3"}]

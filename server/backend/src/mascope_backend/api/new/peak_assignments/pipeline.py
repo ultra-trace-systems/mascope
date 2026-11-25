@@ -45,6 +45,7 @@ import time
 import weakref
 from collections import Counter
 from collections.abc import Awaitable, Callable
+from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any, Optional
@@ -1005,11 +1006,10 @@ async def _propose_by_search(ctx: RunContext) -> None:
         scope=search_scope,
         excluded=assigned_peak_ids,
     )
-    # Every monoisotopic peak a list read is put to the search too. There the
-    # list's reading is one candidate beside the grid's, and a rival takes the
-    # peak only where its evidence beats the reading's by the list's prior
-    # (engine.LIST_PRIOR_WEIGHT); where none does, the grid's rivals are
-    # counted into the reading's density.
+    # Every monoisotopic peak a list read is put to the search too. There the list's
+    # reading is one candidate beside the grid's, and a rival takes the peak only where
+    # its evidence beats the reading's by the list's prior (engine.LIST_PRIOR_WEIGHT);
+    # where none does, the grid's rivals are counted into the reading's density.
     readings = (
         list_readings(
             ctx.stage_a,
@@ -1077,11 +1077,10 @@ async def _propose_by_search(ctx: RunContext) -> None:
     election = search.election = settle_list_election(ctx.stage_a, matches_df, readings)
     ctx.stage_a = election.stage_a
     search_scope["list_hits"] = election.summary
-    # -- A chlorine or bromine reading, proposed from its twin line rather than
-    # from an opened grid (step 3.6): a searched peak whose 37Cl or 81Br twin
-    # sits unexplained at the exact offset is searched again over carbon,
-    # hydrogen, oxygen and that halogen, and the reading replaces the peak's
-    # where it passes every gate.
+    # -- A chlorine or bromine reading, proposed from its twin line rather than from an
+    # opened grid (step 3.6): a searched peak whose 37Cl or 81Br twin sits unexplained
+    # at the exact offset is searched again over carbon, hydrogen, oxygen and that
+    # halogen, and the reading replaces the peak's where it passes every gate.
     search.matches, search.twin_records = await judging_loop._reread_halogen_twins(
         election.matches,
         frame,
@@ -2177,7 +2176,8 @@ async def run_stages(ctx: RunContext) -> RunContext:
     """Run the path's stages in order, from its start to the end.
 
     Every stage reads labelled ions at the purity the sample's ionization setup
-    carries (``custom_elements.labelled_purity``), whichever path runs it. A
+    carries (``custom_elements.labelled_purity``) on any path, and every stage
+    after the resolve grades in the run's context (``ResolvedProfile.graded``). A
     round (:data:`ROUND`) runs again from its first stage while the cap stage
     leaves the judging unsettled.
 
@@ -2186,12 +2186,15 @@ async def run_stages(ctx: RunContext) -> RunContext:
     """
     stages = ctx.path.stages()
     purity = await sample_label_purity(ctx.sample.sample_item_id)
-    with labelled_purity(purity), open_memo(kept_measurement.envelopes_of(ctx)):
+    graded = ExitStack()
+    with labelled_purity(purity), open_memo(kept_measurement.envelopes_of(ctx)), graded:
         index = 0
         while index < len(stages):
             stage = stages[index]
             await STAGE_FUNCTIONS[stage](ctx)
             ctx.ran.append(stage)
+            if stage is Stage.RESOLVE and ctx.resolved_profile is not None:
+                graded.enter_context(ctx.resolved_profile.graded())
             if stage is Stage.CAP and ctx.judged is None:
                 index = stages.index(ROUND[0])
                 continue

@@ -9,9 +9,8 @@ brominated reading stands on, and the evidence a halogen-free one cannot
 account for.
 
 The formula search cannot read it on its own. Its grid holds chlorine only
-where a profile opens it, the raw ratio rule then refuses a chlorine formula
-under twenty carbons (``config.DEFAULT_ELEMENTAL_RATIO_RANGE``, Cl/C 0.05),
-and on a labelled-nitrate run a chlorinated deprotonated ion is mass-identical
+where a profile opens it, and on a labelled-nitrate run a chlorinated
+deprotonated ion is mass-identical
 to a nitrate cluster with two more carbons (Cl against C2H-4 15N, 0.044 mDa
 apart): the search elects the reading its grid holds and leaves the twin
 unexplained. Opening chlorine in every grid would fit it to every peak a
@@ -21,12 +20,15 @@ So the reading is proposed from the twin (:func:`find_twins`). A peak the
 search searched - left unexplained, or committed to a reading whose ion carries
 no chlorine or bromine - whose twin sits unexplained within :data:`TWIN_PPM` of
 the exact offset, at one atom's ratio, is searched again over a grid of carbon,
-hydrogen, oxygen and that one halogen, with the halogen's ratio band opened
-(:func:`reread_twins`). The reading that search elects replaces the peak's only
-where it passes every gate the run puts a reading through: the context's
-windows and the structural rules in the search, its own twin line claimed, its
-evidence at the run's candidate bar, and its mass error on the sample's
-calibration. The reference's own re-read took its labelled-nitrate batch's
+hydrogen, oxygen and that one halogen, under the run's own filter
+(:func:`reread_twins`). The halogen is graded there as everywhere, on the
+formula-shape table's band (``formula_shape.RATIO_CRITERIA``): the raw ratio
+rule that once refused a chlorine formula under twenty carbons, and that this
+re-read used to open for itself, holds no bound since decision MAS-979.
+The reading that search elects replaces the peak's only where it passes every
+gate the run puts a reading through: the structural rules in the search, its
+own twin line claimed, its evidence - graded in the run's context windows - at
+the run's candidate bar, and its mass error on the sample's calibration. The reference's own re-read took its labelled-nitrate batch's
 merged Assigned rows from 498 to 519, and fired nowhere else.
 
 A halogen is read only where the run's context opens it, or a list the run read
@@ -126,12 +128,6 @@ OTHER_ION_OFFSETS: tuple[float, ...] = (
     TWIN_OFFSET["Cl"],
     TWIN_OFFSET["Br"],
 )
-
-#: The halogen's raw ratio band in the re-read: the common range of Kind &
-#: Fiehn 2007 (Table 2), which the graded plausibility reads too
-#: (``heuristic_filter._RATIO_BANDS``), in place of the search's one atom per
-#: twenty carbons.
-TWIN_HALOGEN_RATIO_BAND: tuple[float, float] = (0.0, 0.8)
 
 #: The elements a twin's reading is built of besides its halogen: carbon,
 #: hydrogen and oxygen. The twin confirms the halogen and nothing else, so a
@@ -377,26 +373,6 @@ def twin_search_config(
     return replace(search_config, element_count_ranges=format_element_ranges(grid))
 
 
-def twin_heuristics(
-    heuristics: HeuristicFilterConfig, halogen: str
-) -> HeuristicFilterConfig:
-    """The run's filter, with the halogen's raw ratio band opened.
-
-    The default band holds a chlorine or bromine formula to one atom per
-    twenty carbons (``config.DEFAULT_ELEMENTAL_RATIO_RANGE``), which no
-    chlorobenzene meets. A twin is evidence that band was written without:
-    the re-read opens the halogen to the common range of Kind & Fiehn 2007
-    (:data:`TWIN_HALOGEN_RATIO_BAND`), and every other rule stands.
-
-    :param heuristics: The run's filter configuration.
-    :param halogen: The twin's halogen.
-    :return: The re-read's filter configuration.
-    """
-    bands = dict(heuristics.carbon_element_ratio_range)
-    bands[f"{halogen}/C"] = TWIN_HALOGEN_RATIO_BAND
-    return replace(heuristics, carbon_element_ratio_range=bands)
-
-
 @dataclass
 class TwinReread:
     """What reading the twins changed.
@@ -436,12 +412,12 @@ def reread_twins(
 ) -> TwinReread:
     """Read each twin's peak as its halogen's formula where that passes every gate.
 
-    Each halogen's peaks are searched once (:func:`twin_search_config`,
-    :func:`twin_heuristics`), over the whole frame as the run's search scored
+    Each halogen's peaks are searched once (:func:`twin_search_config`), under
+    the run's own filter, over the whole frame as the run's search scored
     them, and the reading the search elects is the peak's only where:
 
-    - it carries the halogen, and the run's context windows and structural
-      rules admitted it (the search's filter);
+    - it carries the halogen, and the run's structural rules admitted it (the
+      search's filter; its plausibility is graded in the context's windows);
     - its envelope claimed the twin as its own heavy-halogen line;
     - its evidence, fit times plausibility, reaches ``candidate_threshold``;
     - its mass error sits within ``sigmas`` of the sample's width from the
@@ -482,7 +458,7 @@ def reread_twins(
         found, _ = assign_compositions(
             peaks,
             twin_search_config(search_config, halogen),
-            twin_heuristics(heuristics, halogen),
+            heuristics,
             targets=[twin.mz for twin in mine],
             scoring=scoring,
         )

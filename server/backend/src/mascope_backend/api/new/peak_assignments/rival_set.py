@@ -95,7 +95,10 @@ from mascope_tools.composition.arbitration import (
     unseparated,
 )
 from mascope_tools.composition.finder import CANDIDATE_RIVALS
-from mascope_tools.composition.heuristic_filter import formula_plausibility
+from mascope_tools.composition.heuristic_filter import (
+    formula_plausibility,
+    neutral_is_closed_shell,
+)
 from mascope_tools.composition.measurement_model import MeasurementModel
 
 
@@ -452,12 +455,27 @@ def _rivals(own: Reading, on_peak: list[Reading]) -> list[Reading]:
     """The other ions on the peak, each read once: the reading with the best
     evidence stands for its ion, and a reading of the row's own ion is the
     row's measurement split another way, no rival
-    (``engine.invert_matches_to_peak_assignments``)."""
+    (``engine.invert_matches_to_peak_assignments``).
+
+    A radical is no rival to a molecule. That is the one rule a radical meets
+    wherever readings are weighed (decision MAS-979): the tiering pass holds
+    no radical at assigned, whoever names it (``tiering.odd_electron_reason``),
+    so a closed-shell reading that cannot be told from one has lost nothing
+    it could be assigned in its place. The same-ion election prefers the
+    molecule, a list hit's rivals leave radicals out
+    (``finder.assign_compositions``' ``closed_shell_rivals``), and the
+    cross-channel pass gives a reading whose other readings are radicals no
+    rival; here the search's density and a list row's field leave them out
+    too. A radical's own rivals are every other ion, molecules and radicals.
+    """
+    molecule = neutral_is_closed_shell(own.formula)
     best: dict[tuple, Reading] = {}
     for reading in on_peak:
         # The row's own neutral through another channel is one hypothesis
         # arriving twice, which the arbitration collapses, no rival.
         if reading.ion == own.ion or reading.key == own.key:
+            continue
+        if molecule and not neutral_is_closed_shell(reading.formula):
             continue
         held = best.get(reading.ion)
         if held is None or (_evidence(reading), reading.fit) > (

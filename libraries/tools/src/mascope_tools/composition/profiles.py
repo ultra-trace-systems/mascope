@@ -41,6 +41,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Mapping
 
+from mascope_tools.composition import formula_shape
 from mascope_tools.composition.heuristic_filter import element_counts
 from mascope_tools.composition.known_window import KnownWindow
 from mascope_tools.composition.mechanism_notation import (
@@ -298,9 +299,10 @@ class ReagentProfile:
         its label introduces (``"^N"`` for 15N-nitrate).
     :param label_purity: The labelled isotope's fraction (0.98 for a 98% 15N
         reagent), which is what makes the light isotopologue predictable.
-    :param min_carbon: Carbon floor the resolved grid gets. 1 for an organic
-        grid; 0 only for the identity profile, which must reproduce the
-        engine's pre-profile behaviour exactly.
+    :param min_carbon: Carbon floor the resolved grid gets: the formula-shape
+        table's (``formula_shape.GRID_CARBON_FLOOR``), open, so a carbon-free
+        formula is searched and the carbon-free signature caps it. A profile
+        that needs a floor sets it here, a setting of its own search grid.
     :param mz_precision_ppm: A fixed untargeted m/z window in ppm, overriding
         the instrument-class default of
         :data:`INSTRUMENT_MZ_PRECISION_PPM`. Set only by the identity profile.
@@ -327,7 +329,7 @@ class ReagentProfile:
     default_context: str = "none"
     label_isotope: str | None = None
     label_purity: float | None = None
-    min_carbon: int = 1
+    min_carbon: int = formula_shape.GRID_CARBON_FLOOR
     mz_precision_ppm: float | None = None
     source_solvents: tuple[str, ...] = ()
     aliases: tuple[str, ...] = ()
@@ -456,12 +458,15 @@ def priors_met(counts: Mapping[str, int], priors: tuple[str, ...]) -> tuple[str,
     met = []
     nitrogen = counts.get("N", 0)
     for prior in priors:
-        if prior == PRIOR_SULFUR and counts.get("S", 0) > 0:
+        if (
+            prior == PRIOR_SULFUR
+            and counts.get("S", 0) >= formula_shape.SULFUR_PRIOR_MIN
+        ):
             met.append(prior)
         elif (
             prior == PRIOR_ODD_NITROGEN
-            and nitrogen >= 2
-            and counts.get("O", 0) < 2 * nitrogen
+            and nitrogen >= formula_shape.ODD_NITROGEN_MIN
+            and counts.get("O", 0) < formula_shape.ODD_NITROGEN_OXYGEN_PER_N * nitrogen
         ):
             met.append(prior)
     return tuple(met)
@@ -486,10 +491,6 @@ class ChemistryContext:
     :param o_to_c: O/(C+Si) window.
     :param n_to_c: N/(C+Si) window.
     :param dbe_to_c: DBE/(C+Si) window.
-    :param min_carbon_for: Minimum carbon scaffold an element needs in a
-        neutral (``{"Br": 5}``): below it the formula is almost always a
-        reagent-cluster alias. Graded rather than gated, so it is read by the
-        plausibility layer of stage 2, not by this step's filter.
     :param known_window: The ceiling on every reference source's window in
         Stage A: a source contributes a formula only inside both its own window
         and this one. None sets no ceiling, so each source is bounded by its own
@@ -497,8 +498,12 @@ class ChemistryContext:
     :param priors: The formula shapes this matrix holds only on corroboration
         (:data:`CONTEXT_PRIORS`): a formula the search elects that meets one
         reaches the top tier only where something beyond its mass fit saw it.
-        Graded rather than gated, like ``min_carbon_for``: the grid keeps the
-        formula, and the tiering pass reads the prior.
+        Capped rather than gated: the grid keeps the formula, and the tiering
+        pass reads the prior, at the formula-shape table's thresholds.
+    :param windows_gate: Whether the ratio windows refuse a formula outside
+        them rather than grade it (``heuristic_filter.rule_context_ratios``).
+        Off in every shipped context: the windows are a floored factor of the
+        plausibility (#3188).
     :param organonitrates: Whether the matrix makes organonitrates: NOx
         chemistry, whose dinitrates, trinitrates and nitroaromatics the ratio
         windows misjudge (:func:`nox_skeleton_applies`).
@@ -512,10 +517,10 @@ class ChemistryContext:
     o_to_c: tuple[float, float] | None = None
     n_to_c: tuple[float, float] | None = None
     dbe_to_c: tuple[float, float] | None = None
-    min_carbon_for: Mapping[str, int] = field(default_factory=dict)
     known_window: KnownWindow | None = KNOWN_WINDOW_CEILING
     priors: tuple[str, ...] = ()
     organonitrates: bool = False
+    windows_gate: bool = False
 
     def priors_met(self, formula: str | None) -> tuple[str, ...]:
         """The priors of this context a neutral formula meets.
@@ -587,7 +592,6 @@ AMBIENT_AIR = ChemistryContext(
         "Br": 2,
         "I": 0,
     },
-    min_carbon_for={"Br": 5, "Cl": 5, "F": 3},
     priors=ATMOSPHERIC_PRIORS,
     organonitrates=True,
 )
@@ -604,7 +608,6 @@ CHAMBER = ChemistryContext(
     n_to_c=(0.0, 0.4),
     dbe_to_c=(0.0, 0.7),
     element_caps={"N": 2, "S": 1, "P": 0, "F": 0, "Si": 1, "I": 0},
-    min_carbon_for={"Br": 5, "Cl": 5, "F": 3},
     priors=ATMOSPHERIC_PRIORS,
     organonitrates=True,
 )
@@ -621,7 +624,6 @@ INDOOR_AIR = ChemistryContext(
     n_to_c=(0.0, 0.5),
     dbe_to_c=(0.0, 0.9),
     element_caps={"N": 3, "S": 1, "P": 1, "F": 2, "Si": 6, "Cl": 2, "Br": 1},
-    min_carbon_for={"Br": 5, "Cl": 4, "F": 2},
     priors=ATMOSPHERIC_PRIORS,
 )
 
@@ -637,7 +639,6 @@ OBJECT_HEADSPACE = ChemistryContext(
     n_to_c=(0.0, 0.5),
     dbe_to_c=(0.0, 1.0),
     element_caps={"N": 3, "S": 2, "P": 0, "F": 0, "Si": 2},
-    min_carbon_for={"Br": 4, "Cl": 4, "F": 3},
 )
 
 COMBUSTION = ChemistryContext(
@@ -702,7 +703,6 @@ URONIUM = ChemistryContext(
         "Br": 0,
         "I": 0,
     },
-    min_carbon_for={"Si": 2},
     # The sulfur prior alone. Urea CIMS samples an atmosphere, whose sulfur
     # needs a source as anywhere else (2% of the gate's uronium assigned
     # neutrals carried it), but its analytes ARE the reduced-nitrogen bases the
@@ -1218,11 +1218,11 @@ def resolve_element_ranges(
     exponential in), and an element the context says nothing about keeps the
     profile's bound.
 
-    Carbon is floored at ``min_carbon`` for an organic grid. Carbon-free
-    formulas are the clearest wrong answers in the measured baseline - dozens
-    per sample, siloxane and nitrate coincidences that a carbon-free box can
-    always fit - and the inorganic species that are genuine (HNO3, H2SO4, HOBr)
-    belong to Stage A's curated set, which this grid does not gate.
+    Carbon is floored at ``min_carbon`` where a profile sets a floor. None
+    does since decision MAS-979: the floor was the last hard bound on a
+    carbon-free formula, which is now searched, graded and capped - the
+    carbon-free signature holds one at candidate unless a reference list
+    names it (``implausibility``, ``formula_shape.exempt``).
 
     :param profile: The reagent profile supplying the grid.
     :param context: The matrix context supplying the caps.

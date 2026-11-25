@@ -27,6 +27,8 @@ from mascope_tools.composition.custom_elements import (
     label_purity,
     labelled_purity,
 )
+from mascope_tools.composition.heuristic_filter import formula_plausibility, graded_in
+from mascope_tools.composition.profiles import AMBIENT_AIR
 from mascope_tools.composition.reagents import ReagentCalibration
 
 
@@ -85,6 +87,49 @@ async def test_every_stage_reads_the_purity_of_its_samples_setup(path):
     purity.assert_awaited_once_with("si-1")
     assert seen == [0.9] * len(path.stages())
     assert label_purity("^N") == CUSTOM_ELEMENTS["^N"].default_purity
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", pipeline.PATHS, ids=lambda path: path.name)
+async def test_every_stage_after_the_resolve_grades_in_the_runs_context(path):
+    # Decision MAS-979: the context's windows are a factor of every formula's
+    # plausibility, which the stage list sets once the resolve stage names the
+    # context, and leaves as it found it.
+    stuffed = "C10H20N5O3"  # N/C 0.5 against ambient air's 0.4
+    bare = formula_plausibility(stuffed)
+    seen = []
+    profile = SimpleNamespace(graded=lambda: graded_in(AMBIENT_AIR.ratio_windows()))
+
+    async def resolve(ctx):
+        seen.append(formula_plausibility(stuffed))
+        ctx.resolved_profile = profile
+
+    async def stage(ctx):
+        seen.append(formula_plausibility(stuffed))
+
+    async def settle(ctx):
+        seen.append(formula_plausibility(stuffed))
+        ctx.judged = object()
+
+    stages = {name: stage for name in pipeline.STAGES}
+    stages[pipeline.Stage.RESOLVE] = resolve
+    stages[pipeline.Stage.CAP] = settle
+    ctx = pipeline.RunContext(
+        path=path,
+        sample=SimpleNamespace(sample_item_id="si-1"),
+        config=PeakAssignmentConfig(),
+        run_id="r-1",
+    )
+    with (
+        patch.dict(pipeline.STAGE_FUNCTIONS, stages),
+        patch.object(pipeline, "sample_label_purity", AsyncMock(return_value=None)),
+    ):
+        await pipeline.run_stages(ctx)
+
+    assert seen[0] == bare
+    assert len(seen) == len(path.stages())
+    assert all(value < bare for value in seen[1:])
+    assert formula_plausibility(stuffed) == bare
 
 
 @pytest.mark.asyncio

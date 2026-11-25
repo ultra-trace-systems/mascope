@@ -87,14 +87,17 @@ def _measure(scoring, *, readings=None, closed_shell_only=False, config=None):
 class TestTheCount:
     def test_the_rivals_the_evidence_cannot_separate_are_counted(self):
         (found,) = _measure(UNRESOLVED)
-        assert found.density == 5
+        # C6H18N3O4S reads S/C 0.17, which the raw ratio rule refused until
+        # decision MAS-979 left every ratio to the grade (#3246).
+        assert found.density == 6
         assert {rival["formula"] for rival in found.rivals} == {
             "C12H12N4O",
             "C9H14N3O4",
+            "C6H18N3O4S",
             "C15H16S",
             "C14H14NO2",
         }
-        assert found.candidates == 8
+        assert found.candidates == 11
 
     def test_a_peak_the_evidence_resolves_has_none(self):
         (found,) = _measure(RESOLVED)
@@ -145,8 +148,9 @@ class TestTheFitTiedRivals:
     def test_a_rival_only_plausibility_separates_is_named_by_its_fit(self):
         (found,) = _readings_peak("C8H12O6", box=self.BOX)
 
-        [tied] = found.fit_tied
-        assert tied["formula"] == "C4H8N6O4"
+        # With no ratio rejected (MAS-979) the grid also proposes CH12N6O4S and
+        # C3H14N3O5S, which tie on fit too; C4H8N6O4 is the one develop named.
+        [tied] = [r for r in found.fit_tied if r["formula"] == "C4H8N6O4"]
         assert tied["formula"] not in {rival["formula"] for rival in found.rivals}
         assert tied["ionization_mechanism"] == "[M+H]+"
         assert tied["ion"].endswith("+")
@@ -164,7 +168,9 @@ class TestTheFitTiedRivals:
         assert found.density == 1 + len(found.rivals)
 
     def test_a_peak_the_fit_resolves_names_none(self):
-        (found,) = _readings_peak("C8H12O6", box=self.BOX, sigma=15.0)
+        # CH12N6O4S, which a ratio bound refused until MAS-979, still ties at
+        # 8 ppm; at 5 the fit resolves the peak.
+        (found,) = _readings_peak("C8H12O6", box=self.BOX, sigma=5.0)
 
         assert found.fit_tied == ()
 
@@ -187,10 +193,11 @@ class TestTheUnscoredCandidates:
     def test_a_window_past_the_limit_counts_the_ions_it_left(self):
         (found,) = self._dense()
 
-        # 90 candidates make 69 ions besides the reading's: the reading and the
-        # 63 nearest ions are scored, and the 6 past the limit are counted.
-        assert found.candidates == 90
-        assert found.unscored == 6
+        # 218 candidates, with no ratio rejected (MAS-979), make 164 ions
+        # besides the reading's: the reading and the 63 nearest ions are
+        # scored, and the 101 past the limit are counted.
+        assert found.candidates == 218
+        assert found.unscored == 101
 
     def test_the_limit_counts_ions_not_their_splits(self, monkeypatch):
         """MAS-1284 (#3634): the window is elected to one reading per ion

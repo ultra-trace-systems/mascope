@@ -21,6 +21,7 @@ later, after the presets have been revised or a mode's mechanisms edited.
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 
 from mascope_backend.api.new.cheminfo.utils import to_explicit_isotope_format
@@ -28,6 +29,7 @@ from mascope_backend.api.new.peak_assignments.config import (
     DEFAULT_PROFILE,
     PeakAssignmentConfig,
 )
+from mascope_tools.composition.heuristic_filter import graded_in
 from mascope_tools.composition.measurement_model import MeasurementModel
 from mascope_tools.composition.mechanism_notation import mechanism_key
 from mascope_tools.composition.models import (
@@ -243,9 +245,11 @@ class ResolvedProfile:
     def heuristics_config(self, *, use_senior: bool = True) -> HeuristicFilterConfig:
         """The heuristic filter this run's context implies.
 
-        The context's ratio windows ride along as a boolean gate; a context that
-        constrains no ratio (``none``, and every profile that defaults to it)
-        leaves the filter exactly as it was before profiles existed.
+        The context's ratio windows ride along, refusing nothing unless the
+        context opts in to the gate (``ChemistryContext.windows_gate``): they
+        grade the run's formulas (:meth:`graded`). A context that constrains
+        no ratio (``none``, and every profile that defaults to it) leaves the
+        filter exactly as it was before profiles existed.
 
         :param use_senior: Whether to apply the Senior feasibility cut, which
             the peak-centric engine always does.
@@ -255,7 +259,20 @@ class ResolvedProfile:
             use_senior=use_senior,
             context_ratio_windows=self.context.ratio_windows(),
             context_nox_skeleton=self.nox_skeleton,
+            context_windows_gate=self.context.windows_gate,
         )
+
+    def graded(self) -> AbstractContextManager[None]:
+        """Grade every formula of the run in its context's ratio windows.
+
+        A floored factor of the plausibility (decision MAS-979, #3188), read
+        by every reader of it inside the block
+        (``heuristic_filter.graded_in``), with the carbon skeleton of an
+        organonitrate where the run reads one.
+
+        :return: The block's context manager.
+        """
+        return graded_in(self.context.ratio_windows(), self.nox_skeleton)
 
     def search_config(self, notations: list[str]) -> CompositionSearchConfig:
         """The finder's configuration for this run.

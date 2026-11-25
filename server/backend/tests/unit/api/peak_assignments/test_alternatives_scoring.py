@@ -731,17 +731,18 @@ class TestTheRunMeasuresItsWinners:
     @pytest.mark.asyncio
     async def test_a_formula_no_adduct_puts_on_the_peak_is_no_candidate(self):
         # The inspector's rule: only an ion whose M0 paired to this peak counts.
+        # Both closed-shell: a radical is no rival to a molecule (MAS-979).
         row = _winner(
             "p1",
             10.0,
-            [{"assigned_formula": "C4H8N2O3"}, {"assigned_formula": "C6H14N"}],
+            [{"assigned_formula": "C4H8N2O3"}, {"assigned_formula": "C6H15N"}],
         )
 
         summary, _ = await _measure(
             [row],
             ion_by_seed={
                 ("C4H8N2O3", "im-h"): "ion-a",
-                ("C6H14N", "im-h"): "ion-b",
+                ("C6H15N", "im-h"): "ion-b",
             },
             fit_by_ion={"ion-a": 0.95, "ion-b": 0.95},
             scored_rows=[
@@ -885,15 +886,16 @@ class TestTheRunMeasuresItsWinners:
     async def test_ties_are_flagged_where_the_inspector_shows_them(self):
         # One seeded measurement, read by both: the inspector's best entry for
         # each formula, arbitrated with the winner, says what the run records.
+        # Every rival closed-shell, as a radical is no rival to a molecule.
         alternatives = [
             {"assigned_formula": "C4H8N2O3"},
-            {"assigned_formula": "C6H14N"},
+            {"assigned_formula": "C6H15N"},
         ]
         measurement = {
             "ion_by_seed": {
                 ("C4H8N2O3", "im-h"): "ion-a",
                 ("C4H8N2O3", "im-nh4"): "ion-b",
-                ("C6H14N", "im-h"): "ion-c",
+                ("C6H15N", "im-h"): "ion-c",
             },
             "fit_by_ion": {"ion-a": 0.5, "ion-b": 0.86, "ion-c": 0.4},
             "scored_rows": [

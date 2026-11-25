@@ -18,7 +18,6 @@ from mascope_backend.api.new.peak_assignments.cross_channel import (
     SETTLED_BY_PARTNER,
     SETTLED_BY_RADICAL,
     SETTLED_BY_SECOND_CHANNEL,
-    SETTLED_BY_TARGET_LIBRARY,
     apply_cross_channel,
     brightest_by_channel,
     cap_cross_channel,
@@ -319,21 +318,30 @@ class TestTheSameIonRule:
             "via": "[M+NH4]+",
         }
 
-    def test_the_target_library_settles_it(self):
-        # The workspace named the compound, so which reading the ion is was its
-        # curation's decision rather than the sort key's.
+    def test_the_target_library_does_not_settle_it(self):
+        # Decision MAS-979: the same-ion rule is a cap on the ion, asked of
+        # every row, and a target can hold anything (MAS-885). The target's
+        # row keeps its match and is capped like the search's.
         rows = [
             ammoniated("a", "C6H12O6", "C6H15NO6", source="database", compound="tc-1")
         ]
         summary = gate(rows)
-        assert summary["ambiguous_nitrogen"] == 0
-        assert rows[0]["tier"] == "assigned"
-        assert rows[0]["provenance"]["cross_channel"][SAME_ION_SETTLED] == {
-            "alternative": "C6H15NO6",
-            "via": "[M+H]+",
-            "by": SETTLED_BY_TARGET_LIBRARY,
+        assert (summary["ambiguous_nitrogen"], summary["capped"]) == (1, 1)
+        assert rows[0]["assigned_formula"] == "C6H12O6"
+        assert rows[0]["tier"] == "candidate"
+        assert SAME_ION_SETTLED not in rows[0]["provenance"]["cross_channel"]
+        assert set(summary["settled"]) == {
+            SETTLED_BY_SECOND_CHANNEL,
+            SETTLED_BY_PARTNER,
+            SETTLED_BY_RADICAL,
         }
-        assert summary["settled"][SETTLED_BY_TARGET_LIBRARY] == 1
+
+    def test_nor_does_a_reference_list(self):
+        listed = ammoniated("a", "C6H12O6", "C6H15NO6", source="database")
+        listed["provenance"] = {"reference_identities": [{"name": "glucose"}]}
+        rows = [listed]
+        assert gate(rows)["ambiguous_nitrogen"] == 1
+        assert rows[0]["tier"] == "candidate"
 
     def test_a_second_channel_settles_it_and_says_which(self):
         rows = [ammoniated("a", "C6H12O6", "C6H15NO6"), row("b", "C6H12O6", PROTON)]
@@ -866,10 +874,11 @@ class TestARivalTheSampleShows:
             "via": "[M+NH4]+",
         }
 
-    def test_the_target_library_still_settles_a_shown_rival(self):
+    def test_a_target_is_held_by_a_shown_rival_as_the_search_is(self):
         # Corroborated through electron transfer, so the rule that a second
-        # channel does not settle a shown rival is reached, and the library's
-        # curation settles it first.
+        # channel does not settle a shown rival is reached. The library's
+        # curation used to settle it first; a target is asked as every row is
+        # (decision MAS-979).
         rows = [
             benzyl(
                 "C7H6",
@@ -882,11 +891,10 @@ class TestARivalTheSampleShows:
             through_electron_transfer("toluene", "C7H8", intensity=3.0e6),
         ]
         self.gate(rows)
-        assert rows[0]["provenance"]["cross_channel"]["corroborated"] is True
-        assert rows[0]["tier"] == "assigned"
-        assert rows[0]["provenance"]["cross_channel"][SAME_ION_SETTLED]["by"] == (
-            SETTLED_BY_TARGET_LIBRARY
-        )
+        record = rows[0]["provenance"]["cross_channel"]
+        assert record["corroborated"] is True
+        assert rows[0]["tier"] == "candidate"
+        assert SAME_ION_SETTLED not in record
 
     def test_the_isotopologues_of_a_row_a_shown_rival_holds_say_so(self):
         rows = [
@@ -1458,14 +1466,15 @@ class TestAReferenceMirrorsRow:
         assert gate(rows)["ambiguous_nitrogen"] == 1
         assert rows[0]["tier"] == "candidate"
 
-    def test_a_target_library_row_is_exempt_from_either_side(self):
+    def test_a_target_library_row_is_asked_as_a_mirrors_is(self):
+        # Exempt until decision MAS-979: the same-ion rule is a cap on the ion.
         rows = [
             mirror(
                 "a", "C3H7NO", PROTON, compound="tc-1", displaced=("C3H4O", AMMONIUM)
             )
         ]
-        assert gate(rows)["ambiguous_nitrogen"] == 0
-        assert rows[0]["tier"] == "assigned"
+        assert gate(rows)["ambiguous_nitrogen"] == 1
+        assert rows[0]["tier"] == "candidate"
 
     def test_its_isotopologues_follow_it_down(self):
         rows = [

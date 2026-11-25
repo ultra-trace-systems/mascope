@@ -38,6 +38,11 @@ are. Decision 9 already prefers the closed-shell reading when two
 readings make one ion; this says the same thing about a reading with no rival:
 a radical is a tie-break, and a tie-break is not evidence.
 
+Which rows a formula-shape cap asks is one rule (``formula_shape.exempt``,
+MAS-979): a cap on the compound's composition spares a row a reference list
+names, a cap on the ion asks every row, and a row only the target library names
+is spared nothing; it still shows its match, capped like any other.
+
 ``oxygen_free_cluster`` - the row reads the peak as nitrate clustered with a
 neutral that carries no oxygen, which the nitrate has nothing to hold on to
 (:func:`oxygen_free_cluster_reason`). On the gate it names 134 rows, all on the
@@ -73,9 +78,8 @@ carbon cluster was withdrawn on the measurement - are named formula shapes that
 are the product of a mass search rather than of a source
 (``mascope_tools.composition.implausibility``). They are guards rather than
 levers: on the gate they reach a few hundred rows in total, and the value of
-writing them is that a row demoted on one can say which shape it has. A curated
-row is not asked, for the radical rule's reason: it was matched to an identity
-somebody authored, not arrived at by a mass search.
+writing them is that a row demoted on one can say which shape it has. A row a
+reference list names is not asked: a cap on the compound's composition.
 
 ``envelope_neighbour`` - decision 11's rider. An M0 committed on a peak that a
 committed neighbour's envelope predicts a line for, at a height that could
@@ -118,9 +122,10 @@ formula shape only on corroboration. Every atmospheric context carries a sulfur
 prior and an odd-nitrogen prior (``profiles.CONTEXT_PRIORS``; uronium the
 sulfur one alone, since reduced-nitrogen bases are its analytes): a neutral
 carrying sulfur, or two or more nitrogens and fewer than two oxygens per
-nitrogen, that the formula search elected is a candidate at most until a
-second channel, a series of its batch, or a line of the doubted element's own
-heavy isotope (34S, 15N) committed with it saw it (:func:`context_prior_reason`).
+nitrogen, that the formula search elected or only the target library names is a
+candidate at most until a second channel, a series of its batch, or a line of
+the doubted element's own heavy isotope (34S, 15N) committed with it saw it
+(:func:`context_prior_reason`).
 Stricter than ``lone_peak`` on purpose: a 13C line proves the carbon count,
 and the shapes this rule asks about are the ones a mass fit reaches by
 spending the same mass on another element. Measured before the rule, sulfur
@@ -224,7 +229,7 @@ The cross-channel pass's same-ion rule (``ambiguous_nitrogen``,
 or not it lowered the tier. On a row a second channel corroborates, it also says
 where the sample shows the rival's molecule, which is why that channel did not
 settle it. Where another reading of the row's ion is settled - by a second
-channel, by the stronger partner, by the target library, or by being a
+channel, by the stronger partner, or by being a
 radical - the row says so among what it stands on (``same_ion_settled``), and
 its ``no_close_rival`` says the evidence separates the ion from the peak's other
 candidates, not the readings of the ion from each other. A second channel that
@@ -255,11 +260,11 @@ from mascope_backend.api.new.peak_assignments.cross_channel import (
     SETTLED_BY_PARTNER,
     SETTLED_BY_RADICAL,
     SETTLED_BY_SECOND_CHANNEL,
-    SETTLED_BY_TARGET_LIBRARY,
     nitrogen_count,
 )
 from mascope_backend.api.new.peak_assignments.engine import (
     is_target_library_row,
+    named_by_a_list,
     tier_under_ceiling,
 )
 from mascope_backend.api.new.peak_assignments.envelope_claims import (
@@ -293,6 +298,7 @@ from mascope_backend.api.new.peak_assignments.tiers import (
 from mascope_tools.composition.arbitration import CANDIDATE_DENSITY
 from mascope_tools.composition.diagnostic_isotopologues import ion_charge
 from mascope_tools.composition.envelope_tolerance import EnvelopeTolerance
+from mascope_tools.composition.formula_shape import FORMULA_SHAPE_VERSION, exempt
 from mascope_tools.composition.heuristic_filter import (
     context_skeleton_groups,
     element_counts,
@@ -328,7 +334,7 @@ from mascope_tools.composition.utils import formula_identity
 #: run, because a tier is only comparable across runs together with the rules
 #: that produced it - the same statement the tier BANDS carry, for the same
 #: reason.
-TIERING_RULES_VERSION = 16
+TIERING_RULES_VERSION = 17
 
 #: The row's evidence is under the band its tier would need. Not a rule of
 #: this pass: the band is the floor every rule here lowers from, and naming it
@@ -773,11 +779,6 @@ def settled_detail(row: dict, settled: dict) -> str:
             f"{reading}; the sample commits {row.get('assigned_formula')} through "
             f"one of the mode's own channels {strength}, which settles it"
         )
-    if by == SETTLED_BY_TARGET_LIBRARY:
-        return (
-            f"{reading}; this row is a compound of the target library, whose "
-            "curation chose the reading"
-        )
     through = ", ".join(settled.get("through") or []) or "another channel"
     if by == SETTLED_BY_SECOND_CHANNEL:
         formula = row.get("assigned_formula")
@@ -872,19 +873,17 @@ def odd_electron_reason(row: dict) -> dict | None:
     the neutral, and it commits 629 of its own that this engine never agrees
     with either.
 
-    A CURATED row is exempt, because the rule's own justification does not reach
-    it. What this doubts is an election - decision 9's prior choosing a radical
-    reading of an ion over a closed-shell one - and a curated row was not
-    elected from a grid, it was matched to an identity somebody authored. Real
-    radical anions exist in these chemistries and are exactly what such a
-    library holds: the dibromide and carbonate reagent ions, trisulfur. On the
-    gate the exemption spares 12 assigned rows, none of which the reference
-    confirms, so it is taken on the principle rather than on the count.
+    Every row is asked, a list's and the target library's too: it is a cap on
+    the ion, not on the compound's composition (``formula_shape.exempt``,
+    decision MAS-979). A list's row used to be spared, on the principle that
+    it was matched to an identity somebody authored rather than elected; on
+    the gate that spared 12 assigned rows, none of which the reference
+    confirms - the dibromide and carbonate reagent ions, trisulfur.
 
     Fails open on a formula that cannot be parsed, like every other chemistry
     rule here.
     """
-    if row.get("source") == SOURCE_DATABASE:
+    if exempt(REASON_ODD_ELECTRON, list_named=named_by_a_list(row)):
         return None
     formula = row.get("assigned_formula")
     if not formula or neutral_is_closed_shell(str(formula)):
@@ -917,15 +916,15 @@ def oxygen_free_cluster_reason(
     about the ion, and a second channel's reading of the neutral says nothing
     about whether nitrate holds on to it.
 
-    A row of the target library is exempt: the workspace named that compound
-    for the modes its collection is attached to. A reference list's row is not,
-    since a list names a compound and not the channel it is seen through.
+    Every row is asked: a cap on the ion, which no list and no target names
+    (``formula_shape.exempt``). A target's row used to be spared, as the
+    workspace's name for the compound; a target can hold anything (MAS-885).
 
     :param row: A committed monoisotopic row.
     :param notation_by_id: The run's mechanisms, by the id the rows carry.
     :return: The reason, or None where the reading is not such a cluster.
     """
-    if is_target_library_row(row):
+    if exempt(REASON_OXYGEN_FREE_CLUSTER, list_named=named_by_a_list(row)):
         return None
     formula = row.get("assigned_formula")
     notation = notation_by_id.get(str(row.get("ionization_mechanism_id")))
@@ -955,15 +954,14 @@ def polyhalide_cluster_reason(row: dict, notation_by_id: dict[str, str]) -> dict
     is about where the ion came from, and a second channel's reading of the
     neutral does not say.
 
-    A row of the target library is exempt, as it is from the oxygen-free
-    cluster: the workspace named that compound for the modes its collection is
-    attached to.
+    Every row is asked, as of the oxygen-free cluster: a cap on the ion
+    (``formula_shape.exempt``).
 
     :param row: A committed monoisotopic row.
     :param notation_by_id: The run's mechanisms, by the id the rows carry.
     :return: The reason, or None where the reading is not such a cluster.
     """
-    if is_target_library_row(row):
+    if exempt(REASON_POLYHALIDE_CLUSTER, list_named=named_by_a_list(row)):
         return None
     formula = row.get("assigned_formula")
     notation = notation_by_id.get(str(row.get("ionization_mechanism_id")))
@@ -1194,7 +1192,9 @@ def context_prior_reason(
     of the doubted element's own heavy isotope committed with the row - 34S for
     sulfur, 15N for nitrogen. A 13C line is not: it proves the carbon count,
     which the mass fit had already spent, and is what :func:`lone_peak_reason`
-    takes as a second observation. A list is not asked, for that rule's reason.
+    takes as a second observation. A row a reference list names is not asked:
+    a cap on the compound's composition (``formula_shape.exempt``). A row only
+    the target library names is, as the search's are.
 
     Fails open on a row whose channels were never recorded, as the lone-peak
     rule does.
@@ -1205,7 +1205,7 @@ def context_prior_reason(
     :return: The reason, or None where the row meets no prior of the context
         or something corroborates it.
     """
-    if context is None or row.get("source") != SOURCE_UNTARGETED:
+    if context is None or not _asked(REASON_CONTEXT_PRIOR, row):
         return None
     met = context.priors_met(row.get("assigned_formula"))
     if not met:
@@ -1237,6 +1237,13 @@ def context_prior_reason(
         f"committed the same neutral, no series of its batch anchors it, and no "
         f"{own} line of its own is committed with it",
         caps=True,
+    )
+
+
+def _asked(rule: str, row: dict) -> bool:
+    """Whether a formula-shape cap asks a search or Stage A row (``exempt``)."""
+    return row.get("source") in (SOURCE_UNTARGETED, SOURCE_DATABASE) and not exempt(
+        rule, list_named=named_by_a_list(row)
     )
 
 
@@ -1301,8 +1308,11 @@ def nox_skeleton_reason(
     the reference engine's NOx-chemistry nitrate batch, the 59 rows its own
     skeleton reading admitted were all judged right at that tier.
 
-    Asks only the formula search's rows: a list's row was never filtered on
-    the windows.
+    Asks the formula search's rows and the target library's; a row a
+    reference list names is spared, a cap on the compound's composition
+    (``formula_shape.exempt``). The windows grade every formula of the run
+    (``ResolvedProfile.graded``), so a target's skeleton changes its outcome
+    as a search reading's does.
 
     :param row: A committed monoisotopic row.
     :param context: The run's chemistry context.
@@ -1310,7 +1320,7 @@ def nox_skeleton_reason(
     :return: The reason, or None where the run does not read it or it changed
         nothing about the row.
     """
-    if not nox_skeleton or row.get("source") != SOURCE_UNTARGETED:
+    if not nox_skeleton or not _asked(REASON_NOX_SKELETON, row):
         return None
     reading = skeleton_reading(row.get("assigned_formula"), context)
     if reading is None:
@@ -2246,23 +2256,22 @@ def envelope_reason(row: dict, on_a_neighbours_line: dict[str, dict]) -> dict | 
 def implausibility_reasons(row: dict, nox_skeleton: bool = False) -> list[dict]:
     """The named shapes of a formula that fits a mass and not a chemistry.
 
-    A CURATED row is exempt, for the reason the radical rule gives: every
-    signature names what a mass search produces, and a curated row was matched
-    to an identity somebody authored rather than found by one. The library
-    leaves this check to its caller, because a signature is a function of the
-    formula alone and the source belongs to the row. Where the signatures reach
-    curated rows on the gate, the shape is the library's identity and not a
-    fit's: carbon-free on trisulfur and on the bromine of the dibromide reagent
-    ion, which took 7 assigned rows the reference confirms none of, and the
-    oxygen lattice on peroxyacetyl nitrate, a species these sources are built
-    to see.
+    A row a reference list names is exempt: every signature is a cap on the
+    compound's composition, and a list's name is a peer-reviewed identity
+    rather than a mass fit (``formula_shape.exempt``). A row only the target
+    library names is asked, as the search's are: a target can hold anything
+    (MAS-885). The library leaves this check to its caller, because a
+    signature is a function of the formula alone and who named it belongs to
+    the row. Where the signatures reached Stage A rows on the gate: carbon-free
+    on trisulfur and on the bromine of the dibromide reagent ion, which took 7
+    assigned rows the reference confirms none of, and the oxygen lattice on
+    peroxyacetyl nitrate, a species these sources are built to see.
 
     With ``nox_skeleton`` (step 3.6) a signature counts only where the carbon
     skeleton of the formula's organonitrate groups carries it too; one only
     the skeleton spares is :func:`nox_skeleton_reason`'s to name.
     """
-    if row.get("source") == SOURCE_DATABASE:
-        return []
+    list_named = named_by_a_list(row)
     return [
         _reason(
             signature,
@@ -2273,6 +2282,7 @@ def implausibility_reasons(row: dict, nox_skeleton: bool = False) -> list[dict]:
         for signature in implausible_signatures(
             row.get("assigned_formula"), nox_skeleton=nox_skeleton
         )
+        if not exempt(signature, list_named=list_named)
     ]
 
 
@@ -2654,8 +2664,7 @@ def apply_tiering(
             capped += 1
             for reason in mine:
                 # A row can carry more than one rule's name, so these sum ABOVE
-                # `capped`: they count what each rule found, not how many rows
-                # it alone was responsible for.
+                # `capped`: what each rule found, not what it alone took.
                 capped_by_rule[reason["rule"]] = (
                     capped_by_rule.get(reason["rule"], 0) + 1
                 )
@@ -2725,6 +2734,7 @@ def apply_tiering(
 
     return {
         "version": TIERING_RULES_VERSION,
+        "formula_shape_version": FORMULA_SHAPE_VERSION,  # whose caps it read
         # Whether the envelope rule read a neighbour's lines one per peak the
         # file resolves, or one per isotopologue because the run could read no
         # resolution for the file.
