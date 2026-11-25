@@ -77,12 +77,14 @@ _PEAK_COLUMNS = ("sample_peak_id", "mz", "intensity")
 @dataclass
 class _Sample:
     """One sample's kept readings: every row scored at ``fingerprint``, and
-    each reading's rows and ion in it."""
+    each reading's rows and ion in it, and what the grid held against each."""
 
     fingerprint: tuple
     frame: pd.DataFrame = field(default_factory=pd.DataFrame)
     rows: dict[tuple, np.ndarray] = field(default_factory=dict)
     ions: dict[tuple, Optional[str]] = field(default_factory=dict)
+    #: What the grid held against each given reading (:func:`kept_grid`).
+    grid: dict[tuple, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -210,6 +212,29 @@ async def kept_lists(
     return reads.lists[key]
 
 
+def kept_grid(ctx: Any) -> Optional[dict]:
+    """What the grid held against the sample's given readings in the batch's
+    pass (``given_rivals.given_readings_rivals``), to read again rather than
+    ask again (MAS-1045): the grid's answer reads the sample's peaks at its
+    model, so it is kept with the readings' measurement, at the same
+    fingerprint, and dropped with it.
+
+    :param ctx: The stage list's pass, its sample measured.
+    :return: The sample's store, to read and fill; None where nothing is kept
+        (no store, or a model no record held).
+    """
+    kept: Optional[KeptMeasurement] = ctx.kept
+    if kept is None or not ctx.model_recorded:
+        return None
+    sample_item_id = str(ctx.sample.sample_item_id)
+    now = fingerprint(ctx.peaks_df, ctx.match_params, ctx.model)
+    entry = kept.samples.get(sample_item_id)
+    if entry is None or entry.fingerprint != now:
+        entry = _Sample(fingerprint=now)
+        kept.samples[sample_item_id] = entry
+    return entry.grid
+
+
 def _key(seed: Seed, listed: bool, claimed: frozenset[str]) -> tuple:
     """A reading's key: its seed, and for one the lists hold, the claims its
     ion is measured without."""
@@ -246,7 +271,7 @@ async def score_kept(
     :param scorer: The scorer, called with the readings to measure.
     :param listed_seeds: The seeds the sample's lists hold.
     :param rivals: Measure these instead of the pass's seeds: the rivals of
-        its readings (``pipeline._measure_given_rivals``), counted as
+        its readings (``given_rivals.measure_given_rivals``), counted as
         ``rivals_scored`` and ``rivals_kept`` beside the readings' counts.
     :return: What the scorer returns for every seed: the ion by seed, the fit
         by ion, the errors by pairing, and the scored frame.
@@ -343,6 +368,7 @@ __all__ = [
     "KeptMeasurement",
     "envelopes_of",
     "fingerprint",
+    "kept_grid",
     "kept_lists",
     "kept_resolution",
     "score_kept",

@@ -27,6 +27,7 @@ from mascope_backend.api.new.peak_assignments import (
 from mascope_backend.api.new.peak_assignments.kept_measurement import (
     KeptMeasurement,
     envelopes_of,
+    kept_grid,
     kept_lists,
     kept_resolution,
     score_kept,
@@ -234,6 +235,27 @@ async def test_the_readings_rivals_are_kept_and_counted_beside_them():
     assert kept.counts["si-1"] == Counter(
         readings_scored=0, readings_kept=1, rivals_scored=0, rivals_kept=2
     )
+
+
+async def test_the_grids_answers_are_kept_with_the_samples_readings():
+    """What the grid held against the given readings (MAS-1045) is kept at
+    the sample's fingerprint: read again while it holds, dropped with the
+    readings when it moves, and nothing kept without a store or a record."""
+    kept, scorer = KeptMeasurement(), Scorer()
+    await score_kept(_ctx(kept, {A}), scorer, set())
+    store = kept_grid(_ctx(kept, {A}))
+    store["asked"] = "answer"
+    assert kept_grid(_ctx(kept, {A})) is store
+    moved = kept_grid(
+        _ctx(kept, {A}, model=MeasurementModel.v1(SampleMassAccuracy(), 3.0))
+    )
+    assert moved == {}
+    # The readings' measurement went with it.
+    assert scorer.calls == [{A}]
+    await score_kept(_ctx(kept, {A}), scorer, set())
+    assert scorer.calls == [{A}, {A}]
+    assert kept_grid(_ctx(None, {A})) is None
+    assert kept_grid(_ctx(kept, {A}, recorded=False)) is None
 
 
 async def test_a_reading_that_scores_nothing_is_kept_as_nothing():

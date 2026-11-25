@@ -8,7 +8,7 @@ outcome says. See ``batch_untargeted.py``.
 import math
 from contextlib import ExitStack, nullcontext
 from types import SimpleNamespace
-from unittest.mock import DEFAULT, AsyncMock, patch
+from unittest.mock import DEFAULT, AsyncMock, MagicMock, patch
 
 import numpy as np
 import pandas as pd
@@ -1018,6 +1018,8 @@ async def _measure(
     resolution=None,
     grid=None,
     fit_tied=(),
+    kept=None,
+    width=None,
 ):
     """Measure batch decisions on one sample as the propagation does
     (``batch_untargeted.measure_on_sample``), and keep nothing.
@@ -1031,6 +1033,10 @@ async def _measure(
         None asks the real grid.
     :param fit_tied: The grid's formulas only plausibility separated from
         every reading (``finder.ReadingRivals.fit_tied``), shaped as ``grid``'s.
+    :param kept: A batch pass's store (``kept_measurement.KeptMeasurement``)
+        the measurement reads and fills, as the batch's judging passes one.
+    :param width: The width the sample's latest run recorded; none unless a
+        test says.
     :return: The judged rows by peak, and the stand-ins, the seeded scorer's
         keyword arguments per call among them (``scored``) and the grid's
         calls (``grid``).
@@ -1056,9 +1062,16 @@ async def _measure(
         secondary=secondary,
         known=known,
         resolution=resolution,
+        width=width,
     )
     mocks["scored"] = scored_with
     mocks["grid"] = []
+    if kept is not None:
+        from functools import partial
+
+        stack.enter_context(
+            patch(f"{_BU}.RunContext", partial(pipeline.RunContext, kept=kept))
+        )
     if grid is not None:
         stack.enter_context(
             patch(
@@ -2875,3 +2888,116 @@ async def test_a_channel_the_grid_cannot_read_leaves_the_reading_measured(refusa
     assert row["tier"] == TIER_CANDIDATE
     assert [rule for rule, caps in _reasons(row) if caps] == ["lone_peak"]
     assert len(mocks["scored"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_reading_the_grid_cannot_read_is_measured_without_its_rivals():
+    # The grid answers None for a reading whose formula or channel it cannot
+    # read (``finder.rivals_of_readings``). The reading is then measured as
+    # before, without grid rivals, and the miss is kept through the pass: a
+    # second judging does not ask the grid of it again.
+    from mascope_backend.api.new.peak_assignments.kept_measurement import (
+        KeptMeasurement,
+    )
+
+    kept = KeptMeasurement()
+    grid = MagicMock(return_value=[None])
+    measured = []
+    with patch(
+        "mascope_backend.api.new.peak_assignments.given_rivals.rivals_of_readings",
+        grid,
+    ):
+        for _ in range(2):
+            rows, mocks = await _measure(
+                _sample(),
+                _peaks([("p1", 160.8413, 1.0e6)]),
+                [_mechanism("[M-H]-", "im-h")],
+                [("bp-1", "Br2", "Br2H-", "im-h", ["p1"])],
+                kept=kept,
+                width=0.6,
+            )
+            measured.append(rows["p1"])
+
+    for row in measured:
+        assert row["provenance"]["candidate_density"] == 1
+        assert "grid_rivals" not in row["provenance"]
+        assert [rule for rule, caps in _reasons(row) if caps] == ["lone_peak"]
+    assert grid.call_count == 1
+
+
+def test_the_grid_is_asked_once_of_a_reading_a_pass_judges_again():
+    # A batch pass judges a sample again after each stage that rewrites it,
+    # with the same readings at the same peaks and model: the grid's answer
+    # for each is kept (``kept_measurement.kept_grid``) and read again, and
+    # only a reading it was not asked of, or asked another way, asks it.
+    from mascope_backend.api.new.peak_assignments import given_rivals
+
+    peaks = _peaks([("p1", 160.8413, 1.0e6), ("p2", 300.0, 1.0e6)])
+    rows = [
+        {
+            "role": "M0",
+            "assigned_formula": formula,
+            "ionization_mechanism_id": "im-h",
+            "sample_peak_id": peak,
+            "mz_error_ppm": 0.1,
+        }
+        for formula, peak in (("Br2", "p1"), ("C5H8O4", "p2"))
+    ]
+    calls = []
+    grid = _grid([(f, ion, notation) for f, ion, notation, _, _ in _CROWD], calls)
+
+    def ask(rows, *, listed, memo):
+        return given_rivals.given_readings_rivals(
+            rows,
+            peaks,
+            ["mz", "intensity"],
+            notation_by_id={"im-h": "[M-H]-"},
+            search_config="config",
+            heuristics="heuristics",
+            scoring=None,
+            listed=listed,
+            memo=memo,
+        )
+
+    memo = {}
+    with patch.object(given_rivals, "rivals_of_readings", grid):
+        first = ask(rows[:1], listed=True, memo=memo)
+        again = ask(rows, listed=True, memo=memo)
+        other_way = ask(rows[:1], listed=False, memo=memo)
+        unkept = ask(rows[:1], listed=True, memo=None)
+
+    asked = [[reading.formula for reading in readings] for readings, _ in calls]
+    assert asked == [["Br2"], ["C5H8O4"], ["Br2"], ["Br2"]]
+    assert [row["assigned_formula"] for row, _ in again] == ["Br2", "C5H8O4"]
+    assert again[0][1] is first[0][1]
+    assert other_way[0][1] is not first[0][1]
+    assert len(unkept) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_pass_judging_a_sample_again_reads_the_grid_it_asked():
+    # The batch's judging measures a sample's readings again after each stage
+    # that rewrites it, in one pass's store: the second measurement asks the
+    # grid nothing and reads the same rivals, at the same density.
+    from mascope_backend.api.new.peak_assignments.kept_measurement import (
+        KeptMeasurement,
+    )
+
+    kept = KeptMeasurement()
+    measured = []
+    for _ in range(2):
+        rows, mocks = await _measure(
+            _sample(),
+            _peaks([("p1", 160.8413, 1.0e6)]),
+            [_mechanism("[M-H]-", "im-h")],
+            [("bp-1", "Br2", "Br2H-", "im-h", ["p1"])],
+            grid=_CROWD,
+            kept=kept,
+            width=0.6,
+        )
+        measured.append((rows["p1"], len(mocks["grid"])))
+
+    (first, asked_first), (again, asked_again) = measured
+    assert (asked_first, asked_again) == (1, 0)
+    assert again["provenance"]["candidate_density"] == 3
+    assert again["provenance"]["rival_set"] == first["provenance"]["rival_set"]
