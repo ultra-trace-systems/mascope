@@ -110,7 +110,8 @@ several ppm. Measured on the chamber sets before the rule, such rows were 5 to
 44% of a set's assigned rows and under 5% of its assigned intensity, the dim
 ones. A row that keeps its tier names the observation it stands on
 (``second_line``, ``corroborated``, ``series_anchor``, ``on_a_list``), so every
-assigned row says what saw it twice.
+assigned row says what saw it twice. A series is one only on a peak of S/N 4
+or more, or with no S/N recorded (:data:`SERIES_LIFT_MIN_SNR`, MAS-1270).
 
 ``context_prior`` - step 3.6: the run's chemistry context holds the row's
 formula shape only on corroboration. Every atmospheric context carries a sulfur
@@ -135,9 +136,11 @@ the run copied that record onto the row (:data:`SERIES`). It is evidence from
 outside the peak, as a second channel is - a homologue predicted this formula
 at this mass before the peak was read - so it is an escape from the two rules
 that ask whether anything outside the peak saw the reading, ``lone_peak`` and
-``candidate_density``, and a reason a row keeps its tier on. It lifts nothing
-else: a radical, an absent line or a mass off the calibration is still what
-it was, whatever series it sits in. Nor does it hold a row against being read
+``candidate_density``, and a reason a row keeps its tier on. From
+``lone_peak`` only on a peak of S/N 4 or more (above); from
+``candidate_density`` at any S/N. It lifts nothing else: a radical, an absent
+line or a mass off the calibration is still what it was, whatever series it
+sits in. Nor does it hold a row against being read
 as a neighbour's isotope line, which a second channel does: a series says the
 formula has homologues, not that the peak is not a line.
 
@@ -325,7 +328,7 @@ from mascope_tools.composition.utils import formula_identity
 #: run, because a tier is only comparable across runs together with the rules
 #: that produced it - the same statement the tier BANDS carry, for the same
 #: reason.
-TIERING_RULES_VERSION = 15
+TIERING_RULES_VERSION = 16
 
 #: The row's evidence is under the band its tier would need. Not a rule of
 #: this pass: the band is the floor every rule here lowers from, and naming it
@@ -1050,6 +1053,28 @@ def follows_its_owner(line: dict) -> bool:
     return gate.get("tracking") != TRACKING_UNTRACKED
 
 
+#: The S/N under which a series of the batch is no escape from ``lone_peak``
+#: (MAS-1270). Read off MAS-1265's table, its S/N 3 to 4 bin: there the rows a
+#: series lifted agreed with the reference clearly worse than the engine's own
+#: assigned rows on the demo's bromide and uronium batches (65 % against 84 %,
+#: 81 % against 88 %); from 4 up they were level or within two standard errors.
+#: Two batches of one instrument type: read again on a third chemistry.
+SERIES_LIFT_MIN_SNR = 4.0
+
+
+def series_under_floor(row: dict) -> float | None:
+    """The recorded S/N of a series-anchored row's peak where it is under
+    :data:`SERIES_LIFT_MIN_SNR`, or None: no series, no finite S/N recorded
+    (the floor fails open, as the lone-peak rule does on a row with no channel
+    record), or one at the floor or above it."""
+    snr = _provenance(row).get("base_snr")
+    if series_anchor(row) is None or not isinstance(snr, (int, float)):
+        return None
+    if isinstance(snr, bool) or not math.isfinite(snr) or snr >= SERIES_LIFT_MIN_SNR:
+        return None
+    return float(snr)
+
+
 def lone_peak_reason(row: dict, lines: Sequence[dict]) -> dict | None:
     """One peak is all that saw the row's neutral (decision 25).
 
@@ -1063,6 +1088,10 @@ def lone_peak_reason(row: dict, lines: Sequence[dict]) -> dict | None:
     density asks whether the envelope can break a tie the fit left, which it
     cannot, and this asks whether anything besides the one line was seen at all,
     which a second line of the envelope is.
+
+    A series is no escape under :data:`SERIES_LIFT_MIN_SNR`
+    (:func:`series_under_floor`): the reason then names it, and the row
+    keeps its series record.
 
     Asks only the formula search's rows, and fails open on a row whose channels
     were never recorded, since without that record the rule cannot tell a lone
@@ -1080,10 +1109,21 @@ def lone_peak_reason(row: dict, lines: Sequence[dict]) -> dict | None:
         cross_channel.get("channels"), list
     ):
         return None
-    if is_corroborated(row) or series_anchor(row) is not None:
+    faint_series = series_under_floor(row)
+    if is_corroborated(row) or (
+        series_anchor(row) is not None and faint_series is None
+    ):
         return None
     if any(follows_its_owner(line) for line in lines):
         return None
+    if faint_series is None:
+        series = "no series of its batch anchors it"
+    else:
+        series = (
+            "a series of its batch names it, but its peak's signal-to-noise of "
+            f"{faint_series:g} is under the {SERIES_LIFT_MIN_SNR:g} a series lifts "
+            "a lone peak from"
+        )
     if lines:
         one = len(lines) == 1
         seen = (
@@ -1097,8 +1137,8 @@ def lone_peak_reason(row: dict, lines: Sequence[dict]) -> dict | None:
     return _reason(
         REASON_LONE_PEAK,
         f"one peak is all that saw {row.get('assigned_formula')}: {seen}, no "
-        "second channel of this run committed the same neutral, no series of "
-        "its batch anchors it, and it was not matched from a list",
+        f"second channel of this run committed the same neutral, {series}, and "
+        "it was not matched from a list",
         caps=True,
     )
 

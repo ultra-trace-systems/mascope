@@ -64,6 +64,7 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     REASON_UNRESOLVED_PEAK,
     SEPARATED_THROUGH,
     SERIES,
+    SERIES_LIFT_MIN_SNR,
     TIERING_RULES_VERSION,
     UNTESTABLE_ARTIFACT,
     UNTESTABLE_RANGE,
@@ -493,6 +494,20 @@ class TestTheDensityRule:
         assert tier_of(rows, "pa-1") == "assigned"
         assert REASON_CANDIDATE_DENSITY not in rules_on(rows, "pa-1")
 
+    def test_a_series_on_a_faint_peak_still_keeps_it(self):
+        # The S/N floor is the lone-peak rule's alone (MAS-1270): the row is
+        # held by one peak being all that saw it, not by its rivals.
+        rows = [
+            row(
+                "pa-1",
+                density=DENSITY_LIMIT,
+                provenance={SERIES: SERIES_BLOCK, "base_snr": 3.0},
+            )
+        ]
+        summary = run(rows)
+        assert REASON_CANDIDATE_DENSITY not in rules_on(rows, "pa-1")
+        assert summary["capped_by_rule"] == {REASON_LONE_PEAK: 1}
+
     def test_an_uncontested_reading_keeps_it(self):
         # Its 13C line is the second observation; density does not count it.
         rows = [row("pa-1", density=DENSITY_LIMIT - 1), line_of("pa-1")]
@@ -610,6 +625,19 @@ class TestTheContextPriors:
         ]
         run(rows, context=presets.AMBIENT_AIR)
         assert tier_of(rows, "pa-1") == "assigned"
+
+    def test_a_series_on_a_faint_peak_still_keeps_it(self):
+        # The S/N floor is the lone-peak rule's alone (MAS-1270).
+        rows = [
+            row(
+                "pa-1",
+                self.SULFUR,
+                provenance={SERIES: SERIES_BLOCK, "base_snr": 3.0},
+            ),
+        ]
+        summary = run(rows, context=presets.AMBIENT_AIR)
+        assert REASON_CONTEXT_PRIOR not in rules_on(rows, "pa-1")
+        assert summary["capped_by_rule"] == {REASON_LONE_PEAK: 1}
 
     def test_a_list_match_is_not_asked(self):
         rows = [row("pa-1", self.SULFUR, source="database", compound="dms")]
@@ -794,6 +822,73 @@ class TestOnePeakIsNotEnough:
             ),
             "caps": False,
         }
+
+    def test_a_series_does_not_lift_a_peak_under_the_floor(self):
+        # MAS-1270: under S/N 4 the rows a series lifted agreed with the
+        # reference clearly worse than the engine's own.
+        assert SERIES_LIFT_MIN_SNR == 4.0
+        rows = [row("pa-1", provenance={SERIES: SERIES_BLOCK, "base_snr": 3.9})]
+        summary = run(rows)
+        assert tier_of(rows, "pa-1") == "candidate"
+        assert summary["capped_by_rule"] == {REASON_LONE_PEAK: 1}
+        assert self.reason(rows, REASON_LONE_PEAK) == {
+            "rule": REASON_LONE_PEAK,
+            "detail": (
+                "one peak is all that saw C6H12O6: no other line of its isotope "
+                "pattern is committed, no second channel of this run committed "
+                "the same neutral, a series of its batch names it, but its "
+                "peak's signal-to-noise of 3.9 is under the 4 a series lifts a "
+                "lone peak from, and it was not matched from a list"
+            ),
+            "caps": True,
+        }
+        # It keeps its series record, so the reading still shows the series.
+        assert rows[0]["provenance"][SERIES] == SERIES_BLOCK
+
+    def test_a_series_lifts_a_peak_at_the_floor(self):
+        rows = [row("pa-1", provenance={SERIES: SERIES_BLOCK, "base_snr": 4.0})]
+        run(rows)
+        assert tier_of(rows, "pa-1") == "assigned"
+        assert REASON_LONE_PEAK not in rules_on(rows, "pa-1")
+        assert REASON_SERIES_ANCHOR in rules_on(rows, "pa-1")
+
+    @pytest.mark.parametrize("snr", [None, float("nan"), "3.0", True])
+    def test_a_series_lifts_a_peak_with_no_recorded_snr(self, snr):
+        # The floor fails open, as the rule does on a row with no channels.
+        provenance = {SERIES: SERIES_BLOCK}
+        if snr is not None:
+            provenance["base_snr"] = snr
+        rows = [row("pa-1", provenance=provenance)]
+        run(rows)
+        assert tier_of(rows, "pa-1") == "assigned"
+        assert REASON_SERIES_ANCHOR in rules_on(rows, "pa-1")
+
+    @pytest.mark.parametrize(
+        "escape, kept_on",
+        [
+            ({"channels": SEEN_TWICE}, REASON_CORROBORATED),
+            ({"source": "database", "compound": "compound-7"}, REASON_ON_A_LIST),
+            ("line", REASON_SECOND_LINE),
+        ],
+    )
+    def test_another_escape_under_the_floor_is_unchanged(self, escape, kept_on):
+        provenance = {SERIES: SERIES_BLOCK, "base_snr": 3.0}
+        if escape == "line":
+            rows = [row("pa-1", provenance=provenance), line_of("pa-1")]
+        else:
+            rows = [row("pa-1", provenance=provenance, **escape)]
+        run(rows)
+        assert tier_of(rows, "pa-1") == "assigned"
+        assert REASON_LONE_PEAK not in rules_on(rows, "pa-1")
+        assert kept_on in rules_on(rows, "pa-1")
+
+    def test_a_faint_peak_with_no_series_reads_as_before(self):
+        rows = [row("pa-1", provenance={"base_snr": 3.0})]
+        run(rows)
+        assert (
+            "no series of its batch anchors it"
+            in (self.reason(rows, REASON_LONE_PEAK)["detail"])
+        )
 
     @pytest.mark.parametrize(
         "block, named",
@@ -1583,11 +1678,11 @@ class TestTheRunsRecord:
     def test_the_rule_version_is_recorded(self):
         assert run([row("pa-1")])["version"] == TIERING_RULES_VERSION
 
-    def test_the_rule_set_is_15(self):
+    def test_the_rule_set_is_16(self):
         # The number, not the imported constant: a tier is comparable across
         # runs only under the same rules, so the set moves on purpose and this
         # test moves with it.
-        assert run([row("pa-1")])["version"] == 15
+        assert run([row("pa-1")])["version"] == 16
 
     def test_the_thresholds_are_recorded_with_it(self):
         summary = run([row("pa-1")])

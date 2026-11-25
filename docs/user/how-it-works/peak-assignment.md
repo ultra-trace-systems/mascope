@@ -1026,7 +1026,12 @@ What caps a row at candidate:
   row's (*off its M0*, below) does not count, since it is more likely another peak
   inside the matching window; a line *in doubt* does. A formula matched from your
   target library or a reference list is not asked: the list is its second
-  observation.
+  observation. A series counts only on a peak with a signal-to-noise of 4 or more.
+  Under 4 the formulas a series lifted agreed with the reference engine clearly less
+  often than the run's own *assigned* formulas, on both the demo's bromide and uronium
+  batches. Such a row stays a *candidate*, and the reason names the series, the floor
+  and the peak's signal-to-noise. The row still shows its series. A row whose peak has
+  no signal-to-noise recorded is lifted as before.
 - **needs corroboration here** — the formula meets a prior of the run's chemistry
   context (*Priors of an atmosphere*, above): it carries sulfur, or two or more
   nitrogens with fewer than two oxygens per nitrogen. Such a formula stays at
@@ -3127,7 +3132,8 @@ row a series vouches for shows a stairs badge in **Across the batch**, in green 
 that supports it, whose tooltip names the
 step and the assigned compound the series starts at. The series counts as a second
 observation of that formula (*in a series*, above), which lifts it past *one peak only*
-and *rivals left standing* and nothing else: right after the detection, every sample
+and *rivals left standing* and nothing else, and past *one peak only* only on a peak with
+a signal-to-noise of 4 or more (*one peak only*, above): right after the detection, every sample
 whose member reads a formula a series vouches for is judged again (*The batch stages*,
 above), and a sample's next assignment run counts it too. On a source with a 15N-labelled reagent a
 formula carrying C8S or C2F3 is not proposed: its labelled alias makes the same ion and
