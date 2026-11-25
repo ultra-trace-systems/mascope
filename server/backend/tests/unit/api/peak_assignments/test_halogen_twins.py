@@ -364,6 +364,25 @@ class TestTheReread:
         monkeypatch.setattr(module, "assign_compositions", without_the_twin)
         assert reread(frame, rows, twins).summary["reread"] == 0
 
+    def test_the_reread_searches_under_the_runs_own_filter(self, monkeypatch):
+        # No band of its own: the halogen is graded on the table's band, as in
+        # the run's search (decision MAS-979).
+        from mascope_backend.api.new.peak_assignments import halogen_twins as module
+
+        frame = peaks()
+        rows = matches(frame)
+        twins = find_twins(rows, frame, halogens=("Cl",), searched_mzs=[M0])
+        real = module.assign_compositions
+        seen = []
+
+        def spy(peaks_frame, config, heuristics, *args, **kwargs):
+            seen.append(heuristics)
+            return real(peaks_frame, config, heuristics, *args, **kwargs)
+
+        monkeypatch.setattr(module, "assign_compositions", spy)
+        reread(frame, rows, twins)
+        assert seen == [HEURISTICS]
+
 
 class TestTheRecord:
     def test_the_row_names_its_twin_and_leads_with_what_it_replaced(self):

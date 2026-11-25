@@ -82,6 +82,12 @@ class TestTheWindowsGrade:
         with graded_in(AMBIENT):
             assert formula_plausibility("C5H10O12") >= formula_shape.PLAUSIBILITY_FLOOR
 
+    def test_the_floor_is_the_tables(self, monkeypatch):
+        monkeypatch.setattr(formula_shape, "PLAUSIBILITY_FLOOR", 0.01)
+        # O/C 2.4, past twice the span; and a C1 formula the valence checks fail.
+        assert _factor("C5H10O12") == pytest.approx(0.01)
+        assert _factor("CH2O9") == pytest.approx(0.01)
+
     def test_the_span_is_the_tables(self, monkeypatch):
         monkeypatch.setattr(formula_shape, "CONTEXT_WINDOW_SPAN", 0.5)
         # 0.1 past a width of 0.4 is now an eighth of the way to half credit.

@@ -660,8 +660,17 @@ class TestTheContextPriors:
         assert REASON_CONTEXT_PRIOR not in rules_on(rows, "pa-1")
         assert tier_of(rows, "pa-1") == "assigned"
 
-    def test_a_row_only_the_target_library_names_is(self):
-        rows = [row("pa-1", self.SULFUR, source="database", compound="dms")]
+    @pytest.mark.parametrize(
+        "named",
+        [None, {"reference_identities": []}],
+        ids=["no list record", "an empty list record"],
+    )
+    def test_a_row_only_the_target_library_names_is(self, named):
+        rows = [
+            row(
+                "pa-1", self.SULFUR, source="database", compound="dms", provenance=named
+            )
+        ]
         run(rows, context=presets.AMBIENT_AIR)
         assert REASON_CONTEXT_PRIOR in rules_on(rows, "pa-1")
         assert tier_of(rows, "pa-1") == "candidate"
