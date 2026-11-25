@@ -27,7 +27,8 @@ from mascope_tools.composition.custom_elements import (
     label_purity,
     labelled_purity,
 )
-from mascope_tools.composition.heuristic_filter import formula_plausibility, graded_in
+from mascope_tools.composition.formula_shape import graded_in
+from mascope_tools.composition.heuristic_filter import formula_plausibility
 from mascope_tools.composition.profiles import AMBIENT_AIR
 from mascope_tools.composition.reagents import ReagentCalibration
 

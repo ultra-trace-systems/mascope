@@ -1333,3 +1333,48 @@ async def test_the_fold_reads_a_fragment_as_the_source_s_as_a_run_does():
     assert folded["p1"].assigned_formula == "C6H12O6"
     assert (folded["p2"].role, folded["p2"].assigned_formula) == ("reagent", None)
     assert folded["p2"].provenance["reagent"]["family"] == "fragment"
+
+
+@pytest.mark.asyncio
+async def test_from_stage_a_on_the_windows_leave_out_what_its_lists_name():
+    # Decision MAS-1280: a neutral a reference list names is spared the
+    # context windows' grade, as it is the caps on its composition. Stage A
+    # reads the lists, so every stage after the propose grades its rows so;
+    # a neutral only the target library names is graded in the windows. The
+    # lists name a neutral through the reference ions Stage A left out of its
+    # frame for reaching no peak too (MAS-1282), as a whole frame would.
+    from mascope_backend.api.new.peak_assignments import pipeline
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
+        fold_sample_peaks_without_run,
+    )
+    from mascope_tools.composition.formula_shape import graded_run
+
+    seen = []
+    score = pipeline.STAGE_FUNCTIONS[pipeline.Stage.SCORE]
+
+    async def watched(ctx):
+        seen.append(graded_run())
+        await score(ctx)
+
+    stack, mocks = _patched()
+    with stack, patch.dict(pipeline.STAGE_FUNCTIONS, {pipeline.Stage.SCORE: watched}):
+        *first, _scored, curve, _absent = mocks["stage_a"].return_value
+        scored = pd.DataFrame(
+            {
+                "target_compound_formula": ["C6H4N2O5", "C6H12O6"],
+                "reference_identities": [[{"name": "2,4-dinitrophenol"}], None],
+            }
+        )
+        absent = pd.DataFrame(
+            {
+                "target_ion_id": ["ion-left-out"],
+                "target_compound_formula": ["C7H10O4"],
+                "reference_identities": [[{"name": "a listed acid"}]],
+            }
+        )
+        mocks["stage_a"].return_value = (*first, scored, curve, absent)
+        assert await fold_sample_peaks_without_run("si-1") == "batch-1"
+
+    assert seen
+    assert {graded.listed for graded in seen} == {frozenset({"C6H4N2O5", "C7H10O4"})}
+    assert graded_run() is None

@@ -369,11 +369,11 @@ their campaign provenance):
 
 | preset | polarity | adduct panel | element grid | notes |
 |---|---|---|---|---|
-| `BR` | − | `[M+Br]-`, `[M-H]-`, `[M+HBr+Br]-`; `[M+CO3]-`, `[M+Br2]-` and `[M+HCOO]-` secondary (formate from plan step 3.2) | `C0-40 H0-80 N0-3 O0-18 S0-2 Cl0-2 Br0-2` | corroboration weight already measured (+Br⁻ LR ≈ 5.1×, odds ratio 9.8×) |
+| `BR` | − | `[M+Br]-`, `[M-H]-`, `[M+HBr+Br]-`; `[M+CO3]-`, `[M+Br2]-` and `[M+HCOO]-` secondary (formate from plan step 3.2) | `C0-40 H0-80 N0-3 O0-18 S0-2` (`Cl0-2 Br0-2` until MAS-1280) | corroboration weight already measured (+Br⁻ LR ≈ 5.1×, odds ratio 9.8×) |
 | `UR` | + | `[M+H]+`, `[M+CH4N2O+H]+` | `C0-40 H0-90 N0-8 O0-15 S0-2` | urea/uronium |
 | `NO3` | − | `[M+NO3]-`, `[M-H]-`; `[M+CO3]-` and `[M+HCOO]-` secondary | `C0-40 H0-60 N0-3 O0-25 S0-2` | provisional in peaky — ship marked provisional |
 | `NO3_15N` | − | `[M+^NO3]-`, `[M-H]-`; `[M+CO3]-` and `[M+HCOO]-` secondary | as NO3 | `^N` purity 0.98 as data |
-| `IODIDE` | − | `[M+I]-`, `[M-H]-`, `[M+I2]-`, `[M-H+I2]-`; `[M+HCOO]-` secondary | `C0-40 H0-80 N0-3 O0-20 S0-2 Cl0-1` | I deliberately off the neutral grid |
+| `IODIDE` | − | `[M+I]-`, `[M-H]-`, `[M+I2]-`, `[M-H+I2]-`; `[M+HCOO]-` secondary | `C0-40 H0-80 N0-3 O0-20 S0-2` (`Cl0-1` until MAS-1280) | I deliberately off the neutral grid, and Cl since MAS-1280 |
 | `EASYIC_POS` / `EASYIC_NEG` | ± | `[M]+.` with `[M-H]+` and `[M+H]+` secondary; `[M]-.` with `[M-H]-` secondary | `C0-40 H0-80 N0-5 O0-15 S0-2` (negative O0-20) | the charge-transfer (EASY-IC) source, recognised by electron transfer on an Orbitrap; ambient context; the fluoranthene beam as its reagent ladder (assignment plan step 3.1) |
 | `ESI_POS` / `ESI_NEG` | ± | the generic panels (Phase 0 item 6 of the retired `ionization_method_config.md`; shipped as seeded system modes in `ionization_catalogue.py`) | wide default | no reagent grammar; gives non-CIMS users seeded modes |
 

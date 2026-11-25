@@ -18,16 +18,22 @@ import pytest
 
 from mascope_tools.composition import formula_shape
 from mascope_tools.composition import profiles as P
+from mascope_tools.composition.formula_shape import (
+    graded_in,
+    graded_run,
+    listed_in,
+    spare_listed,
+)
 from mascope_tools.composition.heuristic_filter import (
     _plausibility,
     apply_heuristic_rules,
     context_window_plausibility,
     element_counts,
     formula_plausibility,
-    graded_in,
     rule_context_ratios,
 )
 from mascope_tools.composition.models import HeuristicFilterConfig
+from mascope_tools.composition.utils import formula_identity
 
 
 AMBIENT = P.AMBIENT_AIR.ratio_windows()
@@ -111,6 +117,55 @@ class TestTheWindowsGrade:
         # A C5 dinitrate: O/C 1.6 as written, a C5 diol skeleton inside.
         assert _factor("C5H8N2O8") < 1.0
         assert _factor("C5H8N2O8", nox_skeleton=True) == 1.0
+
+
+#: Dinitrophenol, a cited list's compound: an aromatic's H/C 0.67 and DBE/C 1.0
+#: sit just outside ambient air's 0.7 and 0.75.
+DINITROPHENOL = "C6H4N2O5"
+
+
+class TestAListNamedNeutralIsNotGraded:
+    """Decision MAS-1280: a neutral a reference list the run read names is
+    spared the windows' grade, as it is spared the caps on its composition. A
+    cited list naming the compound is stronger evidence than a shape prior."""
+
+    def test_dinitrophenol_sits_outside_the_ambient_windows(self):
+        assert _factor(DINITROPHENOL) < 0.5
+
+    def test_a_listed_neutral_keeps_its_universal_plausibility(self):
+        bare = _plausibility(DINITROPHENOL, None)
+        listed = [formula_identity("C6H4O5N2")]  # one neutral, however spelled
+        with graded_in(AMBIENT):
+            assert formula_plausibility(DINITROPHENOL) < bare
+        with graded_in(AMBIENT, listed=listed):
+            assert formula_plausibility(DINITROPHENOL) == bare
+            # Every other formula is graded as before: a target-only name too.
+            assert formula_plausibility("C10H20N5O3") < _plausibility(
+                "C10H20N5O3", None
+            )
+
+    def test_a_run_spares_them_from_where_it_reads_its_lists(self):
+        bare = _plausibility(DINITROPHENOL, None)
+        with graded_in(AMBIENT):
+            windows = graded_run().windows
+            assert formula_plausibility(DINITROPHENOL) < bare
+            spare_listed([DINITROPHENOL])
+            assert formula_plausibility(DINITROPHENOL) == bare
+            assert graded_run().windows == windows  # the context is unchanged
+        assert graded_run() is None
+        spare_listed([DINITROPHENOL])  # outside a run's block: nothing to spare
+        assert graded_run() is None
+
+    def test_another_known_sets_pass_spares_its_own_lists(self):
+        # A neighbour's first pass, read for a thin file's pool.
+        bare = _plausibility(DINITROPHENOL, None)
+        with graded_in(AMBIENT, listed=[DINITROPHENOL]):
+            with listed_in([]):
+                assert formula_plausibility(DINITROPHENOL) < bare
+            assert formula_plausibility(DINITROPHENOL) == bare
+        with listed_in([DINITROPHENOL]):  # outside a run: the universal bands
+            assert formula_plausibility(DINITROPHENOL) == bare
+            assert graded_run() is None
 
 
 class TestTheWindowsApply:

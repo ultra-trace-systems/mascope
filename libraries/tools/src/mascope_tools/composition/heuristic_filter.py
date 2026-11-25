@@ -3,9 +3,6 @@ Based on 7 Golden Rules by https://bmcbioinformatics.biomedcentral.com/articles/
 """
 
 import math
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
-from contextvars import ContextVar
 from functools import lru_cache
 from typing import Any, Sequence
 
@@ -453,52 +450,26 @@ def senior_plausibility(counts: dict[str, int] | None) -> float:
     return 1.0 if _senior_feasible(counts) else 0.0
 
 
-#: The chemistry context formulas are graded in (:func:`graded_in`): its ratio
-#: windows and whether an organonitrate's skeleton is read. Context-local, as
-#: ``custom_elements.labelled_purity`` is, so concurrent runs each grade in
-#: their own and ``asyncio.to_thread`` carries it. None grades on the universal
-#: bands alone, as a run with no context and every caller outside a run do.
-_GRADED_CONTEXT: ContextVar[tuple | None] = ContextVar("graded_context", default=None)
-
-
-@contextmanager
-def graded_in(
-    windows: Mapping[str, tuple[float, float]], nox_skeleton: bool = False
-) -> Iterator[None]:
-    """Grade formulas in a chemistry context's ratio windows inside the block.
-
-    Every reader of a run's plausibility - the search, both stages'
-    arbitration, the rival sets, the tiers and the identification level -
-    calls :func:`formula_plausibility` with the formula alone, so the run
-    grades every formula in its context once, here, and they agree.
-
-    :param windows: The context's ratio windows; empty grades on the
-        universal bands alone, the identity context ``none`` is.
-    :param nox_skeleton: Read an organonitrate's carbon skeleton too.
-    """
-    key = (tuple(sorted(windows.items())), bool(nox_skeleton)) if windows else None
-    token = _GRADED_CONTEXT.set(key)
-    try:
-        yield
-    finally:
-        _GRADED_CONTEXT.reset(token)
-
-
 def formula_plausibility(formula: str) -> float:
     """Combined graded chemical plausibility in [0, 1] for a single NEUTRAL formula.
 
     0.0 **iff** the Senior/RDBE check (Rule 2) proves the graph impossible; otherwise the
     element-ratio (Rules 4-5) and heteroatom co-occurrence (Rule 6) factors multiply, and
-    inside :func:`graded_in` the context's windows with them
-    (:func:`context_window_plausibility`); the result is floored at
+    inside ``formula_shape.graded_in`` the context's windows with them
+    (:func:`context_window_plausibility`), but for a neutral a reference list the
+    run read names (``GradedRun.listed``); the result is floored at
     ``PLAUSIBILITY_FLOOR``, so a merely unusual formula is never mistaken for an
     impossible one. Unparseable formulas fail open to 1.0. See the section header for
     the design; numbers from Kind & Fiehn 2007, read off ``formula_shape``."""
-    return _plausibility(formula, _GRADED_CONTEXT.get())
+    run = formula_shape.graded_run()
+    return _plausibility(formula, None if run is None else run.grading(_key(formula)))
 
 
-# Pure function of the formula and the context; cached because arbitration
-# re-evaluates it per candidate per peak across a whole run's ledger.
+# Pure functions of the formula and the context; cached because arbitration
+# re-evaluates them per candidate per peak across a whole run's ledger.
+_key = lru_cache(maxsize=65536)(formula_identity)
+
+
 @lru_cache(maxsize=65536)
 def _plausibility(formula: str, context: tuple | None) -> float:
     counts = element_counts(formula)

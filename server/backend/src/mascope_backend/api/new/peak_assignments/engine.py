@@ -70,6 +70,7 @@ from mascope_tools.composition.finder import (
     ListReading,
     ReadingRivals,
 )
+from mascope_tools.composition.formula_shape import listed_in
 from mascope_tools.composition.heuristic_filter import (
     SCORE_VERSION,
     element_counts,
@@ -1569,6 +1570,7 @@ def invert_matches_to_peak_assignments(
     instrument: str | None = None,
     calibration: "Calibration | None | object" = _CALIBRATION_UNSET,
     reference_identities: dict[str, list] | None = None,
+    spared: Iterable[str] | None = None,
 ) -> list[dict]:
     """Invert target-first match results into per-peak assignments (Stage A).
 
@@ -1603,8 +1605,11 @@ def invert_matches_to_peak_assignments(
         explicitly to force uncalibrated. Its ``corroboration_weights`` drive the P3 adduct
         co-occurrence fold-in on ``p_correct``.
     :param reference_identities: The lists' names by formula
-        (:func:`reference_names_by_formula`), or None to read them off
-        the frame.
+        (:func:`reference_names_by_formula`), which the rows' provenance reads
+        and the arbitration spares the windows, or None to read them off the frame.
+    :param spared: The neutrals the arbitration spares instead, where the
+        provenance names none of them: a batch's given readings, judged as a
+        run's rows (``pipeline._elect_given``).
     :return: One assignment dict per matched peak, ready for bulk insert.
     """
     if match_isotope_df.empty:
@@ -1666,10 +1671,11 @@ def invert_matches_to_peak_assignments(
     matched["_formula_key"] = (
         matched["target_compound_formula"].astype(str).map(formula_identity)
     )
-    plaus_by_formula = {
-        f: formula_plausibility(f) for f in matched["_formula_key"].unique()
-    }
-    matched["_plaus"] = matched["_formula_key"].map(plaus_by_formula)
+    # Graded sparing the neutrals this frame's lists name, as its provenance reads them,
+    # the ions left out of it included: a neighbour's, for a pool, is not the run's.
+    with listed_in(reference_identities if spared is None else spared):
+        plaus = {f: formula_plausibility(f) for f in matched["_formula_key"].unique()}
+    matched["_plaus"] = matched["_formula_key"].map(plaus)
     # A reference list's copy of a reading the target library makes on the same
     # peak is that reading again, and the library's row owns it. The list's names
     # still ride along on it (above), but the copy never takes the line, whichever

@@ -137,11 +137,11 @@ tier cap. The graded bands are Kind & Fiehn 2007, Tables 2 and 3.
 | Oxygen, O/C | none (was 2) | 0-1.2, 0-3.0 | `oxygen_lattice`: O/C > 1.3 with O >= 5 | composition |
 | Sulfur, S/C | none (was 0.1) | 0-0.8, 0-3.0 | `context_prior`, sulfur: S >= 1 | composition |
 | Phosphorus, P/C | none (was 0.05) | 0-0.3, 0-2.0 | - | composition |
-| Halogens, F/C, Cl/C, Br/C | none (was 0.05; the twin re-read opened 0.8) | F 0-1.5, 0-6.0; Cl, Br 0-0.8, 0-2.0 | - | composition |
+| Halogens, F/C, Cl/C, Br/C | none (was 0.05; the twin re-read opened 0.8); the bromide and iodide grids hold no Cl or Br (MAS-1280) | F 0-1.5, 0-6.0; Cl, Br 0-0.8, 0-2.0 | - | composition |
 | Iodine, I/C | none (was 0.05) | not graded | - | composition |
 | Silicon, Si/C | none | 0-0.5, 0-1.0 | - | composition |
 | Heteroatom co-occurrence (Rule 6) | none | the paper's Table 3 caps, graded | - | composition |
-| Context windows, H/C O/C N/C DBE/C | none; a context may opt in to the gate (`windows_gate`) | 1.0 inside, half a quarter of the window's width past its edge, the floor at half; below C3 the valence checks | `nox_skeleton` | composition |
+| Context windows, H/C O/C N/C DBE/C | none; a context may opt in to the gate (`windows_gate`) | 1.0 inside, half a quarter of the window's width past its edge, the floor at half; below C3 the valence checks; not asked of a neutral a reference list names (MAS-1280) | `nox_skeleton` | composition |
 | Carbon-free | none: the grid's carbon floor is open (`GRID_CARBON_FLOOR` 0) | fails open, 1.0 | `carbon_free` | composition |
 | Radical | none (Senior keeps odd-electron formulas) | none | `odd_electron` | ion |
 | Oxygen-free nitrate cluster | none | none | `oxygen_free_cluster` | ion |
@@ -165,10 +165,38 @@ a reading whose other readings are all radicals no rival. A radical's own rivals
 other ion.
 
 The context windows' factor enters every formula's plausibility in a run
-(`heuristic_filter.graded_in`, which `pipeline.run_stages` enters after the resolve
+(`formula_shape.graded_in`, which `pipeline.run_stages` enters after the resolve
 stage): the search's ranking, both stages' evidence and tiers, the rival sets and the
-identification level read one number. Stage A's formulas are graded too, as the universal
-bands grade them; the exemption rule is about caps.
+identification level read one number. The universal bands grade every formula, Stage A's
+included.
+
+The windows' grade follows the exemption rule's composition half (decision MAS-1280,
+2026-11-25): a neutral a reference list the run read names is graded on the universal
+bands alone. A cited list naming the compound is stronger evidence than the context's
+shape prior. On the demo bromide batch the ambient-air windows held dinitrophenol, from a
+cited list, below assignability in 70 of 80 samples: an aromatic's H/C (0.67) and DBE/C
+(1.0) sit just outside the windows' 0.7 and 0.75, a factor of 0.355. The run learns the
+names where it reads its lists (`formula_shape.spare_listed`, from
+`stage_a_pass.reference_named`): after Stage A, from its frame and the reference ions it
+left out of the frame for reaching no peak (MAS-1282), in a batch search, and where a
+batch's readings are judged as a run's rows. Stage A's own arbitration grades its frame
+with the names its rows' provenance carries (`formula_shape.listed_in`), the ions left
+out included, so a row whose provenance names a list is spared, and a neighbour's first
+pass, read for a thin file's envelope pool, grades with its own. A neutral only the
+target library names is graded in the windows like any other.
+
+The **halide grids** (decision MAS-1280). The bromide and iodide profiles' grids carried
+`Cl0-2 Br0-2` and `Cl0-1`, ported unchanged from the reference engine's profiles. With no
+ratio bound on them they read the reagent's own ion as a halogenated neutral:
+C20H32O11 + Br⁻ is the same ion as C20H33BrO11 − H⁺. Five builds on 16 demo bromide samples
+(control assigned rows, swap arm): develop 2,257 and 45; the branch with the bound open
+1,370 and 64; a 0.05 per carbon bound in the table 2,102 and 44; the carbon floor back
+1,421 and 64; no Cl or Br in the two grids 2,209 and 41. The last was chosen. No shipped
+list or target names an inorganic halogen the grids would serve, and develop's grid never
+reached one. A halogenated organic in a bromide or iodide run comes from a list, from its
+twin line (`halogen_twins`: chlorine, in a bromide run), or from a context that opens the
+element. A context only narrows a grid today; how one opens an element, and the
+reagent-alias rule that applies once one opens the reagent's own halogen, are #3635.
 
 ### L2 — Spectral-neighbourhood corroboration (adducts, isotopes, fragments)
 *Basis.* A real compound rarely appears as a single peak. Its isotopologues, its different
