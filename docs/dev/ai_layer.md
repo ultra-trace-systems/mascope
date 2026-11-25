@@ -606,7 +606,7 @@ answered wrongly, failed, or **not answerable**: a solver raises
   why, and the session ends with the run's report. `uv run python
   libraries/ai/tests/ai_golden.py run --url ...` prints the same report
   without pytest; `list` prints the table below.
-- **Reference values.** The answers are those of demo bundle 1.4.4, the
+- **Reference values.** The answers are those of demo bundle 1.5.0, the
   registry's default, which CI's stack loads. The numbers come from the
   bundle's goldens (`expected/peaks.parquet`, `expected/ions.parquet`).
   Where a question can be checked against them, a hermetic test holds the
@@ -683,7 +683,7 @@ answered wrongly, failed, or **not answerable**: a solver raises
 | M4 | metadata | Which target collections is the 2025 bromide batch matched against? | Bromide high m/z calibrants, Bromide monitor | `describe`, `resolve` |
 | M5 | metadata | Over what time span was the 2025 uronium batch measured? | 2025-08-11 11:23:12 to 13:00:32 UTC | `describe`, `resolve` |
 | M6 | metadata | Which batches have 'Uronium' in their name? | the 2025-08-11 uronium and the 2026-10-15 Uronium RI acquisitions | `find` |
-| M7 | metadata | How many compounds does the Uronium monitor collection have? | 50 | `describe`, `resolve` |
+| M7 | metadata | How many compounds does the Uronium monitor collection have? | 49 | `describe`, `resolve` |
 | M8 | metadata | Which ionization mode and mechanisms do the 2025 bromide batch's samples use? | Bromide m/z 82-750: [M+Br]- and [M-H]- | `describe`, `resolve` |
 | A1 | analysis | When did C10H16O2's protonated ion (C10H17O2+) peak in the 2025 uronium batch's time series, and how high? | at the 14:34:03 sample, height 1.176e6 | `load_timeseries`, `reduce`, `resolve` |
 | A2 | analysis | In the 2025 bromide batch, what is formic acid's signal (CH2BrO2-) normalised to the reagent ion Br3- (its [81Br]Br2- line): its mean, and its maximum and where? | mean 0.0959 over 80 samples, maximum 0.1074 at 15:21:13 | `derive`, `load_peaks`, `resolve` |

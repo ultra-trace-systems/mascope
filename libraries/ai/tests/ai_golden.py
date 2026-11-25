@@ -74,7 +74,7 @@ from mascope_ai.oracle import STATUS
 
 
 #: The demo bundle whose data the known answers are.
-BUNDLE = "1.4.4"
+BUNDLE = "1.5.0"
 
 #: The demo stack's workspace the questions are about.
 WORKSPACE = "Acquisitions Orbion"
@@ -1164,8 +1164,8 @@ QUESTIONS: tuple[Question, ...] = (
         "metadata",
         "How many compounds does the Uronium monitor collection have?",
         _uronium_monitor_size,
-        50,
-        "50",
+        49,
+        "49",
         ("describe", "resolve"),
     ),
     Question(

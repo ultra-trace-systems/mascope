@@ -251,17 +251,22 @@ class TestClientContract:
 
     def test_sample_peaks_carry_their_scan_counts(self, mascope):
         # The counts come from the server, as per-peak lists the frame takes
-        # whole, so no SDK predates them; a store detected before they were
-        # kept sends null for both, throughout.
+        # whole, so no SDK predates them. A store detected before they were
+        # kept sends null for both, throughout; the demo bundle's stores are
+        # detected with them from bundle 1.5.0 on.
         peaks = mascope.samples.get_peaks(_first_sample_id(mascope), matches=False)
 
         assert peaks is not None and not peaks.empty
         assert {"n_scans", "n_scans_total"} <= set(peaks.columns)
         counted = peaks["n_scans"].notna()
+        assert counted.any(), "the demo's Orbitrap stores carry scan counts"
         assert peaks.loc[counted, "n_scans_total"].notna().all()
         present = peaks.loc[counted, "n_scans"].astype(float)
         total = peaks.loc[counted, "n_scans_total"].astype(float)
         assert ((present >= 0) & (present <= total)).all()
+        # An Orbitrap scan keeps a peak only where it clears that scan's
+        # noise, so some dim peak is missing from some of the averaged scans.
+        assert (present < total).any()
 
     def test_a_sample_says_its_class_and_line_width(self, mascope):
         """Whether or not it has an assignment run: the demo has none."""
@@ -1405,8 +1410,9 @@ class TestSeriesContract:
     `/api/batch-peaks/records/series`, `GET /api/sample/files`).
 
     Each is checked against the slower read it stands in for: the ion series
-    against `load_peaks`, the batch-peak series against the ledger's
-    members, the files listing against the files the batches' samples name.
+    against `load_peaks` and the match tree, the batch-peak series against
+    the ledger's members, the files listing against the files the batches'
+    samples name.
     """
 
     def test_ion_series_holds_the_peaks_heights_per_sample_and_ion(self, mascope):
@@ -1448,10 +1454,36 @@ class TestSeriesContract:
         # A pair's sum holds the heights its peaks show, and more where a
         # line on its mass misses its isotope ratio by under 100 %: that line
         # keeps its intensity in the ion's sum but is no match, so the peak
-        # list does not give it to the ion (#2943).
+        # list does not give it to the ion (#2943). What the sum is, is the
+        # match tree's (below).
         both = pd.concat([heights.rename("height"), intensity], axis=1).fillna(0.0)
         over = both[both["height"] > both["intensity"] * (1 + 1e-9)]
         assert over.empty, f"peaks above their pair's sum:\n{over.head()}"
+
+    def test_ion_series_is_the_match_trees_sums(self, mascope):
+        """The stored sums are those the match tree computes for the sample
+        (#3000), the lines that miss their ratio included. Bundle 1.4.4's
+        stored sums predate #2943 and read below it."""
+        import numpy as np
+        import pandas as pd
+
+        _skip_unless_attr(mascope.batches, "ion_series")
+        _skip_unless_attr(mascope.matching, "aggregate_sample")
+        _, batches = _first_dataset_and_batches(mascope)
+        series = mascope.batches.ion_series(batches.iloc[0]["sample_batch_id"])
+        assert not series.empty, "expected matched ions in the demo batch"
+        sample = series["sample_item_id"].iloc[0]
+
+        live = mascope.matching.aggregate_sample(sample)
+        tree = pd.DataFrame(live["match_ions"]).set_index("target_ion_id")
+        stored = series[series["sample_item_id"] == sample].set_index("target_ion_id")
+
+        assert set(stored.index) == set(tree.index)
+        tree = tree.loc[stored.index]
+        np.testing.assert_allclose(
+            stored["intensity"], tree["sample_peak_intensity_sum"], rtol=1e-9
+        )
+        assert (stored["match_category"] == tree["match_category"]).all()
 
     def test_batch_peak_series_are_the_ledgers_members(self, mascope):
         _skip_unless_attr(mascope.batch_peaks, "series")

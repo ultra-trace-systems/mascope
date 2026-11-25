@@ -758,10 +758,10 @@ tiers.
       "mode": "Bromide m/z 82-750",
       "profile": "BR",
       "reference_window_ppm": null,
-      "seed": {"bundle": "1.4.4"},
+      "seed": {"bundle": "1.5.0"},
       "collections": [],
       "reference_lists": "default",
-      "files": [{"bundle": "1.4.4", "name": "Orbion_neg_Br_NoRI_20250811142350.raw"}]
+      "files": [{"bundle": "1.5.0", "name": "Orbion_neg_Br_NoRI_20250811142350.raw"}]
     }
   }
 }
