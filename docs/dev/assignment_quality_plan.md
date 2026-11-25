@@ -5091,7 +5091,18 @@ fix; and the per-range publish above.
     Taken on a TOF row assigned at fit 76% on one line at the noise floor
     that its own batch reads three ways (step 3.4b). It restates decision
     18 as a rule the ledger can show: a row at assigned names what saw it
-    twice.
+    twice. Amended 2026-11-25 by the plan owner (MAS-1270, option b): a
+    series lifts a row from the lone-peak cap only where its peak's
+    recorded S/N is at least 4 (`tiering.SERIES_LIFT_MIN_SNR`), applied
+    per row. Under it the series-lifted rows agreed with the reference
+    clearly worse than the engine's own assigned rows on the demo's
+    bromide and uronium batches, 65 % against 84 % and 81 % against 88 %
+    (MAS-1265, the S/N 3 to 4 bin); from 4 up they were level on one set
+    and within two standard errors on the other. A row with no S/N
+    recorded is lifted, as the rule fails open on a row with no channel
+    record. The series stays an escape from the density and context-prior
+    caps at any S/N. Two batches of one instrument type: the floor is read
+    again when a third chemistry is measured.
 26. **One margin, read both ways, and the declared channel keeps its
     formula** (taken 2026-09-25 by the plan owner, on the pass-8 reading of
     step 3.1c). A reading through the mode's own channel is settled by its

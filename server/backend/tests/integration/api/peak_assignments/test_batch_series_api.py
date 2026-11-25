@@ -31,6 +31,8 @@ from pass_runs import step_outcome  # the tests root, on sys.path
 from sqlalchemy import select, update
 from stage_stubs import (  # the tests root, on sys.path
     frame,
+    run_sample,
+    stub_known_set,
     stub_sample_reads,
     stub_seeded_scorer,
 )
@@ -453,6 +455,68 @@ async def test_a_candidate_the_series_corroborates_is_judged_again_at_once(
         # A member the sample's own run read, that no decision touched, keeps
         # the run's tier.
         assert tier_name(members["src-0"].tier) == "assigned"
+
+
+async def test_a_series_lifts_a_bright_member_and_leaves_a_faint_one_a_candidate(
+    async_session_factory, series_batch, stubbed, monkeypatch
+):
+    """A series lifts a lone peak only from S/N 4 up (MAS-1270): each sample's
+    run reads the same lone reading of the candidate the series confirms, and
+    it is lifted where its peak is bright and stays a candidate where it is
+    faint, the floor named and its series kept, in the ledger the run folds."""
+    batch_id, samples = series_batch["batch_id"], series_batch["samples"]
+    await run_batch_series_detection(batch_id, PeakAssignmentConfig())
+    snr_of = {samples["S1"]: 20.0, samples["S2"]: 3.5}
+    confirmed = _step(SOURCES[0], 1)
+
+    def lone_reading(sample_item_id, run_id):
+        return [
+            {
+                "peak_assignment_id": gen_id(32),
+                "peak_assignment_run_id": run_id,
+                "sample_item_id": sample_item_id,
+                "sample_peak_id": "up-0",
+                "sample_peak_mz": _mz(confirmed),
+                "sample_peak_intensity": 5000.0,
+                "role": "M0",
+                "assigned_formula": confirmed,
+                "ion_formula": _ion(confirmed),
+                "ionization_mechanism_id": MECHANISM,
+                "source": "untargeted",
+                "tier": "assigned",
+                "fit_score": 0.95,
+                "mz_error_ppm": 0.1,
+                "isotope_label": None,
+                "owner_peak_assignment_id": None,
+                "provenance": {"base_snr": snr_of[sample_item_id]},
+            }
+        ]
+
+    stub_known_set(monkeypatch, lone_reading)
+    bright = await run_sample(samples["S1"])
+    faint = await run_sample(samples["S2"])
+
+    by_run = {}
+    for name, ctx in (("S1", bright), ("S2", faint)):
+        [row] = [r for r in ctx.judged.rows if r["sample_peak_id"] == "up-0"]
+        by_run[name] = row
+        assert row["provenance"]["series"]["formula"] == confirmed
+    rules = {
+        name: {reason["rule"]: reason for reason in row["provenance"]["tier_reasons"]}
+        for name, row in by_run.items()
+    }
+    assert by_run["S1"]["tier"] == "assigned"
+    assert "series_anchor" in rules["S1"] and "lone_peak" not in rules["S1"]
+    assert by_run["S2"]["tier"] == "candidate"
+    assert (
+        "signal-to-noise of 3.5 is under the 4" in (rules["S2"]["lone_peak"]["detail"])
+    )
+    # The members of the one batch peak the runs fold.
+    s1 = (await _members(async_session_factory, samples["S1"]))["up-0"]
+    s2 = (await _members(async_session_factory, samples["S2"]))["up-0"]
+    assert s1.batch_peak_id == s2.batch_peak_id
+    assert tier_name(s1.tier) == "assigned"
+    assert tier_name(s2.tier) == "candidate"
 
 
 async def test_a_better_measured_reading_keeps_its_member(
