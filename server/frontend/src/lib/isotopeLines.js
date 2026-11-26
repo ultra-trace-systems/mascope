@@ -8,18 +8,21 @@
 /**
  * Whether a row is a line of another row's isotope pattern, folded under it.
  *
- * Two kinds of row are. An analyte's isotopologue is an `iso_child`. A source
- * ion's isotope lines keep the `reagent` role - they are the source's peaks, not
- * the sample's - and the reagent pass names the ion's monoisotopic row as their
- * owner, so it is the owner that makes one a line. A reagent row with no owner
- * is an ion of its own: its monoisotopic line, or a line from a run written
- * before the pass linked them.
+ * Two kinds of row are, and for both it is the owner that makes one a line. An
+ * analyte's isotopologue is an `iso_child` naming its M0. A source ion's
+ * isotope lines keep the `reagent` role - they are the source's peaks, not the
+ * sample's - and the reagent pass names the ion's monoisotopic row as their
+ * owner. A row with no owner has no row to fold under, so it stands as a row of
+ * its own: a reagent row is then its ion's monoisotopic line, or a line from a
+ * run written before the pass linked them; an isotopologue is one whose M0 the
+ * run gave to another ion, or one assigned by hand on a sample whose run holds
+ * no M0 of its formula.
  *
  * @param {Object} record a ledger row, or null
  * @returns {boolean} whether the row belongs under another row
  */
 export function isIsotopeLine(record) {
   if (!record) return false
-  if (record.role === 'iso_child') return true
-  return record.role === 'reagent' && record.owner_peak_assignment_id != null
+  if (record.role !== 'iso_child' && record.role !== 'reagent') return false
+  return record.owner_peak_assignment_id != null
 }

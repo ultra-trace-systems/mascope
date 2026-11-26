@@ -212,7 +212,8 @@ vi.mock('@/lib/base', async () => ({
   BaseTierTag: {
     props: ['tier', 'evidence', 'role', 'source', 'tooltip', 'cap'],
     template:
-      '<span class="tier-tag-stub" :data-evidence="String(evidence)" :data-cap="cap?.label" />'
+      '<span class="tier-tag-stub" :data-evidence="String(evidence)" :data-cap="cap?.label" ' +
+      ':data-role="role" />'
   },
   // Says what it was handed, so the level column's tests can read it off; the
   // chip has a spec of its own (base/BaseLevelTag.spec.js).
@@ -1228,6 +1229,115 @@ describe('PaneBrowserAssignment isotopologue labels', () => {
     })
 
     expect(await renderedLabels(bromine)).toEqual(['[81Br]', '[81Br]2'])
+  })
+})
+
+// An isotope line with no owner: assigned by hand on a sample whose run holds
+// no M0 of its formula (mascope#3661). It has no row to fold under, so it is a
+// row of its own, named by its formula with its offset beside it.
+describe('PaneBrowserAssignment an isotope line with no M0', () => {
+  const LINE = {
+    level: '5a',
+    peak_assignment_id: 'hand',
+    sample_peak_id: 'p-hand',
+    sample_peak_mz: 442.867,
+    sample_peak_intensity: 40,
+    role: 'iso_child',
+    source: 'manual',
+    tier: 'candidate',
+    assigned_formula: 'C6H11Br2O5',
+    ion_formula: '[81Br]2C6H11O5-',
+    isotope_label: 'M+4',
+    isotope_formula: '[81Br]2C6H11O5-',
+    owner_peak_assignment_id: null
+  }
+  const standing = () => ({ parent: { ...LINE }, kids: [] })
+
+  beforeEach(() => {
+    runList = [{ peak_assignment_run_id: 'run-1', status: 'completed' }]
+  })
+  afterEach(() => vi.clearAllMocks())
+
+  it('is a row of its own, folded or not', async () => {
+    seed(FAMILY_A, standing())
+    const wrapper = await mountPane()
+    expect(ids(wrapper)).toContain('hand')
+    wrapper.vm.showIsotopologues = true
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper).filter((id) => id === 'hand')).toHaveLength(1)
+    const row = wrapper.vm.rows.find((r) => r.peak_assignment_id === 'hand')
+    expect(row.isChild).toBe(false)
+    expect(row.standingLine).toBe('M+4')
+  })
+
+  it('shows its offset beside its formula, and chips that hold no M0', async () => {
+    const tableRows = ref([])
+    seed(FAMILY_A, standing())
+    const wrapper = mount(PaneBrowserAssignment, {
+      global: {
+        directives: { tooltip: {}, help: {} },
+        stubs: {
+          ...GLOBAL_STUBS,
+          DataTable: {
+            ...GLOBAL_STUBS.DataTable,
+            watch: {
+              value: { handler: (value) => (tableRows.value = value), immediate: true }
+            }
+          },
+          Column: {
+            setup: () => ({ rows: tableRows }),
+            template:
+              '<div class="col"><template v-for="(row, i) in rows" :key="i">' +
+              '<slot name="body" :data="row" /></template></div>'
+          }
+        }
+      }
+    })
+    wrapper.vm.showIsotopologues = true
+    await wrapper.vm.$nextTick()
+    expect(wrapper.findAll('[data-testid="standing-line-label"]').map((c) => c.text())).toEqual([
+      'M+4'
+    ])
+    // The standing line's chips are told no role: it holds its own tier and
+    // level, not an M0's (the M0 row beside it keeps its own role).
+    const chip = (selector) =>
+      wrapper.findAll(selector).map((c) => [c.attributes('data-level'), c.attributes('data-role')])
+    expect(wrapper.findAll('.tier-tag-stub').map((c) => c.attributes('data-role'))).toEqual([
+      'target',
+      undefined
+    ])
+    const levels = chip('.level-tag-stub')
+    expect(levels.length).toBeGreaterThan(0)
+    expect(levels.every(([level, role]) => level === '5a' && role === undefined)).toBe(true)
+  })
+
+  it('is found by its m/z in the search', async () => {
+    seed(FAMILY_A, standing())
+    const wrapper = await mountPane()
+    wrapper.vm.searchQuery = '442.867'
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper)).toEqual(['hand'])
+  })
+
+  // Its tier and level are its own: it holds no M0's, so the chips are not
+  // told it is one's line.
+  it("does not read its chips as an M0's line", async () => {
+    seed(standing())
+    const wrapper = await mountPane()
+    const row = wrapper.vm.rows.find((r) => r.peak_assignment_id === 'hand')
+    expect(wrapper.vm.chipRoleOf(row)).toBeNull()
+  })
+
+  it('an isotopologue that names its M0 still folds under it, unlabelled', async () => {
+    seed(FAMILY_A)
+    const wrapper = await mountPane()
+    expect(ids(wrapper)).toEqual(['a'])
+    wrapper.vm.showIsotopologues = true
+    await wrapper.vm.$nextTick()
+    const child = wrapper.vm.rows.find((r) => r.peak_assignment_id === 'a-c0')
+    expect(child.isChild).toBe(true)
+    expect(wrapper.vm.rows.find((r) => r.peak_assignment_id === 'a').standingLine).toBeNull()
+    expect(wrapper.vm.chipRoleOf(child)).toBe('iso_child')
   })
 })
 
@@ -3215,6 +3325,26 @@ describe('PaneBrowserAssignment engine-tier view', () => {
     // reagent keeps its role chip; the unexplained peak stays unassigned.
     expect(chips(wrapper)).toEqual(['1 candidate', '1 unassigned', '1 not stated', '1 reagent'])
     expect(wrapper.find('.engine-view-label').text()).toBe("engine's tiers")
+  })
+
+  // A line with no owner is a row of its own and counts under its tier
+  // (mascope#3661); a line that names its M0 counts with it.
+  it("counts an isotopologue with no owner under the engine's tier", async () => {
+    assignmentList.push({
+      peak_assignment_id: 'hand',
+      sample_peak_id: 'p-hand',
+      sample_peak_mz: 170.1,
+      role: 'iso_child',
+      tier: 'candidate',
+      engine_tier: 'candidate',
+      assigned_formula: 'C8H10',
+      isotope_label: 'M+2',
+      owner_peak_assignment_id: null
+    })
+    const wrapper = await mountPane()
+    await flip(wrapper)
+
+    expect(chips(wrapper)).toEqual(['2 candidate', '1 unassigned', '1 not stated', '1 reagent'])
   })
 
   it("filters by the engine's tier and leaves the sort on this server's", async () => {

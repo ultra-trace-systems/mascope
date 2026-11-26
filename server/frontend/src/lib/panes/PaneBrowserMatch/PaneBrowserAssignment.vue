@@ -25,7 +25,7 @@ import {
   runConfig,
   usePeakAssignParams
 } from '@/lib/peakAssignParams'
-import { neutralKey } from '@/lib/chem'
+import { formatIsotopeLabel, neutralKey } from '@/lib/chem'
 import { isIsotopeLine } from '@/lib/isotopeLines'
 import { ledgerListing, listingName, targetName, targetOf } from '@/lib/referenceListings'
 import { cappingRulesOf, reasonTooltip } from '@/lib/tierReasons'
@@ -133,7 +133,7 @@ const readsEngineTiers = computed(() => engineView.value && hasEngineTiers.value
 function engineTierHistogram(records) {
   const counts = { [ENGINE_UNSTATED]: 0 }
   for (const record of records ?? []) {
-    if (record.role === 'iso_child') continue
+    if (record.role === 'iso_child' && isIsotopeLine(record)) continue
     const bucket = engineBucketOf(record.engine_tier, record.tier, record.role)
     counts[bucket] = (counts[bucket] ?? 0) + 1
   }
@@ -703,9 +703,21 @@ function isotopologuesOf(parent) {
     }))
 }
 
-// Every row of the run that stands on its own (M0 + unassigned/reagent),
-// decorated with the ranks the columns sort on. The filters pick from these;
-// the lens and Group by's sets read all of them.
+// An isotope line that stands as a row of its own: an isotopologue with no
+// owner, such as one assigned by hand on a sample whose run holds no M0 of its
+// formula (isIsotopeLine). It is named by its formula with its offset beside
+// it, and holds its own tier and level rather than an M0's it does not have.
+const standingLineLabel = (row) =>
+  row.role === 'iso_child' && !isIsotopeLine(row)
+    ? formatIsotopeLabel(row.isotope_label) || 'iso'
+    : null
+// The role the tier and level chips read: a standing line is no M0's line, so
+// they do not say it holds one's tier.
+const chipRoleOf = (row) => (row.standingLine ? null : row.role)
+
+// Every row of the run that stands on its own (M0 + unassigned/reagent, and an
+// isotope line with no owner), decorated with the ranks the columns sort on.
+// The filters pick from these; the lens and Group by's sets read all of them.
 const decoratedRows = computed(() =>
   assignments.value.list
     .filter((row) => !isIsotopeLine(row))
@@ -726,6 +738,7 @@ const decoratedRows = computed(() =>
         listing,
         target: targetOf(row.reference_listing, listing),
         mech: mechById.value.get(row.ionization_mechanism_id) ?? null,
+        standingLine: standingLineLabel(row),
         isChild: false
       }
     })
@@ -859,6 +872,9 @@ const lens = computed(() => {
 // An unfolded line's label: its substitution wherever the row names one,
 // counted from the family's M0 (lib/ledger/rows.js).
 const childLabel = (row) => sampleLineLabel(row, assignments.value.m0Of(row))
+const standingLineTooltip = (row) =>
+  `An isotope line of this formula${row.isotope_formula ? ` (${row.isotope_formula})` : ''}, ` +
+  'standing on its own: the run holds no monoisotopic row it belongs to'
 
 // Two-way selection tied to the focused peak: clicking a row focuses its peak,
 // and focusing a peak elsewhere (spectrum click, inspector) highlights its row.
@@ -1368,6 +1384,14 @@ const HEADERS = {
         :field="formulaOf(data)"
         :tooltip="data.assigned_formula ? null : ION_TOOLTIP"
       />
+      <!-- An isotope line standing on its own: which line of the formula. -->
+      <span
+        v-if="data.standingLine && !data.isChild"
+        class="line-tag"
+        data-testid="standing-line-label"
+        v-tooltip.top="standingLineTooltip(data)"
+        >{{ data.standingLine }}</span
+      >
     </template>
 
     <!-- The mechanism, and the xN pill where the sample's rows read the same
@@ -1391,7 +1415,7 @@ const HEADERS = {
       <BaseTierTag
         :tier="data.tier"
         :evidence="queueMode ? null : data.evidence"
-        :role="data.role"
+        :role="chipRoleOf(data)"
         :source="data.source"
         :cap="cap"
       />
@@ -1406,7 +1430,7 @@ const HEADERS = {
         :level="data.shownLevel.level"
         :evidence="data.shownLevel.evidence"
         :lift="data.shownLevel.lift"
-        :role="data.role"
+        :role="chipRoleOf(data)"
         :source="data.shownLevel.source"
         :engineLevel="data.shownLevel.engineLevel"
       />
@@ -1491,6 +1515,13 @@ const HEADERS = {
   opacity: 1;
 }
 
+.line-tag {
+  margin-left: 0.35rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--p-text-muted-color);
+  white-space: nowrap;
+}
 .mech {
   font-family: var(--font-mono);
   font-size: 0.82rem;

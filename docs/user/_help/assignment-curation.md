@@ -20,7 +20,12 @@ the same in each sample, at what that sample's assignment run asked. A sample wi
 such run, one only folded into the batch ledger, is asked at what a run of it would
 ask, as a reading the batch carries into it is. A peak you assign as one
 of a compound's isotopologues is not asked, since the lines are read from the
-compound's main one. The replaced compound's isotopologues are
+compound's main one. It is stored as that line, its ion named with the heavy
+isotope (`[81Br]...`), and it is linked to no main line: where the run holds no
+main line of the formula, it is a row of its own in **Assignments**, its line
+(`M+4`) beside the formula, counted under its tier above the ledger. A rebuild of
+the batch ledger reads it as a line of its batch peak's compound, not as the
+compound itself at the line's m/z. The replaced compound's isotopologues are
 unassigned with it and come back with it, except any assigned by hand since.
 
 A hand assignment lasts until the sample is next assigned, which recomputes the

@@ -1079,7 +1079,12 @@ What caps a row at candidate:
   asked the run's own rows at; this is the one rule a hand assignment is asked, since
   the others weigh how the run chose between readings. A peak you assign by hand as
   one of a compound's isotopologues, such as its 81Br line, is not asked: the rule
-  reads a formula's lines from its main one. On a run made before Mascope looked for
+  reads a formula's lines from its main one. Such a peak is stored as the line, its
+  ion the line's own formula as an untargeted run stores a line, and names no main
+  line it belongs to; where the run holds none, the sample's ledger lists it as a row
+  of its own with its line beside the formula, and the batch's vote on which batch
+  peak a line belongs to leaves it out rather than counting it against the family.
+  On a run made before Mascope looked for
   missing lines, a hand assignment is not asked either. A line where the
   only peak is one the run set aside as an *artifact*, a side lobe of a bright
   neighbour, is not tested: an artifact neither confirms a line nor refutes it, and
