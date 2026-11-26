@@ -26,6 +26,7 @@ const {
   evidenceText,
   whyReasons,
   whyOwnerReasons,
+  whyHold,
   reasonsOwner,
   neighbourPeak,
   focusNeighbour,
@@ -78,6 +79,11 @@ const memberTooltip = (member) =>
     }"
   >
     <h3 class="why-title" data-testid="why-title">{{ whyHeading }}</h3>
+    <!-- What holds a candidate row there, first and in plain words: a high fit
+         at candidate reads as a mistake without its reason beside it. -->
+    <p v-if="whyHold" class="why-hold" data-testid="why-hold">
+      <span class="pi ph ph-arrow-down" aria-hidden="true" />{{ whyHold.text }}
+    </p>
     <!-- The evidence the tier was read off, on a bar with the run's two bands
          marked: where it sits says which tier its evidence earned. -->
     <div v-if="evidenceBar" class="evidence-scale" data-testid="evidence-bar">
@@ -327,6 +333,16 @@ const memberTooltip = (member) =>
   margin: 0;
   font-size: var(--card-text-base);
   font-weight: 700;
+}
+.why-hold {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  margin: 0;
+  color: var(--state-warning);
+  font-size: var(--card-text-sm);
+  font-weight: 500;
+  line-height: 1.35;
 }
 .evidence-scale {
   display: flex;

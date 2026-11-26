@@ -42,7 +42,8 @@ const {
   verifiable,
   anchorConflict,
   batchOpened,
-  nextSample
+  nextSample,
+  tierChipCap
 } = useCard()
 
 // Which sample the card shows when the batch ledger opened the peak: the
@@ -204,6 +205,7 @@ const provisional = TIERING_PROVISIONAL
         :evidence="focusedAssignment.evidence"
         :role="focusedAssignment.role"
         :source="focusedAssignment.source"
+        :cap="tierChipCap"
         v-help.right="{
           title: 'Confidence Tiers',
           helpKey: 'assignment-tiers',

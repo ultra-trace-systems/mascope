@@ -165,7 +165,10 @@ const autoTooltip = computed(() => {
       ? `Evidence ${percentFormatter.format(props.evidence)} (fit × plausibility)`
       : null,
     sourceLine.value,
-    props.role === 'iso_child' ? 'An isotopologue: it holds the tier of its M0' : null
+    props.role === 'iso_child' ? 'An isotopologue: it holds the tier of its M0' : null,
+    // What holds the tier down, on the chip's own hover as on its mark's: a
+    // reader who hovers the tier sees why it is not higher.
+    props.cap?.tooltip ?? null
   ]
     .filter(Boolean)
     .join('\n')

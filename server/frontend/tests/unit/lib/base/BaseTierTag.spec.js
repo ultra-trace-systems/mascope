@@ -113,6 +113,18 @@ describe('BaseTierTag manual mark', () => {
     expect(wrapper.find('[data-testid="demoted-mark"]').exists()).toBe(false)
   })
 
+  // What holds the tier down is on the chip's own hover too, not only on its
+  // mark's (MAS-1296).
+  it('names the cap on its own hover', () => {
+    const cap = {
+      label: 'Held down by: one peak only',
+      tooltip: 'Held at candidate: one peak only'
+    }
+    const wrapper = mountTag({ tier: 'candidate', evidence: 0.9, cap })
+    expect(wrapper.vm.autoTooltip.split('\n').at(-1)).toBe('Held at candidate: one peak only')
+    expect(mountTag({ tier: 'candidate', evidence: 0.9 }).vm.autoTooltip).not.toContain('Held')
+  })
+
   // A caller-supplied tooltip still wins outright, as it did before.
   it('yields to an explicit tooltip', () => {
     const wrapper = mountTag({ tier: 'candidate', source: 'manual', tooltip: 'say this instead' })

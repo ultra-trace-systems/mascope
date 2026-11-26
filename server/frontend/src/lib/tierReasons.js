@@ -131,11 +131,12 @@ function neighbourOf(reason) {
  * The reasons a row's provenance carries, named - or an empty list when it
  * carries none, which is a row no tiering pass judged: a run from before the
  * pass, an imported run, a row assigned by hand. A reason that names a
- * neighbouring peak carries it as `neighbour`.
+ * neighbouring peak carries it as `neighbour`, and an absent-line reason the
+ * isotope line it found missing as `line` ("15N").
  *
  * @param {object|null} provenance - the row's provenance, from the detail fetch
  * @returns {Array<{rule: string|null, label: string, detail: string, caps: boolean,
- *   neighbour?: {peakId: string, mz: number}}>}
+ *   neighbour?: {peakId: string, mz: number}, line?: string}>}
  */
 export function tierReasonsOf(provenance) {
   const reasons = provenance?.tier_reasons
@@ -149,7 +150,8 @@ export function tierReasonsOf(provenance) {
         label: tierReasonLabel(reason.rule),
         detail: typeof reason.detail === 'string' ? reason.detail : '',
         caps: reason.caps === true,
-        ...(neighbour ? { neighbour } : {})
+        ...(neighbour ? { neighbour } : {}),
+        ...(typeof reason.line === 'string' && reason.line ? { line: reason.line } : {})
       }
     })
 }
