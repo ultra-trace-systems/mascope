@@ -222,6 +222,7 @@ from mascope_backend.db import (
     async_session,
 )
 from mascope_backend.db.id import gen_id
+from mascope_backend.db.retry import retry_on_connection_error
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.notifications.schemas import UserNotification
 from mascope_backend.socket.notifications.service import send_progress_user_notification
@@ -735,10 +736,13 @@ async def stop_stage(
     are stale too. ``then``, the pass's next stage, is stopped as well where
     the hand-over to it committed before the interruption: it began, and
     nothing will end it. Shielded: it is written while a cancellation
-    unwinds."""
+    unwinds. Retried while the database refuses a connection, as a run's end
+    is (:func:`~mascope_backend.db.retry.retry_on_connection_error`): the
+    error that stopped the stage is often that refusal, and a stage row left
+    running holds the batch as a run left running does."""
+    now = _now()
 
     async def write() -> None:
-        now = _now()
         async with async_session() as session:
             await _fold_lock(session, sample_batch_id)
             await mark_stale(
@@ -766,12 +770,13 @@ async def stop_stage(
             )
             await session.commit()
 
+    what = f"mark batch stage '{stage.value}' of batch '{sample_batch_id}' stopped"
     try:
-        await asyncio.shield(write())
+        await asyncio.shield(retry_on_connection_error(write, what))
     except Exception as exc:  # noqa: BLE001 - never replace what interrupted it
-        runtime.logger.warning(
-            f"Could not mark batch stage '{stage.value}' of batch "
-            f"'{sample_batch_id}' as stopped: {exc}"
+        runtime.logger.error(
+            f"Could not {what}: {exc!r}. It stays running until the startup "
+            "reaper resets it."
         )
 
 
