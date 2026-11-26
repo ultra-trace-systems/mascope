@@ -3570,6 +3570,20 @@ describe('PaneBrowserBatchPeaks identification level', () => {
       )
     })
 
+    it("names the batch's own level beside the claim's where the batch states one", async () => {
+      const own = peaks().map((bp) =>
+        bp.batch_peak_id === 'bp-2' ? { ...bp, level: '4a', level_evidence: 'the lock' } : bp
+      )
+      const cells = await cellsOf('member_level', own, { 'bp-2': claimOn('bp-2') })
+
+      const chip = cells['bp-2'].find('.level-tag')
+      expect(chip.attributes('data-level')).toBe('1')
+      const tooltip = chip.attributes('data-tooltip').split('\n')
+      expect(tooltip).toContain('Source: claim - the live verdict states this level')
+      expect(tooltip).toContain("The batch's own level: 4a")
+      expect(tooltip).not.toContain("The members' runs stated 5a")
+    })
+
     it("ranks, sorts and filters on the claim's level", async () => {
       wrapper = await mountPane({ peaks: peaks(), verdicts: { 'bp-4': claimOn('bp-4') } })
       const byId = Object.fromEntries(wrapper.vm.rows.map((row) => [row.batch_peak_id, row]))
@@ -3907,7 +3921,13 @@ describe('PaneBrowserBatchPeaks identification level', () => {
       wrapper.findAll('.column-stub [data-tooltip]').map((span) => [span.text(), span])
     )
     expect(headers.Level.attributes('data-tooltip')).toMatch(/^Identification level/)
-    expect(headers.Level.attributes('data-tooltip')).toContain("members' runs")
+    // The batch's own level, else the members' (step 5.8c).
+    expect(headers.Level.attributes('data-tooltip')).toContain(
+      'Identification level the batch states for the consensus formula'
+    )
+    expect(headers.Level.attributes('data-tooltip')).toContain(
+      "Where the batch states none, the level most members' runs stated"
+    )
     expect(headers.Level.attributes('data-tooltip')).toContain('no tier moves on it')
     expect(headers.Level.attributes('data-help')).toBe('assignment-level')
     expect(headers['Engine level']).toBeUndefined()
