@@ -424,6 +424,53 @@ def _excluded(rivals: Sequence[dict]) -> str:
     return f"{_plural(len(out), 'rival')} out: {', '.join(parts)}"
 
 
+#: A 5a lift's part asking for the shortlist an open rival was not measured on.
+_MEASURE_SHORTLIST = "measure the shortlist"
+
+#: What a 5a row whose run recorded no split would need to read at 4.
+_LIFT_NO_SPLIT = "assign the sample again, so its run records the split"
+
+
+def _narrowed_lift(record: dict, still: Sequence[dict]) -> Optional[str]:
+    """A 5a row's lift once the batch put some of its open rivals out: the
+    run's own lift (``identification_level._open_lift``) asking only of the
+    rivals left open.
+
+    The part naming the measured open rivals names those still open, and goes
+    where none is; "measure the shortlist" goes where every unmeasured rival is
+    out. The parts on the rivals the row does not list stay: the batch tests
+    none of those.
+
+    :param record: The row's record at 5a, its rivals as its run judged them.
+    :param still: The rivals left open under the batch's tests.
+    """
+    opened = [
+        rival
+        for rival in record.get("rivals") or []
+        if isinstance(rival, dict) and rival.get("test") == OPEN
+    ]
+    # Named as ``_open_lift`` names them: the first three measured ones.
+    named, left = (
+        ", ".join([str(rival.get("formula")) for rival in rivals if "fit" in rival][:3])
+        for rivals in (opened, still)
+    )
+    parts: list[str] = []
+    for part in str(record.get("lift") or "").split("; "):
+        if not part:
+            continue
+        if part == _MEASURE_SHORTLIST:
+            if any("fit" not in rival for rival in still):
+                parts.append(part)
+        elif named and (
+            part.startswith(f"exclude {named}:") or part.endswith(f"exclude {named}")
+        ):
+            if left:
+                parts.append(part.replace(f"exclude {named}", f"exclude {left}", 1))
+        else:
+            parts.append(part)
+    return "; ".join(parts) or None
+
+
 def _refuted(
     record: dict, ion_formula: Optional[str], facts: BatchFacts
 ) -> Optional[dict]:
@@ -534,6 +581,9 @@ def _lifted(
             **base,
             "level": LEVEL_5A,
             "evidence": "; ".join(clauses),
+            "lift": _narrowed_lift(record, still)
+            if still or unlisted
+            else _LIFT_NO_SPLIT,
             "rivals": judged,
             "facts": [*(record.get("facts") or []), *added],
             "stated": record.get("level"),
