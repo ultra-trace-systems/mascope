@@ -90,7 +90,8 @@ describe('batchLedgerReturn: from a batch ledger row and back', () => {
       level: 'sample',
       batchId: 'b-1',
       sampleId: 's-1',
-      batchPeakId: 'bp-1'
+      batchPeakId: 'bp-1',
+      overBatch: true
     })
     // One position on from vue-router's entry, with nothing ahead of it.
     expect(pushed).toMatchObject({ position: 4, back: '/', current: '/', forward: null })
@@ -191,6 +192,55 @@ describe('batchLedgerReturn: reached another way', () => {
     store.back()
     expect(store.reveal).toBe('bp-1')
     expect(entry()).toEqual({ level: 'batch', batchId: 'b-1', batchPeakId: 'bp-1' })
+  })
+})
+
+describe('batchLedgerReturn: never Back out of the app', () => {
+  /** The browser's Back or Forward: the entry becomes current, then pops. */
+  const landOn = (state) => {
+    window.history.replaceState(state, '')
+    popTo(state)
+  }
+
+  it('the sample entry its own fallback wrote is no way back by Back', () => {
+    // A sample opened from the sidebar or a shared link.
+    make({ sample: 's-1' })
+    const replace = vi.spyOn(window.history, 'replaceState')
+    store.back()
+    // Back onto the entry the fallback left behind the batch entry it pushed.
+    const [behind] = replace.mock.calls[0]
+    landOn(behind)
+    expect(app.data.sample.focusedId).toBe('s-1')
+
+    store.back()
+    expect(back).not.toHaveBeenCalled()
+    expect(app.data.sample.unfocus).toHaveBeenCalledTimes(2)
+    expect(entry()).toEqual({ level: 'batch', batchId: 'b-1', batchPeakId: null })
+  })
+
+  it('a row jump, Back, another sample from the list, the control, Back: still no Back', () => {
+    make()
+    store.leaveFromRow('bp-1', 's-1')
+    app.data.sample.focusedId = 's-1'
+    landOn({
+      ...ROUTER_STATE,
+      [HISTORY_KEY]: { level: 'batch', batchId: 'b-1', batchPeakId: 'bp-1' }
+    })
+    expect(app.data.sample.focusedId).toBeNull()
+
+    // The sample list: no entry of its own.
+    app.data.sample.focusedId = 's-2'
+    store.back()
+    expect(back).not.toHaveBeenCalled()
+    landOn({
+      ...ROUTER_STATE,
+      [HISTORY_KEY]: { level: 'sample', batchId: 'b-1', sampleId: 's-2', batchPeakId: null }
+    })
+    expect(app.data.sample.focusedId).toBe('s-2')
+
+    store.back()
+    expect(back).not.toHaveBeenCalled()
+    expect(entry()).toEqual({ level: 'batch', batchId: 'b-1', batchPeakId: null })
   })
 })
 

@@ -111,11 +111,14 @@ export const useBatchLedgerReturn = defineStore('browser.match.batchLedgerReturn
       sample_item_id: sampleItemId
     }
     replaceEntry({ level: 'batch', batchId, batchPeakId: batchPeakId ?? null })
+    // Marked as pushed over the batch ledger's entry: the one sample entry
+    // the control may leave with the browser's own Back.
     pushEntry({
       level: 'sample',
       batchId,
       sampleId: sampleItemId,
-      batchPeakId: batchPeakId ?? null
+      batchPeakId: batchPeakId ?? null,
+      overBatch: true
     })
   }
 
@@ -133,17 +136,24 @@ export const useBatchLedgerReturn = defineStore('browser.match.batchLedgerReturn
   }
 
   /**
-   * The control's way back. When the entry before this one is the batch
-   * ledger the reader left from, it is the browser's own Back, so the two
-   * agree; otherwise it pushes the batch ledger as a new entry, so Back
-   * returns to this sample.
+   * The control's way back. When this entry is the one `leaveFromRow` pushed
+   * over the batch ledger's (its `overBatch` mark), it is the browser's own
+   * Back, so the two agree; otherwise it pushes the batch ledger as a new
+   * entry, so Back returns to this sample. The sample entry that fallback
+   * leaves behind carries no mark: what is behind it may be another page, or
+   * nothing, and the browser's Back would leave the app.
    */
   function back() {
     const batchId = app.data.batch.focusedId
     const sampleId = app.data.sample.focusedId
     if (!batchId || !sampleId) return
     const entry = entryOf(window.history.state)
-    if (entry?.level === 'sample' && entry.batchId === batchId && entry.sampleId === sampleId) {
+    if (
+      entry?.level === 'sample' &&
+      entry.overBatch === true &&
+      entry.batchId === batchId &&
+      entry.sampleId === sampleId
+    ) {
       window.history.back()
       return
     }
