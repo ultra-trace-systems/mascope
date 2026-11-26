@@ -311,6 +311,14 @@ describe('cappingRulesOf', () => {
       { rule: 'off_calibration', label: 'off calibration' }
     ])
     expect(cappingRulesOf(['second_line', 'not_measured', 'inherited_from_owner'])).toEqual([])
+    // An isotopologue's own caps, which its ledger chip marks too.
+    expect(
+      cappingRulesOf(['isotopologue_in_doubt', 'envelope_claim', 'isotopologue_untracked'])
+    ).toEqual([
+      { rule: 'isotopologue_in_doubt', label: 'line in doubt' },
+      { rule: 'envelope_claim', label: "read as a neighbour's line" },
+      { rule: 'isotopologue_untracked', label: 'off its M0' }
+    ])
     expect(cappingRulesOf(null)).toEqual([])
     expect(cappingRulesOf('lone_peak')).toEqual([])
   })

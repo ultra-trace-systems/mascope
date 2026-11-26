@@ -79,7 +79,14 @@ export const CAPPING_RULES = Object.freeze([
   'off_calibration',
   'ambiguous_nitrogen',
   'ambiguous_adduct',
-  'minor_channel'
+  'minor_channel',
+  // An isotopologue's own: the line the mass gate doubts or found off its M0,
+  // and a peak a claim read as a neighbour's line, each capped wherever it is
+  // written. Following a capped M0 is not among them: `inherited_from_owner`
+  // caps only where its M0 was capped, which its rule alone cannot say.
+  'isotopologue_in_doubt',
+  'isotopologue_untracked',
+  'envelope_claim'
 ])
 
 /**

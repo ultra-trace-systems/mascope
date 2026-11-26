@@ -4,3 +4,7 @@
   isotopologue. A row at a high fit no longer reads candidate with its reason buried in the
   list below. The tier chip on the card carries the cap mark the ledger's has, and hovering
   a tier chip names the cap.
+
+- **An isotopologue's ledger tier chip marks its own caps.** A line the mass gate doubts or
+  found off its M0, and a peak read as a neighbour's isotope line, now wear the cap mark
+  on their tier chip in the ledger, as every other capping rule does.
