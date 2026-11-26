@@ -163,6 +163,13 @@ class BatchPeaksResource(BaseResource):
                  them carry, a tie read as the weaker, and the count per
                  level; null where no such member states one, on an earlier
                  run's ledger, and absent from a server that predates them),
+                 ``level``, ``level_evidence``, ``level_lift`` and
+                 ``identification_level`` (the batch peak's own
+                 identification level, read off its members' runs and the
+                 batch's isotope checks by the pass's *Identification
+                 level* stage, its two lines and its whole record; null
+                 where none stands for the consensus, on an earlier run's
+                 ledger, and absent from a server that predates them),
                  ``series`` (the
                  homologous series a *Detect series* run found for the
                  consensus formula: ``unit``, ``step``, ``depth``,

@@ -35,6 +35,7 @@ class BatchStage(StrEnum):
     CONTINUITY = "continuity"
     BATCH_CHECKS = "batch_checks"
     BLENDS = "blends"
+    LEVEL = "level"
 
 
 #: What a stage's row says of it.
@@ -79,6 +80,7 @@ STAGE_RECORD_KEYS: dict[BatchStage, tuple[str, ...]] = {
     BatchStage.CONTINUITY: (),
     BatchStage.BATCH_CHECKS: ("batch_checks",),
     BatchStage.BLENDS: (),
+    BatchStage.LEVEL: ("identification_level",),
 }
 
 #: The stage that wrote each provenance key's records.

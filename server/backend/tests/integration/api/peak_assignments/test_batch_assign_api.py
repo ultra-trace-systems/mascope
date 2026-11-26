@@ -370,7 +370,7 @@ async def test_the_summary_lists_every_stage_and_a_later_start_the_earlier_as_no
     assert runs[-1].summary["first_stage"] == "series"
     assert runs[-1].summary["from_stage"] == "series"
     assert runs[-1].config["from_stage"] == "series"
-    assert [later[name]["status"] for name in ORDER] == ["not_run"] * 4 + ["done"] * 5
+    assert [later[name]["status"] for name in ORDER] == ["not_run"] * 4 + ["done"] * 6
     assert later["fold"]["status"] == "not_run"
     assert runs[-1].summary["samples"] == sorted([folded["s1"], folded["s2"]])
     assert set(runs[-1].summary["library"]) == {"target_collections", "reference_lists"}
@@ -693,7 +693,7 @@ async def test_a_pass_cancelled_between_stages_ends_cancelled_and_frees_the_batc
     assert run.is_current == 0
     assert run.cancel_requested_utc is not None
     stages = _stages(run)
-    assert [stages[n]["status"] for n in ORDER[2:]] == ["done"] * 3 + ["cancelled"] * 4
+    assert [stages[n]["status"] for n in ORDER[2:]] == ["done"] * 3 + ["cancelled"] * 5
     # What it wrote stands, and the stages it did not reach are stale.
     states = await _states(batch_id)
     assert states["series"]["state"] == "current"

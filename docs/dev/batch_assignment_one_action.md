@@ -237,7 +237,7 @@ reordering them:
 | Gather samples | Fold the samples (today's *Rebuild batch ledger*, only when it is needed: 4.2) |
 | Recognise source ions | Water ladders, Known species |
 | Find compositions | Untargeted search, Isotope lines (strip, stamp and the search's merge, one pass on the line model of MAS-977), Homologous series |
-| Cross-check across the batch | Co-variation, Ratio stability, Batch checks, Probable blends, and the identification level once it is a stage |
+| Cross-check across the batch | Co-variation, Ratio stability, Batch checks, Probable blends, Identification level |
 
 ## 4. The pipeline
 
@@ -262,7 +262,8 @@ so a rewrite placed after a recording would knock it off the rows it moves.
 | 7 | Co-variation | records only | channels from 4 to 6; normaliser from 2 and 3 |
 | 8 | Ratio stability | records only | 7 (a drift graded without it reads `red`) |
 | 9 | Batch checks | records only | the stamps of 5 and the reading of 7 |
-| 10 | Probable blends, levels | records only | the consensus |
+| 10 | Probable blends | records only | the consensus |
+| 11 | Identification level | records only | the members' levels; the stamps of 5 and the facts of 9, as the ledger serves them; the consensus of 10 |
 
 Stage 6 rewrites members after stage 5 has recorded the isotope lines, against the
 second rule. It may do so because it yields to them (MAS-1091). A row the strip read as
@@ -342,8 +343,10 @@ As built (`batch_stages.py`):
 - Nine stages, the order of 4.1 without the fold, which stays *Rebuild batch ledger*
   until MAS-1011's `needs_fold`: `water_ladders`, `known_species`, `search`,
   `isotope_lines` (strip, then stamp), `series`, `co_variation`, `continuity`,
-  `batch_checks` and `blends` (the consensus of every batch peak read again; the level
-  joins it as a stage once 5.8c makes one). `POST /batch-peaks/batch/{id}/run-stages`
+  `batch_checks`, `blends` (the consensus of every batch peak read again) and, since
+  5.8c (MAS-940), `level`: the batch's identification level, read last, so a pass that
+  stamps or checks again states it again and its record stands as long as the reading it
+  was read for (`batch_level.py`). `POST /batch-peaks/batch/{id}/run-stages`
   takes `from_stage`, or starts at the first stage that is not current. A named stage
   after one that is not current (stale, or never run on the batch) starts the pass at
   that one instead, and so does each step's button: a stage that ran before the stages it

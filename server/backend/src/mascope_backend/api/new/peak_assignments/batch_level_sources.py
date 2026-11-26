@@ -1,18 +1,20 @@
 """Where a batch ledger row's level comes from: its members and their levels.
 
-The batch states no level of its own yet (step 5.8c of the assignment quality
-plan). The ledger's Level column shows the level most of a batch peak's
-members' runs stated for the consensus formula
-(``batch_peaks_records._with_member_levels``). That level is a set of
-samples, and the set can hide better ones: 4a in three samples and 5a in
-forty reads 5a. This read names the set, for one batch peak, on the reader's
-click: each member whose run row commits the consensus formula and states a
-level, with that level's evidence and lift, and how many members state none
-and why. It is asked per batch peak, never put on the ledger's list read,
-whose member levels are already a cost (MAS-1160).
+The ledger's Level column shows the batch peak's own level, the one most of
+its members hold under the batch's isotope checks (step 5.8c of the
+assignment quality plan, ``batch_level``), and where the batch states none
+the level most of its members' runs stated for the consensus formula
+(``batch_peaks_records._with_member_levels``). Either is a set of samples,
+and the set can hide better ones: 4a in three samples and 5a in forty reads
+5a. This read names the set, for one batch peak, on the reader's click: each
+member whose run row commits the consensus formula and states a level, with
+that level's evidence and lift as its own run wrote them, and how many
+members state none and why. It is asked per batch peak, never put on the
+ledger's list read, whose member levels are already a cost (MAS-1160).
 
-It states no level and changes none. A member counts as the ledger counts
-it, so the split it serves is the one the ledger's hover shows.
+It states no level and changes none, the batch's included: the ledger row
+serves that. A member counts as the ledger counts it, so the split it serves
+is the one the ledger's hover shows.
 
 Its sibling, :func:`get_batch_peak_member_readings`, serves the same members whatever
 their row reads (MAS-1315): every member, on the consensus or another formula

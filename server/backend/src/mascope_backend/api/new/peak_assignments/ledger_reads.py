@@ -17,6 +17,7 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
     NotFoundException,
 )
 from mascope_backend.api.new.peak_assignments.batch_blend import blend_record_of
+from mascope_backend.api.new.peak_assignments.batch_level import row_batch_level
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     continuity_reading,
     known_species_summary,
@@ -744,6 +745,9 @@ async def _with_batch_readings(
     ratio-stability grade, ``partial`` and ``stale``
     (``batch_peaks.continuity_reading``). ``batch_known_species``,
     ``batch_water_ladder`` and ``batch_blend``: the ledger's records.
+    ``batch_level``: the batch's level beside the row's own, where the
+    batch's isotope checks move it (``batch_level.row_batch_level``); None
+    elsewhere, a row derived from the ledger included.
     ``batch_groups``: the batch's groups the batch peak is in
     (``batch_series.batch_groups``), each member with the sample's own peak
     at it (``sample_peak_id``). All are about the batch peak, whatever the row
@@ -786,6 +790,7 @@ async def _with_batch_readings(
     row["batch_water_ladder"] = water_ladder_summary(anchor)
     row["batch_blend"] = blend_record_of(anchor)
     row["batch_groups"] = groups
+    row["batch_level"] = row_batch_level(row, anchor)
 
 
 @api_controller()

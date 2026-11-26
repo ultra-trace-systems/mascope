@@ -303,6 +303,12 @@ def snapshot_anchor_meta(row: Any, sample_batch_id: str) -> dict:
         "merged_isotopologue_of": row.merged_isotopologue_of,
         "merged_isotopologues": row.merged_isotopologues,
         "batch_checks": row.batch_checks,
+        # A snapshot keeps no batch level yet: its members' levels are the
+        # live ledger's too.
+        "level": None,
+        "level_evidence": None,
+        "level_lift": None,
+        "identification_level": None,
         "known_species": row.known_species,
         "blend": row.blend,
         "persistence": row.persistence,

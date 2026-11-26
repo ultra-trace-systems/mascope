@@ -1410,6 +1410,12 @@ def row_batch_checks(row: dict, anchor: Any) -> Optional[dict]:
     return record
 
 
+#: The anchor's provenance key the batch's identification level (step 5.8c,
+#: ``batch_level.py``) writes its record under; it names the reading as a batch
+#: checks record does, and stands as one does.
+BATCH_LEVEL_KEY = "identification_level"
+
+
 #: The provenance key the known-species decision
 #: (``batch_known_species.py``) writes an anchor's record under: the species,
 #: the batch's verdict on it and the evidence pooled for it, what the claim
@@ -2206,10 +2212,11 @@ def compute_consensus(
     persistence: Optional[dict] = None,
     flat_series: Optional[dict] = None,
     water_ladder: Optional[dict] = None,
+    batch_level: Optional[dict] = None,
 ) -> Consensus:
     """:func:`vote_consensus`, with the anchor's series, co-variation,
-    stamping, strip, batch checks, known-species, water-ladder, persistence
-    and flat-series records carried along.
+    stamping, strip, batch checks, known-species, water-ladder, persistence,
+    flat-series and batch level records carried along.
 
     Each record stands while the consensus names what it was made for, and is
     kept marked stale otherwise (:func:`kept_record`; MAS-983): a reader serves
@@ -2241,33 +2248,17 @@ def compute_consensus(
     the anchor reads; the rule it feeds is applied once the facts it reads off
     other batch peaks are in hand (:func:`hold_persistence_only`), and asks
     only the reading the search elected. A flat-series record stands as a
-    co-variation record does.
+    co-variation record does, and a batch level record as a batch checks
+    record does.
 
     :param members: The batch peak's occurrences.
     :param batch_peak_id: This batch peak's own id.
     :param manual: A manual curation pinned on the anchor.
-    :param series: The series record the anchor carries
-        (:func:`series_record_of`), or None.
-    :param co_variation: The co-variation record the anchor carries
-        (:func:`co_variation_record_of`), or None.
-    :param diagnostic_isotopologues: The diagnostic isotopologues record the
-        anchor carries (:func:`diagnostic_isotopologues_record_of`), or None.
-    :param stamped_isotopologue_of: The stamp record the anchor carries
-        (:func:`stamped_isotopologue_of_record`), or None.
-    :param merged_isotopologue_of: The stripped row's record the anchor
-        carries (:func:`merged_isotopologue_of_record`), or None.
-    :param merged_isotopologues: The parent's record the anchor carries
-        (:func:`merged_isotopologues_record`), or None.
-    :param batch_checks: The batch checks record the anchor carries
-        (:func:`batch_checks_record_of`), or None.
-    :param known_species: The known-species record the anchor carries
-        (:func:`known_species_record_of`), or None.
-    :param persistence: The persistence record the anchor carries
-        (:func:`persistence_record_of`), or None.
-    :param flat_series: The flat-series record the anchor carries
-        (:func:`flat_series_record_of`), or None.
-    :param water_ladder: The water-ladder record the anchor carries
-        (:func:`water_ladder_record_of`), or None.
+    :param series: The series record the anchor carries, or None; and so for
+        each record after it, ``co_variation`` to ``batch_level``: each read
+        with its stale mark by its own reader (:func:`series_record_of`, the
+        other ``*_record_of`` readers here, and
+        ``batch_level.batch_level_record_of``).
     """
     consensus = vote_consensus(members, batch_peak_id=batch_peak_id, manual=manual)
     formula = consensus.consensus_formula
@@ -2278,6 +2269,12 @@ def compute_consensus(
     # for its stage to read again, and a reading that comes back finds it
     # standing again. A stage writes or takes off its own records; the
     # recompute never does.
+
+    def reads_reading(record: dict) -> bool:
+        return batch_checks_record_reads(
+            record, consensus.consensus_ion_formula, formula, mechanism
+        )
+
     readings = (
         (
             SERIES_KEY,
@@ -2300,13 +2297,7 @@ def compute_consensus(
             on_the_reading(merged_isotopologues, consensus),
             lambda r: stands_on_ion(r, consensus),
         ),
-        (
-            BATCH_CHECKS_KEY,
-            batch_checks,
-            lambda r: batch_checks_record_reads(
-                r, consensus.consensus_ion_formula, formula, mechanism
-            ),
-        ),
+        (BATCH_CHECKS_KEY, batch_checks, reads_reading),
         (
             KNOWN_SPECIES_KEY,
             known_species,
@@ -2318,6 +2309,7 @@ def compute_consensus(
             lambda r: water_ladder_reads(r, consensus),
         ),
         (FLAT_SERIES_KEY, flat_series, lambda r: _reads(r, formula, mechanism)),
+        (BATCH_LEVEL_KEY, batch_level, reads_reading),
     )
     for key, record, reads in readings:
         if isinstance(record, dict):

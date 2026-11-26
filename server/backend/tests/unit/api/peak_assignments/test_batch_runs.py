@@ -114,6 +114,14 @@ def test_the_ledger_shape_off_a_snapshot_matches_the_live_ones():
     assert meta["curated"] is False
     assert meta["consensus_tier"] == "assigned"
     assert meta["max_intensity"] == 5000.0
+    # A snapshot keeps no batch level (step 5.8c): the live ledger's fields,
+    # each empty.
+    assert {key: meta[key] for key in ("level", "level_evidence", "level_lift")} == {
+        "level": None,
+        "level_evidence": None,
+        "level_lift": None,
+    }
+    assert meta["identification_level"] is None
 
 
 def test_the_ledger_names_the_instrument_partition_live_and_off_a_snapshot():

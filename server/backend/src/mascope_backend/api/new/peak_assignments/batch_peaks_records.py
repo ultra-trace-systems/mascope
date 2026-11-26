@@ -19,6 +19,10 @@ from sqlalchemy.dialects.postgresql import ARRAY
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.new.peak_assignments.batch_blend import blend_record_of
+from mascope_backend.api.new.peak_assignments.batch_level import (
+    level_columns,
+    standing_batch_level_record,
+)
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     continuity_stale,
     instrument_type_of,
@@ -83,15 +87,13 @@ def _batch_peak_meta(bp) -> dict:
 
     ``max_intensity`` and ``isotopologue_of`` are member aggregates materialized on
     the row at fold time, so the ledger can offer an intensity column and fold
-    isotopologues under their M0 without joining the occurrence table
-    it is defined by not joining. ``intensity_variable`` rides along because it
-    is what names the unit ``max_intensity`` is in (heights or areas, per
-    instrument type). ``reference_listing`` is what a list calls the consensus
+    isotopologues under their M0 without joining the occurrence table.
+    ``intensity_variable`` names the unit ``max_intensity`` is in (heights or
+    areas, per instrument type). ``reference_listing`` is what a list calls the consensus
     formula, read off the registry entries the members brought
     (:func:`~mascope_backend.api.new.peak_assignments.listing.consensus_listing`).
-    ``engine_tier``, ``engine_claim`` and ``engine_level`` are what an
-    importing engine said of the consensus identity (``batch_import``), None
-    on every other anchor.
+    ``engine_tier``, ``engine_claim`` and ``engine_level``: what an importing
+    engine said of the consensus identity (``batch_import``); None elsewhere.
     ``seeded`` says the anchor was minted at a target ion's m/z rather than at
     the peak that minted it (``batch_peaks.fold_in_sample``).
     ``series`` is the homologous series the batch's series detection found
@@ -118,6 +120,7 @@ def _batch_peak_meta(bp) -> dict:
     where it applies - with only the facts whose stamping or co-variation
     reading still stands (``batch_checks``,
     ``batch_peaks.standing_batch_checks_record``); None where none does.
+    ``level`` and its lines are the batch's own (``batch_level.level_columns``).
     ``known_species`` is the batch's verdict on the species the anchor is, where
     the known-species decision read one: the species, whether the batch
     decided it present and on what evidence, what its claim wrote and which
@@ -191,6 +194,7 @@ def _batch_peak_meta(bp) -> dict:
         "merged_isotopologue_of": merged_isotopologue_of_summary(bp),
         "merged_isotopologues": standing_merged_isotopologues_record(bp),
         "batch_checks": standing_batch_checks_record(bp),
+        **level_columns(standing_batch_level_record(bp)),
         "known_species": known_species_summary(bp),
         "blend": blend_record_of(bp),
         "persistence": persistence_summary(bp),
@@ -209,8 +213,8 @@ def _batch_peak_meta(bp) -> dict:
 async def _with_member_levels(session, data: list[dict]) -> list[dict]:
     """Put on each anchor the identification levels its members' runs stated.
 
-    The batch states no level of its own yet (step 5.8c of the assignment
-    quality plan); what it has are its members' readings, each with the level
+    The members' split beside the batch's own level (``level``, step 5.8c of
+    the assignment quality plan): its members' readings, each with the level
     its sample's run stated (``PeakAssignment.level``). A member counts where
     its run's row commits the consensus formula: a member a batch operation
     re-pointed to another reading, or one that dissents, carries a level about

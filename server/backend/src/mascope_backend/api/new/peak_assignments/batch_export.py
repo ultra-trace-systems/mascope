@@ -39,6 +39,7 @@ from mascope_backend.api.lib.api_features import (
     api_controller,
     api_controller_background_task,
 )
+from mascope_backend.api.new.peak_assignments.batch_level import batch_level_fields
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     ROLE_UNASSIGNED,
     instrument_type_of,
@@ -77,7 +78,11 @@ _EXPORT_CHUNK = 20000
 #: The notification channel the export reports on.
 EXPORT_NOTIFICATION_TYPE = "export_batch_ledger"
 
-#: The column order of a row, which is the CSV's header.
+#: The column order of a row, which is the CSV's header. ``batch_level``,
+#: ``batch_level_evidence`` and ``batch_level_lift`` are the anchor's own
+#: level, as the batch's level stage read it off its members' runs and the
+#: batch's isotope checks (``batch_level``), repeated on each member as the
+#: consensus is; None where none stands.
 COLUMNS = (
     "sample_batch_id",
     "batch_peak_id",
@@ -116,6 +121,9 @@ COLUMNS = (
     "level",
     "level_evidence",
     "level_lift",
+    "batch_level",
+    "batch_level_evidence",
+    "batch_level_lift",
     "owner_batch_peak_id",
     "stamped_isotopologue_of",
     "stamp_source",
@@ -149,8 +157,7 @@ def member_export_row(
     isotopologue stamping stamped the member, the parent batch peak it is a
     diagnostic isotopologue of and where the stamp came from: ``predicted`` by
     the stamping, or ``picker`` where the sample's own run already read the
-    member as the parent's isotopologue (``batch_isotopologues``); None
-    otherwise.
+    member as the parent's isotopologue (``batch_isotopologues``); else None.
 
     ``instrument_type`` and ``intensity_variable`` name the anchor's partition
     and the unit its ``max_intensity`` and the member's ``intensity`` are in,
@@ -227,6 +234,7 @@ def member_export_row(
         "fit_score": member.fit_score,
         "p_correct": member.p_correct,
         **level,
+        **batch_level_fields(anchor),
         "owner_batch_peak_id": member.owner_batch_peak_id,
         "stamped_isotopologue_of": stamp.get("batch_peak_id"),
         "stamp_source": stamp.get("stamp_source"),
