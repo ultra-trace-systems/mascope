@@ -6,6 +6,7 @@ import Button from 'primevue/button'
 import { BaseLevelTag, BaseTierTag, BaseVerdictBadge } from '@/lib/base'
 import { num } from '@/lib/formatters'
 import { formatIsotopeLabel } from '@/lib/chem'
+import { formatShare } from './cardReadings.js'
 import { sourceLabel, sourceLine } from '@/lib/assignmentSources'
 import {
   candidatesTooltip,
@@ -43,24 +44,68 @@ const {
   verifiable,
   anchorConflict,
   batchOpened,
+  batchAgreement,
   nextSample,
   tierChipCap
 } = useCard()
 
-// Which sample the card shows when the batch ledger opened the peak: the
-// brightest of those that hold it, or the one *Other samples* stepped to.
-// Opened from a row's level, the samples are those whose run states it.
-const batchOpenedLine = computed(() => {
+// Opened from the batch ledger, the line names the batch's reading first: its
+// consensus, the consensus tier as the ledger's chip, and how many samples hold
+// the peak with the share of their formulas that agree. The share is over the
+// samples whose run read a formula on the peak (the server's
+// `support_fraction`), so it is said as a share of formulas, never as a count
+// of samples it was not taken over.
+const batchConsensus = computed(() => {
+  const batch = batchOpened.value?.batch
+  if (!batch) return null
+  return { formula: batch.formula || batch.ion || null, ion: !batch.formula && Boolean(batch.ion) }
+})
+const batchCount = computed(() => {
+  const batch = batchOpened.value?.batch
+  if (!batch || batch.present == null) return ''
+  const present = `in ${batch.present} sample${batch.present === 1 ? '' : 's'}`
+  if (!batch.formula || batch.present < 2 || batch.support == null) return present
+  const agree =
+    batch.support >= 1
+      ? 'all their formulas agree'
+      : `${formatShare(batch.support)} of their formulas agree`
+  return `${present}, ${agree}`
+})
+const BATCH_COUNT_TOOLTIP =
+  "How many of the batch's samples hold this batch peak, and the share of the formulas " +
+  'their runs read on it that are the consensus'
+
+// Then the sample the card shows: the brightest of those that hold it, or the
+// one *Other samples* stepped to. Opened from a row's level, the samples are
+// those whose run states it.
+const batchShowing = computed(() => {
   const opened = batchOpened.value
   if (!opened) return ''
+  const which = opened.level ? ` whose run states ${opened.level}` : ''
   const place =
     opened.index === 0
-      ? `the brightest of ${opened.count} samples`
-      : `${opened.index + 1} of ${opened.count} samples, by intensity`
-  const which = opened.level
-    ? `whose run states ${opened.level} for this batch peak`
-    : 'that hold this batch peak'
-  return `In ${opened.name}: ${place} ${which}`
+      ? opened.level
+        ? `the brightest of ${opened.count}${which}`
+        : 'the brightest'
+      : `${opened.index + 1} of ${opened.count}${which}, by intensity`
+  return `Showing ${opened.name}, ${place}.`
+})
+
+// Then whether that sample agrees: the formula under the line is its own run's.
+// Where it reads another, that formula is named in the mono face.
+const OWN_READS = "This sample's run reads "
+const agreement = computed(() => {
+  const { state, formula } = batchAgreement.value ?? {}
+  const own = formula ? { formula, end: '.' } : { formula: null, end: '' }
+  if (state === 'agrees') return { lead: 'This sample agrees.', formula: null, end: '' }
+  if (state === 'none') {
+    return { lead: "This sample's run reads no formula on this peak.", formula: null, end: '' }
+  }
+  if (state === 'unsettled') {
+    const settled = "The batch's consensus is not settled."
+    return formula ? { lead: `${settled} ${OWN_READS}`, ...own } : { lead: settled, ...own }
+  }
+  return { lead: OWN_READS, ...own }
 })
 
 // The ion line: how the ion was made and what it is, where its peak sits, and
@@ -247,11 +292,46 @@ const provisional = TIERING_PROVISIONAL
         compact
       />
     </div>
-    <!-- Opened from the batch ledger: the sample this is, and the way to the
-         next one that holds the batch peak. -->
+    <!-- Opened from the batch ledger: the batch's reading, the sample this
+         is and whether it agrees, and the way to the next one that holds the
+         batch peak. A state, said in the note's muted text. -->
     <div v-if="batchOpened" class="batch-opened" data-testid="batch-opened">
       <span class="pi ph ph-stack" aria-hidden="true" />
-      <span class="batch-opened-text">{{ batchOpenedLine }}</span>
+      <span class="batch-reading" data-testid="batch-reading"
+        >Batch:
+        <span
+          v-if="batchConsensus.formula"
+          class="mono"
+          data-testid="batch-consensus"
+          v-tooltip.top="
+            batchConsensus.ion
+              ? 'The ion the batch names for this peak: no compound of the sample'
+              : 'The formula the batch settled on for this peak, by a vote over its samples'
+          "
+          >{{ batchConsensus.formula }}</span><template v-else>no consensus formula</template>
+        <BaseTierTag
+          v-if="batchOpened.batch.tier"
+          class="batch-tier"
+          :tier="batchOpened.batch.tier"
+          :role="batchOpened.batch.role"
+        /><template v-if="batchCount">
+          &middot;
+          <span data-testid="batch-count" v-tooltip.top="BATCH_COUNT_TOOLTIP">{{
+            batchCount
+          }}</span></template
+        >.</span
+      >
+      {{ ' ' }}<span class="batch-showing" data-testid="batch-showing">{{ batchShowing }}</span>
+      <template v-if="batchAgreement">
+        {{ ' '
+        }}<span class="batch-agreement" data-testid="batch-agreement"
+          >{{ agreement.lead
+          }}<span v-if="agreement.formula" class="mono" data-testid="batch-own-formula">{{
+            agreement.formula
+          }}</span
+          >{{ agreement.end }}</span
+        >
+      </template>
       <Button
         v-if="batchOpened.next"
         label="Other samples"
@@ -358,6 +438,18 @@ const provisional = TIERING_PROVISIONAL
 }
 .batch-opened > .pi {
   margin-right: 0.35rem;
+}
+.batch-opened .mono {
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+.batch-tier {
+  margin-left: 0.25rem;
+  vertical-align: baseline;
+}
+.batch-showing,
+.batch-agreement {
+  color: var(--p-text-muted-color);
 }
 .batch-step {
   display: inline-flex;

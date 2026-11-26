@@ -1907,10 +1907,19 @@ In a narrow column the four measurements stand one above another, and the chips 
   isotope pattern is measured against the sample.
 - **A peak with no ledger row.** A peak the run on view has no row for reads *No
   assignment*, with its m/z and intensity, and offers *Find other formulas for this peak*.
-- **Opened from the batch.** The button on a *Batch peaks* row that opens the brightest sample opens the batch peak in
-  its brightest sample. The answer then names that sample, *In sample A: the brightest of
-  12 samples that hold this batch peak*. *Other samples* opens the next one, by intensity,
-  with its peak in focus, and wraps round from the dimmest to the brightest.
+- **Opened from the batch.** The button on a *Batch peaks* row that opens the brightest
+  sample opens the batch peak in its brightest sample. A line under the chips then names
+  the batch's reading first, then the sample, then whether the sample agrees:
+  *Batch: C3H6O3 · candidate · in 3 samples, 67% of their formulas agree. Showing sample
+  A, the brightest. This sample agrees.* The share is over the samples whose run reads a
+  formula on the peak. The formula that heads the card is the sample's own run's, which
+  may not be the batch's: the line then says *This sample's run reads* that formula. It
+  says when the sample's run reads no formula there, and where the batch's consensus is
+  not settled it says so instead of *agrees*. On a sample with no run of its own the card
+  shows the batch's reading, so the line says nothing of agreeing. *Other samples* opens
+  the next sample, by intensity, with its peak in focus, and wraps round from the dimmest
+  to the brightest; the line then reads that sample's agreement. Opened from a sample's
+  own ledger, the card has no such line.
 
 ## Assigning a peak yourself
 

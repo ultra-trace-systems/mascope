@@ -187,7 +187,11 @@ vi.mock('@/lib/panes/PaneBrowserMatch/stores/batchPeakJump.js', () => ({
 }))
 vi.mock('@/lib/base', () => ({
   BaseClaimStructure: { template: '<div />' },
-  BaseTierTag: { props: ['tier'], template: '<span class="tier-tag" />' },
+  BaseTierTag: {
+    name: 'BaseTierTag',
+    props: ['tier', 'role'],
+    template: '<span class="tier-tag" />'
+  },
   BaseLevelTag: { props: ['level'], template: '<span />' },
   BaseVerdictBadge: { props: ['record'], template: '<span class="verdict-badge" />' },
   BaseEvidenceBadge: { template: '<span />' }
@@ -697,39 +701,175 @@ describe('card states: a sample with no run of its own', () => {
 })
 
 describe('card states: opened from the batch scope', () => {
-  const opened = () => ({
+  // The batch's reading as the ledger row has it: ROW's formula, held by two
+  // of three samples' formulas.
+  const opened = (reading = {}) => ({
     batch_peak_id: 'bp-1',
     sample_batch_id: 'sb-1',
+    consensus_formula: 'C6H12O6',
+    consensus_ion_formula: 'C6H11O6-',
+    consensus_tier: 'candidate',
+    consensus_role: null,
+    support_fraction: 0.6667,
+    n_present: 3,
+    is_ambiguous: false,
+    ...reading,
     members: [
       { sample_item_id: 'si-1', sample_peak_id: 'p-1', intensity: 900 },
       { sample_item_id: 'si-2', sample_peak_id: 'q-7', intensity: 300 },
       { sample_item_id: 'si-3', sample_peak_id: 'r-2', intensity: 10 }
     ]
   })
+  const textOf = (wrapper, id) => byTestId(wrapper, id).text().replace(/\s+/g, ' ')
 
-  it('names the brightest sample and steps to the next one', async () => {
+  it("names the batch's consensus, its tier and count, then the sample, which agrees", async () => {
     state.opened = opened()
     const wrapper = await mountCard()
 
     const line = byTestId(wrapper, 'batch-opened')
-    expect(line.text()).toContain('In Sample one: the brightest of 3 samples')
+    expect(textOf(wrapper, 'batch-reading')).toBe(
+      'Batch: C6H12O6 · in 3 samples, 67% of their formulas agree.'
+    )
+    expect(byTestId(wrapper, 'batch-consensus').classes()).toContain('mono')
+    // The ledger's tier chip, beside the consensus: the batch's tier, not the sample's.
+    const chips = line.findAllComponents({ name: 'BaseTierTag' })
+    expect(chips).toHaveLength(1)
+    expect(chips[0].props('tier')).toBe('candidate')
+    expect(textOf(wrapper, 'batch-showing')).toBe('Showing Sample one, the brightest.')
+    expect(textOf(wrapper, 'batch-agreement')).toBe('This sample agrees.')
+    // The batch first, the sample second.
+    expect(line.text().indexOf('Batch:')).toBeLessThan(line.text().indexOf('Showing'))
+
     const step = byTestId(wrapper, 'batch-other-samples')
     expect(step.attributes('data-tooltip')).toContain('Sample two')
-
     await step.trigger('click')
     expect(stepTo).toHaveBeenCalledWith(1)
+  })
+
+  it('says all the formulas agree, and gives no share for one sample', async () => {
+    state.opened = opened({ support_fraction: 1 })
+    let wrapper = await mountCard()
+    expect(textOf(wrapper, 'batch-count')).toBe('in 3 samples, all their formulas agree')
+
+    state.opened = opened({ support_fraction: 1, n_present: 1 })
+    wrapper = await mountCard()
+    expect(textOf(wrapper, 'batch-count')).toBe('in 1 sample')
+
+    state.opened = opened({ support_fraction: null })
+    wrapper = await mountCard()
+    expect(textOf(wrapper, 'batch-count')).toBe('in 3 samples')
+  })
+
+  it("names the sample's own formula where its run reads another", async () => {
+    state.opened = opened({ consensus_formula: 'C3H6O3', consensus_ion_formula: 'C3H5O3-' })
+    const wrapper = await mountCard()
+
+    expect(textOf(wrapper, 'batch-reading')).toContain('Batch: C3H6O3')
+    expect(textOf(wrapper, 'batch-agreement')).toBe("This sample's run reads C6H12O6.")
+    expect(byTestId(wrapper, 'batch-own-formula').text()).toBe('C6H12O6')
+    // The card still heads with the sample's own formula.
+    expect(wrapper.find('.insp-formula').text()).toBe('C6H12O6')
+  })
+
+  it("says when the sample's run reads no formula on the peak", async () => {
+    state.opened = opened()
+    state.focusedAssignment = {
+      ...ROW,
+      assigned_formula: null,
+      ion_formula: null,
+      tier: 'unassigned'
+    }
+    const wrapper = await mountCard()
+
+    expect(textOf(wrapper, 'batch-agreement')).toBe(
+      "This sample's run reads no formula on this peak."
+    )
+  })
+
+  it('says the consensus is not settled in place of agreeing, and still names another formula', async () => {
+    state.opened = opened({ is_ambiguous: true })
+    let wrapper = await mountCard()
+    expect(textOf(wrapper, 'batch-agreement')).toBe("The batch's consensus is not settled.")
+
+    state.opened = opened({ is_ambiguous: true, consensus_formula: 'C3H6O3' })
+    wrapper = await mountCard()
+    expect(textOf(wrapper, 'batch-agreement')).toBe(
+      "The batch's consensus is not settled. This sample's run reads C6H12O6."
+    )
+  })
+
+  it('compares by the ion where the batch names an ion and no compound', async () => {
+    state.opened = opened({
+      consensus_formula: null,
+      consensus_ion_formula: 'C6H11O6-',
+      consensus_tier: 'unassigned',
+      consensus_role: 'reagent'
+    })
+    state.focusedAssignment = { ...ROW, assigned_formula: null, role: 'reagent' }
+    let wrapper = await mountCard()
+    expect(textOf(wrapper, 'batch-reading')).toBe('Batch: C6H11O6- · in 3 samples.')
+    expect(
+      byTestId(wrapper, 'batch-opened').findComponent({ name: 'BaseTierTag' }).props('role')
+    ).toBe('reagent')
+    expect(textOf(wrapper, 'batch-agreement')).toBe('This sample agrees.')
+
+    state.focusedAssignment = { ...ROW, assigned_formula: null, ion_formula: 'C2H3O2-' }
+    wrapper = await mountCard()
+    expect(textOf(wrapper, 'batch-agreement')).toBe("This sample's run reads C2H3O2-.")
+  })
+
+  it('says when the batch has no consensus formula', async () => {
+    state.opened = opened({
+      consensus_formula: null,
+      consensus_ion_formula: null,
+      consensus_tier: 'unassigned',
+      support_fraction: null
+    })
+    const wrapper = await mountCard()
+    expect(textOf(wrapper, 'batch-reading')).toBe('Batch: no consensus formula · in 3 samples.')
+    expect(textOf(wrapper, 'batch-agreement')).toBe("This sample's run reads C6H12O6.")
+  })
+
+  it('re-reads the agreement for the sample stepped to', async () => {
+    state.opened = opened()
+    const wrapper = await mountCard()
+    expect(textOf(wrapper, 'batch-agreement')).toBe('This sample agrees.')
+
+    // What stepTo lands on: the next member's sample and peak, and its run's row.
+    state.sampleId = 'si-2'
+    state.focusedPeak = { ...PEAK, peak_id: 'q-7' }
+    state.focusedAssignment = { ...ROW, sample_item_id: 'si-2', assigned_formula: 'C7H16O5' }
+    await flushPromises()
+
+    expect(textOf(wrapper, 'batch-showing')).toBe('Showing Sample two, 2 of 3, by intensity.')
+    expect(textOf(wrapper, 'batch-agreement')).toBe("This sample's run reads C7H16O5.")
+  })
+
+  it('leaves the agreement out on a sample with no run of its own', async () => {
+    const ledger = {
+      peak_assignment_run_id: 'fold-si-1',
+      sample_item_id: 'si-1',
+      engine: 'batch',
+      status: 'completed'
+    }
+    state.run = ledger
+    state.runs = [ledger]
+    state.latest = ledger
+    state.opened = opened({ consensus_formula: 'C3H6O3' })
+    const wrapper = await mountCard()
+
+    expect(textOf(wrapper, 'batch-reading')).toContain('Batch: C3H6O3')
+    expect(byTestId(wrapper, 'batch-agreement').exists()).toBe(false)
+    expect(byTestId(wrapper, 'no-own-run').exists()).toBe(true)
   })
 
   it('says the level the members were opened by, from a row of the batch ledger', async () => {
     state.opened = { ...opened(), level: '4a' }
     const wrapper = await mountCard()
 
-    expect(byTestId(wrapper, 'batch-opened').text()).toContain(
-      'In Sample one: the brightest of 3 samples whose run states 4a for this batch peak'
+    expect(textOf(wrapper, 'batch-showing')).toBe(
+      'Showing Sample one, the brightest of 3 whose run states 4a.'
     )
-    state.opened = opened()
-    const plain = await mountCard()
-    expect(byTestId(plain, 'batch-opened').text()).toContain('that hold this batch peak')
   })
 
   it('names a later member by its place, and wraps from the last to the first', async () => {
@@ -738,12 +878,12 @@ describe('card states: opened from the batch scope', () => {
     state.focusedPeak = { ...PEAK, peak_id: 'r-2' }
     const wrapper = await mountCard()
 
-    expect(byTestId(wrapper, 'batch-opened').text()).toContain('In Sample three: 3 of 3 samples')
+    expect(textOf(wrapper, 'batch-showing')).toBe('Showing Sample three, 3 of 3, by intensity.')
     await byTestId(wrapper, 'batch-other-samples').trigger('click')
     expect(stepTo).toHaveBeenCalledWith(0)
   })
 
-  it('says nothing of the batch on another peak, in another batch, or with one member', async () => {
+  it('says nothing of the batch on another peak, in another batch, or from a sample row', async () => {
     state.opened = opened()
     state.focusedPeak = { ...PEAK, peak_id: 'p-other' }
     let wrapper = await mountCard()
@@ -754,9 +894,14 @@ describe('card states: opened from the batch scope', () => {
     wrapper = await mountCard()
     expect(byTestId(wrapper, 'batch-opened').exists()).toBe(false)
 
+    // Opened from the sample's own ledger: the batch never opened the peak.
+    state.opened = null
+    wrapper = await mountCard()
+    expect(byTestId(wrapper, 'batch-opened').exists()).toBe(false)
+
     state.opened = { ...opened(), members: opened().members.slice(0, 1) }
     wrapper = await mountCard()
-    expect(byTestId(wrapper, 'batch-opened').text()).toContain('the brightest of 1 samples')
+    expect(textOf(wrapper, 'batch-showing')).toBe('Showing Sample one, the brightest.')
     expect(byTestId(wrapper, 'batch-other-samples').exists()).toBe(false)
   })
 })

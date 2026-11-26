@@ -192,6 +192,16 @@ export function useAssignmentCard({ showSearch }) {
     return {
       index,
       count,
+      // The batch's reading of the peak, from the ledger row that opened it.
+      batch: {
+        formula: opened.consensus_formula ?? null,
+        ion: opened.consensus_ion_formula ?? null,
+        tier: opened.consensus_tier ?? null,
+        role: opened.consensus_role ?? null,
+        support: opened.support_fraction ?? null,
+        present: opened.n_present ?? null,
+        ambiguous: Boolean(opened.is_ambiguous)
+      },
       // The level the members were chosen by, when the level's popover
       // opened them; null for the brightest of every member.
       level: opened.level ?? null,
@@ -1032,6 +1042,33 @@ export function useAssignmentCard({ showSearch }) {
         (run) => run.engine !== 'batch' && !run.decoy && run.status === 'completed'
       )
   )
+  // --- Opened from the batch: does this sample agree ----------------------------
+  // How the sample on the card stands against the batch's consensus, which the
+  // card names over it (batchOpened): the card's formula is the sample's own
+  // run's, and may be another. Compared as the consensus is named: by its
+  // neutral formula, or by its ion where the batch names an ion and no
+  // compound (a source's claim). A state, not an error. Null where the card
+  // was not opened from the batch, and on a sample with no run of its own:
+  // there the card shows the batch's own reading, and the no-own-run note
+  // says so (MAS-1297).
+  //   agrees    - the sample's run reads the consensus
+  //   differs   - it reads another formula, `formula`
+  //   none      - it reads no formula on the peak
+  //   unsettled - the consensus is not settled, so nothing agrees with it;
+  //               `formula` is the sample's own where it reads another
+  const batchAgreement = computed(() => {
+    const opened = batchOpened.value
+    if (!opened || noOwnRun.value) return null
+    const row = focusedAssignment.value
+    const byIon = !opened.batch.formula && Boolean(opened.batch.ion)
+    const consensus = byIon ? opened.batch.ion : opened.batch.formula
+    const own = (byIon ? row?.ion_formula : row?.assigned_formula) || null
+    const other = own && own !== consensus ? own : null
+    if (opened.batch.ambiguous) return { state: 'unsettled', formula: other }
+    if (!own) return { state: 'none', formula: null }
+    return other ? { state: 'differs', formula: other } : { state: 'agrees', formula: null }
+  })
+
   const NO_OWN_RUN_TEXT =
     "No run of its own: this is the batch's reading for this sample, from the batch ledger."
   const NO_OWN_RUN_TOOLTIP =
@@ -2009,6 +2046,7 @@ export function useAssignmentCard({ showSearch }) {
     canEdit,
     canChange,
     batchOpened,
+    batchAgreement,
     nextSample,
     noRowLine,
     engineTierTooltip,

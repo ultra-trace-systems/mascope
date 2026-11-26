@@ -64,6 +64,30 @@ export function measuredMembers(record) {
 }
 
 /**
+ * The batch's reading of a batch peak, off its ledger row: what the inspector
+ * card names over the sample it opens. The batch-peaks read serves every
+ * field, so the card needs no request of its own.
+ *
+ * Pure. A field the row lacks reads null; `is_ambiguous` reads false.
+ *
+ * @param {object} row - a batch ledger row
+ * @returns {{consensus_formula: string|null, consensus_ion_formula: string|null,
+ *   consensus_tier: string|null, consensus_role: string|null,
+ *   support_fraction: number|null, n_present: number|null, is_ambiguous: boolean}}
+ */
+export function batchReading(row) {
+  return {
+    consensus_formula: row?.consensus_formula ?? null,
+    consensus_ion_formula: row?.consensus_ion_formula ?? null,
+    consensus_tier: row?.consensus_tier ?? null,
+    consensus_role: row?.consensus_role ?? null,
+    support_fraction: row?.support_fraction ?? null,
+    n_present: row?.n_present ?? null,
+    is_ambiguous: Boolean(row?.is_ambiguous)
+  }
+}
+
+/**
  * The batch ledger's row action: open the brightest sample that holds the
  * batch peak, with that peak focused, in the Sample tab.
  *
@@ -82,9 +106,12 @@ export const useBatchPeakJump = defineStore('browser.match.batchPeakJump', () =>
 
   /**
    * The batch peak the ledger last opened, for the inspector card: the batch
-   * it is in, and its measured members among the loaded samples, brightest
-   * first. The card names the sample it is showing and steps through the
-   * others (`stepTo`). Null until a jump lands.
+   * it is in, the batch's reading of it as its ledger row has it (the
+   * consensus formula, ion, tier and role, the share of its members that
+   * agree, how many samples hold it, and whether the consensus is settled),
+   * and its measured members among the loaded samples, brightest first. The
+   * card names the batch's reading and the sample it is showing, and steps
+   * through the others (`stepTo`). Null until a jump lands.
    */
   const opened = ref(null)
 
@@ -142,6 +169,7 @@ export const useBatchPeakJump = defineStore('browser.match.batchPeakJump', () =>
     opened.value = {
       batch_peak_id: row.batch_peak_id,
       sample_batch_id: batchId,
+      ...batchReading(row),
       members: stepping,
       level
     }

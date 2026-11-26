@@ -44,6 +44,17 @@ beforeEach(() => {
   app = makeApp()
 })
 
+// What `opened` carries of a ledger row that names no reading of its own.
+const NO_READING = {
+  consensus_formula: null,
+  consensus_ion_formula: null,
+  consensus_tier: null,
+  consensus_role: null,
+  support_fraction: null,
+  n_present: null,
+  is_ambiguous: false
+}
+
 describe('brightestMember', () => {
   it('picks the member with the highest intensity, with its peak', () => {
     expect(
@@ -112,16 +123,52 @@ describe('useBatchPeakJump', () => {
 
     await jump.jumpToBrightest({ batch_peak_id: 'bp-1' })
 
-    // s-9 is not among the loaded samples, and s-3 was not measured.
+    // s-9 is not among the loaded samples, and s-3 was not measured. A row
+    // with no reading carries none.
     expect(jump.opened).toEqual({
       batch_peak_id: 'bp-1',
       sample_batch_id: 'b-1',
+      ...NO_READING,
       members: [
         { sample_item_id: 's-2', sample_peak_id: 'p2', intensity: 300 },
         { sample_item_id: 's-1', sample_peak_id: 'p1', intensity: 10 }
       ],
       level: null
     })
+  })
+
+  it("keeps the batch row's reading beside the members, for the card to name", async () => {
+    post.mockResolvedValue([series(['s-1', 's-2'], [10, 300], ['p1', 'p2'])])
+    const jump = useBatchPeakJump()
+    const row = {
+      batch_peak_id: 'bp-1',
+      mz: 89.0244,
+      consensus_formula: 'C3H6O3',
+      consensus_ion_formula: 'C3H5O3-',
+      consensus_tier: 'candidate',
+      consensus_role: null,
+      support_fraction: 0.6667,
+      n_present: 3,
+      is_ambiguous: true
+    }
+
+    await jump.jumpToBrightest(row)
+
+    expect(jump.opened).toMatchObject({
+      consensus_formula: 'C3H6O3',
+      consensus_ion_formula: 'C3H5O3-',
+      consensus_tier: 'candidate',
+      consensus_role: null,
+      support_fraction: 0.6667,
+      n_present: 3,
+      is_ambiguous: true
+    })
+    expect(jump.opened.mz).toBeUndefined()
+
+    // The level popover's member carries the same row's reading.
+    const member = { sample_item_id: 's-1', sample_peak_id: 'p1', intensity: 10 }
+    await jump.openMember({ ...row, consensus_role: 'reagent' }, member, [member], '4a')
+    expect(jump.opened).toMatchObject({ consensus_formula: 'C3H6O3', consensus_role: 'reagent' })
   })
 
   it("opens a level's member on its peak, the card stepping through that level's members", async () => {
@@ -141,6 +188,7 @@ describe('useBatchPeakJump', () => {
     expect(jump.opened).toEqual({
       batch_peak_id: 'bp-1',
       sample_batch_id: 'b-1',
+      ...NO_READING,
       members: [at4a[0], at4a[2]],
       level: '4a'
     })
