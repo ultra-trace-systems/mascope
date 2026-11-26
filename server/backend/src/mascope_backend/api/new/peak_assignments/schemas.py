@@ -297,6 +297,7 @@ class PeakAssignmentRecord(BaseModel):
     #: What would raise the level, written from the tests the row is missing
     #: (provenance.identification_level.lift).
     level_lift: str | None = None
+    manual_action: str | None = None  #: provenance.manual.action (ledger_reads)
 
 
 class PeakAssignmentDetailRecord(PeakAssignmentRecord):

@@ -203,6 +203,9 @@ async def test_list_rows_are_slim_with_flattened_confidence_scalars(
     assert unassigned["p_correct"] is None
     assert unassigned["p_correct_provisional"] is None
     assert unassigned["corroboration_adducts"] is None
+    # No hand edit wrote either row (test_manual_curation covers one that did).
+    assert assigned["manual_action"] is None
+    assert unassigned["manual_action"] is None
 
 
 @pytest.mark.asyncio

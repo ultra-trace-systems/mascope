@@ -479,6 +479,39 @@ class TestRowFieldBoundsMatchTheColumns:
             )
 
 
+class TestAnImportersManualBlockReadsAsNoHandEdit:
+    """``manual`` is not server-owned, so an import keeps what it sends there.
+
+    The ledger reads ``manual.action`` into ``manual_action``, the hand mark's
+    source. A block that is not a dict, or an action that is not a string,
+    must read as no hand edit, not fail every ledger read of the sample.
+    """
+
+    @pytest.mark.parametrize(
+        "manual",
+        [
+            True,
+            "set_assignment",
+            ["set_assignment"],
+            3,
+            {"action": 3},
+            {"action": None},
+        ],
+        ids=["bool", "string", "list", "number", "numeric action", "null action"],
+    )
+    def test_a_malformed_block_reads_as_none(self, manual):
+        provenance = strip_server_owned_provenance({"manual": manual})
+
+        assert _provenance_scalars(provenance)["manual_action"] is None
+
+    def test_a_string_action_is_read(self):
+        provenance = strip_server_owned_provenance(
+            {"manual": {"action": "set_assignment"}}
+        )
+
+        assert _provenance_scalars(provenance)["manual_action"] == "set_assignment"
+
+
 class TestServerOwnedProvenanceIsDropped:
     """The ledger's calibrated confidence is this server's judgement, not input.
 
