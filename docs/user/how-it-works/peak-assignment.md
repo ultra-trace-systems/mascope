@@ -1081,9 +1081,12 @@ What caps a row at candidate:
   one of a compound's isotopologues, such as its 81Br line, is not asked: the rule
   reads a formula's lines from its main one. Such a peak is stored as the line, its
   ion the line's own formula as an untargeted run stores a line, and names no main
-  line it belongs to; where the run holds none, the sample's ledger lists it as a row
-  of its own with its line beside the formula, and the batch's vote on which batch
-  peak a line belongs to leaves it out rather than counting it against the family.
+  line it belongs to, so the sample's ledger lists it as a row of its own with its
+  line beside the formula, and the batch's vote on which batch peak a line belongs to
+  leaves it out rather than counting it against the family. The vote leaves out every
+  line that names no main line, a run's own included, such as one whose main line the
+  run gave to another ion. So rebuilding a batch ledger from runs made before this
+  can link a batch peak as an isotopologue where it was linked to none before.
   On a run made before Mascope looked for
   missing lines, a hand assignment is not asked either. A line where the
   only peak is one the run set aside as an *artifact*, a side lobe of a bright
