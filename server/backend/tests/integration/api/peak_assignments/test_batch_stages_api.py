@@ -57,6 +57,7 @@ from mascope_backend.api.new.peak_assignments.batch_stages import (
     STAGES,
     assign_batch,
     begin_stage,
+    check_no_run_in_flight,
     finish_stage,
     hand_over,
     running_stage,
@@ -80,6 +81,7 @@ from mascope_backend.db import (
     SampleBatch,
     SampleFile,
     SampleItem,
+    async_session,
     retry,
 )
 from mascope_backend.db.admin.peak_assignments.reset_running_runs import (
@@ -1001,6 +1003,91 @@ async def test_a_stage_whose_end_fails_is_stopped_not_left_running(
     assert states["co_variation"]["state"] == "stale"
     assert states["co_variation"]["stale_reason"] == "upstream:series"
     assert "running" not in {e["state"] for e in states.values()}
+
+
+def _refusing_stage_sessions(monkeypatch, times):
+    """Makes the stage rows' sessions refuse ``times`` connections, the
+    retry's waits zero, while the batch runs' sessions answer; answers the
+    refusals counted so far."""
+    real_session = batch_stages.async_session
+    refusals = []
+    monkeypatch.setattr(retry, "CONNECTION_RETRY_DELAYS_S", (0,) * 6)
+
+    def _session():
+        if len(refusals) < times:
+            refusals.append("refused")
+            raise TooManyConnectionsError("sorry, too many clients already")
+        return real_session()
+
+    monkeypatch.setattr(batch_stages, "async_session", _session)
+    return refusals
+
+
+async def test_a_stage_whose_stop_the_database_first_refuses_is_stopped(
+    folded, stand_ins, monkeypatch
+):
+    """The incident #3632 replays, at the stage: Postgres runs out of
+    connections, a stage fails on that, and so do the first attempts at
+    recording its stop. The stage has to end stale once the database answers
+    again, not stay running and hold the batch: the status would read the
+    pass as running and every new pass answer 409."""
+    batch_id = folded["batch_id"]
+
+    async def refused_mid_series(call):
+        stand_ins["refusals"] = _refusing_stage_sessions(monkeypatch, 2)
+        raise TooManyConnectionsError("sorry, too many clients already")
+
+    stand_ins["hooks"]["series"] = refused_mid_series
+    with pytest.raises(Exception):  # the pass re-raises it, wrapped
+        await _run(batch_id)
+
+    assert len(stand_ins["refusals"]) == 2
+    monkeypatch.setattr(batch_stages, "async_session", async_session)
+    states = await _states(batch_id)
+    assert states["series"]["state"] == "stale"
+    assert states["series"]["stale_reason"] == "interrupted"
+    assert "running" not in {e["state"] for e in states.values()}
+    assert (await _status(batch_id))["state"] != "running"
+    await check_no_run_in_flight(batch_id)
+    del stand_ins["hooks"]["series"]
+    await _run(batch_id)
+    assert {e["state"] for e in (await _states(batch_id)).values()} == {"current"}
+
+
+async def test_a_stop_refused_past_the_retries_is_left_to_the_reaper(
+    folded, stand_ins, monkeypatch
+):
+    """What the stage raised is the error raised, not the stop's, which is
+    logged as an error; the stage row is left running, as the startup reaper
+    resets it."""
+    batch_id = folded["batch_id"]
+    errors = []
+    monkeypatch.setattr(batch_stages.runtime.logger, "error", errors.append)
+
+    async def refused_mid_series(call):
+        stand_ins["refusals"] = _refusing_stage_sessions(
+            monkeypatch, len(retry.CONNECTION_RETRY_DELAYS_S) + 1
+        )
+        raise RuntimeError("the stage broke")
+
+    stand_ins["hooks"]["series"] = refused_mid_series
+    with pytest.raises(Exception) as raised:
+        await _run(batch_id)
+
+    # The pass wraps what it raises; what it wraps is the stage's error.
+    assert repr(raised.value.__cause__) == "RuntimeError('the stage broke')"
+    stopped = [e for e in errors if "mark batch stage 'series'" in e]
+    assert len(stopped) == 1 and "startup reaper" in stopped[0]
+    assert len(stand_ins["refusals"]) == len(retry.CONNECTION_RETRY_DELAYS_S) + 1
+    monkeypatch.setattr(batch_stages, "async_session", async_session)
+    assert (await _states(batch_id))["series"]["state"] == "running"
+    with pytest.raises(ApiException):
+        await check_no_run_in_flight(batch_id)
+
+    await reset_running_batch_peak_runs()
+
+    assert (await _states(batch_id))["series"]["state"] == "stale"
+    await check_no_run_in_flight(batch_id)
 
 
 async def test_a_pass_interrupted_right_after_a_hand_over_leaves_no_stage_running(
