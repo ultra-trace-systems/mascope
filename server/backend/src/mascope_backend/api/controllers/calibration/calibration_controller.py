@@ -1062,6 +1062,54 @@ async def calibration_mz_fit(
     }
 
 
+async def _release_apply_hold(
+    held_batch_ids: list[str],
+    pending_recalibration_ids: list[str],
+    filename: str,
+) -> None:
+    """Release the ``processing`` hold of a calibration apply that raised.
+
+    Each batch the apply held goes back to what it waited on: a pending
+    ``recalibrate`` to ``recalibrate``, any other to ``rematch``, since the
+    apply may have rewritten the file's axis and removed its matches before
+    it raised. The writes go only over ``processing``: a status written over
+    the hold while the apply ran (a ``recalibrate`` included) asked for work
+    after it, so it stays.
+
+    A batch held by another run before the apply started is not in
+    ``held_batch_ids``; that run releases it. A failure here is logged and
+    swallowed, so the caller re-raises the apply's own error.
+    """
+    try:
+        if pending_recalibration_ids:
+            await update_sample_batch_status(
+                sample_batch_ids=pending_recalibration_ids,
+                status="recalibrate",
+                independent_transaction=True,
+                only_over=["processing"],
+            )
+        # After the write above, which takes the pending batches off
+        # "processing", so this one passes them by.
+        await update_sample_batch_status(
+            sample_batch_ids=held_batch_ids,
+            status="rematch",
+            independent_transaction=True,
+            only_over=["processing"],
+        )
+    except Exception as e:
+        # The batches keep "processing" until the startup reset; the apply's
+        # own error is the one the caller reports.
+        runtime.logger.error(
+            f"Could not release the batches of the failed m/z calibration "
+            f"apply of '{filename}': {e}"
+        )
+    else:
+        runtime.logger.info(
+            f"Released {len(held_batch_ids)} batch(es) held by the failed m/z "
+            f"calibration apply of '{filename}'"
+        )
+
+
 @api_controller_background_task(
     success_notification_rooms=["user_id"],
     success_reload=[("match", "affected_sample_batch_ids")],
@@ -1095,6 +1143,8 @@ async def calibration_mz_apply(
     - Notify completion for each affected batch and remove existing matches
     - Set non-ACQUISITION batches to "rematch", keeping a pending
       "recalibrate" (one held before the apply or set while it ran)
+    - On an error after the "processing" write, release the batches it
+      held (:func:`_release_apply_hold`) and re-raise
     - Return m/z fit result data and message
 
     :param fit: Fit dictionary.
@@ -1143,6 +1193,14 @@ async def calibration_mz_apply(
         for b in affected_sample_batches
         if b.sample_batch_type != "ACQUISITION" and b.status == "recalibrate"
     ]
+    # The batches this apply holds: one already at "processing" is held by
+    # another run (a batch Recalibrate applying each of its files, a forced
+    # rematch), which releases it itself.
+    held_batch_ids = [
+        b.sample_batch_id
+        for b in affected_sample_batches
+        if b.sample_batch_type != "ACQUISITION" and b.status != "processing"
+    ]
     # already "processing" batches will not change the status
     await update_sample_batch_status(
         sample_batch_ids=non_acquisition_batch_ids,
@@ -1155,158 +1213,172 @@ async def calibration_mz_apply(
         "to 'processing' for calibration apply"
     )
 
-    # --- Prepare progress user notification. ---
-    total_samples = len(affected_sample_item_ids)
-    notification = UserNotification(
-        process_id=process_id or gen_id(8),
-        parent_id=parent_id,
-        type="calibration_mz_apply",
-        status="pending",
-        message=(
-            f"Applying m/z fit for sample file '{filename}'. "
-            f"Samples affected: {total_samples}."
-        ),
-        data={
-            "sample_item_ids": affected_sample_item_ids,
-            "filename": filename,
-            "_room_ids": [sample_file.sample_file_id],
-            "_user_id": user_id,
-        },
-    )
-
-    await send_progress_user_notification(notification, 0.1)
-
-    # Before the apply, which trims the parameters the seal covers.
-    sealed = fit_seal_valid(fit, filename)
-    # Before the apply too: a file still on its acquisition axis gives the
-    # index that axis starts at only until the apply rewrites it.
-    acquisition = (
-        await asyncio.to_thread(
-            acquisition_axis.resolve,
-            filename,
-            sample_file.mz_calibration,
-            fit,
-            not previous_fit_moved_the_axis(sample_file.mz_calibration),
-        )
-        if _is_tof(filename)
-        else None
-    )
-
-    # --- Apply m/z calibration to file ---
-    calibration_handler = get_calibration_handler(
-        filename=filename, calibration_params=None, notification=notification
-    )
-    await calibration_handler.apply(fit)
-    updated_mz_axis = (await asyncio.to_thread(get_sum_signal, filename)).mz.values
-    new_mz_range = [updated_mz_axis[0], updated_mz_axis[-1]]
-
-    issues = (
-        []
-        if transferred
-        else stamp_quality_verdict(
-            fit,
-            filename,
-            accept=accept_quality_issues,
-            accepted_by=user_id,
-            sealed=sealed,
-        )
-    )
-    if issues:
-        # INFO: a data condition the record and the badge carry.
-        consequence = (
-            "accepted by an operator"
-            if fit.get("accepted_by") is not None
-            else "kept out of matching"
-            if not fit["verified"]
-            else "matched anyway (quality gate: warn)"
-        )
-        runtime.logger.info(
-            f"m/z calibration of '{filename}' applied below the quality bar, "
-            f"{consequence}: " + " ".join(issue["message"] for issue in issues)
-        )
-    acquisition_axis.stamp(fit, acquisition)
-    if carry_acquisition_drift(
-        fit,
-        sample_file.mz_calibration,
-        filename,
-        manual=manual,
-        cleared_by=user_id,
-    ):
-        await clear_drift_suppression(sample_file.instrument)
-
-    await send_progress_user_notification(notification, 0.3)
-
-    # --- Update sample file database record with new calibration ---
-    sample_file.mz_calibration = fit
-    sample_file.range = new_mz_range
-    await update_sample_file(
-        sample_file.sample_file_id, SampleFileUpdate(**sample_file.to_dict())
-    )
-
-    await send_progress_user_notification(notification, 0.8)
-
-    # --- Per-batch: notify and remove existing matches ---
-    for sample_batch in affected_sample_batches:
-        sample_batch_id = sample_batch.sample_batch_id
-        sample_batch_name = sample_batch.sample_batch_name
-        batch_samples = [
-            sample
-            for sample in affected_samples
-            if sample.sample_batch_id == sample_batch_id
-        ]
-
-        batch_notification = UserNotification(
-            process_id=gen_id(8),
-            parent_id=process_id,
+    try:
+        # --- Prepare progress user notification. ---
+        total_samples = len(affected_sample_item_ids)
+        notification = UserNotification(
+            process_id=process_id or gen_id(8),
+            parent_id=parent_id,
             type="calibration_mz_apply",
             status="pending",
             message=(
-                f"Applied m/z fit to '{filename}'. "
-                f"Affected samples in batch '{sample_batch_name}': "
-                f"{len(batch_samples)}."
+                f"Applying m/z fit for sample file '{filename}'. "
+                f"Samples affected: {total_samples}."
             ),
             data={
-                "sample_batch_id": sample_batch_id,
-                "_room_ids": [sample_batch_id],
+                "sample_item_ids": affected_sample_item_ids,
+                "filename": filename,
+                "_room_ids": [sample_file.sample_file_id],
                 "_user_id": user_id,
             },
         )
-        await send_progress_user_notification(batch_notification)
 
-        # FAQ_match removes matches in all samples associated with filename
-        for sample_item in batch_samples:
-            await match_remove_sample(
-                sample_item_id=sample_item.sample_item_id,
-                full_remove=True,
-                independent_transaction=False,
-                user_id=user_id,
+        await send_progress_user_notification(notification, 0.1)
+
+        # Before the apply, which trims the parameters the seal covers.
+        sealed = fit_seal_valid(fit, filename)
+        # Before the apply too: a file still on its acquisition axis gives the
+        # index that axis starts at only until the apply rewrites it.
+        acquisition = (
+            await asyncio.to_thread(
+                acquisition_axis.resolve,
+                filename,
+                sample_file.mz_calibration,
+                fit,
+                not previous_fit_moved_the_axis(sample_file.mz_calibration),
+            )
+            if _is_tof(filename)
+            else None
+        )
+
+        # --- Apply m/z calibration to file ---
+        calibration_handler = get_calibration_handler(
+            filename=filename, calibration_params=None, notification=notification
+        )
+        await calibration_handler.apply(fit)
+        updated_mz_axis = (await asyncio.to_thread(get_sum_signal, filename)).mz.values
+        new_mz_range = [updated_mz_axis[0], updated_mz_axis[-1]]
+
+        issues = (
+            []
+            if transferred
+            else stamp_quality_verdict(
+                fit,
+                filename,
+                accept=accept_quality_issues,
+                accepted_by=user_id,
+                sealed=sealed,
+            )
+        )
+        if issues:
+            # INFO: a data condition the record and the badge carry.
+            consequence = (
+                "accepted by an operator"
+                if fit.get("accepted_by") is not None
+                else "kept out of matching"
+                if not fit["verified"]
+                else "matched anyway (quality gate: warn)"
+            )
+            runtime.logger.info(
+                f"m/z calibration of '{filename}' applied below the quality bar, "
+                f"{consequence}: " + " ".join(issue["message"] for issue in issues)
+            )
+        acquisition_axis.stamp(fit, acquisition)
+        if carry_acquisition_drift(
+            fit,
+            sample_file.mz_calibration,
+            filename,
+            manual=manual,
+            cleared_by=user_id,
+        ):
+            await clear_drift_suppression(sample_file.instrument)
+
+        await send_progress_user_notification(notification, 0.3)
+
+        # --- Update sample file database record with new calibration ---
+        sample_file.mz_calibration = fit
+        sample_file.range = new_mz_range
+        await update_sample_file(
+            sample_file.sample_file_id, SampleFileUpdate(**sample_file.to_dict())
+        )
+
+        await send_progress_user_notification(notification, 0.8)
+
+        # --- Per-batch: notify and remove existing matches ---
+        for sample_batch in affected_sample_batches:
+            sample_batch_id = sample_batch.sample_batch_id
+            sample_batch_name = sample_batch.sample_batch_name
+            batch_samples = [
+                sample
+                for sample in affected_samples
+                if sample.sample_batch_id == sample_batch_id
+            ]
+
+            batch_notification = UserNotification(
                 process_id=gen_id(8),
                 parent_id=process_id,
+                type="calibration_mz_apply",
+                status="pending",
+                message=(
+                    f"Applied m/z fit to '{filename}'. "
+                    f"Affected samples in batch '{sample_batch_name}': "
+                    f"{len(batch_samples)}."
+                ),
+                data={
+                    "sample_batch_id": sample_batch_id,
+                    "_room_ids": [sample_batch_id],
+                    "_user_id": user_id,
+                },
             )
-    # --- Set non-ACQUISITION batches to "rematch" ---
-    # ACQUISITION batches being matched for the first time.
-    # A batch that waited on a recalibration goes back to "recalibrate": this
-    # apply re-fits one file, and the batch's other files still owe the
-    # recalibration (a recalibration ends in a rematch, so it covers this
-    # one). The rematch write passes never_lower, so a "recalibrate" written
-    # over "processing" while this apply ran - by a rematch forced from
-    # "recalibrate" finishing - is kept too.
-    if pending_recalibration_ids:
+            await send_progress_user_notification(batch_notification)
+
+            # FAQ_match removes matches in all samples associated with filename
+            for sample_item in batch_samples:
+                await match_remove_sample(
+                    sample_item_id=sample_item.sample_item_id,
+                    full_remove=True,
+                    independent_transaction=False,
+                    user_id=user_id,
+                    process_id=gen_id(8),
+                    parent_id=process_id,
+                )
+        # --- Set non-ACQUISITION batches to "rematch" ---
+        # ACQUISITION batches being matched for the first time.
+        # A batch that waited on a recalibration goes back to "recalibrate": this
+        # apply re-fits one file, and the batch's other files still owe the
+        # recalibration (a recalibration ends in a rematch, so it covers this
+        # one). The rematch write passes never_lower, so a "recalibrate" written
+        # over "processing" while this apply ran - by a rematch forced from
+        # "recalibrate" finishing - is kept too.
+        if pending_recalibration_ids:
+            await update_sample_batch_status(
+                sample_batch_ids=pending_recalibration_ids,
+                status="recalibrate",
+                independent_transaction=True,
+            )
         await update_sample_batch_status(
-            sample_batch_ids=pending_recalibration_ids,
-            status="recalibrate",
+            sample_batch_ids=non_acquisition_batch_ids,
+            status="rematch",
             independent_transaction=True,
+            never_lower=True,
         )
-    await update_sample_batch_status(
-        sample_batch_ids=non_acquisition_batch_ids,
-        status="rematch",
-        independent_transaction=True,
-        never_lower=True,
-    )
-    runtime.logger.info(
-        f"Set {len(non_acquisition_batch_ids)} non-ACQUISITION batch(es) "
-        "to 'rematch' after applying m/z calibration"
-    )
+        runtime.logger.info(
+            f"Set {len(non_acquisition_batch_ids)} non-ACQUISITION batch(es) "
+            "to 'rematch' after applying m/z calibration"
+        )
+    except BaseException:
+        # Shielded: a background task runs inside the http middlewares' anyio
+        # task group, whose cancellation is level-triggered, so an unshielded
+        # release of a cancelled apply would be cancelled in turn and leave
+        # the batches at "processing".
+        await asyncio.shield(
+            _release_apply_hold(
+                held_batch_ids=held_batch_ids,
+                pending_recalibration_ids=pending_recalibration_ids,
+                filename=filename,
+            )
+        )
+        raise
 
     # --- Return m/z fit result data and message ---
     message = (
