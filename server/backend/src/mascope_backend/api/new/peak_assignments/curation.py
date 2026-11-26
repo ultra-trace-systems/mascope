@@ -70,6 +70,10 @@ from mascope_backend.api.new.peak_assignments.config import (
     MAX_ALTERNATIVES_CEILING,
     PeakAssignmentConfig,
 )
+from mascope_backend.api.new.peak_assignments.curation_message import (
+    EditOutcome,
+    edit_message,
+)
 from mascope_backend.api.new.peak_assignments.engine import (
     evidence_for,
     plausibility_for,
@@ -78,6 +82,10 @@ from mascope_backend.api.new.peak_assignments.engine import (
 from mascope_backend.api.new.peak_assignments.fold_view import (
     DerivedAssignmentReadOnlyException,
     is_fold_id,
+)
+from mascope_backend.api.new.peak_assignments.hand_lines import (
+    detach_hand_lines,
+    link_hand_lines,
 )
 from mascope_backend.api.new.peak_assignments.identification_level import (
     IDENTIFICATION_LEVEL,
@@ -648,7 +656,8 @@ def _demote(
 
     ``source`` stays 'manual': the row's state is a person's doing, and the
     ledger's source filter has to show the whole footprint of an override, not
-    only the row that gained a formula.
+    only the row that gained a formula. An isotope line a person assigned by
+    hand never comes here: it is detached instead (``hand_lines``).
 
     :param owner_formula: The formula the isotopologue belonged to, and
     :param owner_mechanism_id: the adduct it belonged to under. The two
@@ -720,11 +729,13 @@ def _demote(
     return entry
 
 
-#: The sources a restored isotopologue may claim. A row that is owned by an M0 is
-#: always engine output - curating a row detaches it from its family, so a
-#: 'manual' row is never anyone's isotopologue to demote - and the archive is JSON
-#: an imported run could have written anything into. Anything else comes back
-#: sourceless rather than mislabelled.
+#: The sources a restored isotopologue may claim. A demoted row was engine
+#: output when its owner was overridden: the one 'manual' row an M0 can own is
+#: an isotope line a person assigned by hand and linked under it
+#: (``hand_lines``), and an override detaches that line rather than demoting
+#: it, so it never reaches the archive. The archive is JSON an imported run
+#: could have written anything into, so anything else comes back sourceless
+#: rather than mislabelled.
 _ENGINE_SOURCES = (SOURCE_DATABASE, SOURCE_UNTARGETED)
 
 
@@ -1135,12 +1146,20 @@ async def curate_assignment(
     the undo cannot reach at all - its row deleted since, or its archived state
     unusable - is reported as such rather than passed over in silence.
 
+    A person's choice is never undone as a side effect, and an isotope line
+    assigned by hand is one (``hand_lines``). It is linked under the run's one
+    M0 of its formula and adduct, and shows that M0's level; an M0 committed
+    takes the run's ownerless hand lines of its compound the same way. When
+    that M0's compound is replaced, the line is detached rather than demoted:
+    it keeps its formula and stands on its own.
+
     :param sample_item_id: Sample the assignment belongs to.
     :param peak_assignment_id: The row to curate.
     :param body: A validated ``PromoteAlternativeBody`` or ``SetAssignmentBody``.
     :param user_id: The curating user, recorded in provenance.
     :return: Status envelope; ``data[0]`` is the curated row, followed by the
-        isotopologue rows the edit displaced and the ones it restored.
+        isotopologue rows the edit demoted, the hand lines it detached, the
+        rows it restored and the hand lines it linked under the row.
     :raises NotFoundException: The assignment is not this sample's.
     :raises ApiException: 409 when the run is not completed (something else is
         still writing it) or the promoted candidate moved; 422 when the request
@@ -1296,6 +1315,10 @@ async def curate_assignment(
         # carry the same timestamp, which is what a later restore matches on to
         # tell an untouched demotion from a row someone has curated since.
         at = dt.now(timezone.utc).isoformat()
+        # A line a person assigned by hand is detached rather than demoted.
+        displaced, detached, detach_note = detach_hand_lines(
+            displaced, previous_formula, at
+        )
         (
             restored,
             restore_skipped,
@@ -1352,8 +1375,8 @@ async def curate_assignment(
         # its own rows: the stage list's person's-choice path
         # (:func:`_persons_choice`). An absent line holds the row at candidate
         # at most, and is the one reason a hand assignment lists. A hand
-        # isotopologue is not asked: the rule reads a formula's lines from its
-        # main one, and the row has no M0 on the run.
+        # isotope line is not asked: the rule reads a formula's lines from its
+        # main one, which is the M0's to ask.
         judged, lines = await _persons_choice(
             session,
             sample,
@@ -1395,10 +1418,6 @@ async def curate_assignment(
         if not same_compound:
             # The engine's level goes with its tier, by the same three cases.
             assignment.engine_tier, assignment.engine_level = promoted_verdict
-        # The curated row stands for its formula on its own: the run arbitrated
-        # a family for the composition it replaced, not for this one, so there
-        # is no owner here that was ever competed for.
-        assignment.owner_peak_assignment_id = None
         # Its identification level, which the stages stated of the formula a
         # person chose (``identification_level.hand_level``): refuted where a
         # line it predicts is absent, else rivals not measured, since no
@@ -1414,6 +1433,9 @@ async def curate_assignment(
                 IDENTIFICATION_LEVEL: inherited,
             }
             child.level = inherited["level"]
+        # A hand line folds under its compound's one M0 on the run, and an M0
+        # takes the run's ownerless hand lines of its compound (`hand_lines`).
+        link = await link_hand_lines(session, assignment)
 
         # Read out before the commit expires these instances. A refresh per row
         # would be the alternative, and an expired attribute read on an async
@@ -1425,7 +1447,7 @@ async def curate_assignment(
         # on the run. Without this the same row reads differently here and from
         # the detail endpoint a request later.
         records = []
-        for row in [assignment, *displaced, *restored]:
+        for row in [assignment, *displaced, *detached, *restored, *link.linked]:
             record = row.to_dict()
             record["provenance"] = provenance_with_calibration(
                 record.get("provenance"), run.confidence_calibration
@@ -1434,61 +1456,25 @@ async def curate_assignment(
 
         await session.commit()
 
-    displaced_note = (
-        f" {len(displaced)} isotopologue"
-        f"{'s' if len(displaced) != 1 else ''} of "
-        f"'{previous_formula}' demoted to unassigned."
-        if displaced
-        else ""
-    )
-    restored_note = (
-        f" {len(restored)} isotopologue"
-        f"{'s' if len(restored) != 1 else ''} of "
-        f"'{assigned}' restored."
-        if restored
-        else ""
-    )
-    skipped_note = (
-        f" {len(restore_skipped)} demoted isotopologue"
-        f"{'s' if len(restore_skipped) != 1 else ''} left as "
-        f"{'they are' if len(restore_skipped) != 1 else 'it is'}, curated by "
-        "hand since."
-        if restore_skipped
-        else ""
-    )
-    # Said out loud rather than left to the provenance blob: without it the
-    # message would report an undo while an isotopologue stayed demoted, and the
-    # person clicking has no other way to learn that.
-    failed_note = (
-        f" {len(restore_failed)} demoted isotopologue"
-        f"{'s' if len(restore_failed) != 1 else ''} could not be put back: "
-        f"{'their rows are' if len(restore_failed) != 1 else 'the row is'} gone "
-        "from this run, or the archived state cannot be committed."
-        if restore_failed
-        else ""
-    )
-    # Said here as well as in the row's reasons: the tier the person sees is
-    # not the one the evidence alone gave, and this says why.
-    if lines.reason is not None:
-        lines_note = (
-            f" Its {lines.reason['line']} line is not in the spectrum, which "
-            "holds it at candidate at most."
+    message = edit_message(
+        EditOutcome(
+            assigned=assigned,
+            previous_formula=previous_formula,
+            sample_peak_id=sample_peak_id,
+            sample_name=sample.sample_item_name,
+            demoted=len(displaced),
+            restored=len(restored),
+            restore_skipped=len(restore_skipped),
+            restore_failed=len(restore_failed),
+            line_reason=lines.reason,
+            lines_unread=lines.unread,
+            link_note=link.note,
+            detach_note=detach_note,
         )
-    elif lines.unread:
-        lines_note = (
-            " Its isotope lines were not checked: the sample's peaks could not be read."
-        )
-    else:
-        lines_note = ""
+    )
     return {
         "status": "success",
-        "message": (
-            f"Assigned '{assigned}' to peak {sample_peak_id} of sample "
-            f"'{sample.sample_item_name}' by hand"
-            f"{f' (was {previous_formula!r})' if previous_formula else ''}."
-            f"{lines_note}{displaced_note}{restored_note}{skipped_note}"
-            f"{failed_note}"
-        ),
+        "message": message,
         "results": len(records),
         "data": records,
     }

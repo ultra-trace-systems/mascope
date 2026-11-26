@@ -21,11 +21,20 @@ such run, one only folded into the batch ledger, is asked at what a run of it wo
 ask, as a reading the batch carries into it is. A peak you assign as one
 of a compound's isotopologues is not asked, since the lines are read from the
 compound's main one. It is stored as that line, its ion named with the heavy
-isotope (`[81Br]...`), and it is linked to no main line, so it is a row of its
-own in **Assignments**, its line (`M+4`) beside the formula, counted under its
-tier above the ledger. A rebuild of the batch ledger reads it as a line of its
-batch peak's compound, not as the compound itself at the line's m/z. The replaced compound's isotopologues are
-unassigned with it and come back with it, except any assigned by hand since.
+isotope (`[81Br]...`). When the run holds the main line of that formula and
+adduct, the peak is linked to it: it folds under that row in **Assignments**,
+shows its level, and keeps the tier its own evidence gives it. The message
+names the main line's m/z. When the run holds no such main line, or more than
+one, the peak is a row of its own, its line (`M+4`) beside the formula, counted
+under its tier above the ledger, and the message says which case it was. A
+main line you assign later takes the run's isotope lines of its formula and
+adduct that you assigned by hand and that belong to no main line. A rebuild of
+the batch ledger reads such a peak as a line of its batch peak's compound, not
+as the compound itself at the line's m/z. The replaced compound's isotopologues
+are unassigned with it and come back with it, except any assigned by hand
+since. An isotope line you assigned by hand is not unassigned with it: it keeps
+its formula, stands on its own, and is linked again when the compound comes
+back.
 
 A hand assignment lasts until the sample is next assigned, which recomputes the
 ledger, so record a verification to keep the judgement. Assigning is not

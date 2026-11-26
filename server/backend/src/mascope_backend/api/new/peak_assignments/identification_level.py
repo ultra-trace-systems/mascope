@@ -1283,8 +1283,9 @@ def hand_level(row: dict) -> dict:
     What the mapping can state of such a formula: 5b where its lines
     (``tiering.ask_absent_line``, which curation asks) or its plausibility
     refute it, else 5a with its rivals not measured, since no shortlist of the
-    run was competed against it. A hand isotopologue has no monoisotopic row
-    on the run whose level it could show.
+    run was competed against it. A hand isotopologue states no level of its
+    own: it shows its M0's once linked under the run's M0 of its compound
+    (``hand_lines``), and until then the level of a line with no M0.
 
     :param row: The row: its ``role``, ``source``, ``assigned_formula`` and
         ``provenance``.
