@@ -168,7 +168,11 @@ The context windows' factor enters every formula's plausibility in a run
 (`formula_shape.graded_in`, which `pipeline.run_stages` enters after the resolve
 stage): the search's ranking, both stages' evidence and tiers, the rival sets and the
 identification level read one number. The universal bands grade every formula, Stage A's
-included.
+included. Only the paths that ask the run's rules (`Rules.RUN`) grade in the windows. A
+person's choice, a hand assignment or a batch's pin, is asked the spectrum's rules alone
+(`Rules.SPECTRUM`): the windows are the run's matrix prior, as the rivals and the lists
+are its, so the choice is tiered on the fit and the universal bands, the evidence it
+stores (`curation._manual_provenance`, `batch_curation.candidate_measurement`).
 
 The windows' grade follows the exemption rule's composition half (decision MAS-1280,
 2026-11-25): a neutral a reference list the run read names is graded on the universal
