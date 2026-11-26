@@ -16,8 +16,9 @@ would compete at that m/z, and asks who wins:
    the grid the context's element caps narrow (`resolve_element_ranges`), the
    finder's per-mechanism row cap on what is left, then the heuristic rules with
    the context's ratio windows riding along as the boolean gate that shipped
-   (`rule_context_ratios`), exactly as `ResolvedProfile.heuristics_config`
-   configures them.
+   (`rule_context_ratios`), as `ResolvedProfile.heuristics_config` configured
+   them before decision MAS-979: a run grades in them now, and gates only under
+   a context that opts in (`context_windows_gate`), so every arm here opts in.
 3. The true reading joins the pool unless the arm's context gates it: by a cap
    or by a ratio window. The structural rules do not judge it, in any arm: the
    seeded target is the truth by definition, and the arms differ only in their
@@ -224,7 +225,9 @@ def outside_windows(formulas: list[str], windows: dict) -> list[bool]:
         return [False] * len(formulas)
     mask, _ = rule_context_ratios(
         pl.DataFrame({"formula": formulas}),
-        heuristics_config=HeuristicFilterConfig(context_ratio_windows=windows),
+        heuristics_config=HeuristicFilterConfig(
+            context_ratio_windows=windows, context_windows_gate=True
+        ),
     )
     return [not keep for keep in mask.to_list()]
 
@@ -269,7 +272,7 @@ def truth_gate(
     mask, _ = rule_context_ratios(
         pl.DataFrame({"formula": [neutral]}),
         heuristics_config=HeuristicFilterConfig(
-            context_ratio_windows=context.ratio_windows()
+            context_ratio_windows=context.ratio_windows(), context_windows_gate=True
         ),
     )
     return None if bool(mask[0]) else "ratio"
@@ -311,7 +314,9 @@ def _arm_pool(
     survivors, _ = apply_heuristic_rules(
         kept,
         HeuristicFilterConfig(
-            use_senior=True, context_ratio_windows=context.ratio_windows()
+            use_senior=True,
+            context_ratio_windows=context.ratio_windows(),
+            context_windows_gate=True,
         ),
     )
     return survivors
