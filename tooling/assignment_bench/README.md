@@ -25,6 +25,7 @@ uv run python tooling/assignment_bench/bench.py run <your branch> --post <pr>
 uv run python tooling/assignment_bench/bench.py run <your branch> --post <pr> --fresh
 uv run python tooling/assignment_bench/bench.py run <your branch> --post <pr> --check
 uv run python tooling/assignment_bench/bench.py run <your branch> --batch --sets Db
+uv run python tooling/assignment_bench/bench.py run <your branch> --post <pr> --config '{"stage_b_confidence": true}'
 uv run python tooling/assignment_bench/bench.py post <your branch> --pr <pr>
 uv run python tooling/assignment_bench/bench.py review
 uv run python tooling/assignment_bench/bench.py review --record <sheet> --recalibrate
@@ -84,7 +85,9 @@ uv run python tooling/assignment_bench/bench.py inspect
   the head has such a card ("A card without a run", below). **`run <ref>
   --batch`** adds the batch arm: each set's batch assigned by a pass of the
   batch stages, and the samples carded again as the batch left them, beside
-  the control ("The batch arm", below). **`run <ref> --post <pr>`** also posts the card on
+  the control ("The batch arm", below). **`run <ref> --config <json>`**
+  (or `--config-file <path>`) asks every in-app run with that run config
+  instead of the engine's defaults ("A run config", below). **`run <ref> --post <pr>`** also posts the card on
   a pull request; "Asking for a card on a PR" below. **`post <ref> --pr
   <pr>`** posts a card a run already made, running nothing; the same
   section.
@@ -97,7 +100,8 @@ uv run python tooling/assignment_bench/bench.py inspect
   reference pin with peaky's version string and the `mascope-tools` it
   scored with, develop's baseline card, and the last five cards with their
   ref, commit, verdict, engine digest, and whether each was run or reused
-  from another card (`reused <card>`). It needs no runtime home.
+  from another card (`reused <card>`), and `with a run config` for one
+  made with `--config`. It needs no runtime home.
 - **`inspect`** looks inside the bench without changing it: the runs by
   status, the newest card's runs, the tables' sizes, the schema's revision,
   the env's settings and its filestore. It reads the database in read-only
@@ -199,7 +203,8 @@ box in the caller's own session, one run at a time. In order:
    intrinsic metrics alone.
 5. **The engine.** It runs the in-app engine on every other sample, as an
    assign request with no config: the engine's own defaults, as the gate's
-   runs had. `--jobs N` samples run at once (default 8). With `--decoys` each
+   runs had; with `--config`, that run config ("A run config", below).
+   `--jobs N` samples run at once (default 8). With `--decoys` each
    sample's decoy arms follow its run, made against it as their control
    (step 5.2): 9 ppm either way and the swapped adducts on an Orbitrap set,
    0.35 Da and the swapped adducts on a TOF set. An arm the server refuses,
@@ -396,7 +401,7 @@ engine inputs takes seconds and holds nothing up ("A card without a run").
 |---|---|---|
 | `card.md`, `card.json`, `card_<set>.md`, `card_<set>.json` | the card (`tooling/assignment_compare/README.md`, "What the card writes") | yes, scrubbed |
 | `diff.md`, `diff.json` | with `--baseline`: the readings that moved since develop's baseline, and which card that was | yes, scrubbed |
-| `run.json` | the run: the ref and its commit, develop's head, the migration, the engine digest and its parts (`engine`), the pin, per set the samples read and left out by reason, the causes of those failed or stalled (`causes`, only on a set that has any), the minutes it took and each decoy arm's outcomes, the verdict, the baseline, whether it became the baseline, and for a reused card the card it reuses (`reused`). With `--batch`: `batch`, the dump's and the restore's seconds under `migration`, and per set its arm (`sets.<set>.batch`, "The batch arm") | yes, scrubbed |
+| `run.json` | the run: the ref and its commit, develop's head, the migration, the engine digest and its parts (`engine`), the pin, per set the samples read and left out by reason, the causes of those failed or stalled (`causes`, only on a set that has any), the minutes it took and each decoy arm's outcomes, the verdict, the baseline, whether it became the baseline, and for a reused card the card it reuses (`reused`). With `--config`: `config`, the run config asked for. With `--batch`: `batch`, the dump's and the restore's seconds under `migration`, and per set its arm (`sets.<set>.batch`, "The batch arm") | yes, scrubbed |
 | `run.log` | every step, and each sample by id with what became of its runs and why | no: it names samples |
 | `work/` | the comparison's input: the sets with their sample ids, the deny list | no |
 
@@ -499,6 +504,48 @@ or a sample without peaks).
 arms does, and never the reverse. A card whose arm is off on a set serves no
 request with the arm, whatever the reason ("A card without a run").
 
+## A run config (`--config`)
+
+A step that ships behind a run option that is off by default, such as step
+4.15's `stage_b_confidence`, changes nothing a run at the defaults reads: the
+card of its branch is develop's. `bench run <ref> --config '<json>'` (or
+`--config-file <path>`, the same object in a file) asks every in-app run of
+the card with that run config instead, so the card measures the option. The
+diff against develop's baseline, which is a run at the defaults, then reads
+as the option's effect.
+
+- **The config is a JSON object of the engine's run options**, by the field
+  names of `PeakAssignmentConfig` (`server/backend/.../peak_assignments/config.py`).
+  Anything else is refused before anything runs, as is a `decoy` key: the
+  decoy arms are `--decoys`'. An empty object is no config.
+- **Every run of the card is asked with it**: the control, the run the batch
+  pass folds and the run after it (`--batch`), and each decoy arm, with its
+  own `decoy` block beside the config, since a decoy must share its
+  control's settings. The pass of the batch stages runs at the batch's own
+  settings, as without `--config`.
+- **Each run must take it.** The server records a run's config on its row
+  from the start, and drops an option it does not know without a word. So
+  at a run's first poll the bench reads its recorded config, and a run that
+  lacks an option asked for, or holds another value, is let go at once as
+  failed: a typo, or an option the ref's engine does not have, would
+  otherwise card the defaults under the config's name. Such a sample is
+  left out with its cause in `run.json` ("its run did not take the run
+  config: ...").
+- **The card says it.** The run log's second line is `run config: <json>`,
+  `run.json` and the card's record in `state.json` hold it as `config`, and
+  the comment on a PR says it under the line that names the commit. A run
+  without `--config` writes none of it, as before.
+- **A config's card stands only for the same config.** A reuse ("A card
+  without a run") serves a request the newest card of the same digest, sets,
+  arms and config; a run at the defaults is never served a config's card,
+  nor the reverse.
+- **It is never the baseline.** The baseline is the engine's defaults. A
+  run of develop's head with `--config` and `--baseline` is diffed against
+  the baseline and gated against it as a branch is, and does not replace
+  it; `bench.py baseline <card>` refuses a config's card; and a config's
+  card of develop is no stand-in for a baseline older than a PR's merge
+  base.
+
 ## A card without a run
 
 Most heads a card is asked for measure nothing new: a rebase onto a develop
@@ -528,8 +575,9 @@ The digest hashes everything a card can depend on, in three parts:
 
 A card stands for the head when it is the newest card a run made of the same
 digest, of the same sets, with the decoy arms and the batch arm where the
-request asks for them, written whole, and with nothing left out that another
-run might read. A card with either arm serves a request without it, not the
+request asks for them, with the same run config (none for none, "A run
+config"), written whole, and with nothing left out that another run might
+read. A card with either arm serves a request without it, not the
 reverse; for a request with the batch arm, a card whose arm is off on a set
 does not count. A
 sample left out because `init` left it with a problem, it has no reference at

@@ -407,7 +407,21 @@ def _head(title: str, summary: dict, pr: PullRequest, full: bool = True) -> list
         line += f"; {summary['minutes']} min"
     if summary.get("finished"):
         line += f", finished {summary['finished']}"
-    return [MARKER, f"### {title}", "", line + "."]
+    return [MARKER, f"### {title}", "", line + "."] + config_lines(summary)
+
+
+def config_lines(summary: dict) -> list[str]:
+    """The run config the in-app runs were asked with, for a run given one
+    (``bench run --config``, MAS-893); nothing for a run at the defaults."""
+    config = summary.get("config")
+    if not config:
+        return []
+    text = json.dumps(config, sort_keys=True, separators=(", ", ": "))
+    return [
+        "",
+        f"**Run config:** `{text}`, on every in-app run of the card; the "
+        "baseline is the engine's defaults.",
+    ]
 
 
 def _sets_line(summary: dict) -> str | None:

@@ -1,6 +1,6 @@
 """``bench run``: a ref's in-app engine on the bench sets, beside the pinned reference.
 
-    bench.py run <ref> [--sets A,D,...] [--decoys] [--batch] [--baseline] [--post PR] [--no-wait] [--jobs N] [--budget-min M] [--run-limit-min M] [--workers N]
+    bench.py run <ref> [--sets A,D,...] [--decoys] [--batch] [--baseline] [--config JSON] [--post PR] [--no-wait] [--jobs N] [--budget-min M] [--run-limit-min M] [--workers N]
     bench.py baseline [CARD]
 
 The command the bench exists for (step 6.5 of the assignment quality plan).
@@ -16,7 +16,8 @@ One run, behind the bench's lock:
    run the pinned reference published (``bench reference``).
 3. It runs the in-app engine on every other sample of the chosen sets with the
    plan's default run config, an assign request with no config: the engine's
-   own defaults. With ``--decoys`` it then runs the decoy arms of the set's
+   own defaults; with ``--config`` that run config instead, which each run
+   must record or fail (MAS-893). With ``--decoys`` it then runs the decoy arms of the set's
    instrument class (step 5.2) against that run as their control. It waits for
    every run, within a time budget per set, and stops waiting on one run
    that has not ended within its limit (``--run-limit-min``).
@@ -92,8 +93,71 @@ ENGINE = "mascope"
 REFERENCE_ENGINE = "peaky"
 
 #: The plan's default run config: none, so the engine takes its own defaults,
-#: as the gate's runs did.
+#: as the gate's runs did. ``bench run --config`` sends another (MAS-893).
 DEFAULT_CONFIG: dict | None = None
+
+
+def parse_config(text: str | None, where: str = "--config") -> dict | None:
+    """A run config given to ``bench run``: a JSON object of the engine's run
+    options (``PeakAssignmentConfig``'s field names), or None for none.
+
+    An empty object is no config: the engine's defaults run, and the card is
+    the defaults' card. A ``decoy`` key is refused: the decoy arms are
+    ``--decoys``', and a config that made the control a decoy would card the
+    decoy as the control.
+
+    :raises RunError: The text is no JSON object, or names ``decoy``.
+    """
+    if text is None:
+        return None
+    try:
+        config = json.loads(text)
+    except ValueError as error:
+        raise RunError(f"{where} is not JSON: {error}") from None
+    if not isinstance(config, dict):
+        raise RunError(
+            f"{where} must be a JSON object of run options, not {type(config).__name__}"
+        )
+    if "decoy" in config:
+        raise RunError(
+            f"{where} names `decoy`: the decoy arms are --decoys', against the "
+            "control this config makes"
+        )
+    return config or None
+
+
+def config_problem(asked: dict, recorded) -> str | None:
+    """Why a run's recorded config is not the run config asked for, or None.
+
+    The server records the request's config on the run's row, among its own
+    facts (``config`` on the runs listing); an option it does not know it
+    drops without a word. So every option asked must be on the record with
+    the value asked, a nested object key by key: a config that did not reach
+    the engine would card the defaults under its name.
+    """
+    if not isinstance(recorded, dict):
+        return "the run records no config"
+    for key, value in asked.items():
+        if key not in recorded:
+            return f"the run's config has no `{key}`: the engine does not know it"
+        held = recorded[key]
+        if isinstance(value, dict) and isinstance(held, dict):
+            why = config_problem(value, held)
+            if why is not None:
+                return f"in `{key}`, " + why.removeprefix("the run's config has ")
+            continue
+        if held != value:
+            return (
+                f"the run's config has `{key}` {json.dumps(held)}, not the "
+                f"{json.dumps(value)} asked for"
+            )
+    return None
+
+
+def config_text(config: dict) -> str:
+    """A run config in one line, as the run log and the card print it."""
+    return json.dumps(config, sort_keys=True, separators=(", ", ": "))
+
 
 #: The decoy arms of step 5.2 per instrument class: the axis shifted 9 ppm
 #: either way on an Orbitrap, 0.35 Da on a TOF (inside whose window a ppm
@@ -1245,6 +1309,7 @@ class BenchRun:
         post: bench_post.Poster | None = None,
         fresh: bool = False,
         batch: bool = False,
+        config: dict | None = None,
     ) -> int:
         """One run of ``ref``; 0 when the card passes with nothing left out,
         1 when it fails its gate or something was left out, 2 when no card was
@@ -1263,20 +1328,35 @@ class BenchRun:
         and the database is dumped before the run and put back after it,
         whatever the ref: a pass writes batch decisions that a later run's
         control would read.
+
+        With ``config`` every run of the engine is asked with that run config
+        (:func:`parse_config`) instead of none: the control, the run for the
+        batch pass and the runs after it, and each decoy arm beside its own
+        block. The card says so, is reused only for the same config, and is
+        never develop's baseline.
         """
         if not fresh:
             code = self.reuse(
-                ref, sets, decoys, baseline, post, quiet=True, batch=batch
+                ref,
+                sets,
+                decoys,
+                baseline,
+                post,
+                quiet=True,
+                batch=batch,
+                config=config,
             )
             if code is not None:
                 return code
         if post is None:
-            return self._run_once(ref, sets, decoys, baseline, None, {}, batch)
+            return self._run_once(ref, sets, decoys, baseline, None, {}, batch, config)
         if post.pr is None:
             post.open()
         progress: dict = {}
         try:
-            return self._run_once(ref, sets, decoys, True, post, progress, batch)
+            return self._run_once(
+                ref, sets, decoys, True, post, progress, batch, config
+            )
         except bench_post.PostError:
             raise
         except (Exception, Stopped, KeyboardInterrupt) as error:
@@ -1287,7 +1367,7 @@ class BenchRun:
             raise
 
     def _run_once(
-        self, ref, sets, decoys, baseline, post, progress, batch=False
+        self, ref, sets, decoys, baseline, post, progress, batch=False, config=None
     ) -> int:
         state = self.load_state()
         chosen = choose_sets(state, sets)
@@ -1325,6 +1405,7 @@ class BenchRun:
                 post,
                 progress,
                 batch,
+                config,
             )
 
     def _card_dir(self, ref: str) -> Path:
@@ -1364,6 +1445,7 @@ class BenchRun:
         post=None,
         progress=None,
         batch=False,
+        config=None,
     ) -> int:
         say = runlog.say
         started = self.clock()
@@ -1379,6 +1461,8 @@ class BenchRun:
             "decoys": decoys,
             # Only with the arm: a run without it writes what it always did.
             **({"batch": True} if batch else {}),
+            # Only with a config: a run at the defaults writes what it always did.
+            **({"config": config} if config else {}),
             "migration": None,
             "engine": None,
             "reused": None,
@@ -1393,6 +1477,8 @@ class BenchRun:
             + (", batch arm" if batch else "")
             + f", reference {reference['pin']}; card into {out}"
         )
+        if config:
+            say(f"run config: {config_text(config)}")
         for p in plans.values():
             say(f"set {p.name}: {len(p.samples)} of {p.total} sample(s) to run")
             self._note_left_out(runlog, p)
@@ -1446,7 +1532,13 @@ class BenchRun:
             for name in chosen:
                 if plans[name].samples:
                     results[name] = self._run_set(
-                        api, plans[name], decoys, runlog, batch, shared.get(name)
+                        api,
+                        plans[name],
+                        decoys,
+                        runlog,
+                        batch,
+                        shared.get(name),
+                        config,
                     )
             self._check_controls(api, plans, results, reference, runlog)
             card = self._card(
@@ -1461,7 +1553,10 @@ class BenchRun:
                 runlog,
                 state,
                 creds,
-                absolute=sha == develop,
+                # A config's card of develop's head is read against the
+                # defaults' baseline, as any branch's is: its moves are the
+                # option's.
+                absolute=sha == develop and not config,
             )
         except (Stopped, KeyboardInterrupt) as error:
             stop = error
@@ -1648,6 +1743,7 @@ class BenchRun:
         runlog: RunLog,
         batch: bool = False,
         arm_off: str | None = None,
+        config: dict | None = DEFAULT_CONFIG,
     ) -> dict:
         """The set's control runs, then its decoy arms, within its budget; with
         ``batch``, then its batch arm (:meth:`_batch_arm`), unless ``arm_off``
@@ -1658,6 +1754,9 @@ class BenchRun:
         sample runs once more after its control and its arms: the run the pass
         folds, whose rows the batch stages rewrite, so the control stays as it
         was made.
+
+        Every run is asked with ``config``; a decoy arm with ``config`` and
+        its own block, as a decoy must share its control's settings.
         """
         arms = DECOY_ARMS.get(p.instrument, ()) if decoys else ()
         before = p.snapshot()
@@ -1668,7 +1767,7 @@ class BenchRun:
         done = [0]
 
         def work(sample: str, stop: threading.Event):
-            control = self._one(api, sample, DEFAULT_CONFIG, deadline, stop, limit)
+            control = self._one(api, sample, config, deadline, stop, limit)
             outcomes: dict[str, Outcome] = {}
             copy = None
             if control.status == "completed":
@@ -1681,7 +1780,12 @@ class BenchRun:
                         outcomes[arm_name(arm)] = behind(stalled)
                         continue
                     outcomes[arm_name(arm)] = self._one(
-                        api, sample, {"decoy": arm}, deadline, stop, limit
+                        api,
+                        sample,
+                        {**(config or {}), "decoy": arm},
+                        deadline,
+                        stop,
+                        limit,
                     )
                     if outcomes[arm_name(arm)].status == "stalled":
                         stalled = outcomes[arm_name(arm)]
@@ -1689,9 +1793,7 @@ class BenchRun:
                     copy = (
                         behind(stalled)
                         if stalled is not None
-                        else self._one(
-                            api, sample, DEFAULT_CONFIG, deadline, stop, limit
-                        )
+                        else self._one(api, sample, config, deadline, stop, limit)
                     )
             with lock:
                 done[0] += 1
@@ -1775,7 +1877,7 @@ class BenchRun:
                 result["batch"] = self._arm_off(p, arm_off, runlog)
             else:
                 result["batch"] = self._batch_arm(
-                    api, p, copies, deadline, runlog, limit
+                    api, p, copies, deadline, runlog, limit, config
                 )
             if result["batch"] is not None:
                 result["batch"]["minutes"] = round((self.clock() - arm_start) / 60, 1)
@@ -1819,6 +1921,7 @@ class BenchRun:
         deadline: float,
         runlog: RunLog,
         limit_s: float | None = None,
+        config: dict | None = DEFAULT_CONFIG,
     ) -> dict:
         """One pass of the batch stages on the set's batch, then every
         sample's engine again, within the set's budget (MAS-1140).
@@ -1879,7 +1982,7 @@ class BenchRun:
         )
 
         def again(sample: str, stop: threading.Event):
-            outcome = self._one(api, sample, DEFAULT_CONFIG, deadline, stop, limit_s)
+            outcome = self._one(api, sample, config, deadline, stop, limit_s)
             runlog.note(
                 f"set {p.name}: {sample}: after the pass {outcome.status} "
                 f"{outcome.run_id or ''}"
@@ -2017,7 +2120,9 @@ class BenchRun:
         of the sample in flight) is asked again for at most ``limit_s`` too.
         A poll the server does not answer is a missed poll; that many in a
         row fail the sample. A run still not ended ``limit_s`` after its 202
-        is ``stalled``: the server may never end it (#3607).
+        is ``stalled``: the server may never end it (#3607). A run whose row
+        does not record the options of ``config`` fails at its first poll
+        (``config_unapplied``, :func:`config_problem`).
         """
         limit_s = self.run_limit() if limit_s is None else limit_s
         transient = 0
@@ -2065,6 +2170,9 @@ class BenchRun:
         started = self.clock()
         transient = 0
         status = None
+        # The run options asked beside the decoy block, which the row keeps
+        # in its own column too (:func:`config_problem`).
+        asked = {k: v for k, v in (config or {}).items() if k != "decoy"}
         while True:
             try:
                 runs = api.runs(sample, include_decoys=True)
@@ -2104,6 +2212,19 @@ class BenchRun:
                         detail="the run left the listing",
                         cause="its run left the listing",
                     )
+                if asked:
+                    # The row records the config from its creation: a run
+                    # that did not take it is no reading of it, and is let
+                    # go at once rather than waited for.
+                    why = config_problem(asked, run.get("config"))
+                    if why is not None:
+                        return Outcome(
+                            "failed",
+                            launch.run_id,
+                            code="config_unapplied",
+                            detail=why,
+                            cause=f"its run did not take the run config: {why}",
+                        )
                 status = run.get("status")
                 if status in TERMINAL:
                     error = run.get("error")
@@ -2459,6 +2580,10 @@ class BenchRun:
         """Make this card develop's rolling baseline, when it is one."""
         if summary["sha"] != summary["develop"]:
             why = f"{ref} is not develop's head ({str(summary['develop'])[:9]})"
+        elif summary.get("config"):
+            # The baseline is the engine's defaults, which every card is read
+            # against: a config's card is diffed against it, never one.
+            why = "it ran with a run config, and the baseline is the defaults'"
         else:
             why = not_whole(summary["card"]["sets"], state["sets"], problems)
         if why:
@@ -2528,6 +2653,7 @@ class BenchRun:
             "sets": card["sets"],
             "decoys": summary["decoys"],
             **({"batch": True} if summary.get("batch") else {}),
+            **({"config": summary["config"]} if summary.get("config") else {}),
             "baseline": base["path"] if base else None,
             "digest": (summary.get("engine") or {}).get("digest"),
             "reused": (summary.get("reused") or {}).get("path"),
@@ -2582,13 +2708,15 @@ class BenchRun:
         post: bench_post.Poster | None = None,
         quiet: bool = False,
         batch: bool = False,
+        config: dict | None = None,
     ) -> int | None:
         """``ref``'s card without a run, where its engine inputs are unchanged.
 
         It looks for the newest complete card (:meth:`_source`) of the ref's
         head's engine digest (:func:`engine_digest`) and the same sets, with
         the decoy arms and the batch arm where they are asked for: a card with
-        them serves a request without them, not the reverse. Finding one, it takes no lock,
+        them serves a request without them, not the reverse, and with the
+        same run config, or none for none. Finding one, it takes no lock,
         starts no backend, migrates nothing and checks nothing out: of the
         database it reads only the instance's names, for the scrub. It
         writes a card folder for the head whose ``run.json`` names the
@@ -2614,7 +2742,9 @@ class BenchRun:
         if post is not None and post.pr is None:
             post.open()
         try:
-            found = self._reusable(ref, sets, decoys, baseline, post, say, batch)
+            found = self._reusable(
+                ref, sets, decoys, baseline, post, say, batch, config=config
+            )
         except Exception as error:
             # Whatever stops the reuse is a run's to meet: it says so, on the
             # PR with --post, or runs once it holds the lock.
@@ -2633,6 +2763,7 @@ class BenchRun:
         baseline: bool = False,
         post: bench_post.Poster | None = None,
         batch: bool = False,
+        config: dict | None = None,
     ) -> int:
         """Whether ``ref``'s head would get a card without a run: the lookup
         :meth:`reuse` makes for the same request, stopped before it writes.
@@ -2657,7 +2788,7 @@ class BenchRun:
 
         try:
             found = self._reusable(
-                ref, sets, decoys, baseline, post, _say, batch, seen=seen
+                ref, sets, decoys, baseline, post, _say, batch, seen=seen, config=config
             )
         except Exception as error:
             why = " ".join(str(error).split())[-300:]
@@ -2677,7 +2808,16 @@ class BenchRun:
         return 0
 
     def _reusable(
-        self, ref, sets, decoys, baseline, post, say, batch=False, seen=None
+        self,
+        ref,
+        sets,
+        decoys,
+        baseline,
+        post,
+        say,
+        batch=False,
+        seen=None,
+        config=None,
     ) -> dict | None:
         """What :meth:`reuse` writes as ``ref``'s card, or None when it runs.
 
@@ -2699,13 +2839,14 @@ class BenchRun:
                 "the baseline: it runs"
             )
             return None
-        source = self._source(state, engine["digest"], chosen, decoys, batch)
+        source = self._source(state, engine["digest"], chosen, decoys, batch, config)
         if source is None:
             say(
                 f"engine digest {engine['digest'][:12]}: no complete card of it with "
                 f"set(s) {', '.join(chosen)}"
                 + (" and the decoy arms" if decoys else "")
                 + (" and the batch arm" if batch else "")
+                + (f" and the run config {config_text(config)}" if config else "")
                 + "; it runs"
             )
             return None
@@ -2720,10 +2861,12 @@ class BenchRun:
         chosen: list[str],
         decoys: bool,
         batch: bool = False,
+        config: dict | None = None,
     ) -> dict | None:
         """The newest card a run made of ``digest`` that can stand for a run
         now: written whole, of the same sets, with the decoy arms and the
-        batch arm if asked for, and nothing left out that another run might
+        batch arm if asked for, run with the same run config (none for
+        none), and nothing left out that another run might
         read (:func:`passing_problems`): with ``batch``, no set whose batch
         arm is off its card.
 
@@ -2736,6 +2879,7 @@ class BenchRun:
                 or record.get("verdict") not in WRITTEN
                 or (decoys and not record.get("decoys"))
                 or (batch and not record.get("batch"))
+                or (record.get("config") or None) != config
             ):
                 continue
             folder = self.home.cards / record["path"]
@@ -2861,6 +3005,8 @@ class BenchRun:
                 f"{was.get('finished')} this is; nothing runs"
             )
             runlog.note(f"the card reused: {src}")
+            if was.get("config"):
+                runlog.say(f"run config: {config_text(was['config'])}")
             for line in said:
                 runlog.say(line)
             for name, text in files.items():
@@ -2877,6 +3023,7 @@ class BenchRun:
                 "reference": was.get("reference"),
                 "decoys": bool(was.get("decoys")),
                 **({"batch": True} if was.get("batch") else {}),
+                **({"config": was["config"]} if was.get("config") else {}),
                 "migration": None,
                 "engine": engine,
                 "reused": {
@@ -3009,6 +3156,10 @@ class BenchRun:
         for record in records:
             other = record.get("sha")
             if not other or record.get("verdict", "pass") not in ("pass", "fail"):
+                continue
+            if record.get("config"):
+                # A card of develop at another config than the defaults is
+                # no baseline (:meth:`_promote`).
                 continue
             if not set(chosen) <= set(record.get("sets") or []):
                 continue
@@ -3312,6 +3463,11 @@ class BenchRun:
             raise RunError(
                 f"{folder} reuses the card of {summary['reused']['path']}, made at "
                 f"{str(summary['reused']['sha'])[:9]}: make that card the baseline"
+            )
+        if summary.get("config"):
+            raise RunError(
+                f"{folder} ran with the run config {config_text(summary['config'])}: "
+                "the baseline is the engine's defaults"
             )
         if not self.instance.is_on_develop(summary["sha"]):
             raise RunError(
