@@ -1778,16 +1778,23 @@ flowchart TD
   those rows (*Seeing a group*, above), and **Plot them** draws their batch peaks in the
   batch chart, in place of what it drew. The ***Supported by N channels*** badge and the other readings of the
   same ion are in this box too.
-- **Four measurements**, each a value with a caption in words:
-  - the **mass error**, in ppm, and under it how many widths of the run's own mass
-    calibration it sits from the run's centre;
-  - the **isotope lines**, found of those predicted, with the abundance error and the lines
-    not found or not tested. On the M0 the abundance error reads *-*: the other lines are
-    measured against it, so it has no error of its own;
-  - the **confidence**, the formula's share of the evidence among the peak's candidates,
+- **Four measurements**, each a small box titled with what it measures, a value and a
+  caption in words:
+  - **Mass error**: the m/z error in ppm, and under it how many widths of the run's own
+    mass calibration it sits from the run's centre;
+  - **Isotope lines found**: the lines found of those predicted, such as *3 of 4*, with
+    the abundance error and the lines not found or not tested. On the M0 the abundance
+    error reads *-*: the other lines are measured against it, so it has no error of its own;
+  - **Confidence**: the formula's share of the evidence among the peak's candidates,
     with a tie written out;
-  - the **batch**: the samples its batch peak is in, and how many of the batch's readings
-    the card lists for it.
+  - **Batch**: two lines, *Samples it is in* (the samples its batch peak is in) and
+    *Batch readings* (how many of the batch's readings the card lists for it, under
+    *Across the batch*).
+
+  A box with nothing to show reads *—*, and its caption and tooltip say why: no m/z
+  error recorded, a confidence the run did not record, a sample count not served for
+  the row, or no batch peak holding the peak, because the batch pass has not run yet or
+  did not take it. Hover a value for what it counts.
 - **A change by hand** is one line with its action: *Assigned by hand in place of C3H4O4 ·
   Undo*, or *Curated for the batch in place of C3H4O4 · Release*. Hover the line for the
   whole account of what changed and what undoing it brings back. *Undo* is *Use* on the

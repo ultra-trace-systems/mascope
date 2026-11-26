@@ -4844,8 +4844,8 @@ describe('PanePeakAssign hover text', () => {
     expect(tip(wrapper.find('[data-testid="tile-mass"] .tile-value'))).toBe(
       'Measured minus predicted m/z of the peak, in ppm'
     )
-    expect(tip(wrapper.find('[data-testid="tile-isotopes"] .tile-value'))).toBe(
-      'How far the measured isotope abundances are from the predicted ones'
+    expect(tip(wrapper.find('[data-testid="tile-isotopes"] .tile-value'))).toMatch(
+      /\nHow far the measured isotope abundances are from the predicted ones$/
     )
   })
 
@@ -5555,6 +5555,14 @@ describe('PanePeakAssign the card, answer first', () => {
       value: wrapper.find(`[data-testid="tile-${name}"] .tile-value`).text(),
       caption: wrapper.find(`[data-testid="tile-${name}"] .tile-caption`).text()
     })
+    // The batch tile's lines: each a value over its label.
+    const batchLines = (wrapper) =>
+      wrapper.findAll('[data-testid="tile-batch"] .tile-line').map((line) => ({
+        value: line.find('.tile-value').text(),
+        label: line.find('.tile-caption').text()
+      }))
+    const titles = (wrapper) =>
+      wrapper.findAll('[data-testid^="tile-"] .tile-title').map((title) => title.text())
 
     it('says each value in words: mass error, isotope lines, confidence, batch', async () => {
       const child = { ...isotopologue(ROW), mz_error_ppm: 1.1, abundance_error: 0.12 }
@@ -5585,10 +5593,49 @@ describe('PanePeakAssign the card, answer first', () => {
         value: '62%',
         caption: 'its share of the evidence among the candidates'
       })
-      expect(tile(wrapper, 'batch')).toEqual({
-        value: '7 of 9',
-        caption: 'samples it is in · 1 batch reading'
-      })
+      expect(batchLines(wrapper)).toEqual([
+        { value: '7 of 9', label: 'Samples it is in' },
+        { value: '1', label: 'Batch readings' }
+      ])
+    })
+
+    it('titles every tile with what it measures', async () => {
+      const wrapper = await mountPane()
+
+      expect(titles(wrapper)).toEqual(['Mass error', 'Isotope lines found', 'Confidence', 'Batch'])
+    })
+
+    it('says what the isotope count counts on hover', async () => {
+      familyRows = [ROW, { ...isotopologue(ROW), mz_error_ppm: 1.1 }]
+      detailRecord = {
+        provenance: {
+          predicted_envelope: {
+            lines: [{ line: 'M+2', predicted_mz: 202.1, predicted_share: 0.08, state: 'absent' }]
+          }
+        }
+      }
+      const wrapper = await mountPane({ recordTooltips: true })
+
+      expect(
+        wrapper.find('[data-testid="tile-isotopes"] .tile-value').attributes('data-tooltip')
+      ).toMatch(/^1 of 2 predicted isotope lines found\n/)
+    })
+
+    // A dash on its own says nothing: each empty tile gives its reason.
+    it('gives the reason behind every dash', async () => {
+      focusedAssignment = { ...ROW, mz_error_ppm: null }
+      detailRecord = { provenance: {} }
+      const wrapper = await mountPane({ recordTooltips: true })
+      const dash = (name) => wrapper.find(`[data-testid="tile-${name}"] .tile-value`)
+
+      expect(dash('mass').text()).toBe('—')
+      expect(dash('mass').attributes('data-tooltip')).toMatch(/^Not measured/)
+      expect(tile(wrapper, 'mass').caption).toBe('no m/z error recorded for this row')
+      expect(dash('confidence').text()).toBe('—')
+      expect(dash('confidence').attributes('data-tooltip')).toMatch(/^Not recorded/)
+      expect(dash('batch').text()).toBe('—')
+      expect(dash('batch').attributes('data-tooltip')).toMatch(/^No batch peak holds this peak/)
+      expect(tile(wrapper, 'batch').caption).toBe('in no batch peak')
     })
 
     it('writes the tie out', async () => {
@@ -5610,10 +5657,10 @@ describe('PanePeakAssign the card, answer first', () => {
       detailRecord = { provenance: { batch_peak: { batch_peak_id: 'bp-1', n_present: 5 } } }
       const wrapper = await mountPane()
 
-      expect(tile(wrapper, 'batch')).toEqual({
-        value: '5',
-        caption: 'samples it is in · 0 batch readings'
-      })
+      expect(batchLines(wrapper)).toEqual([
+        { value: '5', label: 'Samples it is in' },
+        { value: '0', label: 'Batch readings' }
+      ])
       expect(tile(wrapper, 'confidence').value).toBe('—')
     })
   })
@@ -5720,7 +5767,7 @@ describe('PanePeakAssign the card, answer first', () => {
       // Each in the registry's tone: a stable ratio supports the reading.
       expect(badges[1].attributes('data-tone')).toBe('supports')
       expect(field(wrapper, 'batch-series').text()).toContain("In the batch's CH2 series")
-      expect(field(wrapper, 'tile-batch').text()).toContain('4 batch readings')
+      expect(field(wrapper, 'batch-readings').text()).toBe('4Batch readings')
     })
   })
 

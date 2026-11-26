@@ -2,8 +2,9 @@
  * What the inspector card reads off a row, its run and its detail, as plain
  * functions: the bands its evidence is drawn against, the order and tone of
  * its reasons, the batch's groups a reason spans, and the four measurement
- * tiles. The card's sections show them (docs/dev/assignment_ledger_and_card.md,
- * section 4.1); here they can be tested without mounting anything.
+ * tiles, their titles and the reasons an empty one gives. The card's sections
+ * show them (docs/dev/assignment_ledger_and_card.md, section 4.1); here they
+ * can be tested without mounting anything.
  */
 
 import { num } from '@/lib/formatters'
@@ -182,8 +183,35 @@ export const M0_ABUNDANCE_TOOLTIP =
   'The monoisotopic line (M0) is the line the other lines are measured against, so it has no abundance error of its own.'
 
 /**
+ * The four tiles' titles, in the words the user page and the rest of the card
+ * use for each measurement (docs/user/how-it-works/peak-assignment.md, the
+ * inspector card).
+ */
+export const TILE_TITLES = Object.freeze({
+  mass: 'Mass error',
+  isotopes: 'Isotope lines found',
+  confidence: 'Confidence',
+  batch: 'Batch'
+})
+
+/** What a dash stands for on a tile with nothing to show. */
+export const EMPTY_REASONS = Object.freeze({
+  mass: 'Not measured: the run recorded no m/z error for this row',
+  confidence:
+    'Not recorded: the run that wrote this row kept no confidence for it, so there is no ' +
+    "share of the evidence among the peak's candidates to show",
+  noBatchPeak:
+    'No batch peak holds this peak: the batch pass has not run yet, or it gathered this ' +
+    'peak into none',
+  samples:
+    "Not counted for this row: a batch peak's samples are counted on a row served from the " +
+    "batch ledger, or where the batch's persistence stage took the peak"
+})
+
+/**
  * The isotope tile: the lines found of those predicted, from the family the
- * card lists and the lines the run asked for and did not find.
+ * card lists and the lines the run asked for and did not find. Its tooltip
+ * says what the count counts.
  *
  * @param {object} options
  * @param {Array<object>} options.family - the family's rows, the head included
@@ -192,7 +220,7 @@ export const M0_ABUNDANCE_TOOLTIP =
  * @param {boolean} [options.reference] - the row is the line the others are
  *   measured against (the M0), whose zero is no error of its own: its error
  *   reads `-`, and the caption's tooltip says why
- * @returns {{value: string, caption: string, captionTooltip: string|null, found: number, predicted: number}}
+ * @returns {{value: string, caption: string, captionTooltip: string|null, tooltip: string, found: number, predicted: number}}
  */
 export function isotopeTile({ family, missing, abundanceError, reference = false }) {
   const found = Math.max(0, (family?.length ?? 0) - 1)
@@ -214,6 +242,7 @@ export function isotopeTile({ family, missing, abundanceError, reference = false
       value: 'M0 only',
       caption: 'no isotope line found or asked for',
       captionTooltip: null,
+      tooltip: 'No isotope line was found or asked for: only the main peak, M0, is measured',
       found,
       predicted
     }
@@ -222,33 +251,54 @@ export function isotopeTile({ family, missing, abundanceError, reference = false
     value: `${found} of ${predicted}`,
     caption: parts.length ? parts.join(' · ') : 'isotope lines found of those predicted',
     captionTooltip,
+    tooltip: `${found} of ${predicted} predicted isotope line${predicted === 1 ? '' : 's'} found`,
     found,
     predicted
   }
 }
 
 /**
- * The batch tile: the samples the peak's batch peak is in, and how many of the
- * batch's readings the card lists for it.
+ * The batch tile: two labelled lines, the samples the peak's batch peak is in
+ * and how many of the batch's readings the card lists for it; or one dash,
+ * with its reason, where no batch peak holds the peak.
  *
  * @param {object} options
  * @param {number|null} options.present - samples the batch peak is in
  * @param {number|null} options.total - samples in the batch, where known
  * @param {number} options.readings - the batch readings the card lists
  * @param {boolean} options.inBatch - whether the peak sits in a batch peak
- * @returns {{value: string, caption: string}}
+ * @returns {{lines: Array<{key: string, label: string, value: string, tooltip: string}>}
+ *   | {lines: null, value: string, caption: string, tooltip: string}}
  */
 export function batchTile({ present, total, readings, inBatch }) {
-  const readingsWord = `${readings} batch reading${readings === 1 ? '' : 's'}`
-  if (Number.isInteger(present)) {
-    const of = Number.isInteger(total) ? ` of ${total}` : ''
+  const counted = Number.isInteger(present)
+  if (!counted && !inBatch && !readings) {
     return {
-      value: `${present}${of}`,
-      caption: `sample${present === 1 && !of ? '' : 's'} it is in · ${readingsWord}`
+      lines: null,
+      value: '—',
+      caption: 'in no batch peak',
+      tooltip: EMPTY_REASONS.noBatchPeak
     }
   }
-  if (inBatch || readings) return { value: '—', caption: readingsWord }
-  return { value: '—', caption: 'in no batch peak' }
+  const of = counted && Number.isInteger(total) ? ` of ${total}` : ''
+  return {
+    lines: [
+      {
+        key: 'samples',
+        label: 'Samples it is in',
+        value: counted ? `${present}${of}` : '—',
+        tooltip: counted
+          ? `The batch peak is in ${present}${of} sample${present === 1 && !of ? '' : 's'}`
+          : EMPTY_REASONS.samples
+      },
+      {
+        key: 'readings',
+        label: 'Batch readings',
+        value: String(readings),
+        tooltip: `${readings} reading${readings === 1 ? '' : 's'} of the batch stages, listed under Across the batch`
+      }
+    ]
+  }
 }
 
 /**

@@ -6,6 +6,7 @@ import {
   bandsOf,
   barPosition,
   batchTile,
+  EMPTY_REASONS,
   formatShare,
   isotopeTile,
   M0_ABUNDANCE_TOOLTIP,
@@ -198,9 +199,13 @@ describe('isotopeTile', () => {
       value: '2 of 4',
       caption: 'abundance off by 3.10% · 1 not found · 1 not tested',
       captionTooltip: null,
+      tooltip: '2 of 4 predicted isotope lines found',
       found: 2,
       predicted: 4
     })
+    expect(isotopeTile({ family: [{}], missing: [{ state: 'absent' }] }).tooltip).toBe(
+      '0 of 1 predicted isotope line found'
+    )
   })
 
   it("reads the M0's abundance error as a dash: the other lines are measured against it", () => {
@@ -222,29 +227,56 @@ describe('isotopeTile', () => {
   })
 
   it('says a lone M0 is all there is', () => {
-    expect(isotopeTile({ family: [{}], missing: [], abundanceError: null }).value).toBe('M0 only')
+    const tile = isotopeTile({ family: [{}], missing: [], abundanceError: null })
+    expect(tile.value).toBe('M0 only')
+    expect(tile.tooltip).toMatch(/only the main peak, M0, is measured/)
   })
 })
 
 describe('batchTile', () => {
-  it('names the samples the batch peak is in, and its readings', () => {
-    expect(batchTile({ present: 7, total: 9, readings: 2, inBatch: true })).toEqual({
-      value: '7 of 9',
-      caption: 'samples it is in · 2 batch readings'
-    })
-    expect(batchTile({ present: 1, total: null, readings: 1, inBatch: true })).toEqual({
-      value: '1',
-      caption: 'sample it is in · 1 batch reading'
-    })
+  const lines = (tile) => tile.lines.map(({ label, value }) => [label, value])
+
+  it('lays the samples and the readings out as two labelled lines', () => {
+    const tile = batchTile({ present: 7, total: 9, readings: 2, inBatch: true })
+    expect(lines(tile)).toEqual([
+      ['Samples it is in', '7 of 9'],
+      ['Batch readings', '2']
+    ])
+    expect(tile.lines[0].tooltip).toBe('The batch peak is in 7 of 9 samples')
+    expect(tile.lines[1].tooltip).toBe(
+      '2 readings of the batch stages, listed under Across the batch'
+    )
+    const one = batchTile({ present: 1, total: null, readings: 1, inBatch: true })
+    expect(lines(one)).toEqual([
+      ['Samples it is in', '1'],
+      ['Batch readings', '1']
+    ])
+    expect(one.lines[0].tooltip).toBe('The batch peak is in 1 sample')
+    expect(one.lines[1].tooltip).toMatch(/^1 reading of/)
   })
 
-  it('says where the count is unknown, and where there is no batch peak', () => {
-    expect(batchTile({ present: null, total: null, readings: 3, inBatch: true }).caption).toBe(
-      '3 batch readings'
-    )
+  it('takes a counted batch peak as one, whatever else the detail serves', () => {
+    expect(lines(batchTile({ present: 3, total: 4, readings: 0, inBatch: false }))).toEqual([
+      ['Samples it is in', '3 of 4'],
+      ['Batch readings', '0']
+    ])
+  })
+
+  it('gives the reason where the count is unknown, and where there is no batch peak', () => {
+    const uncounted = batchTile({ present: null, total: null, readings: 3, inBatch: true })
+    expect(lines(uncounted)).toEqual([
+      ['Samples it is in', '—'],
+      ['Batch readings', '3']
+    ])
+    expect(uncounted.lines[0].tooltip).toBe(EMPTY_REASONS.samples)
+    expect(
+      batchTile({ present: null, total: null, readings: 0, inBatch: true }).lines
+    ).toHaveLength(2)
     expect(batchTile({ present: null, total: null, readings: 0, inBatch: false })).toEqual({
+      lines: null,
       value: '—',
-      caption: 'in no batch peak'
+      caption: 'in no batch peak',
+      tooltip: EMPTY_REASONS.noBatchPeak
     })
   })
 })
