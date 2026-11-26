@@ -315,6 +315,256 @@ series. It adds:
 MAS-983 turns batch decisions into versioned records and replaces the fields this would
 otherwise read, so MAS-1066 is blocked by it and reads those records.
 
+### 4.4 A batch row's card: the options
+
+*Added for MAS-1298, from the owner's question "peak card for batch assignment?". This
+section lays out the options. It builds nothing, and the choice is the Decision issue
+MAS-1311, call 4 of section 7.*
+
+#### What happens today
+
+Read from the code on develop and checked on a demo instance with an assigned batch.
+
+- **A click on a batch row selects it.** The selection is what the batch chart plots.
+  No card opens. The Batch tab has no inspector column at all, only the chart
+  (`PaneTabBatch.vue`).
+- **The m/z and the row's arrow open the brightest sample.** `useBatchPeakJump` reads
+  the batch peak's series (`POST /batch-peaks/records/series`). It picks the measured
+  member with the highest intensity, the first of equals, among the samples the sample
+  list holds. Then it switches to the Sample tab with that member's peak focused
+  (`focusSamplePeak`).
+- **The card is then that sample's card.** The answer, the chips, *Why the tier*, the
+  tiles, the isotope pattern, the alternatives and the level are the sample's own run
+  row. Where that row commits another formula than the consensus, the card heads with
+  the sample's formula and says nothing of the consensus.
+- **It names the sample** (section 4.2, built). The answer reads "In *sample*: the
+  brightest of N samples that hold this batch peak". *Other samples* steps to the next
+  member by intensity and wraps round.
+- **What it shows of the batch:**
+  - the batch tile: the samples the peak is in, of the batch's, and how many batch
+    readings it has;
+  - *Across the batch*, folded: the stamp, the predicted isotope lines, co-variation,
+    the isotope checks, persistence, flat series, the series, ratio stability, the
+    reagent decisions and the blend flag;
+  - the batch-level verdict, as borrowed evidence above the verdict bar;
+  - the batch pin, as a one-line note.
+- **What it leaves out:**
+  - the consensus formula and tier, and how firm the consensus is (`support_fraction`,
+    `is_ambiguous`);
+  - what the members that disagree read, and how many they are;
+  - the members' level split, and which members state the shown level. The brightest
+    sample is not where the level comes from (MAS-1301);
+  - which samples lack the peak, and where in the acquisition order the peak is;
+  - an importing engine's tier and claim for the batch peak.
+- **Seen on the demo instance.** Three samples of a demo batch were assigned, then the
+  batch's pass was run. One row's consensus was an assigned formula, held by two of its
+  three members. Its m/z opened the brightest member, whose own run read another formula
+  as a candidate. The card headed with that candidate. Its batch tile read "0 batch
+  readings" and showed no sample count, and nothing on the card named the consensus.
+- **Where a reader sees the batch's readings for the peak now:** all on the ledger row.
+  - the Tier chip, the consensus tier;
+  - the Level chip, the members' majority level, with the split in its tooltip;
+  - Samples, `n/N`;
+  - Across the batch, up to three badges and `+n`, each explained by its tooltip;
+  - the ratio-stability popover and the batch verdict popover;
+  - the lens, from a badge or the `×N` pill, for the rows a reading spans (3.5);
+  - the chart, one point per sample, for the rows plotted.
+
+#### What a reader of a batch row wants to know
+
+What a sample's card does not answer:
+
+1. **The consensus and how firm it is.** The formula and ion the batch settled on, its
+   tier, how many members agree, which disagree and what they read.
+2. **Where in the batch the peak is.** The samples that hold it and those that do not,
+   in acquisition order, with intensity.
+3. **The samples its level comes from, the evidence, and what would raise it.** The
+   owner's input of 2026-11-26: these three sit on the first screen of any batch card.
+   MAS-1301 builds them now as a popover on the ledger's level chip, in a component a
+   card can reuse.
+4. **The batch checks' readings in full.** Today they are one line each, in tooltips or
+   folded.
+5. **What the batch decided against the samples' own runs.** A known-species or
+   water-ladder claim, a batch pin, a stamp or a strip that overrode a sample's reading,
+   and how many samples each one changed.
+
+#### What is served, and what is not
+
+| A reader wants | Served today | Not served |
+|---|---|---|
+| Consensus, tier, role, `support_fraction`, `is_ambiguous`, `n_present` | the batch-peaks read, per row | nothing |
+| The batch's readings and groups | the batch-peaks read, per row, and `batch_groups` | nothing |
+| The members' level split | the batch-peaks read, `member_levels` | nothing |
+| Each member's level, evidence and lift | the members read, whole batch, paged | a read for one batch peak: MAS-1301 adds it, for the members on the consensus formula |
+| What each dissenting member reads | the members read, whole batch, paged | the same read for one batch peak, with every member, any formula |
+| Presence and intensity per sample | the series read, per batch peak | the absent samples are the sample list minus the members, worked out by the client |
+| What the batch overrode in each sample | the claim records name the samples kept | a per-member flag "the batch changed this sample's reading", from those records |
+| The batch-level verdict | the verdicts read | nothing |
+
+So every option needs one new read: **one batch peak's members**, each with its sample,
+intensity, formula, tier, level, evidence, lift and whether a batch decision wrote it.
+MAS-1301's route is that read narrowed to the consensus formula. Widened to every member,
+it serves all the options below.
+
+#### Option A: a batch card
+
+The batch scope gets a card of its own, about the batch peak. It opens in a new
+inspector column of the Batch tab, beside the chart, on a click on the m/z. A way down
+opens one sample's card.
+
+```mermaid
+flowchart LR
+  R[Batch row, m/z] --> BC[Batch card]
+  BC -- "Open a sample" --> SC[Sample card]
+  SC -- "Back to the batch" --> BC
+```
+
+The first screen, at about 300 px:
+
+1. **The answer.** The consensus formula, its ion line, the batch's tier, level and
+   verdict chips. A firmness line under it: "31 of 40 samples agree · 9 read C3H5O4".
+2. **The level block**, MAS-1301's component. The split, the shown level's evidence
+   and lift, *Open a sample* per level, and the best level any member states.
+3. **The samples strip.** One tick per sample of the batch, in acquisition order, its
+   height the intensity and its colour the member's tier. A gap is a sample without the
+   peak. A tick opens that sample's card.
+4. **Why the batch's tier.** The batch's `tier_reasons` and its holding-back readings,
+   in the Why box's style.
+5. **Folded:** *Across the batch* in full, each reading with its line and its group;
+   *What the batch decided*, the overrides with their sample counts; *Members*, the
+   small table (sample, time, intensity, formula, tier, level).
+6. **The verdict bar**, for the batch-level verdict, pinned at the foot.
+
+- **Keyboard.** Enter on the m/z opens the card and moves focus to its heading. Tab
+  walks the level block, the strip (arrow keys step ticks, Enter opens one), the
+  sections and the verdict bar. Escape returns focus to the row.
+- **An unassigned batch peak.** The answer says "Unassigned", with its m/z and the
+  strip. The level block shows nothing. *Why* says what kept it out.
+- **A blend.** The firmness line names both formulas and the axis they separate on. The
+  strip colours ticks by formula, so the split shows in place.
+- **One sample only.** The strip has one tick and the firmness line reads "in 1 of 40
+  samples". The card offers *Open the sample* in the answer. The level block reads that
+  member alone.
+- **Cost: L.** A new column in the Batch tab, and its layout beside the chart. A card
+  model of its own beside `useAssignmentCard`, its answer, Why and verdict bar reworked
+  for a batch peak, the strip, the members table. The members read.
+- **Data not served:** the members read, widened; the per-member override flag.
+
+#### Option B: the sample's card, in batch dress
+
+The card stays a sample's. Opened from the batch ledger, it names the sample and why
+that one, and gains a batch section at the top. It is section 4.2 as built, grown.
+
+```mermaid
+flowchart LR
+  R[Batch row, m/z] --> SC["Sample card, chosen sample"]
+  SC -- "Other samples / a level" --> SC
+```
+
+The first screen, at about 300 px:
+
+1. **The batch banner**, above the sample's answer: the consensus formula and tier,
+   the firmness line, and the sample shown with why ("the brightest of 40", or "a
+   sample at level 3c").
+2. **The level block**, MAS-1301's component, in the banner, folded to one line: the
+   split and the best level. Unfolded, *Open a sample* per level changes which sample
+   the card shows.
+3. **The sample's own card**, as today, under the banner.
+
+The strip and the members table go in a folded *This batch peak's samples* section.
+
+- **Keyboard.** As today's card. The banner is the first stop. *Other samples* and the
+  level block's choices move the card to another member and keep focus on the banner.
+- **An unassigned batch peak.** The banner says the batch left it unassigned, and the
+  sample's card under it may still hold the sample's own reading.
+- **A blend.** The banner names both formulas. The card under it shows one sample's
+  side only, and *Other samples* walks by intensity, not by formula.
+- **One sample only.** The banner shrinks to "in this sample only", and the card is
+  the sample's.
+- **Cost: S to M.** No new column: the card stays in the Sample tab. The banner, the
+  level block reused, the folded samples section. The members read.
+- **Data not served:** the members read, widened.
+- **Its limit.** The first screen is the banner plus the sample's answer. At 300 px the
+  sample's Why falls below the fold. The card mixes two readers' questions, and a
+  sample's formula that differs from the consensus sits under a banner that says the
+  other.
+
+#### Option C: both, by scope
+
+The batch ledger opens option A's batch card. The sample ledger opens the sample card.
+Each links to the other: the batch card's *Open a sample* and strip go down, and the
+sample card gains one line, "In batch peak *m/z*, consensus *formula* · Open the batch
+peak", that goes up.
+
+```mermaid
+flowchart LR
+  BR[Batch row] --> BC[Batch card]
+  SR[Sample row] --> SC[Sample card]
+  BC -- "Open a sample, a strip tick" --> SC
+  SC -- "Open the batch peak" --> BC
+```
+
+- **The first screen** of the batch card is option A's. The sample card's is today's,
+  plus the one line up, in place of section 4.2's "In *sample*" line.
+- **Keyboard.** As option A's batch card, and the up line is one more stop on the
+  sample card, right after the answer.
+- **Unassigned, blend, one sample:** as option A.
+- **Cost: L**, option A's plus the up line and the round trip, which MAS-1294's way
+  back to the batch ledger already starts.
+- **Data not served:** as option A.
+
+#### Option D: the row unfolds in the ledger
+
+The code suggests a fourth. The ledger already folds isotopologue lines under a row
+(`useFamilyFold`) and narrows to a group under a lens (`useLedgerLens`). A batch row can
+unfold a panel in place, under itself, with no card at all. The m/z keeps opening the
+brightest sample's card, as today.
+
+```mermaid
+flowchart LR
+  R[Batch row] -- "caret or Enter" --> P[Panel under the row]
+  P -- "Open a sample" --> SC[Sample card]
+```
+
+- **The panel**, as wide as the ledger: the firmness line, the level block, the strip,
+  and the batch's readings in full, one line each.
+- **Keyboard.** The caret is a button in the row. Enter unfolds, Tab walks the panel,
+  Escape folds it and returns to the row.
+- **Unassigned, blend, one sample:** as option A, in the panel.
+- **Cost: M.** No new column. One more fold kind in the ledger, which has to live beside
+  the isotopologue sub-rows and the lens. The members read.
+- **Its limit.** The panel pushes the rows below it down, and a ledger of 1,000 rows
+  with one panel open is harder to scan. There is no verdict bar of the batch's own: the
+  verdict popover stays where it is.
+
+#### Side by side
+
+| | A: batch card | B: sample card, batch dress | C: both, by scope | D: row unfolds |
+|---|---|---|---|---|
+| Opens from a batch row | the batch card | the sample's card, banner on top | the batch card | a panel under the row |
+| Level source, evidence, lift | level block, first screen | level block in the banner, folded to a line | level block, first screen | level block in the panel |
+| Where the peak is in the batch | strip, first screen | folded section | strip, first screen | strip in the panel |
+| The batch's verdict | its own verdict bar | borrowed, as today | its own verdict bar | the ledger's popover |
+| New screen area | an inspector column in the Batch tab | none | an inspector column in the Batch tab | none |
+| Cost | L | S to M | L | M |
+
+Every option needs the members read for one batch peak. Every option reuses MAS-1301's
+level block.
+
+#### Recommendation
+
+**Option C**, built in two steps:
+
+1. The batch card's first screen in a new column of the Batch tab: the answer and its
+   firmness line, the level block, the strip, and the up line on the sample card.
+2. The folded sections, the members table, and the batch verdict bar.
+
+It is the one option where each card answers one reader's question. A batch row is about
+the batch, a sample row about the sample. The owner's three things sit on the batch
+card's first screen whole, not folded under a banner. Option B is the cheapest. Its
+limit is the 300 px first screen, which then holds a banner and a sample's answer that
+may disagree.
+
 ## 5. One mark, one meaning
 
 **Colour says what a reading does to confidence.** The tones are the design system's
@@ -398,8 +648,13 @@ help card gains its legend.
    *Show › Engine readings*, not columns. The alternative kept today's columns.
    *Decided on 2026-11-22: the chip.*
 
-The first is built as written here and raised on its PR. The other two are settled, and
-MAS-1064's brief carries them.
+4. **What card a batch ledger row opens** (4.4). A batch card, the sample's card in
+   batch dress, both by scope, or a panel unfolding under the row. The recommendation is
+   both by scope. *Open: the Decision issue MAS-1311.*
+
+The first is built as written here and raised on its PR. The second and third are
+settled, and MAS-1064's brief carries them. Nothing is built for the fourth until
+MAS-1311 is answered.
 
 ## 8. Docs
 
