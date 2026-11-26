@@ -1673,7 +1673,10 @@ supports it, amber holds it back, teal drifted, grey moves nothing, and an outli
 person's act.
 
 - At most three badges show on a row. The ones that hold the reading back come first,
-  then the others in a fixed order, and **+n** counts the rest, naming them on hover.
+  then the others in a fixed order, and **+n** counts the rest. Click **+n**, or press
+  Enter on it, for a popover with every badge of the row, each followed by its reading in
+  words. A badge in it does what the same badge does in the row. Escape or a click outside
+  closes it.
 - The ratio-stability badge opens the pairs behind its grade (*Ratio stability*, below).
 - The badges whose reading is about other rows open those rows together: the series badge
   its series, the co-variation badge the pair it read, and the batch facts badge the line,

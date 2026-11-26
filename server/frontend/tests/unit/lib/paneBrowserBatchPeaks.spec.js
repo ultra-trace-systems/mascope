@@ -279,10 +279,12 @@ const PopoverStub = {
   name: 'Popover',
   // The cell popovers call these; open or not, the stub renders its slot.
   // `visible` follows them as PrimeVue's own does.
-  data: () => ({ visible: false }),
+  data: () => ({ visible: false, anchor: null }),
   methods: {
-    show() {
+    show(event) {
       popoverCalls.push([this.$attrs['aria-label'], 'show'])
+      // What it would anchor to, as PrimeVue's reads it.
+      this.anchor = event?.currentTarget ?? null
       this.visible = true
     },
     hide() {
@@ -1272,7 +1274,10 @@ describe('PaneBrowserBatchPeaks series mark', () => {
       'facts',
       'manual'
     ])
-    expect(wrapper.vm.acrossMoreTooltip(wrapper.vm.rows[0]).split('\n')).toHaveLength(3)
+    // Hover says how many more, in words; the click shows them as badges.
+    expect(wrapper.vm.acrossMoreTooltip(wrapper.vm.rows[0])).toBe(
+      '3 more readings across the batch: click to see them all'
+    )
     // Two badges: both, and no count.
     expect(marks(cells[1])).toEqual(['series', 'manual'])
     expect(cells[1].find('[data-testid="across-more"]').exists()).toBe(false)
@@ -1282,6 +1287,119 @@ describe('PaneBrowserBatchPeaks series mark', () => {
     wrapper.unmount()
     const formula = await formulaCells(rows)
     expect(formula[0].findAll('.evidence-badge')).toHaveLength(0)
+  })
+
+  // "+n" opens a popover with every badge of the row, the three the cell shows
+  // included, each with its reading in words (MAS-1295).
+  describe('the popover behind +n', () => {
+    const FIVE = () => [
+      peak('bp-1', 'candidate', 0.7, {
+        max_intensity: 1000,
+        series: SERIES,
+        blend: { formulas: ['C6H12O6', 'C7H16O5'], axis: 'time', time: null, intensity: null },
+        co_variation: { verdict: 'co_varying', r: 0.8, n_spectra: 20 },
+        batch_checks: { halogen_lock: { element: 'Br', verdict: 'locked' } },
+        continuity: { pairs: [] },
+        continuity_grade: 'stable'
+      }),
+      peak('bp-2', 'assigned', 0.9, { mz: 200.1, max_intensity: 500 })
+    ]
+    const ALL = ['blend', 'series', 'coVariation', 'ratio', 'facts']
+    const popover = () => wrapper.find('[data-testid="across-popover"]')
+
+    it('shows three and +2 for five, and the popover lists all five with their readings', async () => {
+      const { markOf } = await import('@/lib/evidence/marks')
+      const cells = await formulaCells(FIVE(), 'acrossRank')
+      const more = cells[0].find('[data-testid="across-more"]')
+      expect(cells[0].findAll('.evidence-badge')).toHaveLength(3)
+      expect(more.text()).toBe('+2')
+      expect(more.element.tagName).toBe('BUTTON')
+      expect(more.attributes('aria-label')).toBe(
+        '2 more readings across the batch: click to see them all'
+      )
+      expect(popover().exists()).toBe(false)
+      expect(more.attributes('aria-haspopup')).toBe('dialog')
+      expect(more.attributes('aria-expanded')).toBe('false')
+
+      popoverCalls.length = 0
+      await more.trigger('click')
+      await flushPromises()
+      expect(popoverCalls).toContainEqual(['Across the batch', 'show'])
+      expect(more.attributes('aria-expanded')).toBe('true')
+      expect(wrapper.vm.acrossTarget.batch_peak_id).toBe('bp-1')
+      const items = popover().findAll('li')
+      expect(items.map((li) => li.find('.evidence-badge').attributes('data-mark'))).toEqual(ALL)
+      const row = wrapper.vm.rows[0]
+      const record = (id) => wrapper.vm.acrossMarks(row).find((m) => m.id === id).record
+      expect(items.map((li) => li.find('[data-testid="across-reading-text"]').text())).toEqual(
+        ALL.map((id) => markOf(id).tooltip(record(id)).trim())
+      )
+      // The ratio badge acts in the popover as in the cell; the blend does not.
+      expect(popover().find('[data-testid="across-act-ratio"]').attributes('aria-label')).toBe(
+        'Ratio stability: open the pairs behind the grade'
+      )
+      expect(popover().find('[data-testid="across-act-blend"]').exists()).toBe(false)
+      // Closed, it says so, though the popover still points at the row.
+      wrapper.vm.acrossMenu.hide()
+      await wrapper.vm.$nextTick()
+      expect(more.attributes('aria-expanded')).toBe('false')
+    })
+
+    it("opens the pairs behind the grade from the popover's ratio badge, as the cell's does", async () => {
+      const cells = await formulaCells(FIVE(), 'acrossRank')
+      await cells[0].find('[data-testid="across-more"]').trigger('click')
+      await flushPromises()
+      popoverCalls.length = 0
+      await popover().find('[data-testid="across-act-ratio"]').trigger('click')
+      await flushPromises()
+      expect(popoverCalls).toContainEqual(['Across the batch', 'hide'])
+      expect(popoverCalls).toContainEqual(['Ratio stability', 'show'])
+      expect(wrapper.vm.continuityTarget.batch_peak_id).toBe('bp-1')
+      // The popover it was clicked in is gone: the pairs open at "+n".
+      const pairs = wrapper
+        .findAllComponents({ name: 'Popover' })
+        .find((p) => p.attributes('aria-label') === 'Ratio stability')
+      expect(pairs.vm.anchor).toBe(cells[0].find('[data-testid="across-more"]').element)
+    })
+
+    it('closes the other cell popovers when it opens, and the other way round', async () => {
+      const cells = await formulaCells(FIVE(), 'acrossRank')
+      popoverCalls.length = 0
+      await cells[0].find('[data-testid="across-more"]').trigger('click')
+      expect(popoverCalls).toContainEqual(['Ratio stability', 'hide'])
+      expect(popoverCalls).toContainEqual(['Batch-level verdict', 'hide'])
+      expect(popoverCalls).toContainEqual(['Where the level comes from', 'hide'])
+      popoverCalls.length = 0
+      await wrapper
+        .findAll('.column-stub')
+        .find((col) => col.attributes('data-field') === 'verdictRank')
+        .find('.verdict-cell')
+        .trigger('click')
+      expect(popoverCalls).toContainEqual(['Across the batch', 'hide'])
+    })
+
+    it('returns focus to +n when it closes, unless the reader moved it elsewhere', async () => {
+      const cells = await formulaCells(FIVE(), 'acrossRank')
+      document.body.appendChild(wrapper.element)
+      const more = cells[0].find('[data-testid="across-more"]')
+      await more.trigger('click')
+      await flushPromises()
+      const acrossPopover = wrapper
+        .findAllComponents({ name: 'Popover' })
+        .find((p) => p.attributes('aria-label') === 'Across the batch')
+      // Focus inside the popover (the reader pressed Escape there): back to +n.
+      popover().find('[data-testid="across-act-ratio"]').element.focus()
+      acrossPopover.vm.$emit('hide')
+      expect(document.activeElement).toBe(more.element)
+      // Focus on another control (an outside click on it): it stays there.
+      const other = document.createElement('button')
+      document.body.appendChild(other)
+      other.focus()
+      acrossPopover.vm.$emit('hide')
+      expect(document.activeElement).toBe(other)
+      other.remove()
+      wrapper.element.remove()
+    })
   })
 
   // The column sorts the rows most held back first, then the most badges, a
@@ -4125,6 +4243,37 @@ describe('PaneBrowserBatchPeaks groups', () => {
     expect(cells['bp-root'].find('[data-testid="lens-series"]').exists()).toBe(false)
     await cells['bp-up'].find('[data-testid="lens-series"]').trigger('click')
     expect(ids()).toEqual(SERIES_ORDER)
+  })
+
+  it("opens the series lens from the series badge in +n's popover, as from the row", async () => {
+    // The step's row with more than three badges, so its series badge can be
+    // clicked from the popover too.
+    const peaks = PEAKS().map((row) =>
+      row.batch_peak_id === 'bp-up'
+        ? {
+            ...row,
+            curated: true,
+            blend: { formulas: ['C6H12O6', 'C7H16O5'], axis: 'time', time: null, intensity: null },
+            co_variation: { verdict: 'co_varying', r: 0.8, n_spectra: 20 },
+            continuity: { pairs: [] },
+            continuity_grade: 'stable'
+          }
+        : row
+    )
+    const cells = await cellsOf('acrossRank', peaks)
+    app.data.batchPeak.groups = fixture.BATCH_GROUPS
+    await wrapper.vm.$nextTick()
+    await cells['bp-up'].find('[data-testid="across-more"]').trigger('click')
+    await flushPromises()
+    const popover = wrapper.find('[data-testid="across-popover"]')
+    expect(popover.find('[data-testid="across-act-series"]').attributes('aria-label')).toBe(
+      'Homologous series: see its rows together'
+    )
+    expect(ids()).not.toEqual(SERIES_ORDER)
+    popoverCalls.length = 0
+    await popover.find('[data-testid="across-act-series"]').trigger('click')
+    expect(ids()).toEqual(SERIES_ORDER)
+    expect(popoverCalls).toContainEqual(['Across the batch', 'hide'])
   })
 
   it('narrows to the group in its order and labels each step', async () => {

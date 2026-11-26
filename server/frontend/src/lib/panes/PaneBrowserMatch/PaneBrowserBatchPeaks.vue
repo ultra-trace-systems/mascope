@@ -85,6 +85,7 @@ import { runLabel } from '@/stores/data/modules/batchPeak/run.js'
 import { useBatchAssign } from './stores/batchAssign.js'
 import { useBatchChartSelection } from './stores/batchChartSelection.js'
 import { useBatchLedgerReturn } from './stores/batchLedgerReturn.js'
+import BatchAcrossPopover from './BatchAcrossPopover.vue'
 import BatchPeakContinuityPopover from './BatchPeakContinuityPopover.vue'
 
 /**
@@ -426,8 +427,11 @@ const onlyFlatSeries = viewChoice('flatSeries')
 // Across the batch: the batch's readings of a row, one badge each, as the
 // registry draws them (lib/evidence/marks.js). At most three show, the ones
 // that hold the reading back first and the rest in the registry's order, and
-// a "+n" says how many more, naming them on hover. The ratio-stability badge
-// opens the pairs behind its grade.
+// a "+n" says how many more. A click on it opens every badge of the row in a
+// popover, each with its reading in words (BatchAcrossPopover). The
+// ratio-stability badge opens the pairs behind its grade, and a badge whose
+// reading names other rows opens them together, from the cell and from the
+// popover alike.
 const ACROSS_SHOWN = 3
 const acrossMarks = (row) => {
   const marks = ledgerMarks(row).map((reading) => ({
@@ -438,10 +442,10 @@ const acrossMarks = (row) => {
 }
 const acrossShown = (row) => acrossMarks(row).slice(0, ACROSS_SHOWN)
 const acrossMore = (row) => acrossMarks(row).slice(ACROSS_SHOWN)
-const acrossMoreTooltip = (row) =>
-  acrossMore(row)
-    .map((reading) => markOf(reading.id).summary(reading.record) || markOf(reading.id).label)
-    .join('\n')
+const acrossMoreTooltip = (row) => {
+  const n = acrossMore(row).length
+  return `${n} more reading${n === 1 ? '' : 's'} across the batch: click to see them all`
+}
 // The column's sort: the rows with the most that holds them back first, then
 // the most badges; a row with none sorts last.
 const acrossRankOf = (row) => {
@@ -803,27 +807,73 @@ const lens = computed(() => {
 // click, so each opener closes the other popover itself.
 const findDecorated = (id) => decorated.value.find((row) => row.batch_peak_id === id)
 const idOf = (row) => row.batch_peak_id
+// Each opener closes the others: the table's cell popovers show one at a time.
+const hideOthers = (keep) =>
+  [verdictMenu, continuityMenu, levelMenu, acrossMenu]
+    .filter((menu) => menu !== keep)
+    .forEach((menu) => menu.value?.hide())
 const {
   menu: verdictMenu,
   target: verdictTarget,
   open: openVerdict
-} = useRowPopover(findDecorated, idOf, {
-  beforeOpen: () => [continuityMenu, levelMenu].forEach((menu) => menu.value?.hide())
-})
+} = useRowPopover(findDecorated, idOf, { beforeOpen: () => hideOthers(verdictMenu) })
 const {
   menu: continuityMenu,
   target: continuityTarget,
   open: openContinuity
-} = useRowPopover(findDecorated, idOf, {
-  beforeOpen: () => [verdictMenu, levelMenu].forEach((menu) => menu.value?.hide())
-})
+} = useRowPopover(findDecorated, idOf, { beforeOpen: () => hideOthers(continuityMenu) })
 const {
   menu: levelMenu,
   target: levelTarget,
   open: openLevelPopover
-} = useRowPopover(findDecorated, idOf, {
-  beforeOpen: () => [verdictMenu, continuityMenu].forEach((menu) => menu.value?.hide())
-})
+} = useRowPopover(findDecorated, idOf, { beforeOpen: () => hideOthers(levelMenu) })
+const {
+  menu: acrossMenu,
+  target: acrossTarget,
+  open: openAcrossPopover
+} = useRowPopover(findDecorated, idOf, { beforeOpen: () => hideOthers(acrossMenu) })
+
+// --- Across the batch's "+n" ---------------------------------------------------
+// What a badge's click does, the same from the cell and from the popover: the
+// ratio-stability badge opens the pairs behind its grade, a badge whose
+// reading names other rows opens them together, any other does nothing.
+function acrossAction(row, reading) {
+  if (reading.id === 'ratio') {
+    return { kind: 'continuity', label: 'Ratio stability: open the pairs behind the grade' }
+  }
+  const group = badgeGroup(row, reading.id)
+  if (!group) return null
+  return { kind: 'lens', group, label: `${markOf(reading.id).label}: see its rows together` }
+}
+const acrossReadings = (row) =>
+  acrossMarks(row).map((reading) => ({ ...reading, action: acrossAction(row, reading) }))
+// The "+n" that opened the popover: where the pairs open when the popover's
+// ratio badge is clicked (the popover is gone by then), and where focus
+// returns when it closes.
+let acrossOpener = null
+function openAcross(event, row) {
+  acrossOpener = event.currentTarget
+  openAcrossPopover(event, row)
+}
+function actFromAcross(reading) {
+  const row = acrossTarget.value
+  if (!row) return
+  acrossMenu.value?.hide()
+  if (reading.action?.kind === 'continuity') {
+    openContinuity({ currentTarget: acrossOpener, target: acrossOpener }, row)
+  } else if (reading.action?.kind === 'lens') {
+    openLens(reading.action.group)
+  }
+}
+// Focus goes back to "+n" when the popover closes, unless the reader has
+// moved it somewhere else (an outside click on another control keeps it).
+function returnAcrossFocus() {
+  const opener = acrossOpener
+  if (!opener) return
+  const active = document.activeElement
+  if (active && active !== document.body && !active.closest?.('.across-popover')) return
+  opener.focus()
+}
 
 // --- Where a row's level comes from ------------------------------------------
 // The Level chip opens the members whose run states it (LedgerLevelSources):
@@ -1685,13 +1735,24 @@ watch(
                 :data-testid="`mark-${reading.id}`"
               />
             </template>
-            <span
+            <!-- "+n" opens every badge of the row with its reading. -->
+            <button
               v-if="acrossMore(data).length"
+              type="button"
               class="across-more"
               data-testid="across-more"
+              aria-haspopup="dialog"
+              :aria-expanded="
+                String(
+                  Boolean(acrossMenu?.visible) && acrossTarget?.batch_peak_id === data.batch_peak_id
+                )
+              "
+              :aria-label="acrossMoreTooltip(data)"
               v-tooltip.top="acrossMoreTooltip(data)"
-              >+{{ acrossMore(data).length }}</span
+              @click.stop="openAcross($event, data)"
             >
+              +{{ acrossMore(data).length }}
+            </button>
           </span>
         </template>
       </Column>
@@ -1729,6 +1790,14 @@ watch(
           v-if="continuityTarget"
           :row="continuityTarget"
           :isotopeLine="Boolean(continuityTarget.parentId)"
+        />
+      </Popover>
+
+      <Popover ref="acrossMenu" aria-label="Across the batch" @hide="returnAcrossFocus">
+        <BatchAcrossPopover
+          v-if="acrossTarget"
+          :readings="acrossReadings(acrossTarget)"
+          @act="actFromAcross"
         />
       </Popover>
 
@@ -1838,9 +1907,19 @@ watch(
   cursor: pointer;
 }
 .across-more {
+  padding: 0.05rem 0.25rem;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  font: inherit;
   font-size: 0.72rem;
   font-variant-numeric: tabular-nums;
   color: var(--p-text-muted-color);
+  cursor: pointer;
+}
+.across-more:hover {
+  color: var(--p-text-color);
+  background: var(--p-content-hover-background);
 }
 
 /* The row's action, the jump: the spinner marks the one jump in flight. */
