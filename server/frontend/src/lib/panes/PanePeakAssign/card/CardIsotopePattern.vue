@@ -4,6 +4,7 @@ import { computed } from 'vue'
 import { num } from '@/lib/formatters'
 import { formatIsotopeLabel } from '@/lib/chem'
 import { notFoundTooltip, notFoundWord } from '@/lib/predictedEnvelope'
+import CardLedgerNote from './CardLedgerNote.vue'
 import CardSection from './CardSection.vue'
 import { useCard } from './useCard.js'
 
@@ -206,25 +207,19 @@ const STICK = 2.4
       </div>
       <!-- A row the batch ledger serves: its numbers are measured for the view,
            and no run asked which lines it expected, so none reads not found. -->
-      <div v-if="ledgerServed" class="ledger-note" data-testid="iso-ledger-note">
-        <span class="pi ph ph-stack" aria-hidden="true" />
-        {{ LEDGER_ISOTOPE_NOTE }}
-      </div>
+      <CardLedgerNote
+        v-if="ledgerServed"
+        class="iso-ledger-note"
+        :text="LEDGER_ISOTOPE_NOTE"
+        data-testid="iso-ledger-note"
+      />
     </div>
   </CardSection>
 </template>
 
 <style scoped>
-.ledger-note {
-  display: flex;
-  align-items: baseline;
-  gap: 0.35rem;
+.iso-ledger-note {
   margin-top: 0.3rem;
-  color: var(--p-text-muted-color);
-  font-size: var(--card-text-sm);
-}
-.ledger-note .ph {
-  color: var(--state-info);
 }
 .isotopologues {
   display: flex;

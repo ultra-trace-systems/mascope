@@ -2271,15 +2271,17 @@ card says why each part is missing in its own place:
   both come from a run of the sample.
 - **Isotope pattern** shows the lines measured for the view. It lists no line as *not
   found*, since no run of the sample asked which lines it expected. A note says so.
-- **Identification level** reads *none: no run of this sample*. No level chip shows in the
-  answer.
+- **Identification level** reads *none: the batch ledger states no level*. No level chip
+  shows in the answer.
 - In the **Sum spectrum**, the crimson circles of the predicted pattern appear once the
   inspector has measured it. Their hover reads *Predicted, not measured in this sample by a
   run of its own*.
 
 Nothing of the batch's other samples stands in for these parts. Run **Assign sample** for
 the full card. A sample that has a run of its own, read on **Batch ledger** in the run
-selector by choice, gets the read-only notice instead. Select its own run to go back.
+selector by choice, gets the read-only notice instead. Select its own run to go back. Its
+parts still read as above, since the row shown is the batch ledger's.
+
 The isotopologue table always lists the main peak, even when the pattern has no other
 peaks, so the focused peak's m/z is read in the same place on every card. Its labels
 count from the monoisotopic peak, the way an isotope table does - a bromine-rich ion reads

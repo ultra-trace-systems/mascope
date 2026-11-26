@@ -3,6 +3,7 @@ import { computed } from 'vue'
 
 import { BaseLevelTag } from '@/lib/base'
 import { heldByNote, isOpenRival, rivalTestLabel } from '@/lib/levels'
+import CardLedgerNote from './CardLedgerNote.vue'
 import CardSection from './CardSection.vue'
 import { useCard } from './useCard.js'
 
@@ -123,32 +124,20 @@ const summary = computed(() => {
       </div>
     </div>
   </CardSection>
-  <!-- A row the batch ledger serves states no level: no run of the sample
-       read one. The section says so in its place, rather than going missing. -->
+  <!-- A row the batch ledger serves states no level, whether or not the
+       sample also has a run of its own (read on the ledger by choice). The
+       section says so in its place, rather than going missing. -->
   <CardSection
     v-else-if="ledgerServed"
     title="Identification level"
-    summary="none: no run of this sample"
+    summary="none: the batch ledger states no level"
     testid="section-level"
   >
-    <div class="ledger-note" data-testid="level-ledger-note">
-      <span class="pi ph ph-stack" aria-hidden="true" />
-      {{ LEDGER_LEVEL_NOTE }}
-    </div>
+    <CardLedgerNote :text="LEDGER_LEVEL_NOTE" data-testid="level-ledger-note" />
   </CardSection>
 </template>
 
 <style scoped>
-.ledger-note {
-  display: flex;
-  align-items: baseline;
-  gap: 0.35rem;
-  color: var(--p-text-muted-color);
-  font-size: var(--card-text-sm);
-}
-.ledger-note .ph {
-  color: var(--state-info);
-}
 .identification-level {
   display: flex;
   flex-direction: column;
