@@ -1397,8 +1397,44 @@ describe('PaneBrowserBatchPeaks series mark', () => {
       other.focus()
       acrossPopover.vm.$emit('hide')
       expect(document.activeElement).toBe(other)
+      // Focus on the body (a click on a blank spot outside it): back to +n.
+      other.blur()
       other.remove()
+      expect(document.activeElement).toBe(document.body)
+      acrossPopover.vm.$emit('hide')
+      expect(document.activeElement).toBe(more.element)
       wrapper.element.remove()
+    })
+
+    it('closes on a second click on the same +n', async () => {
+      const cells = await formulaCells(FIVE(), 'acrossRank')
+      const more = cells[0].find('[data-testid="across-more"]')
+      await more.trigger('click')
+      await flushPromises()
+      expect(wrapper.vm.acrossMenu.visible).toBe(true)
+      await more.trigger('click')
+      await flushPromises()
+      expect(wrapper.vm.acrossMenu.visible).toBe(false)
+      expect(more.attributes('aria-expanded')).toBe('false')
+    })
+
+    it("says expanded on the open row's +n only", async () => {
+      const [first] = FIVE()
+      const second = peak('bp-2', 'candidate', 0.7, {
+        ...first,
+        batch_peak_id: 'bp-2',
+        mz: 200.1,
+        max_intensity: 500
+      })
+      const cells = await formulaCells([first, second], 'acrossRank')
+      const mores = cells.map((cell) => cell.find('[data-testid="across-more"]'))
+      expect(mores.map((more) => more.exists())).toEqual([true, true])
+      await mores[0].trigger('click')
+      await flushPromises()
+      expect(mores.map((more) => more.attributes('aria-expanded'))).toEqual(['true', 'false'])
+      await mores[1].trigger('click')
+      await flushPromises()
+      expect(mores.map((more) => more.attributes('aria-expanded'))).toEqual(['false', 'true'])
     })
   })
 
