@@ -707,6 +707,28 @@ describe('PaneBrowserAssignment launcher', () => {
     expect(wrapper.vm.launchError).toBeNull()
   })
 
+  it("opens on the batch's settings when the dialog was opened before the pane mounted", async () => {
+    // The inspector card's Assign sample, from Targets mode: it switches the
+    // browser to this ledger and opens the flag in one go, so this pane mounts
+    // with the flag already true and its watcher never sees it change.
+    batchSettings = { mz_precision_ppm: 4, max_alternatives: 2, profile: 'BR' }
+    useAssignmentLauncher().configVisible = true
+
+    const wrapper = await mountPane()
+    await flushAll()
+
+    expect(wrapper.vm.configVisible).toBe(true)
+    expect({ ...formModel(wrapper) }).toEqual({
+      ...SERVED,
+      mz_precision_ppm: 4,
+      max_alternatives: 2,
+      profile: 'BR'
+    })
+    expect(helpStub.set).toHaveBeenLastCalledWith('dialog_peak_assign')
+    await wrapper.vm.launch()
+    expect(assign.mock.calls[0][1]).toMatchObject({ mz_precision_ppm: 4, profile: 'BR' })
+  })
+
   it('does nothing without a focused sample', async () => {
     focusedSampleId = ref(null)
     const wrapper = await mountPane()
