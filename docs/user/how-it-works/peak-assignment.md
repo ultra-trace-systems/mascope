@@ -3448,10 +3448,10 @@ insufficient read grey. Its hover says what the grade means, and when it is part
 pass left some of the batch peak's pairs ungraded), behind the ledger (a sample folded in
 since, or the consensus formula moved, so the next pass grades it again) or withdrawn
 (a batch that is not time-ordered). The pair counts it gives are of the graded pairs.
-Clicking the badge lists the pairs behind the grade -
-by grade in that order, then the best supported, up to four - each with its grade, the samples both peaks are
-in, the median ratio, its spread and its drift, and for two channels what *Read
-co-variation* said of them. An isotope line's own grade, on its pair with the main peak,
+Clicking the badge lists the pairs behind the grade, up to four: by grade in the
+order unstable, drift, stable, inconclusive, insufficient, then the best supported.
+Each pair shows its grade, the samples both peaks are in, the median ratio, its
+spread and its drift, and for two channels what *Read co-variation* said of them. An isotope line's own grade, on its pair with the main peak,
 is among the main peak's pairs. No tier, verdict or filter reads it.
 
 The pass is a stage after *Read co-variation* (*The batch stages*, above), so it grades a
