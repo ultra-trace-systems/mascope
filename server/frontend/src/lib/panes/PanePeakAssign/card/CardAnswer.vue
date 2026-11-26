@@ -6,7 +6,7 @@ import Button from 'primevue/button'
 import { BaseLevelTag, BaseTierTag, BaseVerdictBadge } from '@/lib/base'
 import { num } from '@/lib/formatters'
 import { formatIsotopeLabel } from '@/lib/chem'
-import { formatShare } from './cardReadings.js'
+import { formatShare, shareDigits } from './cardReadings.js'
 import { sourceLabel, sourceLine } from '@/lib/assignmentSources'
 import {
   candidatesTooltip,
@@ -67,7 +67,7 @@ const batchCount = computed(() => {
   const agree =
     batch.support >= 1
       ? 'all their formulas agree'
-      : `${formatShare(batch.support)} of their formulas agree`
+      : `${formatShare(batch.support, shareDigits(batch.support, 1))} of their formulas agree`
   return `${present}, ${agree}`
 })
 const BATCH_COUNT_TOOLTIP =
