@@ -60,7 +60,7 @@ describe('batchContinuity labels and rank', () => {
     expect(continuityLabel(ungraded)).toBe('Not graded')
     const text = continuityTooltip(ungraded)
     expect(text).toMatch(/^Partial: .*none of these was graded\./)
-    expect(text).not.toMatch(/most alarming/)
+    expect(text).not.toMatch(/graded pair/)
     // A partial anchor with a grade had some graded, and a complete one is not partial.
     const partial = row('stable', { continuity: detail({ warnings: ['partial'] }) })
     expect(continuityUngraded(partial)).toBe(false)
@@ -69,7 +69,7 @@ describe('batchContinuity labels and rank', () => {
     expect(continuityLabel(row(null))).toBe('')
   })
 
-  it('ranks in the order of alarm, null where there is no grade', () => {
+  it("ranks in the grades' order, null where there is no grade", () => {
     expect(GRADES.map((grade) => continuityRank(row(grade)))).toEqual([0, 1, 2, 3, 4])
     expect(continuityRank(row(null))).toBeNull()
     expect(continuityRank(null)).toBeNull()
@@ -89,17 +89,25 @@ describe('batchContinuity tooltip and warning', () => {
   it("gives the grade's meaning over its pairs, and that it is shown only", () => {
     const text = continuityTooltip(row('red'))
     expect(text).toMatch(
-      /^Unstable on its most alarming of 2 graded pairs: .*two species may share a trace\./
+      /^Unstable, the first grade among its 2 graded pairs in the order unstable, drift, stable, inconclusive, insufficient: .*two species may share a trace\./
     )
     expect(text).toMatch(/never which species, and no tier moves on it\.$/)
     expect(continuityWarning(row('red'))).toBe('')
+  })
+
+  it('says what the inconclusive grade measured, not how to feel about it', () => {
+    expect(continuityTooltip(row('inconclusive'))).toContain(
+      'Inconclusive, the first grade among its 2 graded pairs in the order unstable, drift, ' +
+        'stable, inconclusive, insufficient: the ratio is neither flat enough to be stable ' +
+        'nor drifting or jumping enough to be drift or unstable.'
+    )
   })
 
   it('counts the graded pairs, not the ones the pass skipped', () => {
     const partial = row('red', {
       continuity: detail({ warnings: ['partial'], n_pairs: 3, grades: { red: 1 } })
     })
-    expect(continuityTooltip(partial)).toMatch(/^Unstable on its most alarming of 1 graded pair: /)
+    expect(continuityTooltip(partial)).toMatch(/^Unstable, the grade of its one graded pair: /)
   })
 
   it('says a stale grade was graded at another prevalence', () => {
@@ -118,7 +126,7 @@ describe('batchContinuity tooltip and warning', () => {
     expect(continuityWarning(gap)).toMatch(/not time-ordered: its largest gap/)
     const few = row(null, { continuity: detail({ eligible: false, reason: 'few_times' }) })
     expect(continuityWarning(few)).toMatch(/too few distinct acquisition times/)
-    expect(continuityTooltip(gap)).not.toMatch(/most alarming/)
+    expect(continuityTooltip(gap)).not.toMatch(/graded pair/)
   })
 
   it('gives the reason for the clock on a batch that is not time-ordered too', () => {
@@ -218,7 +226,9 @@ describe('batchContinuity pair lines', () => {
           continuity: detail({ n_pairs: 9, grades: { red: 5, stable: 2 }, pairs: [{}, {}] })
         })
       )
-    ).toBe('Showing 2 of 7 graded pairs: the most alarming first, then the best supported.')
+    ).toBe(
+      'Showing 2 of 7 graded pairs: by grade in the order unstable, drift, stable, inconclusive, insufficient, then the best supported.'
+    )
     expect(
       pairsShownNote(row('red', { continuity: detail({ n_pairs: 2, pairs: [{}, {}] }) }))
     ).toBe('')

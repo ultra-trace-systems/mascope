@@ -415,7 +415,7 @@ describe('BatchAssignDetails checklist', () => {
     )
     expect(result('series')).toBe('3 series families, 17 batch peaks in a series')
     expect(result('co_variation')).toBe('4 pairs of channels co-vary, 1 do not')
-    expect(result('continuity')).toBe('12 pairs graded, 2 red')
+    expect(result('continuity')).toBe('12 pairs graded, 2 unstable')
     expect(result('batch_checks')).toBe('Nothing was checked')
     expect(result('blends')).toBe('120 batch peaks read again')
   })

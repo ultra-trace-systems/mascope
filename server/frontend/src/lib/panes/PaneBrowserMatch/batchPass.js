@@ -157,7 +157,7 @@ const RESULTS = {
   continuity: (d) =>
     isCount(d.pairs_graded)
       ? `${plural(d.pairs_graded, 'pair')} graded` +
-        (d.grades && isCount(d.grades.red) ? `, ${d.grades.red} red` : '')
+        (d.grades && isCount(d.grades.red) ? `, ${d.grades.red} unstable` : '')
       : null,
   batch_checks: (d) =>
     isCount(d.locked) && isCount(d.twin_present) && isCount(d.labelled_ions)
