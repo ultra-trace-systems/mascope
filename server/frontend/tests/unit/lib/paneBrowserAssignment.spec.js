@@ -1320,7 +1320,20 @@ describe('PaneBrowserAssignment an isotope line with no M0', () => {
     const wrapper = await mountPane()
     const rows = Object.fromEntries(wrapper.vm.rows.map((r) => [r.peak_assignment_id, r]))
     expect(wrapper.vm.channelCount(rows.m)).toBe(1)
-    expect(wrapper.vm.channelCount(rows.hand)).toBe(1)
+    expect(wrapper.vm.channelCount(rows.hand)).toBe(0)
+  })
+
+  // Group by compound groups a neutral read through several channels. The
+  // line and its M0 are one channel, so they make no group.
+  it('makes no compound group with its M0', async () => {
+    const m0 = family({ id: 'm', mz: 438.872, intensity: 900, formula: 'C6H11Br2O5' })
+    m0.parent.ionization_mechanism_id = 'mech-1'
+    seed(m0, { parent: { ...LINE, ionization_mechanism_id: 'mech-1' }, kids: [] })
+    const wrapper = await mountPane()
+    wrapper.vm.view.groupBy = 'compound'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.vm.rows.filter((r) => r.ledgerKind === 'group')).toEqual([])
+    expect(ids(wrapper).sort()).toEqual(['hand', 'm'])
   })
 
   it('is found by its m/z in the search', async () => {
