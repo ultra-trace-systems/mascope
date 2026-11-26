@@ -40,10 +40,15 @@ from mascope_backend.api.new.peak_assignments.batch_staleness import (
     STAGE_OF_KEY,
     BatchStage,
 )
+from mascope_backend.api.new.peak_assignments.engine import GRID_RIVALS
 from mascope_backend.api.new.peak_assignments.identification_level import (
     LIFT_4A,
     SPLIT,
+    LevelContext,
+    level_of,
 )
+from mascope_backend.api.new.peak_assignments.rival_set import RIVAL_SET
+from mascope_backend.api.new.peak_assignments.tiering import PREDICTED_ENVELOPE
 
 
 FORMULA = "C6H5BrO"
@@ -148,6 +153,52 @@ def locked_anchor(run: str = "run-1", stamped_run: str = "run-1") -> SimpleNames
 LOCK = BatchFacts(lock={**lock(), "batch_peak_run_id": "run-2"})
 
 
+def run_record(*rivals: tuple, tof: bool = False, quiet: bool = False) -> dict:
+    """The bromophenol row's record as its run states it
+    (``identification_level.level_of``), ``rivals`` measured in the tie;
+    ``quiet``, its isotope lines under the file's detectability threshold."""
+    row = {
+        "peak_assignment_id": "pa-1",
+        "assigned_formula": FORMULA,
+        "ion_formula": ION,
+        "role": "M0",
+        "tier": "assigned",
+        "source": "database",
+        "fit_score": 0.9,
+        "ionization_mechanism_id": MECH,
+        "sample_peak_id": "p-1",
+        "sample_peak_intensity": 1000.0,
+        "mz_error_ppm": 0.0,
+        "owner_peak_assignment_id": None,
+        "alternatives": None,
+        "provenance": {
+            "cross_channel": {"channels": ["[M-H]-"]},
+            "plausibility": 1.0,
+            GRID_RIVALS: {"fit_score": 0.9, "added": 0, "rivals": []},
+            RIVAL_SET: {
+                "fit_score": 0.9,
+                "rivals": [
+                    {
+                        "formula": formula,
+                        "ion_formula": ion,
+                        "fit_score": 0.88,
+                        "mz_error_ppm": 0.1,
+                        "monoisotopic": True,
+                    }
+                    for formula, ion in rivals
+                ],
+                "rivals_unlisted": 0,
+            },
+        },
+    }
+    if quiet:
+        row["provenance"][PREDICTED_ENVELOPE] = {"lines": []}
+    context = LevelContext(
+        neutral_channels={}, notation_by_id={MECH: "[M-H]-"}, tof=tof
+    )
+    return level_of(row, [], context)
+
+
 class TestTheHalogenLock:
     def test_it_puts_out_the_rivals_without_its_halogen_5a_to_4(self):
         record = overlay(five_a(open_rival(*NO_BR)), ION, LOCK)
@@ -186,6 +237,92 @@ class TestTheHalogenLock:
         tests = {entry["formula"]: entry["test"] for entry in record["rivals"]}
         assert tests == {"C7H7O2": "mass", NO_BR[0]: "isotopes", WITH_BR[0]: "open"}
 
+    @pytest.mark.parametrize(
+        "kind, test",
+        [
+            ("orbitrap", ": an isotope line one of them cannot make"),
+            ("tof", ": a heavy-isotope twin one of them cannot make"),
+            ("quiet", ""),
+        ],
+    )
+    def test_its_lift_asks_only_of_the_rivals_left_open(self, kind, test):
+        own = run_record(NO_BR, WITH_BR, tof=kind == "tof", quiet=kind == "quiet")
+        assert f"exclude {NO_BR[0]}, {WITH_BR[0]}{test}" in own["lift"]
+
+        record = overlay(own, ION, LOCK)
+
+        assert record["level"] == "5a"
+        assert record["lift"] == own["lift"].replace(
+            f"exclude {NO_BR[0]}, {WITH_BR[0]}", f"exclude {WITH_BR[0]}"
+        )
+
+    def test_its_lift_names_the_first_three_left_open_as_its_run_names_them(self):
+        brominated = [(f"C{n}H4BrN", f"C{n}H3BrN-") for n in (5, 6, 7)]
+        own = run_record(NO_BR, *brominated)
+        listed = [rival["formula"] for rival in own["rivals"]]
+        assert NO_BR[0] in listed[:3]
+        assert own["lift"].startswith(f"exclude {', '.join(listed[:3])}:")
+
+        record = overlay(own, ION, LOCK)
+
+        left = [formula for formula in listed if formula != NO_BR[0]]
+        assert record["lift"].startswith(f"exclude {', '.join(left)}:")
+
+    def test_its_lift_names_no_rival_its_run_put_out(self):
+        by_mass = {**open_rival("C8H9NO4", "C8H8NO4-"), "test": "mass"}
+        own = five_a(
+            by_mass,
+            open_rival(*NO_BR),
+            open_rival(*WITH_BR),
+            lift=f"exclude {NO_BR[0]}, {WITH_BR[0]}: an isotope line",
+        )
+
+        record = overlay(own, ION, LOCK)
+
+        assert record["lift"] == f"exclude {WITH_BR[0]}: an isotope line"
+
+    def test_its_lift_keeps_what_it_asks_of_the_rivals_the_row_does_not_list(self):
+        own = five_a(
+            open_rival(*NO_BR),
+            rivals_unlisted=2,
+            lift=f"exclude {NO_BR[0]}: an isotope line; measure the rivals past the "
+            "stored shortlist",
+        )
+
+        record = overlay(own, ION, LOCK)
+
+        assert record["lift"] == "measure the rivals past the stored shortlist"
+
+    def test_its_lift_asks_for_the_shortlist_while_an_unmeasured_rival_is_open(self):
+        unmeasured_br = {
+            "formula": WITH_BR[0],
+            "ion_formula": WITH_BR[1],
+            "test": "open",
+        }
+        unmeasured_no_br = {**unmeasured_br, "formula": "C7H8O3", "ion_formula": None}
+        # The run names its measured open rivals, its unmeasured ones not.
+        lift = "measure the shortlist; exclude {}: an isotope line"
+
+        kept = overlay(
+            five_a(open_rival(*NO_BR), unmeasured_br, lift=lift.format(NO_BR[0])),
+            ION,
+            LOCK,
+        )
+        gone = overlay(
+            five_a(
+                open_rival(*NO_BR),
+                unmeasured_no_br,
+                open_rival(*WITH_BR),
+                lift=lift.format(f"{NO_BR[0]}, {WITH_BR[0]}"),
+            ),
+            ION,
+            LOCK,
+        )
+
+        assert kept["lift"] == "measure the shortlist"
+        assert gone["level"] == "5a"
+        assert gone["lift"] == f"exclude {WITH_BR[0]}: an isotope line"
+
     def test_it_puts_out_nothing_where_every_open_rival_holds_it(self):
         assert overlay(five_a(open_rival(*WITH_BR)), ION, LOCK) is None
 
@@ -211,13 +348,24 @@ class TestTheHalogenLock:
         assert overlay(unmeasured, ION, LOCK) is None
 
     def test_a_row_whose_run_recorded_no_split_stays_at_5a(self):
-        record = five_a(open_rival(*NO_BR))
+        record = five_a(open_rival(*NO_BR), lift=f"exclude {NO_BR[0]}: a line")
         record.pop(SPLIT)
 
         lifted = overlay(record, ION, LOCK)
 
         assert lifted["level"] == "5a"
         assert "did not record the split" in lifted["evidence"]
+        assert lifted["lift"] == "assign the sample again, so its run records the split"
+
+    @pytest.mark.parametrize("fact", ["lock", "34S"])
+    def test_a_rival_whose_ion_cannot_be_read_stays_open(self, fact):
+        facts = (
+            LOCK
+            if fact == "lock"
+            else read_facts(anchor(diagnostic_isotopologues=stamping(line(fact))), {})
+        )
+
+        assert overlay(five_a(open_rival(None, None)), ION, facts) is None
 
     def test_a_lock_that_did_not_lock_is_no_fact(self):
         facts = read_facts(
@@ -316,6 +464,19 @@ class TestTheLabelTwin:
 
         assert record["level"] == "4a"
         assert record["moved_by"] == [BY_LOCK, BY_TWIN]
+
+    def test_it_pins_nothing_of_a_row_the_lock_lifts_to_a_split_of_4a(self):
+        facts = BatchFacts(lock=LOCK.lock, twin=self.TWIN.twin)
+
+        record = overlay(five_a(open_rival(*NO_BR), split="4a"), self.LABELLED, facts)
+
+        assert record["level"] == "4a"
+        assert record["moved_by"] == [BY_LOCK]
+        assert record["evidence"].endswith("the split reads 4a")
+        assert record["lift"] == LIFT_4A
+        assert {"fact": "label_twin", "record": "batch_checks.label_twin"} not in (
+            record["facts"]
+        )
 
 
 class TestStampingStands:
@@ -607,6 +768,16 @@ class TestTheStage:
             "1 lifted by the batch's isotope checks (1 by a halogen lock)"
             in (levels_outcome(summary, "b")["message"])
         )
+
+    def test_a_source_roles_reading_states_no_level(self):
+        reagent = locked_anchor()
+        reagent.consensus_role = "reagent"
+        members = {"bp-1": [member("s-1", "5a", five_a(open_rival(*NO_BR)))]}
+
+        records, summary = read_levels([reagent], members)
+
+        assert records == {}
+        assert summary["anchors_read"] == 0
 
     def test_an_isotope_line_states_no_level_of_its_own(self):
         line = anchor("bp-13c")

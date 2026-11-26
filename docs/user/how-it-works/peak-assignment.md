@@ -1548,7 +1548,9 @@ facts:
 
 Each test is an isotope test the run itself asks of a rival, so a rival that reads the
 peak as another ion's isotope line, a rival the row does not list, or a row whose rivals
-were not measured stays as its run left it. The batch never lowers a member's level but
+were not measured stays as its run left it. A row the batch puts out some of its open
+rivals of, and not all, stays 5a: its **why** names the rivals left open, and its **would
+lift it** asks only of them. The batch never lowers a member's level but
 by the refutation, and its lifts end at 4 and 4a: a member its run stated at 3b or 2b
 keeps it. The batch's level is the one most of its members then hold, a tie reading as
 the weaker level, with the evidence line and lift of the brightest of them and how many
