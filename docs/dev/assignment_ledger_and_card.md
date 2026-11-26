@@ -309,6 +309,14 @@ place of C3H4O4 · Undo"); their full sentence is the tooltip.
 - **Loading:** skeleton lines in each section until the detail arrives.
 - **A focused peak with no ledger row:** the answer area says so, and *Find other
   formulas* is offered.
+- **A sample with no run of its own** (MAS-1297), served from the batch ledger: a note
+  under the answer in `--state-info`, not a warning, says the card is the batch's reading
+  for the sample, with *Assign sample* beside it (the bar's action, disabled with its
+  reason for a viewer). Each part a run fills says so where it would be: the Why box where
+  the channels' line would be, the isotope pattern under its lines, the level as a folded
+  section reading *none*. The spectrum draws the predicted pattern from the card's
+  on-demand measurement and names it *predicted, not measured in this sample*. Nothing is
+  borrowed from the batch's other samples.
 
 ### 4.3 What the card needs from the server
 

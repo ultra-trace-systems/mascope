@@ -65,6 +65,34 @@ function peakTrace(name, color, peaks, assignments = null, segments = null) {
   }
 }
 
+// What a circle of a sample the batch ledger serves is (the inspector card's
+// note says the same, docs/dev/assignment_ledger_and_card.md, section 4.2).
+export const LEDGER_PREDICTED = 'Predicted, not measured in this sample by a run of its own'
+
+// A ledger-served family's rows with the errors the inspector's on-demand
+// measurement found for them, by the peak each paired to; the M0 carries the
+// record's own. A row the measurement has no numbers for reads null.
+export function ledgerErrors(record) {
+  const byPeak = new Map(
+    (record?.isotopologues ?? [])
+      .filter((iso) => iso.sample_peak_id != null)
+      .map((iso) => [String(iso.sample_peak_id), iso])
+  )
+  return (row, m0) => {
+    if (!record) return null
+    const found =
+      row.peak_assignment_id === m0?.peak_assignment_id
+        ? record
+        : byPeak.get(String(row.sample_peak_id))
+    if (found?.mz_error_ppm == null) return null
+    return {
+      ...row,
+      mz_error_ppm: found.mz_error_ppm,
+      abundance_error: found.abundance_error ?? null
+    }
+  }
+}
+
 export const useChartData = defineStore('chart.sample.spectrum', () => {
   const spectrumData = shallowRef(null)
   const length = ref()
@@ -273,9 +301,18 @@ export const useChartData = defineStore('chart.sample.spectrum', () => {
     }
     const m0 = assignments.m0Of(assignment)
     const m0ToHeight = toHeight(m0) ?? 1
+    // A sample the batch ledger serves: its rows store no errors, so read as a
+    // run's they would put each "theoretical" circle on the measured stick.
+    // The errors come from the measurement the inspector takes for the view
+    // (`evidenceOf`, through the M0), and a row it gives none for is not drawn
+    // until it does. Its circles are the prediction alone: no run of the
+    // sample measured it, and the hover says so.
+    const ledger = assignments.run?.engine === 'batch'
+    const errorsOf = ledger ? ledgerErrors(assignments.evidenceOf?.(m0?.peak_assignment_id)) : null
     const points = family
-      .map((iso) => {
-        if (iso.sample_peak_intensity == null) return null
+      .map((row) => {
+        const iso = errorsOf ? errorsOf(row, m0) : row
+        if (!iso || iso.sample_peak_intensity == null) return null
         const theoreticalMz =
           iso.mz_error_ppm != null
             ? iso.sample_peak_mz / (1 + iso.mz_error_ppm / 1e6)
@@ -315,7 +352,7 @@ export const useChartData = defineStore('chart.sample.spectrum', () => {
           .flat(),
         hovertemplate:
           [
-            '<i>Theoretical</i>',
+            ledger ? `<i>${LEDGER_PREDICTED}</i>` : '<i>Theoretical</i>',
             'mz: <b>%{customdata[2]:.4f}</b>',
             'expected height: <b>%{customdata[0]:.3e}</b>'
           ].join('<br>') + '<extra></extra>'

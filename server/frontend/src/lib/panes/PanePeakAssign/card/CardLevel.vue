@@ -11,7 +11,14 @@ import { useCard } from './useCard.js'
 // against. An excluded rival names the test that excluded it; an open one - no
 // test did - wears the warning colour, since it is what holds the level at a
 // mass. Folded by default; the chip row carries the level itself.
-const { app, focusedAssignment, identificationLevel, rivalTooltip } = useCard()
+const {
+  app,
+  focusedAssignment,
+  identificationLevel,
+  rivalTooltip,
+  ledgerServed,
+  LEDGER_LEVEL_NOTE
+} = useCard()
 
 // Whose level it is: the live verdict's claim, which states it in place of the
 // engine's, or the engine's where no live verdict states one.
@@ -116,9 +123,32 @@ const summary = computed(() => {
       </div>
     </div>
   </CardSection>
+  <!-- A row the batch ledger serves states no level: no run of the sample
+       read one. The section says so in its place, rather than going missing. -->
+  <CardSection
+    v-else-if="ledgerServed"
+    title="Identification level"
+    summary="none: no run of this sample"
+    testid="section-level"
+  >
+    <div class="ledger-note" data-testid="level-ledger-note">
+      <span class="pi ph ph-stack" aria-hidden="true" />
+      {{ LEDGER_LEVEL_NOTE }}
+    </div>
+  </CardSection>
 </template>
 
 <style scoped>
+.ledger-note {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  color: var(--p-text-muted-color);
+  font-size: var(--card-text-sm);
+}
+.ledger-note .ph {
+  color: var(--state-info);
+}
 .identification-level {
   display: flex;
   flex-direction: column;

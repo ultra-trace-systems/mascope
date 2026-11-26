@@ -46,7 +46,9 @@ const {
   sameIonReadings,
   SAME_ION_TOOLTIP,
   channelOf,
-  EVIDENCE_TOOLTIPS
+  EVIDENCE_TOOLTIPS,
+  ledgerServed,
+  LEDGER_WHY_NOTE
 } = useCard()
 
 // Which reasons are unfolded to their sentence, by list and index. A new row
@@ -260,6 +262,12 @@ const memberTooltip = (member) =>
     >
       <span class="pi ph ph-link-simple" />
       {{ corroborationLabel }}
+    </div>
+    <!-- A row the batch ledger serves has no reasons and no channels of its
+         own: said where the channels' line would be, rather than nothing. -->
+    <div v-else-if="ledgerServed" class="ledger-note" data-testid="why-ledger-note">
+      <span class="pi ph ph-stack" aria-hidden="true" />
+      {{ LEDGER_WHY_NOTE }}
     </div>
     <Popover ref="channelsMenu" aria-label="The other channels' peaks">
       <div class="other-readings">
@@ -571,6 +579,16 @@ button.reason-neighbour:focus-visible,
   cursor: default;
 }
 .reading-icon,
+.ledger-note {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  color: var(--p-text-muted-color);
+  font-size: var(--card-text-sm);
+}
+.ledger-note .ph {
+  color: var(--state-info);
+}
 .reading-channel,
 .reading-listed {
   color: var(--p-text-muted-color);

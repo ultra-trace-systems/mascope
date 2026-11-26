@@ -51,6 +51,9 @@ const m1 = {
 let chart
 // The M0's detail, as the store caches it once the inspector has fetched it.
 let details
+// The run on view, and the inspector's on-demand measurement by M0 id.
+let run
+let evidence
 
 const open = async (family, peaks = [], focused = m0) => {
   const rows = new Map(family.map((row) => [row.sample_peak_id, row]))
@@ -69,11 +72,12 @@ const open = async (family, peaks = [], focused = m0) => {
       },
       peakAssignment: {
         peak: {
-          run: { peak_assignment_run_id: 'r-1' },
+          run,
           forPeak: (peakId) => rows.get(String(peakId)) ?? null,
           m0Of: () => family[0],
           familyOf: () => family,
-          detailOf: (id) => details.get(id) ?? null
+          detailOf: (id) => details.get(id) ?? null,
+          evidenceOf: (id) => evidence.get(id) ?? null
         }
       }
     },
@@ -95,6 +99,8 @@ beforeEach(() => {
   vi.clearAllMocks()
   vi.resetModules()
   details = new Map()
+  run = { peak_assignment_run_id: 'r-1' }
+  evidence = new Map()
 })
 
 describe('the theoretical envelope of the focused peak', () => {
@@ -205,5 +211,58 @@ describe('the lines the run did not find', () => {
     await open([m0, m1])
     expect(notFound()).toHaveLength(0)
     expect(envelope()).toHaveLength(1)
+  })
+})
+
+describe('the envelope of a sample the batch ledger serves', () => {
+  // The ledger's rows store no errors: read as a run's, each circle would sit
+  // on its measured stick and be called theoretical.
+  const bare = (row) => ({ ...row, mz_error_ppm: null, abundance_error: null })
+  const measured = {
+    peak_assignment_id: 'a-0',
+    mz_error_ppm: 10,
+    abundance_error: null,
+    isotopologues: [{ sample_peak_id: '8', mz_error_ppm: -5, abundance_error: 0.1 }]
+  }
+  beforeEach(() => {
+    run = { peak_assignment_run_id: 'fold-s-1', engine: 'batch' }
+  })
+
+  it('draws nothing until the inspector has measured the pattern', async () => {
+    await open([bare(m0), bare(m1)])
+
+    expect(envelope()).toHaveLength(0)
+  })
+
+  it('places each circle by the measured errors, and calls it predicted', async () => {
+    evidence.set('a-0', measured)
+    await open([bare(m0), bare(m1)])
+
+    const [trace] = envelope()
+    expect(trace.x[0]).toBeCloseTo(100.001 / (1 + 10 / 1e6), 9)
+    expect(trace.x[3]).toBeCloseTo(101.004 / (1 - 5 / 1e6), 9)
+    expect(trace.y[4]).toBeCloseTo(220 / 1.1, 9)
+    expect(trace.hovertemplate).toContain(
+      '<i>Predicted, not measured in this sample by a run of its own</i>'
+    )
+    expect(trace.hovertemplate).not.toContain('Theoretical')
+  })
+
+  it('leaves out a line the measurement has no numbers for', async () => {
+    evidence.set('a-0', { ...measured, isotopologues: [] })
+    await open([bare(m0), bare(m1)])
+
+    const [trace] = envelope()
+    expect(trace.x.filter((x) => x != null)).toHaveLength(2)
+  })
+
+  it("keeps a run's own rows and their hover as they were", async () => {
+    run = { peak_assignment_run_id: 'r-1', engine: 'mascope' }
+    evidence.set('a-0', { ...measured, mz_error_ppm: 99 })
+    await open([m0, m1])
+
+    const [trace] = envelope()
+    expect(trace.x[0]).toBeCloseTo(100.001 / (1 + 10 / 1e6), 9)
+    expect(trace.hovertemplate).toContain('<i>Theoretical</i>')
   })
 })
