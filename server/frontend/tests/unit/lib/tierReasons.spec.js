@@ -45,6 +45,7 @@ const SERVER_RULES = [
   'no_close_rival',
   'not_measured',
   'in_source_fragment',
+  'unread_line',
   'inherited_from_owner',
   'envelope_claim',
   'isotopologue_in_doubt',
@@ -184,6 +185,8 @@ describe('reasonIcon', () => {
   // it wears neither the arrow nor the check.
   it('marks a grouping the run records apart from both', () => {
     expect(reasonIcon({ rule: 'in_source_fragment', caps: false })).toBe('ph-info')
+    expect(reasonIcon({ rule: 'unread_line', caps: false })).toBe('ph-info')
+    expect(holdsTierDown({ rule: 'unread_line', caps: false })).toBe(false)
     expect(holdsTierDown({ rule: 'in_source_fragment', caps: false })).toBe(false)
   })
 })
@@ -220,6 +223,13 @@ describe('reasonTooltip', () => {
         'Caps nothing and keeps nothing: a grouping the run records about this row'
       )
     }
+  })
+
+  it('says a line that could not be read is no evidence against the row', () => {
+    const unread = { rule: 'unread_line', caps: false }
+    expect(reasonTooltip(unread, 'assigned')).toBe(
+      'Caps nothing: a line the file could not show apart is no evidence against this row'
+    )
   })
 
   // The band is where the row's evidence put it before any rule, so it does
