@@ -24,6 +24,18 @@ describe('the narrow ledger', () => {
     expect(LEDGER).toMatch(/\.ledger \{[^}]*container: ledger \/ inline-size;/)
   })
 
+  // A scoped rule weighs as much as `.ledger .x` and comes later in the
+  // bundle, so one that sets the display of a class these rules hide would
+  // keep it on screen at every width (the intensity's bar did).
+  it("is not overridden by the ledger's own display of what it hides", () => {
+    const style = LEDGER.slice(LEDGER.indexOf('<style'))
+    for (const { selector } of parseNarrowRules()) {
+      const cls = selector.split(' ').at(-1)
+      const own = new RegExp(`(^|\\n)${cls.replace('.', '\\.')}\\s*\\{[^}]*display:`)
+      expect(style, selector).not.toMatch(own)
+    }
+  })
+
   it('reads every rule it holds', () => {
     expect(parseNarrowRules()).toHaveLength(5)
   })

@@ -1040,7 +1040,10 @@ const engineChipTooltip = (row) =>
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
-.intensity-bar {
+/* Under :where(), so the rule weighs less than ./narrow.css's: scoped, it
+   weighed as much and came later, and its display won over the rule that
+   drops the bar at a narrow width. */
+:where(.intensity-bar) {
   display: inline-block;
   width: 3rem;
   height: 4px;
