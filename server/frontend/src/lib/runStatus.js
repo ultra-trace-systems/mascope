@@ -28,3 +28,18 @@ export const runStatusLabel = (status) => {
     ? RUN_STATUS_LABELS[status]
     : String(status)
 }
+
+// The statuses of a sample's assignment run that is still in flight: the
+// backend's NON_TERMINAL_RUN_STATUSES (peak_assignments/admission.py). While a
+// run of a sample holds one, the server refuses another run of that sample, so
+// the launchers do not offer one. 'importing' is a run an import is assembling;
+// it holds the sample as a running one does.
+export const IN_FLIGHT_RUN_STATUSES = Object.freeze(['pending', 'running', 'importing'])
+
+/**
+ * Whether a sample's assignment run is still in flight.
+ *
+ * @param {object|null} run the run as the runs listing returns it
+ * @returns {boolean} true while the run is pending, running or importing
+ */
+export const isRunInFlight = (run) => IN_FLIGHT_RUN_STATUSES.includes(run?.status)

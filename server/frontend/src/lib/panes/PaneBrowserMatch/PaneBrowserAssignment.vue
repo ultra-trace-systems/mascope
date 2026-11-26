@@ -78,7 +78,7 @@ import {
 import { usePeakSearch } from '@/lib/panes/PanePeakAssign/stores/peakSearch.js'
 import { useApp } from '@/stores'
 
-import { useAssignmentLauncher } from './stores'
+import { assignBlockedReason, useAssignmentLauncher } from './stores'
 import { useBatchChartSelection } from './stores/batchChartSelection.js'
 import { useBatchLedgerReturn } from './stores/batchLedgerReturn.js'
 
@@ -305,6 +305,10 @@ onScopeDispose(() => {
   launcher.configVisible = false
 })
 const submitting = ref(false)
+// Why a run cannot start now: a run of this sample still in flight, or a
+// launch already on its way for it (stores/assignmentLauncher.js). The same
+// reason disables Assign sample in the switch bar.
+const assignBlocked = computed(() => assignBlockedReason(app, launcher))
 // The run configuration opens on the batch's settings (its saved
 // `assignment_settings` over the server defaults,
 // docs/dev/batch_assignment_one_action.md 3.4), so a sample is assigned as its
@@ -357,6 +361,12 @@ watch(configVisible, (open) => {
 async function launch() {
   const sampleItemId = app.data.sample.focusedId
   if (!sampleItemId) return
+  // A second click while the first request is in flight sends nothing (the
+  // launch marks the sample below, synchronously), and neither does one while
+  // a run of the sample is: the server would refuse it as busy. The confirm
+  // button is disabled for both, but a double click can land before the
+  // disabled state renders.
+  if (assignBlocked.value) return
   // A range still being typed is committed first; one that does not parse
   // keeps the dialog open, saying why.
   if (configForm.value && !configForm.value.commit()) {
@@ -365,9 +375,12 @@ async function launch() {
   }
   formError.value = null
   submitting.value = true
+  launcher.launchingId = sampleItemId
+  let started = false
   try {
     await runs.value.assign(sampleItemId, runConfig(runModel, {}, runSaved))
     launchError.value = null
+    started = true
   } catch (error) {
     // A refusal is an answer, not a crash: the request was understood and
     // declined. Either way the dialog has nothing left to do - closing it puts
@@ -377,6 +390,16 @@ async function launch() {
   } finally {
     submitting.value = false
     configVisible.value = false
+  }
+  // The run list learns of the new run only when it is read again: the
+  // server's reload comes at the run's end. Until it lands, the launch itself
+  // holds the button, so there is no moment between the two when it is offered.
+  try {
+    if (started) await runs.value.load('assign')
+  } catch {
+    // The run list shows its own load error.
+  } finally {
+    if (launcher.launchingId === sampleItemId) launcher.launchingId = null
   }
 }
 
@@ -1142,7 +1165,16 @@ const HEADERS = {
         </Message>
         <template #footer>
           <Button label="Cancel" text severity="secondary" @click="configVisible = false" />
-          <Button label="Assign" icon="pi ph ph-magic-wand" :loading="submitting" @click="launch" />
+          <span v-tooltip.top="submitting ? null : assignBlocked" class="assign-confirm-wrap">
+            <Button
+              label="Assign"
+              icon="pi ph ph-magic-wand"
+              data-testid="assign-confirm"
+              :loading="submitting"
+              :disabled="Boolean(assignBlocked)"
+              @click="launch"
+            />
+          </span>
         </template>
       </Dialog>
     </template>
@@ -1186,6 +1218,8 @@ const HEADERS = {
             label="Assign sample"
             icon="pi ph ph-magic-wand"
             size="small"
+            :loading="Boolean(assignBlocked)"
+            :disabled="Boolean(assignBlocked)"
             @click="configVisible = true"
           />
         </template>

@@ -22,6 +22,9 @@ import { SORT_FIELDS } from '@/lib/ledger/useLedgerView.js'
 // uncaught promise behind a dialog that never closes.
 
 const assign = vi.fn()
+// The run list read again after a launch, so the new run's status holds the
+// button (lib/panes/PaneBrowserMatch/stores/assignmentLauncher.js).
+const runLoad = vi.fn()
 // Module-level so assertions see the same mock the component called: makeApp()
 // runs afresh on every useApp() and would otherwise hand out new spies.
 const sampleUnfocus = vi.fn()
@@ -161,7 +164,8 @@ function makeApp() {
           focused: runList[0] ?? null,
           focus: vi.fn(),
           unfocus: vi.fn(),
-          assign
+          assign,
+          load: runLoad
         },
         peak: {
           list: assignmentList,
@@ -710,6 +714,108 @@ describe('PaneBrowserAssignment launcher', () => {
     await wrapper.vm.launch()
 
     expect(assign).not.toHaveBeenCalled()
+  })
+
+  // A run of the sample still in flight holds it: the server refuses another
+  // as busy, so neither the bar's button nor the dialog's own sends one.
+  describe('while a run of the sample is in flight', () => {
+    const confirm = (wrapper) => wrapper.find('[data-testid="assign-confirm"]')
+    const deferred = () => {
+      let resolve
+      const promise = new Promise((r) => (resolve = r))
+      return { promise, resolve }
+    }
+
+    beforeEach(() => runLoad.mockReset().mockResolvedValue(undefined))
+
+    it.each(['pending', 'running', 'importing'])(
+      'disables the confirm button and sends nothing for a %s run',
+      async (status) => {
+        runList = [{ peak_assignment_run_id: 'run-1', status }]
+        const wrapper = await mountPane()
+        await openDialog(wrapper)
+
+        expect(confirm(wrapper).attributes('disabled')).toBeDefined()
+        await wrapper.vm.launch()
+        expect(assign).not.toHaveBeenCalled()
+      }
+    )
+
+    it.each(['completed', 'failed', 'cancelled'])(
+      'offers the confirm button once the run is %s',
+      async (status) => {
+        runList = [{ peak_assignment_run_id: 'run-1', status }]
+        const wrapper = await mountPane()
+        await openDialog(wrapper)
+
+        expect(confirm(wrapper).attributes('disabled')).toBeUndefined()
+        await wrapper.vm.launch()
+        expect(assign).toHaveBeenCalledTimes(1)
+      }
+    )
+
+    it('offers it for a sample with no run yet, as does the empty state', async () => {
+      const wrapper = await mountPane()
+      await openDialog(wrapper)
+
+      expect(confirm(wrapper).attributes('disabled')).toBeUndefined()
+      const empty = wrapper.find('.empty-state-stub [label="Assign sample"]')
+      expect(empty.attributes('disabled')).toBeUndefined()
+    })
+
+    it('sends one request for a double click', async () => {
+      const request = deferred()
+      assign.mockReturnValue(request.promise)
+      const wrapper = await mountPane()
+      await openDialog(wrapper)
+
+      const first = wrapper.vm.launch()
+      await wrapper.vm.launch()
+      expect(assign).toHaveBeenCalledTimes(1)
+
+      request.resolve({ data: [{ peak_assignment_run_id: 'run-1' }] })
+      await first
+      expect(assign).toHaveBeenCalledTimes(1)
+    })
+
+    it('holds the sample until the run list has the new run', async () => {
+      const read = deferred()
+      runLoad.mockReturnValue(read.promise)
+      const launcher = useAssignmentLauncher()
+      const wrapper = await mountPane()
+      await openDialog(wrapper)
+
+      const launching = wrapper.vm.launch()
+      expect(launcher.launchingId).toBe('si-1')
+      await flushAll()
+
+      // The request is answered and the dialog closed, but the list has not
+      // been read yet: a click now would still be refused, so none is offered.
+      expect(assign).toHaveBeenCalledTimes(1)
+      expect(runLoad).toHaveBeenCalledTimes(1)
+      expect(wrapper.vm.configVisible).toBe(false)
+      expect(launcher.launchingId).toBe('si-1')
+      expect(
+        wrapper.find('.empty-state-stub [label="Assign sample"]').attributes('disabled')
+      ).toBeDefined()
+      await wrapper.vm.launch()
+      expect(assign).toHaveBeenCalledTimes(1)
+
+      read.resolve()
+      await launching
+      expect(launcher.launchingId).toBeNull()
+    })
+
+    it('reads nothing again and lets go for a refused launch', async () => {
+      assign.mockRejectedValue(apiError(409, 'busy'))
+      const launcher = useAssignmentLauncher()
+      const wrapper = await mountPane()
+
+      await wrapper.vm.launch()
+
+      expect(runLoad).not.toHaveBeenCalled()
+      expect(launcher.launchingId).toBeNull()
+    })
   })
 })
 

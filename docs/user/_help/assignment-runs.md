@@ -1,7 +1,9 @@
 Each **Assign sample** launch creates a run &mdash; an immutable snapshot of the
 sample's assignments, numbered in launch order and listed newest first. The
 ledger shows the selected run; pick an older one to revisit it. A run marked
-with &hellip; is still in progress.
+with &hellip; is still in progress. While it is, **Assign sample** waits with
+a spinner: a sample runs one assignment at a time. It is offered again once
+the run ends, whether it completed, failed or was cancelled.
 
 A run also carries **who produced it**, shown as a chip beside its number:
 
