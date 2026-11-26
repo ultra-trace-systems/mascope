@@ -878,7 +878,7 @@ What it prints, one line each:
 | `lock` | free, or the command that holds the bench's lock, since when and whether its process still runs; the commands waiting |
 | `schema` | the database's alembic revisions, and whether this checkout knows them: at its head, behind it (a run migrates forward), or a revision it does not know (a later build migrated the database) |
 | `runs`, `batch` | every assignment run by engine, arm (control, or the decoy arm) and status; the batch runs by status |
-| `card` | the newest card that ran (a reused card ran nothing, and is named as such): its ref, commit, verdict and the times it ran from and to; its in-app runs made in that window per set and arm by status; and its failed runs by the shape of their error |
+| `card` | the newest card that ran (a reused card ran nothing, and is named as such): its ref, commit, verdict and the times it ran from and to; its in-app runs made in that window per set and arm by status; and its failed runs by the shape of their error. A card whose run put the database back after it (a `--batch` card, or a ref that migrates) says its runs are gone, and reads none |
 | `going` | while a run holds the lock, its in-app runs since it took it, per set and arm by status, and its failed ones by shape |
 | `storage` | each assignment table (`peak_assignment_run`, `peak_assignment`, `sample_measurement_model`, `assignment_calibration`, `assignment_verification`, `batch_peak_run`, `batch_peak_stage`, `batch_peak`, `batch_peak_run_anchor`) the database holds: its rows, its stored size (TOAST included), its indexes' size, and each JSON column's stored bytes and bytes a row |
 | `ledger` | the ledger rows the newest card's in-app runs wrote, per arm, with their `provenance` and `alternatives` stored bytes and bytes a row, counted exactly |
@@ -902,6 +902,11 @@ the instance's names and ids, every sample's file name and id, the
 reference's run ids and the hosts. Every in-app and batch run's id is added
 to that list. A line the scrub refuses is not printed. In its place a line
 says which kind of name it held, never the name, and the command exits 1.
+The command's own words are not names: the words of its text, of the
+tables and JSON columns it names, of the cards' refs, and the engines the
+bench runs (`mascope`, `peaky`). A workspace named after the app, or a
+calibration file, holds no line back. An engine read off a row is scrubbed
+like any other value.
 It exits 0 when every line printed, and 2 when the database could not be
 read; nothing is printed then but why.
 
