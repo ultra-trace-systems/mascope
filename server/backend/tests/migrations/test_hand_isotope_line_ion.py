@@ -5,7 +5,8 @@ Stairway and drift run the chain against an empty database, where the
 ``UPDATE`` matches nothing. Here hand lines in the old shape - the
 monoisotopic ion in ``ion_formula``, the line in ``isotope_formula`` - are
 seeded at the previous revision beside the rows the migration must leave
-alone: a hand M0, a run's line, and a hand line that names an owner.
+alone: a hand M0, a run's line, a hand line that names an owner, and a hand
+line that names no line formula (a promoted runner-up, mascope#3682).
 
 Rows are seeded through raw SQL rather than the ORM: a migration test has to
 describe the schema as it was at PRIOR_REVISION.
@@ -143,8 +144,10 @@ def test_a_hand_line_with_no_owner_takes_its_line_as_its_ion(migrated: dict) -> 
     assert migrated["pa-hand-line"] == LINE
 
 
-def test_a_hand_line_that_names_no_line_keeps_no_ion(migrated: dict) -> None:
-    assert migrated["pa-hand-bare"] is None
+def test_a_hand_line_that_names_no_line_keeps_its_ion(migrated: dict) -> None:
+    # A runner-up promoted at an isotope line stores no line formula: nulling
+    # its ion would lose the only formula it has, with no way back.
+    assert migrated["pa-hand-bare"] == M0_ION
 
 
 def test_every_other_row_is_left_as_it_was(migrated: dict) -> None:
