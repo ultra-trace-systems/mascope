@@ -853,10 +853,14 @@ async function loadLevelSources(row) {
   }
 }
 function openLevelSources(event, row) {
-  // A second click on the open row's chip closes it and asks nothing.
-  const closing = levelTarget.value?.batch_peak_id === row.batch_peak_id
+  // A second click on the open row's chip closes it and asks nothing. Any
+  // other click opens it and reads again, the same row's included: the
+  // popover may have closed on an Assign batch that moved the members' levels,
+  // and batch peak ids stay the same across a re-fold.
+  const closing =
+    Boolean(levelMenu.value?.visible) && levelTarget.value?.batch_peak_id === row.batch_peak_id
   openLevelPopover(event, row)
-  if (!closing || levelSources.id !== row.batch_peak_id) loadLevelSources(row)
+  if (!closing) loadLevelSources(row)
 }
 // The claim the row shows in place of the members' level, for the popover.
 const claimOf = (row) => (row?.shownLevel?.source === 'claim' ? row.shownLevel : null)
