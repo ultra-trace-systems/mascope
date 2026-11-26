@@ -60,6 +60,41 @@ describe('ledgerTierChips', () => {
 })
 
 describe('useLedgerFilters', () => {
+  // What lets a ledger say which filter hides a row (the note after a hand
+  // assignment, PaneBrowserAssignment.vue): the first filter on that hides
+  // it, in the order passes() reads them.
+  it('names the filter that hides a row, and none for a row that passes', () => {
+    const state = reactive({ tiers: [], search: '', roles: true, verdict: 'all' })
+    const verdicts = { 1: 'confirmed' }
+    const { toggleTier, hiddenBy, passes, filters } = useLedgerFilters({
+      bucketOf: (row) => row.bucket,
+      state,
+      menus: { level: FilterMatchMode.EQUALS },
+      verdictOf: (row) => (verdicts[row.id] ? { verdict: verdicts[row.id] } : null),
+      search: { texts: (row) => [row.formula], mzs: () => [] }
+    })
+    expect(ROWS.map((row) => hiddenBy(row))).toEqual([null, null, null, null])
+
+    state.roles = false
+    expect(hiddenBy(ROWS[3])).toBe('roles')
+    state.roles = true
+    toggleTier('assigned')
+    expect(hiddenBy(ROWS[1])).toBe('tiers')
+    expect(hiddenBy(ROWS[0])).toBeNull()
+    toggleTier('assigned')
+    state.search = 'C7H8'
+    expect(hiddenBy(ROWS[0])).toBe('search')
+    state.search = ''
+    filters.value.level.constraints[0].value = '5a'
+    expect(hiddenBy(ROWS[0])).toBe('menu:level')
+    filters.value.level.constraints[0].value = null
+    state.verdict = 'confirmed'
+    expect(hiddenBy(ROWS[1])).toBe('verdict')
+    expect(hiddenBy(ROWS[1], { verdicts: false })).toBeNull()
+    // passes() is hiddenBy's null.
+    expect(ROWS.map((row) => passes(row))).toEqual(ROWS.map((row) => hiddenBy(row) === null))
+  })
+
   it('filters by every chip that is on, and by none while none is', () => {
     const { toggleTier, passes, activeTiers } = useLedgerFilters({ bucketOf: (row) => row.bucket })
     expect(shown(passes)).toEqual([1, 2, 3, 4])

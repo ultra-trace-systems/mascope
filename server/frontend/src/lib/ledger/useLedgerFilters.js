@@ -139,7 +139,8 @@ export function useLedgerFilters({
 
   const read = (field) => valueOf[field] ?? ((row) => row[field])
 
-  function passesMenus(row) {
+  // The field of the first column menu that hides the row, or null.
+  function hidingMenu(row) {
     for (const [field, meta] of Object.entries(filters.value)) {
       if (menuShown[field] && !menuShown[field].value) continue
       const constraints = (meta.constraints ?? [meta]).filter(
@@ -154,22 +155,24 @@ export function useLedgerFilters({
         )
       const passed =
         meta.operator === FilterOperator.OR ? constraints.some(matches) : constraints.every(matches)
-      if (!passed) return false
+      if (!passed) return field
     }
-    return true
+    return null
   }
 
   /**
-   * Whether a top-level row passes every filter on.
+   * The first filter on that hides a top-level row, or null when it passes:
+   * `roles`, `tiers`, `search`, `menu:<field>` or `verdict`, in the order
+   * `passes` reads them. What lets a scope say which filter hides a row.
    *
    * @param {Object} row
-   * @param {{ verdicts?: boolean }} [options] `verdicts: false` leaves the
-   *   verdict filter out (the sample scope's verification queue)
+   * @param {{ verdicts?: boolean }} [options] as `passes`
+   * @returns {string|null}
    */
-  function passes(row, { verdicts = true } = {}) {
+  function hiddenBy(row, { verdicts = true } = {}) {
     const bucket = bucketOf(row)
-    if (!choices.roles && roleBuckets.has(bucket)) return false
-    if (activeTiers.value.size && !activeTiers.value.has(bucket)) return false
+    if (!choices.roles && roleBuckets.has(bucket)) return 'roles'
+    if (activeTiers.value.size && !activeTiers.value.has(bucket)) return 'tiers'
     if (
       search &&
       parsedSearch.value.kind !== 'none' &&
@@ -179,14 +182,26 @@ export function useLedgerFilters({
         toValue(tolerancePpm)
       )
     ) {
-      return false
+      return 'search'
     }
-    if (!passesMenus(row)) return false
+    const menu = hidingMenu(row)
+    if (menu) return `menu:${menu}`
     if (verdictOf && verdicts && verdictFilter.value !== 'all') {
-      return (verdictOf(row)?.verdict ?? 'unverified') === verdictFilter.value
+      if ((verdictOf(row)?.verdict ?? 'unverified') !== verdictFilter.value) return 'verdict'
     }
-    return true
+    return null
   }
 
-  return { activeTiers, toggleTier, filters, verdictFilter, searchQuery, passes }
+  /**
+   * Whether a top-level row passes every filter on.
+   *
+   * @param {Object} row
+   * @param {{ verdicts?: boolean }} [options] `verdicts: false` leaves the
+   *   verdict filter out (the sample scope's verification queue)
+   */
+  function passes(row, options) {
+    return hiddenBy(row, options) === null
+  }
+
+  return { activeTiers, toggleTier, filters, verdictFilter, searchQuery, passes, hiddenBy }
 }

@@ -11,7 +11,12 @@ import { reactive, watch } from 'vue'
  * over from the new choice.
  *
  * @param {import('vue').Ref<boolean>} all - Show > Isotopologue lines
- * @returns {{ isOpen: (id: string) => boolean, toggle: (id: string) => void }}
+ * `open` unfolds one family and leaves an open one open: what the ledger does
+ * for the family a hand assignment wrote into, where a toggle would shut a
+ * family the reader had open.
+ *
+ * @returns {{ isOpen: (id: string) => boolean, toggle: (id: string) => void,
+ *   open: (id: string) => void }}
  */
 export function useFamilyFold(all) {
   const flipped = reactive(new Set())
@@ -21,5 +26,8 @@ export function useFamilyFold(all) {
     if (flipped.has(id)) flipped.delete(id)
     else flipped.add(id)
   }
-  return { isOpen, toggle }
+  const open = (id) => {
+    if (!isOpen(id)) toggle(id)
+  }
+  return { isOpen, toggle, open }
 }

@@ -107,6 +107,39 @@ const joined = (parts, separator) => parts.filter(Boolean).join(separator)
 
 const MANUAL_BATCH = 'Curated by hand for the whole batch'
 const MANUAL_SAMPLE = 'Assigned by hand'
+const MANUAL_CLAIMED = 'Claimed when its M0 was assigned by hand'
+
+// The hand edits in which a person chose a row's formula: the formula search's
+// and the card's (`provenance.manual.action`, served on the slim row as
+// `manual_action`).
+const PERSON_ACTIONS = new Set(['set_assignment', 'promote_alternative'])
+// The edits that strip a line with its M0 (curation.py's DEMOTE_ACTIONS): such
+// a row holds no formula and folds under nothing, so it wears no hand mark.
+const DEMOTE_ACTIONS = new Set(['demote_isotopologue', 'demote_satellite'])
+
+const manualSummary = (record) =>
+  record?.batch ? MANUAL_BATCH : record?.claimed ? MANUAL_CLAIMED : MANUAL_SAMPLE
+
+/**
+ * The hand mark's record for an isotope line folded under its M0, or null for
+ * a line no hand edit wrote.
+ *
+ * A folded line wears no tier chip, so the chip's own hand mark is not drawn
+ * on it; this is that mark, said of the line. Two kinds of hand line fold
+ * under an M0, told apart by the edit that wrote them: one a person assigned
+ * on its own peak (`set_assignment`, `promote_alternative`), and one a hand M0
+ * claimed with it (any other action but a demotion). A row whose action is
+ * unknown reads as assigned by hand, the plainer claim.
+ *
+ * @param {object} row - a sample ledger row: `source` and `manual_action`
+ * @returns {{batch: false, claimed: boolean}|null}
+ */
+export function handLineMark(row) {
+  if (row?.source !== 'manual') return null
+  const action = row.manual_action ?? null
+  if (DEMOTE_ACTIONS.has(action)) return null
+  return { batch: false, claimed: action != null && !PERSON_ACTIONS.has(action) }
+}
 
 /**
  * The readings, in the order a row shows them: what supports first, then
@@ -281,16 +314,17 @@ const DEFINITIONS = [
   },
   {
     // A person's act: `{ batch: true }` for a batch peak curated for the
-    // whole batch, `{ batch: false }` for a sample's row assigned by hand.
+    // whole batch, `{ batch: false }` for a sample's row assigned by hand, and
+    // `{ batch: false, claimed: true }` for an isotope line a hand M0 claimed
+    // (handLineMark).
     id: 'manual',
     glyph: 'ph-hand-pointing',
     label: 'Changed by hand',
     fields: ['curated'],
     read: (row) => (row?.curated ? { batch: true } : null),
     tone: () => TONE_HUMAN,
-    summary: (record) => (record?.batch ? MANUAL_BATCH : MANUAL_SAMPLE),
-    tooltip: (record) =>
-      `${record?.batch ? MANUAL_BATCH : MANUAL_SAMPLE}; the next assignment run supersedes this`
+    summary: manualSummary,
+    tooltip: (record) => `${manualSummary(record)}; the next assignment run supersedes this`
   }
 ]
 

@@ -1,6 +1,14 @@
 import { describe, it, expect } from 'vitest'
 
-import { MARKS, MARK_IDS, TONES, ledgerMarks, markOf, markTone } from '@/lib/evidence/marks'
+import {
+  MARKS,
+  MARK_IDS,
+  TONES,
+  handLineMark,
+  ledgerMarks,
+  markOf,
+  markTone
+} from '@/lib/evidence/marks'
 import * as batchChecks from '@/lib/batchChecks'
 
 // One mark, one meaning (docs/dev/assignment_ledger_and_card.md, section 5):
@@ -153,6 +161,30 @@ describe('the evidence mark tones', () => {
     expect(markTone('manual', { batch: true })).toBe('human')
     expect(MARKS.manual.summary({ batch: true })).toBe('Curated by hand for the whole batch')
     expect(MARKS.manual.summary({ batch: false })).toBe('Assigned by hand')
+    expect(MARKS.manual.summary({ batch: false, claimed: true })).toBe(
+      'Claimed when its M0 was assigned by hand'
+    )
+    expect(MARKS.manual.tooltip({ batch: false, claimed: true })).toBe(
+      'Claimed when its M0 was assigned by hand; the next assignment run supersedes this'
+    )
+  })
+
+  // A folded isotope line wears no tier chip, so the hand mark is said of the
+  // line itself: which kind of hand line it is, by the edit that wrote it.
+  it('reads which kind of hand line a folded line is', () => {
+    const line = (manual_action, source = 'manual') => ({ source, manual_action })
+    expect(handLineMark(line('set_assignment'))).toEqual({ batch: false, claimed: false })
+    expect(handLineMark(line('promote_alternative'))).toEqual({ batch: false, claimed: false })
+    // Any other edit a line keeps is its M0's claim.
+    expect(handLineMark(line('claim_isotopologue'))).toEqual({ batch: false, claimed: true })
+    // An unknown edit reads as the plainer claim.
+    expect(handLineMark(line(null))).toEqual({ batch: false, claimed: false })
+    // A demoted row holds no formula: no mark.
+    expect(handLineMark(line('demote_isotopologue'))).toBeNull()
+    expect(handLineMark(line('demote_satellite'))).toBeNull()
+    // A line a run wrote is no hand line.
+    expect(handLineMark(line(null, 'database'))).toBeNull()
+    expect(handLineMark(null)).toBeNull()
   })
 })
 

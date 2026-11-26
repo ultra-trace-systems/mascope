@@ -104,6 +104,7 @@ beforeEach(async () => {
   vi.resetModules()
   SAMPLE_ID = 'si-1'
   servePage([M0, CHILD])
+  patch.mockResolvedValue({})
   ;({ usePeakAssignment } = await import('@/stores/data/modules/peakAssignment/assignment'))
 })
 
@@ -167,6 +168,33 @@ describe('peakAssignment curate()', () => {
 
     await expect(store.curate('pa-m0', PROMOTE)).rejects.toBe(forbidden)
     expect(get).not.toHaveBeenCalled()
+  })
+
+  // The ledger shows the row a click wrote (PaneBrowserAssignment.vue): it
+  // hears of it here, once the reload is in, so the row it reads is the one
+  // the server wrote and not the one the click was made on.
+  it('announces the written row once the reload is in', async () => {
+    const store = usePeakAssignment()
+    expect(store.written).toBeNull()
+    servePage([CURATED, DEMOTED])
+
+    await store.curate('pa-m0', PROMOTE)
+
+    expect(store.written.sampleItemId).toBe('si-1')
+    expect(store.written.row.assigned_formula).toBe('C7H16O5')
+    const first = store.written
+
+    await store.curate('pa-m0', PROMOTE)
+    // The same row written again is announced again.
+    expect(store.written).not.toBe(first)
+    expect(store.written.seq).toBeGreaterThan(first.seq)
+  })
+
+  it('announces nothing when the write or the reload fails', async () => {
+    const store = usePeakAssignment()
+    get.mockRejectedValue(new Error('503 Service Unavailable'))
+    await expect(store.curate('pa-m0', PROMOTE)).rejects.toThrow()
+    expect(store.written).toBeNull()
   })
 
   it('does nothing without a focused sample or an assignment to curate', async () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { flushPromises, mount } from '@vue/test-utils'
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { ref } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 
@@ -73,6 +73,9 @@ let peakList
 let peaksPending
 // Bumped to tell the pane the three above changed after it mounted.
 const peakRev = ref(0)
+// The row a hand assignment wrote, as the store announces it once its reload
+// is in (`written`), or null.
+const writtenRef = ref(null)
 // The peak list's load error, or null.
 let peaksError
 // Whether the run's rows are still loading, and their load error, or null.
@@ -181,7 +184,10 @@ function makeApp() {
           forPeak: (peakId) =>
             assignmentList.find((row) => String(row.sample_peak_id) === String(peakId)) ?? null,
           loadDetail: async () => detailRecord,
-          run: runRecord
+          run: runRecord,
+          get written() {
+            return writtenRef.value
+          }
         },
         verification: { forAssignment },
         anchorContext: { overlayFor },
@@ -225,6 +231,7 @@ vi.mock('@/lib/base', async () => ({
       ':data-engine-level="engineLevel" />'
   },
   BaseVerdictBadge: true,
+  BaseEvidenceBadge: (await vi.importActual('@/lib/base/BaseEvidenceBadge.vue')).default,
   // Real: the tier column's header renders it, and the provisional-tiers tests
   // below read the mark it draws.
   BaseProvisionalMark: (await vi.importActual('@/lib/base/BaseProvisionalMark.vue')).default,
@@ -485,6 +492,11 @@ function familyBreak(rows) {
   return null
 }
 
+// Every pane a test mounts is unmounted after it. The pane's stubs read refs this
+// file shares (the written row, the focused sample), so a pane left mounted
+// renders again when a later test writes one, against data that test replaced.
+enableAutoUnmount(afterEach)
+
 // Reset before every test in the file, including the describes below that only
 // override part of it.
 beforeEach(() => {
@@ -513,6 +525,7 @@ beforeEach(() => {
   tierCountsRecord = {}
   queueList = []
   batchPeakList = []
+  writtenRef.value = null
   seed()
 })
 
@@ -4433,5 +4446,386 @@ describe('PaneBrowserAssignment back to Batch peaks', () => {
       batchPeakId: null
     })
     wrapper.unmount()
+  })
+})
+
+// After a hand assignment the run is read again, and the row the click wrote
+// can land out of sight: a line folds under its M0, an M0 gains lines. The
+// ledger shows it: it opens the family the row is in, keeps the row selected
+// and in view, marks a hand line under its M0, and names the filter that
+// hides it.
+describe('PaneBrowserAssignment after a hand assignment', () => {
+  // A family whose first line a person assigned by hand.
+  const handFamily = (action = 'set_assignment') => {
+    const fam = family({
+      id: 'a',
+      mz: 200.1,
+      intensity: 1000,
+      formula: 'C10H12',
+      tier: 'candidate',
+      fit: 0.7,
+      children: [
+        { sample_peak_mz: 201.1, sample_peak_intensity: 5 },
+        { sample_peak_mz: 202.1, sample_peak_intensity: 6 }
+      ]
+    })
+    fam.kids[0] = { ...fam.kids[0], source: 'manual', manual_action: action }
+    return fam
+  }
+  const write = async (wrapper, row, sampleItemId = 'si-1') => {
+    writtenRef.value = { sampleItemId, row, seq: (writtenRef.value?.seq ?? 0) + 1 }
+    await wrapper.vm.$nextTick()
+    await wrapper.vm.$nextTick()
+  }
+  const selectedId = (wrapper) => wrapper.vm.selectedRow?.peak_assignment_id ?? null
+
+  beforeEach(() => {
+    runList = [{ peak_assignment_run_id: 'run-1', status: 'completed' }]
+  })
+  afterEach(() => vi.clearAllMocks())
+
+  it("opens a written line's M0 family and selects the line itself", async () => {
+    const fam = handFamily()
+    seed(fam, FAMILY_B)
+    focusedPeak = { peak_id: 'p-a-c0' }
+    const wrapper = await mountPane()
+    // Folded, the focused line maps to its M0's row.
+    expect(selectedId(wrapper)).toBe('a')
+    scrollVirtualRowIntoView.mockClear()
+
+    await write(wrapper, fam.kids[0])
+
+    expect(wrapper.vm.familyOpen({ peak_assignment_id: 'a' })).toBe(true)
+    expect(wrapper.vm.familyOpen({ peak_assignment_id: 'b' })).toBe(false)
+    expect(selectedId(wrapper)).toBe('a-c0')
+    // And it is scrolled to, at the line's own index.
+    const index = ids(wrapper).indexOf('a-c0')
+    expect(index).toBeGreaterThan(0)
+    expect(scrollVirtualRowIntoView.mock.calls.at(-1)[1]).toBe(index)
+  })
+
+  it("opens an M0's own family once it has lines", async () => {
+    seed(FAMILY_A)
+    focusedPeak = { peak_id: 'p-a' }
+    const wrapper = await mountPane()
+
+    await write(wrapper, FAMILY_A.parent)
+
+    expect(wrapper.vm.familyOpen({ peak_assignment_id: 'a' })).toBe(true)
+    expect(ids(wrapper)).toEqual(['a', 'a-c0', 'a-c1'])
+    expect(selectedId(wrapper)).toBe('a')
+  })
+
+  // Opened, not toggled: a toggle would shut the family the reader had open.
+  it('leaves a family that is already open open', async () => {
+    const fam = handFamily()
+    seed(fam)
+    const wrapper = await mountPane()
+    wrapper.vm.toggleFamily({ peak_assignment_id: 'a' })
+    await wrapper.vm.$nextTick()
+
+    await write(wrapper, fam.kids[0])
+    expect(wrapper.vm.familyOpen({ peak_assignment_id: 'a' })).toBe(true)
+    await write(wrapper, fam.parent)
+    expect(wrapper.vm.familyOpen({ peak_assignment_id: 'a' })).toBe(true)
+  })
+
+  it('opens nothing for a row with no family', async () => {
+    const lone = family({ id: 'lone', mz: 300.2, intensity: 10, formula: 'C3H8' })
+    seed(FAMILY_A, lone)
+    const wrapper = await mountPane()
+    await write(wrapper, lone.parent)
+    expect(wrapper.vm.familyOpen({ peak_assignment_id: 'a' })).toBe(false)
+    expect(ids(wrapper).sort()).toEqual(['a', 'lone'])
+  })
+
+  // A hand edit moves the row's tier, and with it its place in the sort, while
+  // the selection and the row count stay as they were: the row is scrolled to
+  // all the same.
+  it('scrolls to a written row that opens no family', async () => {
+    const lone = family({ id: 'lone', mz: 300.2, intensity: 10, formula: 'C3H8' })
+    seed(FAMILY_A, lone)
+    focusedPeak = { peak_id: 'p-lone' }
+    const wrapper = await mountPane()
+    scrollVirtualRowIntoView.mockClear()
+
+    await write(wrapper, lone.parent)
+
+    expect(scrollVirtualRowIntoView).toHaveBeenCalled()
+    expect(scrollVirtualRowIntoView.mock.calls.at(-1)[1]).toBe(ids(wrapper).indexOf('lone'))
+  })
+
+  it('does nothing for a write on a sample the ledger no longer shows', async () => {
+    const fam = handFamily()
+    seed(fam)
+    const wrapper = await mountPane()
+    await write(wrapper, fam.kids[0], 'si-2')
+    expect(wrapper.vm.familyOpen({ peak_assignment_id: 'a' })).toBe(false)
+  })
+
+  it('unfolds a group line folded over the written row', async () => {
+    const m0 = family({ id: 'm', mz: 181.07, intensity: 900, formula: 'C6H12O6' })
+    const other = family({ id: 'o', mz: 198.1, intensity: 90, formula: 'C6H12O6' })
+    m0.parent.ionization_mechanism_id = 'mech-1'
+    other.parent.ionization_mechanism_id = 'mech-2'
+    seed(m0, other)
+    const wrapper = await mountPane()
+    wrapper.vm.view.groupBy = 'compound'
+    await wrapper.vm.$nextTick()
+    const line = wrapper.vm.rows.find((r) => r.ledgerKind === 'group')
+    expect(line).toBeTruthy()
+    wrapper.vm.toggleGroupLine(line)
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper)).not.toContain('m')
+
+    await write(wrapper, m0.parent)
+    expect(ids(wrapper)).toContain('m')
+  })
+
+  // A row read through one channel is in no compound set: it is listed in
+  // the Ungrouped section, whose line folds as well.
+  it('unfolds a folded Ungrouped section over the written row', async () => {
+    const m0 = family({ id: 'm', mz: 181.07, intensity: 900, formula: 'C6H12O6' })
+    const other = family({ id: 'o', mz: 198.1, intensity: 90, formula: 'C6H12O6' })
+    const lone = family({ id: 'lone', mz: 300.2, intensity: 10, formula: 'C3H8' })
+    m0.parent.ionization_mechanism_id = 'mech-1'
+    other.parent.ionization_mechanism_id = 'mech-2'
+    seed(m0, other, lone)
+    focusedPeak = { peak_id: 'p-lone' }
+    const wrapper = await mountPane()
+    wrapper.vm.view.groupBy = 'compound'
+    await wrapper.vm.$nextTick()
+    const line = wrapper.vm.rows.find((r) => r.ledgerKind === 'group' && r.groupKey === 'ungrouped')
+    expect(line).toBeTruthy()
+    wrapper.vm.toggleGroupLine(line)
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper)).not.toContain('lone')
+
+    await write(wrapper, lone.parent)
+    expect(ids(wrapper)).toContain('lone')
+    expect(selectedId(wrapper)).toBe('lone')
+  })
+
+  describe('a hand line under its M0', () => {
+    function mountRendered() {
+      const tableRows = ref([])
+      return mount(PaneBrowserAssignment, {
+        global: {
+          directives: {
+            tooltip: {
+              mounted: (el, binding) => (el.dataset.tooltip = binding.value ?? ''),
+              updated: (el, binding) => (el.dataset.tooltip = binding.value ?? '')
+            },
+            help: {}
+          },
+          stubs: {
+            ...GLOBAL_STUBS,
+            DataTable: {
+              ...GLOBAL_STUBS.DataTable,
+              watch: {
+                value: { handler: (value) => (tableRows.value = value), immediate: true }
+              }
+            },
+            Column: {
+              setup: () => ({ rows: tableRows }),
+              template:
+                '<div class="col"><template v-for="(row, i) in rows" :key="i">' +
+                '<slot name="body" :data="row" /></template></div>'
+            }
+          }
+        }
+      })
+    }
+    const marks = (wrapper) =>
+      wrapper
+        .findAll('[data-testid="hand-line-mark"]')
+        .map((mark) => [mark.attributes('aria-label'), mark.attributes('data-tooltip')])
+
+    it('wears the hand mark, said of a line a person assigned', async () => {
+      seed(handFamily('set_assignment'))
+      const wrapper = mountRendered()
+      wrapper.vm.showIsotopologues = true
+      await wrapper.vm.$nextTick()
+      // The one hand line, not its engine-written sibling.
+      expect(marks(wrapper)).toEqual([
+        ['Assigned by hand', 'Assigned by hand; the next assignment run supersedes this']
+      ])
+      expect(wrapper.find('[data-testid="hand-line-mark"]').attributes('data-mark')).toBe('manual')
+    })
+
+    it('says of a line a hand M0 claimed that its M0 claimed it', async () => {
+      seed(handFamily('claim_isotopologue'))
+      const wrapper = mountRendered()
+      wrapper.vm.showIsotopologues = true
+      await wrapper.vm.$nextTick()
+      expect(marks(wrapper)).toEqual([
+        [
+          'Claimed when its M0 was assigned by hand',
+          'Claimed when its M0 was assigned by hand; the next assignment run supersedes this'
+        ]
+      ])
+    })
+
+    it('marks no line a run wrote', async () => {
+      seed(FAMILY_A)
+      const wrapper = mountRendered()
+      wrapper.vm.showIsotopologues = true
+      await wrapper.vm.$nextTick()
+      expect(marks(wrapper)).toEqual([])
+    })
+  })
+
+  describe('a written row a filter hides', () => {
+    const note = (wrapper) => wrapper.find('[data-testid="written-hidden"]')
+
+    it('names the tier chip that hides it, under the filter bar', async () => {
+      const fam = handFamily()
+      seed(fam, FAMILY_B)
+      const wrapper = await mountPane()
+      // FAMILY_A is a candidate; only the assigned chip is on.
+      wrapper.vm.toggleTier('assigned')
+      await wrapper.vm.$nextTick()
+
+      await write(wrapper, fam.kids[0])
+
+      expect(note(wrapper).exists()).toBe(true)
+      expect(note(wrapper).text()).toBe(
+        'The isotope line you assigned by hand (C10H12 at m/z 201.1000) is hidden by ' +
+          'the tier chip on (assigned).'
+      )
+      // The reader's filter stays as it was.
+      expect([...wrapper.vm.activeTiers]).toEqual(['assigned'])
+
+      // Once the row shows the note goes, and a filter set later brings none back.
+      wrapper.vm.toggleTier('assigned')
+      await wrapper.vm.$nextTick()
+      expect(note(wrapper).exists()).toBe(false)
+      wrapper.vm.toggleTier('assigned')
+      await wrapper.vm.$nextTick()
+      expect(note(wrapper).exists()).toBe(false)
+    })
+
+    it('names the search that hides it', async () => {
+      seed(FAMILY_A, FAMILY_B)
+      const wrapper = await mountPane()
+      wrapper.vm.searchQuery = 'C2H6'
+      await wrapper.vm.$nextTick()
+      await write(wrapper, FAMILY_A.parent)
+      expect(note(wrapper).text()).toBe(
+        'The row you assigned by hand (C10H12 at m/z 200.1000) is hidden by the search "C2H6".'
+      )
+    })
+
+    it('names Show > Verdict when the verdict filter hides it', async () => {
+      seed(FAMILY_A)
+      const wrapper = await mountPane()
+      wrapper.vm.verdictFilter = 'confirmed'
+      await wrapper.vm.$nextTick()
+      await write(wrapper, FAMILY_A.parent)
+      expect(note(wrapper).text()).toContain('is hidden by Show > Verdict (Confirmed).')
+    })
+
+    // The queue ignores Show > Verdict, so a verdict filter left set is not
+    // what hides a row the queue leaves out.
+    it('names the to verify chip in the verification queue', async () => {
+      seed(FAMILY_A)
+      const wrapper = await mountPane()
+      wrapper.vm.verdictFilter = 'confirmed'
+      wrapper.vm.queueMode = true
+      await wrapper.vm.$nextTick()
+      await write(wrapper, FAMILY_A.parent)
+      expect(note(wrapper).text()).toContain('is hidden by the to verify chip.')
+    })
+
+    // The queue still applies the tier chips: one of them hiding a queued
+    // row is what the note names, not the to verify chip.
+    it('names a tier chip that hides a queued row in the verification queue', async () => {
+      seed(FAMILY_A)
+      queueList = [{ peak_assignment_id: 'a', reason: 'low_margin' }]
+      const wrapper = await mountPane()
+      wrapper.vm.queueMode = true
+      wrapper.vm.toggleTier('assigned')
+      await wrapper.vm.$nextTick()
+      await write(wrapper, FAMILY_A.parent)
+      expect(note(wrapper).text()).toContain('is hidden by the tier chip on (assigned).')
+    })
+
+    it('says nothing of a written row the ledger shows', async () => {
+      seed(FAMILY_A)
+      const wrapper = await mountPane()
+      await write(wrapper, FAMILY_A.parent)
+      expect(note(wrapper).exists()).toBe(false)
+      expect(wrapper.vm.writtenShown).toBeNull()
+    })
+
+    it('names Show > Roles when the role rows are hidden', async () => {
+      const reagent = family({ id: 'r', mz: 61.99, intensity: 50, formula: null, role: 'reagent' })
+      seed(FAMILY_A, reagent)
+      const wrapper = await mountPane()
+      wrapper.vm.view.roles = false
+      await wrapper.vm.$nextTick()
+      await write(wrapper, reagent.parent)
+      // A row with no formula is named by nothing but what hides it.
+      expect(note(wrapper).text()).toBe(
+        'The row you assigned by hand is hidden by Show > Roles, which is off.'
+      )
+    })
+
+    it("names the Level column's filter", async () => {
+      const leveled = family({ id: 'l', mz: 250.1, intensity: 30, formula: 'C12H10' })
+      leveled.parent.level = '4a'
+      FAMILY_B.parent.level = '5a'
+      try {
+        seed(leveled, FAMILY_B)
+        const wrapper = await mountPane()
+        wrapper.vm.filters.level.constraints[0].value = '5a'
+        await wrapper.vm.$nextTick()
+        await write(wrapper, leveled.parent)
+        expect(note(wrapper).text()).toContain("is hidden by the Level column's filter.")
+      } finally {
+        delete FAMILY_B.parent.level
+      }
+    })
+
+    it('names the lens when one is open on another group', async () => {
+      const { useLedgerLensStore } = await import('@/lib/ledger/useLedgerLens.js')
+      seed(FAMILY_A, FAMILY_B)
+      const wrapper = await mountPane()
+      useLedgerLensStore().open(
+        'sample',
+        {
+          group_id: 'channels:C2H6',
+          kind: 'channels',
+          formula: 'C2H6',
+          members: [{ formula: 'C2H6', mechanism: '[M+H]+', mz: 100.05, sample_peak_id: 'p-b' }]
+        },
+        { sampleId: 'si-1' }
+      )
+      await wrapper.vm.$nextTick()
+      await write(wrapper, FAMILY_A.parent)
+      expect(note(wrapper).text()).toContain('is hidden by the lens on a group.')
+    })
+
+    it('goes with the sample it was about', async () => {
+      seed(FAMILY_A, FAMILY_B)
+      const wrapper = await mountPane()
+      wrapper.vm.toggleTier('assigned')
+      await write(wrapper, FAMILY_A.parent)
+      expect(note(wrapper).exists()).toBe(true)
+      focusedSampleId.value = 'si-2'
+      await wrapper.vm.$nextTick()
+      expect(note(wrapper).exists()).toBe(false)
+    })
+
+    it('goes when it is closed', async () => {
+      seed(FAMILY_A, FAMILY_B)
+      const wrapper = await mountPane()
+      wrapper.vm.toggleTier('assigned')
+      await write(wrapper, FAMILY_A.parent)
+      expect(note(wrapper).exists()).toBe(true)
+      wrapper.vm.writtenShown = null
+      await wrapper.vm.$nextTick()
+      expect(note(wrapper).exists()).toBe(false)
+    })
   })
 })

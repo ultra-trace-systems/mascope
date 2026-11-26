@@ -36,6 +36,17 @@ since. An isotope line you assigned by hand is not unassigned with it: it keeps
 its formula, stands on its own, and is linked again when the compound comes
 back.
 
+After the click, **Assignments** shows the row it wrote. The run is read again,
+and the row can land under another one: an isotope line folds under its
+compound's main line, and a main line can gain lines. So the ledger opens that
+family, selects the row and scrolls to it. A family you had open stays open.
+An isotope line folded under its main line carries the hand mark when it was
+assigned by hand; hover it to see whether you assigned that line or your
+assignment of its main line claimed it. The ledger does not change your
+filters: when a tier chip, the search, the **to verify** chip, the lens or a
+choice under **Show** hides the row, a note under the filter bar names it. The
+toast carries the server's whole message, which says what the change did.
+
 A hand assignment lasts until the sample is next assigned, which recomputes the
 ledger, so record a verification to keep the judgement. Assigning is not
 verifying: nothing is confirmed on your behalf, and a verdict the row carried

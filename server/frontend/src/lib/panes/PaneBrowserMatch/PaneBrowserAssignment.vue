@@ -14,6 +14,7 @@ import { getApiErrorMessage, isRefusedRequest } from '@/api/utils'
 import {
   BaseCopyableField,
   BaseEmptyState,
+  BaseEvidenceBadge,
   BaseLevelTag,
   BaseLoadError,
   BaseTierTag
@@ -27,6 +28,7 @@ import {
 } from '@/lib/peakAssignParams'
 import { formatIsotopeLabel, neutralKey } from '@/lib/chem'
 import { isIsotopeLine } from '@/lib/isotopeLines'
+import { handLineMark } from '@/lib/evidence/marks'
 import { ledgerListing, listingName, targetName, targetOf } from '@/lib/referenceListings'
 import { cappingRulesOf, reasonTooltip } from '@/lib/tierReasons'
 import {
@@ -507,18 +509,19 @@ const searchMzs = (row) => [
 ]
 const searchWindow = computed(() => runSearchWindow(runs.value.focused))
 
-const { activeTiers, toggleTier, filters, verdictFilter, searchQuery, passes } = useLedgerFilters({
-  bucketOf,
-  state: view,
-  menus: { level: FilterMatchMode.EQUALS },
-  // The menu filters on the level the column draws, a claim's included.
-  valueOf: { level: (row) => row.shownLevel?.level ?? null },
-  menuShown: { level: hasLevels },
-  view: readsEngineTiers,
-  verdictOf: effectiveVerdictFor,
-  search: { texts: searchTexts, mzs: searchMzs },
-  tolerancePpm: searchWindow
-})
+const { activeTiers, toggleTier, filters, verdictFilter, searchQuery, passes, hiddenBy } =
+  useLedgerFilters({
+    bucketOf,
+    state: view,
+    menus: { level: FilterMatchMode.EQUALS },
+    // The menu filters on the level the column draws, a claim's included.
+    valueOf: { level: (row) => row.shownLevel?.level ?? null },
+    menuShown: { level: hasLevels },
+    view: readsEngineTiers,
+    verdictOf: effectiveVerdictFor,
+    search: { texts: searchTexts, mzs: searchMzs },
+    tolerancePpm: searchWindow
+  })
 const searchTooltip = computed(() => {
   const { ppm, centrePpm } = searchWindow.value
   return (
@@ -955,6 +958,101 @@ watch([() => selectedRow.value?.sample_peak_id, () => rows.value.length], scroll
   immediate: true
 })
 
+// --- After a hand assignment -------------------------------------------------
+// A hand assignment reloads the run, and the row it wrote can land out of
+// sight: a line folds under its M0, and an M0 can gain lines. So the ledger
+// shows it (the store's `written`): it opens the family the row is in - the
+// M0's for a line with an owner, the row's own once it has lines - without
+// shutting one the reader had open, unfolds a group line folded over it, and
+// keeps the row in view. The selection follows the focused peak, which is the
+// written one (the search and the card write the focused peak's row), and
+// once the family is open `selectedRow` finds the line itself.
+//
+// What it does not do is undo the reader's filters. A row a filter hides is
+// left hidden, and a note under the filter bar names the filter, until the
+// row shows or the note is closed.
+const writtenShown = ref(null)
+
+// The row heading the family a ledger row is in: the M0's for a line with an
+// owner, the row itself otherwise.
+const familyHead = (record) =>
+  rowByPeak.value.get(String(assignments.value.m0Of(record)?.sample_peak_id)) ?? null
+
+watch(
+  () => assignments.value.written,
+  (written) => {
+    if (!written || written.sampleItemId !== app.data.sample.focusedId) return
+    const record = assignments.value.forPeak(written.row.sample_peak_id) ?? written.row
+    const familyId = isIsotopeLine(record)
+      ? record.owner_peak_assignment_id
+      : assignments.value.childrenOf(record.peak_assignment_id).length
+        ? record.peak_assignment_id
+        : null
+    if (familyId != null) families.open(familyId)
+    const head = familyHead(record)
+    if (head && view.groupBy === 'compound') {
+      const id = String(head.sample_peak_id)
+      const idOf = (row) => String(row.sample_peak_id)
+      // A row no compound set holds, such as one read through a single
+      // channel, is listed in the Ungrouped section, which folds too.
+      let inSet = false
+      for (const set of sampleGroupSets(decoratedRows.value, groupKeyOf, idOf)) {
+        if (!set.ids.includes(id)) continue
+        inSet = true
+        collapsed.delete(set.key)
+      }
+      if (!inSet) collapsed.delete('ungrouped')
+    }
+    writtenShown.value = { sampleId: written.sampleItemId, peakId: String(record.sample_peak_id) }
+    if (!writtenNote.value) writtenShown.value = null
+    nextTick(scrollToFocusedRow)
+  }
+)
+
+// Which filter hides the written row, named as the ledger labels it.
+function hidingFilter(head) {
+  if (lensGroup.value) return 'the lens on a group'
+  // The queue still applies every filter but the verdict one, so the to
+  // verify chip is to blame only when none of those hides the row.
+  const filter = hiddenBy(head, { verdicts: !queueMode.value })
+  if (queueMode.value && filter === null) return 'the to verify chip'
+  if (filter === 'roles') return 'Show > Roles, which is off'
+  if (filter === 'tiers') {
+    const labels = tierChips.value.filter((chip) => activeTiers.value.has(chip.key))
+    const names = labels.map((chip) => chip.label).join(', ')
+    return `the tier chip${labels.length === 1 ? '' : 's'} on (${names})`
+  }
+  if (filter === 'search') return `the search "${searchQuery.value}"`
+  if (filter === 'verdict') {
+    const choice = VERDICT_FILTERS.find((entry) => entry.value === verdictFilter.value)
+    return `Show > Verdict (${choice?.label ?? verdictFilter.value})`
+  }
+  // The Level column's is the one menu this ledger has.
+  if (filter === 'menu:level') return "the Level column's filter"
+  return null
+}
+
+const writtenNote = computed(() => {
+  const shown = writtenShown.value
+  if (!shown || shown.sampleId !== app.data.sample.focusedId) return null
+  if (rows.value.some((row) => !row.ledgerKind && String(row.sample_peak_id) === shown.peakId)) {
+    return null
+  }
+  const record = assignments.value.forPeak(shown.peakId)
+  const head = record ? familyHead(record) : null
+  const filter = head ? hidingFilter(head) : null
+  if (!filter) return null
+  const formula = formulaOf(record)
+  const mz = record.sample_peak_mz != null ? ` at m/z ${record.sample_peak_mz.toFixed(4)}` : ''
+  const what = isIsotopeLine(record) ? 'The isotope line' : 'The row'
+  return `${what} you assigned by hand${formula ? ` (${formula}${mz})` : ''} is hidden by ${filter}.`
+})
+// Once the row shows, the note is done with: a filter set later hides it as
+// it hides any row.
+watch(writtenNote, (note) => {
+  if (!note) writtenShown.value = null
+})
+
 // Says which of the two tiers this chip is, and whether it agrees. Without it
 // two chips on one row read as one claim rendered twice. Both tiers are named
 // in words, not as the API's keys.
@@ -1327,6 +1425,17 @@ const HEADERS = {
 
     <template #above-table>
       <Message
+        v-if="writtenNote"
+        severity="info"
+        size="small"
+        closable
+        class="written-note"
+        data-testid="written-hidden"
+        @close="writtenShown = null"
+      >
+        {{ writtenNote }}
+      </Message>
+      <Message
         v-if="staleNotice && !assignments.pending && !assignments.error"
         severity="warn"
         class="stale-notice"
@@ -1377,6 +1486,15 @@ const HEADERS = {
         <span class="child-label" v-tooltip.top="data.isotope_formula || data.isotope_label">{{
           childLabel(data)
         }}</span>
+        <!-- A line a hand edit wrote: the mark a manual row's tier chip wears,
+             which a folded line has no chip to carry. -->
+        <BaseEvidenceBadge
+          v-if="handLineMark(data)"
+          mark="manual"
+          :record="handLineMark(data)"
+          class="hand-line-mark"
+          data-testid="hand-line-mark"
+        />
       </span>
     </template>
 
@@ -1519,6 +1637,10 @@ const HEADERS = {
   opacity: 1;
 }
 
+/* A hand line's mark, centred on the line's label rather than its baseline. */
+.hand-line-mark {
+  align-self: center;
+}
 .line-tag {
   margin-left: 0.35rem;
   font-family: var(--font-mono);
