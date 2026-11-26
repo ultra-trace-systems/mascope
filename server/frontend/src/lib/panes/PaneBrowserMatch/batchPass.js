@@ -119,11 +119,20 @@ const RESULTS = {
     isCount(d.present) && isCount(d.species)
       ? `${d.present} of ${plural(d.species, 'known species', 'known species')} present`
       : null,
-  search: (d) =>
-    isCount(d.anchors_annotated) && isCount(d.anchors_searched)
-      ? `${d.anchors_annotated} of ${plural(d.anchors_searched, 'batch peak')} ` +
-        'assigned a composition'
-      : null,
+  search: (d) => {
+    if (!isCount(d.anchors_annotated) || !isCount(d.anchors_searched)) return null
+    // The batch peaks the last search found nothing for, left out while
+    // nothing it read of them changed (MAS-1189): counted, or the line reads
+    // as though the batch held only the ones searched.
+    const before = isCount(d.anchors_searched_before) ? d.anchors_searched_before : 0
+    if (before > 0 && d.anchors_searched === 0) {
+      return `${plural(before, 'batch peak')} not searched again`
+    }
+    const line =
+      `${d.anchors_annotated} of ${plural(d.anchors_searched, 'batch peak')} ` +
+      'assigned a composition'
+    return before > 0 ? `${line}, ${before} not searched again` : line
+  },
   isotope_lines: (strip, all) => {
     // The strip, then the stamp: one stage, two steps.
     const stamp = all[1] ?? {}

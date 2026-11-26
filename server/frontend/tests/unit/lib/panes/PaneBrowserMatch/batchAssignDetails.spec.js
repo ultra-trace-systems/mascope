@@ -897,6 +897,27 @@ describe('batchPass helpers', () => {
     ).toBe('1 sample folded, 2 skipped')
   })
 
+  it('counts the batch peaks the search did not search again', () => {
+    const search = (data) => stageResult({ stage: 'search', outcomes: [{ message: '...', data }] })
+    expect(
+      search({ anchors_searched: 12, anchors_annotated: 2, anchors_searched_before: 186 })
+    ).toBe('2 of 12 batch peaks assigned a composition, 186 not searched again')
+    // Without the count, or at zero, the line reads as before MAS-1189.
+    expect(search({ anchors_searched: 12, anchors_annotated: 2 })).toBe(
+      '2 of 12 batch peaks assigned a composition'
+    )
+    expect(search({ anchors_searched: 12, anchors_annotated: 2, anchors_searched_before: 0 })).toBe(
+      '2 of 12 batch peaks assigned a composition'
+    )
+    // Nothing searched, some left out: no "0 of 0 batch peaks".
+    expect(
+      search({ anchors_searched: 0, anchors_annotated: 0, anchors_searched_before: 186 })
+    ).toBe('186 batch peaks not searched again')
+    expect(search({ anchors_searched: 0, anchors_annotated: 0, anchors_searched_before: 1 })).toBe(
+      '1 batch peak not searched again'
+    )
+  })
+
   it('takes the message’s head where the counts are not there', () => {
     expect(
       stageResult({

@@ -2951,7 +2951,8 @@ brightest changes nothing the search reads. A sample left with nothing to search
 searched at all, which after a fold-in is most of the batch. Under a peak cap (the
 **Max untargeted peaks** setting) nothing is left out, since which peaks a capped search
 takes depends on all the others. The search's message counts the batch peaks it left
-out. A batch peak that takes a reading by any other way, a pin say, loses the record,
+out, and so does the search's line in the checklist of **Assign batch**'s **Details**:
+"2 of 12 batch peaks assigned a composition, 186 not searched again". A batch peak that takes a reading by any other way, a pin say, loses the record,
 also once the pin is released.
 
 **The search judges as an assignment run does.** Each sample's search takes the same
