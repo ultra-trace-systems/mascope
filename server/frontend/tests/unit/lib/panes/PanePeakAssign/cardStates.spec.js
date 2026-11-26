@@ -605,7 +605,9 @@ describe('card states: a sample with no run of its own', () => {
     expect(byTestId(wrapper, 'level-ledger-note').text()).toBe(
       'The identification level comes from an assignment run of the sample.'
     )
-    expect(byTestId(wrapper, 'section-level').text()).toContain('none: no run of this sample')
+    expect(byTestId(wrapper, 'section-level').text()).toContain(
+      'none: the batch ledger states no level'
+    )
     // A verdict can still be recorded on it, as on the sample's own result.
     expect(buttonsLabelled(wrapper, 'Confirm')[0].attributes('disabled')).toBeUndefined()
   })
@@ -656,6 +658,10 @@ describe('card states: a sample with no run of its own', () => {
     expect(byTestId(wrapper, 'run-notice-ledger').exists()).toBe(true)
     // The row is still the ledger's: each missing part still says why.
     for (const id of NOTES) expect(byTestId(wrapper, id).exists()).toBe(true)
+    // In words that hold beside the notice: the sample does have a run.
+    const level = byTestId(wrapper, 'section-level').text()
+    expect(level).toContain('none: the batch ledger states no level')
+    expect(level).not.toContain('no run of this sample')
   })
 
   it('shows none of it on a sample read on its own run', async () => {

@@ -8,6 +8,7 @@ import { num } from '@/lib/formatters'
 import { listingName, listingOf, listingTooltip } from '@/lib/referenceListings'
 import { reasonFigure, reasonIcon, reasonTooltip } from '@/lib/tierReasons'
 import { memberLabel, reasonTone } from './cardReadings.js'
+import CardLedgerNote from './CardLedgerNote.vue'
 import { useCard } from './useCard.js'
 
 // Why the row holds its tier: the evidence drawn against the run's own bands,
@@ -265,10 +266,11 @@ const memberTooltip = (member) =>
     </div>
     <!-- A row the batch ledger serves has no reasons and no channels of its
          own: said where the channels' line would be, rather than nothing. -->
-    <div v-else-if="ledgerServed" class="ledger-note" data-testid="why-ledger-note">
-      <span class="pi ph ph-stack" aria-hidden="true" />
-      {{ LEDGER_WHY_NOTE }}
-    </div>
+    <CardLedgerNote
+      v-else-if="ledgerServed"
+      :text="LEDGER_WHY_NOTE"
+      data-testid="why-ledger-note"
+    />
     <Popover ref="channelsMenu" aria-label="The other channels' peaks">
       <div class="other-readings">
         <div class="eyebrow">The same neutral, through the other channels</div>
@@ -579,16 +581,6 @@ button.reason-neighbour:focus-visible,
   cursor: default;
 }
 .reading-icon,
-.ledger-note {
-  display: flex;
-  align-items: baseline;
-  gap: 0.35rem;
-  color: var(--p-text-muted-color);
-  font-size: var(--card-text-sm);
-}
-.ledger-note .ph {
-  color: var(--state-info);
-}
 .reading-channel,
 .reading-listed {
   color: var(--p-text-muted-color);
