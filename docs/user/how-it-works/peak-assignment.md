@@ -3347,9 +3347,9 @@ Each pair is graded in this order:
 | drift | it drifts, and *Read co-variation* read the two channels as co-varying: the source's chemistry moved and the assignment stands |
 | unstable | it drifts with nothing saying the two traces co-vary, which an isotope ratio never has, or its spread is 0.5 or more: a ratio that jumps |
 | stable | a spread of at most 0.15 for an isotope ratio or 0.25 for a channel ratio, over 8 samples or more, the deviation above zero |
-| inconclusive | anything else |
+| inconclusive | anything else: neither flat enough to be stable nor drifting or jumping enough to be drift or unstable |
 
-A batch peak takes its most alarming pair's grade, in that order of alarm: unstable, drift,
+A batch peak takes the grade of its pairs that comes first in this order: unstable, drift,
 stable, inconclusive, insufficient. Only a time-ordered batch is graded: an
 acquisition batch, or an analysis batch whose largest gap between acquisition times is
 at most ten times the median gap. A batch that is not keeps no grades, and its batch
@@ -3383,7 +3383,7 @@ pass left some of the batch peak's pairs ungraded), behind the ledger (a sample 
 since, or the consensus formula moved, so the next pass grades it again) or withdrawn
 (a batch that is not time-ordered). The pair counts it gives are of the graded pairs.
 Clicking the badge lists the pairs behind the grade -
-the most alarming first, up to four - each with its grade, the samples both peaks are
+by grade in that order, then the best supported, up to four - each with its grade, the samples both peaks are
 in, the median ratio, its spread and its drift, and for two channels what *Read
 co-variation* said of them. An isotope line's own grade, on its pair with the main peak,
 is among the main peak's pairs. No tier, verdict or filter reads it.

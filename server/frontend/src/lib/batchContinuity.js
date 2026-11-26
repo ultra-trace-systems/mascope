@@ -4,8 +4,8 @@
  * The pass (step 4.11 of the assignment plan, `continuity.py`) reads the
  * within-sample ratio of every pair of related batch peaks - an isotope line
  * and its main peak, two channels of one compound - across a time-ordered
- * batch, and grades it. A batch peak carries its most alarming pair's grade as
- * `continuity_grade`, the pairs under `continuity`, and `continuity_stale`
+ * batch, and grades it. A batch peak carries the grade of its pairs that comes
+ * first in `GRADES` as `continuity_grade`, the pairs under `continuity`, and `continuity_stale`
  * where a sample folded since, a curation or a re-fold moved it. It is
  * display-only: no tier reads it, and these words say so.
  */
@@ -18,7 +18,10 @@ export const GRADE_STABLE = 'stable'
 export const GRADE_INCONCLUSIVE = 'inconclusive'
 export const GRADE_INSUFFICIENT = 'insufficient'
 
-/** The grades in the pass's order of alarm, which the column sorts on. */
+/**
+ * The grades in the pass's order: a batch peak takes the first its pairs have,
+ * the column sorts on it, and the popover lists the pairs in it.
+ */
 export const GRADES = [GRADE_RED, GRADE_DRIFT, GRADE_STABLE, GRADE_INCONCLUSIVE, GRADE_INSUFFICIENT]
 
 /** The grades that say something of the pair; the other two say it could not. */
@@ -48,13 +51,18 @@ export const GRADE_META = {
   },
   [GRADE_INCONCLUSIVE]: {
     label: 'Inconclusive',
-    meaning: 'the ratio is neither flat enough to be stable nor alarming'
+    meaning:
+      'the ratio is neither flat enough to be stable nor drifting or jumping enough to be ' +
+      'drift or unstable'
   },
   [GRADE_INSUFFICIENT]: {
     label: 'Insufficient',
     meaning: 'too few samples or acquisition times hold both peaks to read the ratio'
   }
 }
+
+/** The grades' order in words, as the tooltip and the popover name it. */
+const GRADE_ORDER = GRADES.map((grade) => GRADE_META[grade].label.toLowerCase()).join(', ')
 
 const DISPLAY_ONLY =
   'Shown for reading only: it says two peaks behave as one species, never which species, ' +
@@ -116,7 +124,7 @@ export function continuityLabel(row) {
 }
 
 /**
- * What the ledger's column sorts on: the grade's place in the order of alarm,
+ * What the ledger's column sorts on: the grade's place in the grades' order,
  * unstable first, null where there is no grade, so those sort last in both
  * directions.
  */
@@ -163,7 +171,9 @@ export function continuityTooltip(row) {
   if (meta) {
     const pairs = gradedPairCount(row)
     lines.push(
-      `${meta.label} on its most alarming of ${pairs} graded pair${pairs === 1 ? '' : 's'}: ${meta.meaning}.`
+      pairs === 1
+        ? `${meta.label}, the grade of its one graded pair: ${meta.meaning}.`
+        : `${meta.label}, the first grade among its ${pairs} graded pairs in the order ${GRADE_ORDER}: ${meta.meaning}.`
     )
   }
   const partial = continuityPartialSentence(row)
@@ -227,7 +237,7 @@ export function pairsShownNote(row) {
   const listed = row?.continuity?.pairs?.length ?? 0
   const total = gradedPairCount(row)
   if (total <= listed) return ''
-  return `Showing ${listed} of ${total} graded pairs: the most alarming first, then the best supported.`
+  return `Showing ${listed} of ${total} graded pairs: by grade in the order ${GRADE_ORDER}, then the best supported.`
 }
 
 export { DISPLAY_ONLY as CONTINUITY_DISPLAY_ONLY }
