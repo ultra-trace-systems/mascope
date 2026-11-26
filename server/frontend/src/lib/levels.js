@@ -407,9 +407,10 @@ export function memberLevelsSummary(memberLevels) {
 }
 
 /**
- * The hover text of a batch peak's level chip. The level is the one most of the
- * members' runs stated for the consensus formula - the batch states none of its
- * own - so the text says whose it is and how the members split.
+ * The hover text of a batch peak's level chip where the batch states no level
+ * of its own (its level stage has not run, or its record no longer stands): the
+ * one most of the members' runs stated for the consensus formula, so the text
+ * says whose it is and how the members split.
  *
  * @param {string|null} memberLevel the batch peak's `member_level`
  * @param {Object<string, number>|null} memberLevels its `member_levels`
@@ -517,6 +518,74 @@ export function unstatedLines(unstated) {
   return Object.entries(words)
     .filter(([why]) => Number.isInteger(unstated?.[why]) && unstated[why] > 0)
     .map(([why, line]) => line(unstated[why]))
+}
+
+/**
+ * The level a batch peak states of its own (step 5.8c), read off its members'
+ * runs and the batch's isotope checks: the ledger's `level` with its two lines,
+ * or null where no level of the batch stands and the members' level is all the
+ * row has.
+ *
+ * @param {object} row a batch ledger row
+ * @returns {?{level: string, evidence: ?string, lift: ?string}}
+ */
+export function batchLevelOf(row) {
+  if (!isLevel(row?.level)) return null
+  return { level: row.level, evidence: row.level_evidence ?? null, lift: row.level_lift ?? null }
+}
+
+/**
+ * The hover text of a batch peak's own level chip: the level, whose it is,
+ * what earned it and what would lift it, and how the members' runs split.
+ *
+ * @param {object} row a batch ledger row with `level`, `level_evidence`,
+ *   `level_lift` and `member_levels`
+ * @returns {string} '' for a batch peak with no level of its own
+ */
+export function batchLevelTooltip(row) {
+  const own = batchLevelOf(row)
+  if (!own) return ''
+  const summary = memberLevelsSummary(row.member_levels)
+  return [
+    levelMeta(own.level).description,
+    "Source: the batch - read off its members' runs and its isotope checks",
+    own.evidence ? `Why: ${own.evidence}` : null,
+    own.lift ? `Would lift it: ${own.lift}` : null,
+    summary ? `Stated by the members' runs: ${summary}` : null
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
+/**
+ * The batch's level on a sample's row, where the batch's isotope checks move
+ * the row's own (`batch_level` of the detail read): the level, marked as the
+ * batch's, with the level the row's run stated. Null where the batch moves
+ * nothing.
+ *
+ * @param {?object} record the detail's `batch_level`
+ * @returns {?{level: string, name: string, evidence: ?string, lift: ?string, stated: ?string, tooltip: string}}
+ */
+export function borrowedLevelOf(record) {
+  const meta = levelMeta(record?.level)
+  if (!meta || !record.borrowed) return null
+  const stated = isLevel(record.stated) ? record.stated : null
+  return {
+    level: record.level,
+    name: meta.name,
+    evidence: record.evidence ?? null,
+    lift: record.lift ?? null,
+    stated,
+    tooltip: [
+      meta.description,
+      "Source: the batch - its isotope checks read this row's own rivals" +
+        (stated ? `; the row's run stated ${stated}` : ''),
+      record.evidence ? `Why: ${record.evidence}` : null,
+      record.lift ? `Would lift it: ${record.lift}` : null
+    ]
+      .filter(Boolean)
+      .join('\n')
+  }
 }
 
 /**

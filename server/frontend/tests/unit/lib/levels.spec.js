@@ -6,6 +6,9 @@ import {
   LEVEL_META,
   LEVEL_RANK,
   RIVAL_TESTS,
+  batchLevelOf,
+  batchLevelTooltip,
+  borrowedLevelOf,
   claimLevelOf,
   heldByNote,
   isLevel,
@@ -402,5 +405,63 @@ describe("where a batch peak's level comes from", () => {
       "3 samples' runs commit no formula on this peak"
     ])
     expect(unstatedLines(null)).toEqual([])
+  })
+})
+
+describe("a batch peak's own level (step 5.8c)", () => {
+  const row = {
+    level: '4a',
+    level_evidence: "two rivals out: one by the batch's isotope checks",
+    level_lift: 'MS/MS',
+    member_level: '5a',
+    member_levels: { '4a': 1, '5a': 3 }
+  }
+
+  it('is the ledger row level with its two lines', () => {
+    expect(batchLevelOf(row)).toEqual({
+      level: '4a',
+      evidence: "two rivals out: one by the batch's isotope checks",
+      lift: 'MS/MS'
+    })
+  })
+
+  it('is none where the batch states no level of its own', () => {
+    expect(batchLevelOf({ member_level: '5a' })).toBeNull()
+    expect(batchLevelOf({ level: '9z' })).toBeNull()
+    expect(batchLevelTooltip({ member_level: '5a' })).toBe('')
+  })
+
+  it("names the batch as its source and keeps the members' split in its hover", () => {
+    const text = batchLevelTooltip(row)
+    expect(text).toContain("Source: the batch - read off its members' runs")
+    expect(text).toContain("Why: two rivals out: one by the batch's isotope checks")
+    expect(text).toContain('Would lift it: MS/MS')
+    expect(text).toContain("Stated by the members' runs: 1 member at 4a, 3 at 5a")
+  })
+})
+
+describe("the batch's level on a sample's row", () => {
+  const record = {
+    level: '4a',
+    evidence: 'the lock puts out C4H9N2O3P',
+    lift: 'MS/MS',
+    stated: '5a',
+    borrowed: true,
+    batch_level: '4a'
+  }
+
+  it("is marked as the batch's, with what the row's run stated", () => {
+    const shown = borrowedLevelOf(record)
+    expect(shown).toMatchObject({ level: '4a', stated: '5a', lift: 'MS/MS' })
+    expect(shown.name).toBe(levelMeta('4a').name)
+    expect(shown.tooltip).toContain("Source: the batch - its isotope checks read this row's")
+    expect(shown.tooltip).toContain("the row's run stated 5a")
+    expect(shown.tooltip).toContain('Why: the lock puts out C4H9N2O3P')
+  })
+
+  it('is none where the batch moves nothing or the record is no borrowed level', () => {
+    expect(borrowedLevelOf(null)).toBeNull()
+    expect(borrowedLevelOf({ ...record, borrowed: false })).toBeNull()
+    expect(borrowedLevelOf({ ...record, level: 'x' })).toBeNull()
   })
 })

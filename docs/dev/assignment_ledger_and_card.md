@@ -144,14 +144,16 @@ tell them apart.
 Imported engine tiers and levels show in the Tier and Level cells as a second, outlined
 chip when *Show › Engine readings* is on. They do not get columns of their own.
 
-The batch scope's level cell shows the level most of the batch peak's members' runs
-stated for the consensus formula, a tie reading as the weaker level, or a live
-batch-level claim's in its place. That level is a set of samples, and the set can hide
-better ones, so the chip opens a popover (MAS-1301, `lib/ledger/LedgerLevelSources.vue`):
-the claim first where there is one, then the members' split in the scale's order, the
-shown level's evidence and lift (the most common line of each, with how many members
-wrote it), the best level any member states where it is better, and the members that
-state none, by why, with **Assign batch** for an editor. **Open a sample** opens the
+The batch scope's level cell shows the batch peak's own level, the one most of its
+members hold under the batch's isotope checks (step 5.8c, MAS-940), else, where the batch
+states none, the level most of its members' runs stated for the consensus formula, a tie
+reading as the weaker level; a live batch-level claim's shows in its place. That level is
+a set of samples, and the set can hide better ones, so the chip opens a popover
+(MAS-1301, `lib/ledger/LedgerLevelSources.vue`): the claim first where there is one, the
+batch's own level with its evidence and lift next, then the members' own split in the
+scale's order, the members' level's evidence and lift (the most common line of each,
+with how many members wrote it), the best level any member states where it is better,
+and the members that state none, by why, with **Assign batch** for an editor. **Open a sample** opens the
 brightest member at a level in the sample scope, the card stepping through that level's
 members; a list picks another. The members come from one read per batch peak, on the
 click (`GET /batch-peaks/batch/{id}/levels/{batch_peak_id}`), never from the ledger's

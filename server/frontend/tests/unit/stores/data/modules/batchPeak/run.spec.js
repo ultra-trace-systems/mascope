@@ -89,3 +89,14 @@ describe('batchPeak run store', () => {
     expect(store.viewingId).toBeNull()
   })
 })
+
+describe('the stage labels a run with none of its own is named by', () => {
+  it('name the identification level, the last stage of a pass (step 5.8c)', async () => {
+    const { STAGE_LABELS, runLabel } = await import('@/stores/data/modules/batchPeak/run')
+
+    expect(Object.keys(STAGE_LABELS).at(-1)).toBe('level')
+    expect(runLabel({ action: 'assign', summary: { first_stage: 'level' } })).toBe(
+      'Assignment from a stage (Identification level)'
+    )
+  })
+})

@@ -76,7 +76,8 @@ const STAGES = [
   ['co_variation', 'Read co-variation', 'Cross-check across the batch'],
   ['continuity', 'Ratio stability', 'Cross-check across the batch'],
   ['batch_checks', 'Read batch checks', 'Cross-check across the batch'],
-  ['blends', 'Probable blends', 'Cross-check across the batch']
+  ['blends', 'Probable blends', 'Cross-check across the batch'],
+  ['level', 'Identification level', 'Cross-check across the batch']
 ].map(([stage, label, phase]) => ({ stage, label, phase, state: 'current', version: 1 }))
 
 // Local times, so the status line's "today 14:02" holds in any time zone.

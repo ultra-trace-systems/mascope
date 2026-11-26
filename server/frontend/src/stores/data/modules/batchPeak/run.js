@@ -22,7 +22,8 @@ export const STAGE_LABELS = Object.freeze({
   co_variation: 'Read co-variation',
   continuity: 'Ratio stability',
   batch_checks: 'Read batch checks',
-  blends: 'Probable blends'
+  blends: 'Probable blends',
+  level: 'Identification level'
 })
 
 /** The fold of every sample a pass may start with: no stage of the list. */

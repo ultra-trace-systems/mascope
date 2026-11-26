@@ -104,6 +104,7 @@ vi.mock('@/lib/ledger/LedgerLevelSources.vue', () => ({
     name: 'LedgerLevelSources',
     props: [
       'claim',
+      'batchLevel',
       'memberLevel',
       'memberLevels',
       'sources',
@@ -3468,6 +3469,37 @@ describe('PaneBrowserBatchPeaks identification level', () => {
     expect(cells['bp-3'].text()).toBe('')
   })
 
+  it("shows the batch's own level where one stands, with its lines and the members' split", async () => {
+    const own = peaks().map((bp) =>
+      bp.batch_peak_id === 'bp-2'
+        ? {
+            ...bp,
+            level: '4a',
+            level_evidence: "two rivals out: two by the batch's isotope checks",
+            level_lift: 'MS/MS'
+          }
+        : bp
+    )
+    const cells = await cellsOf('member_level', own)
+
+    const chip = cells['bp-2'].find('.level-tag')
+    expect(chip.attributes('data-level')).toBe('4a')
+    const tooltip = chip.attributes('data-tooltip')
+    expect(tooltip).toContain("Source: the batch - read off its members' runs")
+    expect(tooltip).toContain("Why: two rivals out: two by the batch's isotope checks")
+    expect(tooltip).toContain("Stated by the members' runs: 2 members at 5a")
+    expect(tooltip).not.toContain('not one the batch states of its own')
+    // Where none stands, the members' level as before.
+    expect(cells['bp-1'].find('.level-tag').attributes('data-level')).toBe('4a')
+    expect(cells['bp-1'].find('.level-tag').attributes('data-tooltip')).toContain(
+      'not one the batch states of its own'
+    )
+    // The filter reads the level the column draws.
+    wrapper.vm.filters.member_level.constraints[0].value = '4a'
+    await wrapper.vm.$nextTick()
+    expect(ids().sort()).toEqual(['bp-1', 'bp-2'])
+  })
+
   it('ranks each batch peak by the scale, one with no level null', async () => {
     wrapper = await mountPane({ peaks: peaks() })
     const byId = Object.fromEntries(wrapper.vm.rows.map((row) => [row.batch_peak_id, row]))
@@ -3629,6 +3661,27 @@ describe('PaneBrowserBatchPeaks identification level', () => {
       expect(popover().props('memberLevels')).toEqual({ '4a': 3, '5a': 2 })
       expect(popover().props('claim')).toBeNull()
       expect(popover().props('snapshot')).toBe(false)
+    })
+
+    it("hands the popover the batch's own level where one stands, and none where it does not", async () => {
+      const own = peaks().map((bp) =>
+        bp.batch_peak_id === 'bp-2'
+          ? { ...bp, level: '4b', level_evidence: 'the bromine lock', level_lift: 'MS/MS' }
+          : bp
+      )
+      const cells = await cellsOf('member_level', own)
+
+      await chipOf(cells, 'bp-2').trigger('click')
+      await flushPromises()
+      expect(popover().props('batchLevel')).toEqual({
+        level: '4b',
+        evidence: 'the bromine lock',
+        lift: 'MS/MS'
+      })
+
+      await chipOf(cells, 'bp-1').trigger('click')
+      await flushPromises()
+      expect(popover().props('batchLevel')).toBeNull()
     })
 
     it("asks nothing when a second click closes the open row's popover", async () => {

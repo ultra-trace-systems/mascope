@@ -171,6 +171,51 @@ describe('LedgerLevelSources', () => {
     expect(testid(wrapper, 'level-better').exists()).toBe(false)
   })
 
+  it("says the batch's own level first, with its lines, the members' own split under it", () => {
+    const wrapper = mountIt({
+      batchLevel: {
+        level: '4b',
+        evidence: 'the bromine lock puts out C8H9NO4; 3 of 5 members read 4b',
+        lift: 'MS/MS'
+      }
+    })
+    const own = testid(wrapper, 'level-batch')
+
+    expect(own.find('.level-tag').attributes('data-level')).toBe('4b')
+    expect(own.text()).toContain('The batch states this level')
+    expect(own.text()).toContain('Why: the bromine lock puts out C8H9NO4')
+    expect(own.text()).toContain('Would lift it: MS/MS')
+    const html = wrapper.html()
+    expect(html.indexOf('level-batch')).toBeLessThan(html.indexOf('level-split'))
+    // The members' 5a is theirs, not the one the row shows.
+    expect(testid(wrapper, 'level-shown-mark').text()).toBe("members' level")
+    // The batch states a level, so the note that it states none is gone.
+    expect(testid(wrapper, 'level-no-batch').exists()).toBe(false)
+    expect(testid(mountIt(), 'level-no-batch').exists()).toBe(true)
+  })
+
+  it("measures a better level some members state against the batch's own", () => {
+    // 4a is better than the batch's 4b: still the nearest way to raise the row.
+    const lifted = mountIt({ batchLevel: { level: '4b', evidence: null, lift: null } })
+    expect(testid(lifted, 'level-better').text()).toContain('2 samples read 4a')
+    expect(testid(lifted, 'level-batch').text()).not.toContain('Why')
+
+    // At the batch's 4a, no member's run states a better one.
+    const best = mountIt({ batchLevel: { level: '4a', evidence: null, lift: null } })
+    expect(testid(best, 'level-better').exists()).toBe(false)
+  })
+
+  it("puts a live claim before the batch's own level, and says both are above the split", () => {
+    const wrapper = mountIt({
+      claim: { level: '1', evidence: 'a reference standard', lift: null },
+      batchLevel: { level: '4a', evidence: 'the lock', lift: null }
+    })
+    const html = wrapper.html()
+
+    expect(html.indexOf('level-claim')).toBeLessThan(html.indexOf('level-batch'))
+    expect(testid(wrapper, 'level-claim').text()).toContain("the batch's own level and what")
+  })
+
   it("shows the ledger's split while the read is asked, with no way to a member yet", () => {
     const wrapper = mountIt({ sources: null, loading: true })
 
