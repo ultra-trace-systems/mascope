@@ -285,7 +285,8 @@ def _build_reference_isotopes_df(
 # deployment's realistic (mechanism set, polarity) combinations.
 _REFERENCE_ISOTOPE_CACHE_MAX = 8
 _reference_isotope_cache: OrderedDict[tuple, pd.DataFrame] = OrderedDict()
-_reference_isotope_cache_lock = asyncio.Lock()
+#: The lock of each key being built (:func:`reference_fine_lines_built`).
+_reference_isotope_build_locks: dict[tuple, asyncio.Lock] = {}
 
 
 async def _fetch_reference_known_isotopes(
@@ -306,9 +307,9 @@ async def _fetch_reference_known_isotopes(
     is no reference data or the sample has no matching ionization mechanisms -
     so the seam is a no-op until a reference database is loaded.
 
-    The expansion is cached across runs (see the cache note above); the lock
-    makes concurrent runs with the same key wait for one build instead of
-    duplicating it.
+    The expansion is cached across runs (see the cache note above); a lock
+    per key makes concurrent runs with the same key wait for one build instead
+    of duplicating it.
 
     :param sample: Sample model object.
     :param isotope_abundance_threshold: Minimum relative abundance for a
@@ -345,15 +346,33 @@ async def _reference_fine_lines(
     """The reference lists' fine lines for :func:`_fetch_reference_known_isotopes`,
     from the cache across runs: None where no mechanism or no active source
     reads any."""
+    frame, _ = await reference_fine_lines_built(sample, mechanisms, known_window)
+    return frame
+
+
+async def reference_fine_lines_built(
+    sample: Sample,
+    mechanisms: list[SimpleNamespace],
+    known_window: KnownWindow | None,
+) -> tuple[pd.DataFrame | None, bool]:
+    """:func:`_reference_fine_lines`, and whether this call built the entry.
+
+    The one way into the cache: a run reads it here, and so does the warm-up
+    a worker starts after start-up (``reference_warmup``), so an entry the
+    warm-up built is under the key a run then reads.
+
+    :return: The fine lines, None where no mechanism or no active source reads
+        any, and True when this call built them, False when it found them.
+    """
     if not mechanisms:
-        return None
+        return None, False
 
     async with async_session() as session:
         fingerprint = await known_state_fingerprint(session)
     if not fingerprint:
         # No active reference sources: nothing to expand, and nothing worth a
         # cache slot either.
-        return None
+        return None, False
 
     licenses = reference_license_gate()
     polarity = SAMPLE_POLARITIES.get(sample.polarity)
@@ -372,20 +391,38 @@ async def _reference_fine_lines(
         tuple(label_purity(symbol) for symbol in sorted(CUSTOM_ELEMENTS)),
     )
 
-    async with _reference_isotope_cache_lock:
-        reference_isotopes_df = _reference_isotope_cache.get(cache_key)
+    reference_isotopes_df = _cached_reference_frame(cache_key, sample)
+    if reference_isotopes_df is not None:
+        return reference_isotopes_df, False
+    # One lock per key: a run that needs an entry being built waits for that
+    # build and reads its frame, while a run whose entry is warm, or needs
+    # another one, does not wait behind it (MAS-1281).
+    lock = _reference_isotope_build_locks.setdefault(cache_key, asyncio.Lock())
+    async with lock:
+        reference_isotopes_df = _cached_reference_frame(cache_key, sample)
         if reference_isotopes_df is not None:
-            _reference_isotope_cache.move_to_end(cache_key)
-            runtime.logger.debug(
-                f"Reference isotope cache hit for sample '{sample.sample_item_name}'"
-            )
-        else:
-            reference_isotopes_df = await _build_reference_known_isotopes(
-                sample, polarity, licenses, mechanisms, known_window
-            )
-            _reference_isotope_cache[cache_key] = reference_isotopes_df
-            while len(_reference_isotope_cache) > _REFERENCE_ISOTOPE_CACHE_MAX:
-                _reference_isotope_cache.popitem(last=False)
+            return reference_isotopes_df, False
+        reference_isotopes_df = await _build_reference_known_isotopes(
+            sample, polarity, licenses, mechanisms, known_window
+        )
+        _reference_isotope_cache[cache_key] = reference_isotopes_df
+        while len(_reference_isotope_cache) > _REFERENCE_ISOTOPE_CACHE_MAX:
+            _reference_isotope_cache.popitem(last=False)
+        # Dropped once the frame is in: a waiter still holds the lock and finds
+        # the frame. A build that raised keeps it, so the next caller of the key
+        # builds again, one at a time, as the lazy path always has.
+        _reference_isotope_build_locks.pop(cache_key, None)
+    return reference_isotopes_df, True
+
+
+def _cached_reference_frame(cache_key: tuple, sample: Sample) -> pd.DataFrame | None:
+    """The cached frame of ``cache_key``, marked as the newest used, or None."""
+    reference_isotopes_df = _reference_isotope_cache.get(cache_key)
+    if reference_isotopes_df is not None:
+        _reference_isotope_cache.move_to_end(cache_key)
+        runtime.logger.debug(
+            f"Reference isotope cache hit for sample '{sample.sample_item_name}'"
+        )
     return reference_isotopes_df
 
 

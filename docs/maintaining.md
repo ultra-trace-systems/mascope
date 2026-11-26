@@ -2046,6 +2046,48 @@ gigabytes a month. It buys the inspector's per-peak alternatives and error
 figures and hand curation on every sample without an explicit run. All three
 take effect on the next stack restart.
 
+#### The reference lists' warm-up
+
+With peak assignment on and a reference list loaded (the shipped lists, or
+any [loaded with `mascope reference`](#loading-reference-chemistry-data)),
+every sample is matched against the ions the lists name, each with its
+isotope lines. Each backend worker expands the lists into those lines once
+per ionization mode and polarity and keeps them in memory. With the shipped
+lists that takes some 16 to 20 seconds each time.
+
+So each worker does it **in the background once it has started**. It takes
+the newest sample with peaks of each ionization mode and polarity in the
+database, newest first, and builds the entries their assignment reads, up to
+the eight the worker keeps. The worker's log shows one line when it starts
+and one when it ends:
+
+```text
+Reference lists warm-up started: 2 ionization mode and polarity pair(s) in use
+Reference lists warm-up done: 2 entries built in 10.6 s
+```
+
+- The start does not wait for it: `/ready` and the healthcheck answer as
+  soon as the worker serves, and requests are served while it runs.
+- A sample that arrives before its entry is ready waits for that build, as
+  the first sample always did, and is not given a second copy of it.
+- A sample whose spectrum opens a channel the newest sample of its mode did
+  not still builds its own entry when it arrives.
+- A failure is logged as a warning or an error and changes nothing else: the
+  first sample of each mode then builds its entry itself.
+- After a `mascope reference sync`, a seed or a list switched on or off, the
+  next sample of each mode builds its entry anew, as before. The warm-up runs
+  only when a worker starts, so a restart is what warms the changed lists.
+
+A worker does it only with peak assignment on and an active compound list.
+To switch it off anyway, for a test stack or a deployment that assigns little
+and would rather not spend the CPU at every start, set it in the env's config
+toml and restart:
+
+```toml
+[backend]
+reference_warmup = false   # default true
+```
+
 #### Samples assigned before the one measurement model
 
 Releases after 1.16.1 record one measurement model per assignment run: the

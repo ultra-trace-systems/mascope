@@ -523,6 +523,16 @@ class BackendConfig(ModuleConfig):
     # the files converted from then on. Switching it back on does not compute
     # it for the files converted while it was off.
     axis_fingerprint: Literal["ingest", "off"] = "ingest"
+    # The reference lists' warm-up: with peak assignment on and a reference
+    # list loaded, each backend worker expands the lists into their ions'
+    # fine lines in the background once it has started, for each ionization
+    # mode in use, so the first sample it assigns does not pay that expansion
+    # (about 16-20 s per mode and polarity with the shipped lists). Start-up
+    # does not wait for it, and a sample that arrives first waits for its own
+    # entry as it always has. False builds nothing until a sample asks, as
+    # before; a test stack or a worker that assigns nothing sets it false.
+    # Read by the backend when a worker starts.
+    reference_warmup: bool = True
     # Allowlist of per-record reference licences the peak-assignment database
     # stage (Stage A) may match against. The reference mirror carries a
     # licence per record from ingest through to results, and some sources

@@ -61,6 +61,9 @@ chemistry_detection = "audit"
 composite_scan_streams = true
 # "ingest" or "off" ("Axis fingerprint").
 axis_fingerprint = "ingest"
+# Expand the reference lists in the background after a worker starts
+# ("Peak assignment").
+reference_warmup = true
 # Unset by default, so no line here; see EXAMPLES: mfa_required_min_role
 # ("Two-factor authentication"), reference_licenses ("Reference licence
 # gating") and deployment_id ("Deployment identity").

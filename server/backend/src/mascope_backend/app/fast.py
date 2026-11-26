@@ -25,6 +25,10 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
     handle_exception,
 )
 from mascope_backend.api.lib.rate_limit import client_ip
+from mascope_backend.api.new.peak_assignments.reference_warmup import (
+    start_reference_warmup,
+    stop_reference_warmup,
+)
 from mascope_backend.api.new.readiness.routes import READY_PATH
 from mascope_backend.api.routes import routers
 from mascope_backend.db import init_db
@@ -52,8 +56,11 @@ async def lifespan(app: FastAPI):
     Worker startup tasks:
     - Configure database engine and connection pool for this worker
     - Connect to Redis for cross-worker session storage
+    - Start the reference lists' warm-up in the background, not waited for
+      (``peak_assignments.reference_warmup``)
 
     Worker shutdown tasks:
+    - Cancel the reference lists' warm-up if it still runs
     - Drain detached auto-processing pipelines (waits, then cancels what
       overruns, so a truncated pipeline still names its file)
     - Stop this worker's socket heartbeat
@@ -89,8 +96,14 @@ async def lifespan(app: FastAPI):
             f" multi-worker storage sharing will not work [Worker {worker_pid}]"
         )
 
+    # In the background, never waited for: the worker answers requests, and
+    # /ready, while its first samples' reference entries are built.
+    start_reference_warmup()
+
     # Yield control back to FastAPI
     yield
+
+    await stop_reference_warmup()
 
     # --- SHUTDOWN TASKS ---
     # Auto-processing runs detached from the request that scheduled it, so uvicorn
