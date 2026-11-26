@@ -344,9 +344,10 @@ class TestAClusterWithNothingToHoldOnTo:
 
     def test_a_reference_list_s_row_is_asked(self):
         # A list names a compound, not the channel it is seen through.
-        rows = [cluster("pa-1", source="database")]
+        rows = [cluster("pa-1", source="database", provenance=LISTED)]
         run(rows, notation_by_id=CHANNELS)
         assert tier_of(rows, "pa-1") == "candidate"
+        assert REASON_OXYGEN_FREE_CLUSTER in rules_on(rows, "pa-1")
 
     def test_a_target_library_row_is_asked_too(self):
         # It used to be exempt, as the cluster somebody chose to watch; a cap on
