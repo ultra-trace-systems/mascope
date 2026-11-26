@@ -118,45 +118,10 @@ function holdName(reason) {
 // held from above.
 const BATCH_DECISION = 'batch_known_species'
 
-/**
- * What holds a candidate row at candidate, in plain words, for the line the
- * Why box leads with and the tier chip's hover: a row whose fit is high reads
- * as a mistake at candidate unless the reason stands beside it.
- *
- * - The evidence band, where the evidence, fit times plausibility, is under
- *   the assigned band: a high fit at a low plausibility is held there.
- * - The rules that cap the row, each named with what it turned on.
- * - For an isotopologue, the rules that capped its M0, which it follows.
- * - A row the batch's decision put at candidate says that instead.
- * - A row the tiering pass judged and that names nothing that holds it says
- *   "no reason recorded": that is the engine's to answer, not the card's.
- *
- * A row no tiering pass judged (no reasons at all: an imported run, a hand
- * assignment, a row served from the batch ledger) gets no line, as the Why
- * box shows nothing for it.
- *
- * @param {object} options
- * @param {string|null} options.tier - the row's tier
- * @param {Array<object>} options.reasons - the row's `tierReasonsOf`
- * @param {Array<object>} [options.ownerReasons] - its M0's, for an isotopologue
- * @param {number|null} [options.evidence] - the row's evidence
- * @param {{candidate: number, assigned: number}} options.bands - `bandsOf`'s
- * @returns {{text: string, caps: Array<object>, viaM0: boolean, band: boolean}|null}
- */
-export function candidateHold({ tier, reasons, ownerReasons = [], evidence = null, bands }) {
-  if (tier !== 'candidate' || !Array.isArray(reasons) || !reasons.length) return null
-  if (reasons.some((reason) => reason.rule === BATCH_DECISION)) {
-    return {
-      text: "At candidate on the batch's decision: the batch found this listed compound present over its files",
-      caps: [],
-      viaM0: false,
-      band: false
-    }
-  }
-  const inherited = reasons.find((reason) => reason.rule === 'inherited_from_owner')
-  const own = reasons.filter((reason) => reason.caps && reason !== inherited)
-  const viaM0 = !own.length && inherited?.caps === true
-  const caps = viaM0 ? (ownerReasons ?? []).filter((reason) => reason.caps) : own
+// What holds a row judged on its own reasons: the evidence band where its
+// evidence is under the assigned one, then the rules that cap it, each named.
+function holdParts(reasons, evidence, bands) {
+  const caps = reasons.filter((reason) => reason.caps && reason.rule !== 'inherited_from_owner')
   const bandReason = reasons.find((reason) => reason.rule === 'evidence_band')
   const underAssigned = isFraction(evidence)
     ? evidence < bands.assigned && evidence >= bands.candidate
@@ -175,28 +140,90 @@ export function candidateHold({ tier, reasons, ownerReasons = [], evidence = nul
     )
   }
   if (named) parts.push(band ? `also ${named}` : named)
-  let text
-  if (viaM0) {
-    text = named ? `Held at candidate with its M0: ${named}` : 'Held at candidate with its M0'
-  } else if (parts.length) {
-    text = `Held at candidate: ${parts.join('; ')}`
-  } else {
-    text = 'Held at candidate: no reason recorded - the run names no rule that holds this row'
+  return { caps, band, parts }
+}
+
+const NO_REASON = 'no reason recorded - the run names no rule that holds'
+
+/**
+ * What holds a candidate row at candidate, in plain words, for the line the
+ * Why box leads with and the tier chip's hover: a row whose fit is high reads
+ * as a mistake at candidate unless the reason stands beside it.
+ *
+ * - The evidence band, where the evidence, fit times plausibility, is under
+ *   the assigned band: a high fit at a low plausibility is held there.
+ * - The rules that cap the row, each named with what it turned on.
+ * - An isotopologue no rule of its own caps follows its M0, and reads what
+ *   holds the M0: its band, with the M0's evidence, and its rules. The M0's
+ *   band is named whether or not the run marked the inherited reason as
+ *   capping, which it does only for a rule (tiering.py).
+ * - A row the batch's decision put at candidate says that instead.
+ * - A row the tiering pass judged and that names nothing that holds it says
+ *   "no reason recorded": that is the engine's to answer, not the card's.
+ *
+ * A row no tiering pass judged (no reasons at all: an imported run, a hand
+ * assignment, a row served from the batch ledger) gets no line, as the Why
+ * box shows nothing for it.
+ *
+ * @param {object} options
+ * @param {string|null} options.tier - the row's tier
+ * @param {Array<object>} options.reasons - the row's `tierReasonsOf`
+ * @param {Array<object>} [options.ownerReasons] - its M0's, for an isotopologue
+ * @param {number|null} [options.evidence] - the row's evidence
+ * @param {number|null} [options.ownerEvidence] - its M0's, for an isotopologue
+ * @param {{candidate: number, assigned: number}} options.bands - `bandsOf`'s
+ * @returns {{text: string, caps: Array<object>, viaM0: boolean, m0Capped: boolean,
+ *   band: boolean}|null}
+ */
+export function candidateHold({
+  tier,
+  reasons,
+  ownerReasons = [],
+  evidence = null,
+  ownerEvidence = null,
+  bands
+}) {
+  if (tier !== 'candidate' || !Array.isArray(reasons) || !reasons.length) return null
+  if (reasons.some((reason) => reason.rule === BATCH_DECISION)) {
+    return {
+      text: "At candidate on the batch's decision: the batch found this listed compound present over its files",
+      caps: [],
+      viaM0: false,
+      m0Capped: false,
+      band: false
+    }
   }
-  return { text, caps, viaM0, band }
+  const inherited = reasons.find((reason) => reason.rule === 'inherited_from_owner')
+  const own = holdParts(reasons, evidence, bands)
+  const viaM0 = !own.caps.length && Boolean(inherited)
+  if (!viaM0) {
+    const text = own.parts.length
+      ? `Held at candidate: ${own.parts.join('; ')}`
+      : `Held at candidate: ${NO_REASON} this row`
+    return { text, caps: own.caps, viaM0, m0Capped: false, band: own.band }
+  }
+  const owner = Array.isArray(ownerReasons) ? ownerReasons : []
+  const m0 = holdParts(owner, ownerEvidence, bands)
+  let text
+  if (m0.parts.length) text = `Held at candidate with its M0: ${m0.parts.join('; ')}`
+  else if (owner.length) text = `Held at candidate with its M0: ${NO_REASON} the M0`
+  // Before the M0's detail arrives.
+  else text = 'Held at candidate with its M0'
+  return { text, caps: m0.caps, viaM0, m0Capped: inherited.caps === true, band: m0.band }
 }
 
 /**
  * The tier chip's cap mark on the card (BaseTierTag's `cap`), from
  * `candidateHold`: the rules that hold the row, named, or null where none
  * does - the evidence band is no rule, and the chip's hover names the
- * evidence already.
+ * evidence already. An isotopologue whose M0 a rule capped is marked before
+ * the M0's reasons arrive.
  *
  * @param {object|null} hold - `candidateHold`'s result
  * @returns {{label: string, tooltip: string}|null}
  */
 export function holdCap(hold) {
-  if (!hold || (!hold.caps.length && !hold.viaM0)) return null
+  if (!hold || (!hold.caps.length && !hold.m0Capped)) return null
   const names = hold.caps.map((reason) => reason.label).join(', ')
   return {
     label: names

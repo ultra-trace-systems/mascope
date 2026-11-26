@@ -104,6 +104,7 @@ describe('candidateHold', () => {
       text: 'Held at candidate: one peak only, rivals left standing (3 formulas)',
       caps: [LONE, RIVALS],
       viaM0: false,
+      m0Capped: false,
       band: false
     })
   })
@@ -135,11 +136,45 @@ describe('candidateHold', () => {
   })
 
   it("reads an isotopologue's hold off its M0", () => {
-    const result = hold({ reasons: [follows(true)], ownerReasons: [BAND, LONE] })
+    const result = hold({
+      reasons: [follows(true)],
+      ownerReasons: [BAND, LONE],
+      ownerEvidence: 0.9
+    })
     expect(result.text).toBe('Held at candidate with its M0: one peak only')
     expect(result.viaM0).toBe(true)
     // Before the M0's detail arrives.
     expect(hold({ reasons: [follows(true)] }).text).toBe('Held at candidate with its M0')
+  })
+
+  // The run marks the inherited reason as capping only where a rule capped
+  // the M0 (tiering.py): an M0 its band alone holds still holds its
+  // isotopologue, and the line says so with the M0's evidence.
+  it("names the M0's band for an isotopologue its M0's band alone holds", () => {
+    const result = hold({
+      reasons: [follows(false)],
+      ownerReasons: [BAND, KEPT],
+      evidence: 0.2,
+      ownerEvidence: 0.749
+    })
+    expect(result.text).toBe(
+      'Held at candidate with its M0: evidence 74.9% is under the assigned band of 75.0%'
+    )
+    expect(result).toMatchObject({ viaM0: true, m0Capped: false, band: true, caps: [] })
+  })
+
+  it("names the M0's band beside the rule that capped it", () => {
+    expect(
+      hold({ reasons: [follows(true)], ownerReasons: [BAND, LONE], ownerEvidence: 0.6 }).text
+    ).toBe(
+      'Held at candidate with its M0: evidence 60% is under the assigned band of 75%; also one peak only'
+    )
+  })
+
+  it("says no reason is recorded where the isotopologue's M0 names none", () => {
+    expect(hold({ reasons: [follows(false)], ownerReasons: [KEPT] }).text).toBe(
+      'Held at candidate with its M0: no reason recorded - the run names no rule that holds the M0'
+    )
   })
 
   it("says a row stands on the batch's decision rather than held", () => {
@@ -150,7 +185,7 @@ describe('candidateHold', () => {
   })
 
   it('says no reason is recorded where the judged row names none', () => {
-    expect(hold({ reasons: [KEPT, follows(false)], evidence: 0.9 }).text).toBe(
+    expect(hold({ reasons: [KEPT], evidence: 0.9 }).text).toBe(
       'Held at candidate: no reason recorded - the run names no rule that holds this row'
     )
   })
@@ -172,6 +207,9 @@ describe('candidateHold', () => {
       tooltip: 'Held at candidate with its M0'
     })
     expect(holdCap(hold({ reasons: [BAND], evidence: 0.6 }))).toBeNull()
+    expect(
+      holdCap(hold({ reasons: [follows(false)], ownerReasons: [BAND], ownerEvidence: 0.6 }))
+    ).toBeNull()
     expect(holdCap(null)).toBeNull()
   })
 })

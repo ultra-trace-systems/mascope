@@ -1822,6 +1822,43 @@ describe('PanePeakAssign tier reasons', () => {
     )
   })
 
+  // The run marks the inherited reason as capping only where a rule capped
+  // the M0: an M0 its band alone holds names the band with its own evidence,
+  // read off its ledger row or its detail.
+  it.each([
+    ['its ledger row', { evidence: 0.749 }, {}],
+    ['its detail', {}, { evidence: 0.749 }]
+  ])(
+    "leads an isotopologue's Why box with its M0's band, the M0's evidence read off %s",
+    async (_, onRow, onDetail) => {
+      const owner = { ...M0, ...onRow }
+      focusedAssignment = isotopologue(owner)
+      familyRows = [owner, focusedAssignment]
+      detailRecord = { provenance: { evidence: 0.2, tier_reasons: [follows(false)] } }
+      otherDetails.set(M0.peak_assignment_id, {
+        provenance: {
+          ...onDetail,
+          tier_reasons: [
+            {
+              rule: 'evidence_band',
+              detail: 'evidence 74.9% is under the assigned band of 75.0%',
+              caps: false
+            },
+            NO_RIVAL
+          ]
+        }
+      })
+      const wrapper = await mountPane()
+
+      expect(wrapper.find('[data-testid="why-hold"]').text()).toBe(
+        'Held at candidate with its M0: evidence 74.9% is under the assigned band of 75.0%'
+      )
+      expect(
+        wrapper.find('[data-testid="chips"] .tier-tag').attributes('data-cap-label')
+      ).toBeUndefined()
+    }
+  )
+
   it('leads with nothing on a row served from the batch ledger', async () => {
     runRecord = { engine: 'batch' }
     focusedAssignment = { ...M0, batch_peak_id: 'bp-1' }

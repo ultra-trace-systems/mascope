@@ -1207,6 +1207,16 @@ export function useAssignmentCard({ showSearch }) {
     const detail = app.data.peakAssignment.peak.detailOf(owner.peak_assignment_id)
     return tierReasonsOf(detail?.provenance ?? owner.provenance)
   })
+  // The M0's evidence, which its band reason reads: an isotopologue held at
+  // candidate by its M0's band says the M0's number, not its own.
+  const ownerEvidence = computed(() => {
+    const owner = reasonsOwner.value
+    if (!owner) return null
+    const detail = app.data.peakAssignment.peak.detailOf(owner.peak_assignment_id)
+    const value =
+      withMeasured(owner)?.evidence ?? (detail?.provenance ?? owner.provenance)?.evidence
+    return typeof value === 'number' && Number.isFinite(value) ? value : null
+  })
 
   // --- Identification level -------------------------------------------------------
   // What a reader may state of the row, in the scale peaky and this server share
@@ -1751,6 +1761,7 @@ export function useAssignmentCard({ showSearch }) {
       reasons: tierReasons.value,
       ownerReasons: ownerReasons.value,
       evidence: evidenceValue.value,
+      ownerEvidence: ownerEvidence.value,
       bands: tierBands.value
     })
   )
