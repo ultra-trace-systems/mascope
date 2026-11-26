@@ -218,7 +218,7 @@ def stub_known_set(
     canned: the rows ``rows_of(sample_item_id, run_id)`` gives, but for those
     on a peak the claim stage took, at a measurement of nothing fitted and
     today's line-share tolerance, with no frame to score again at a refit's
-    model and no confidence curve.
+    model, no confidence curve and no reference ion left out.
 
     :return: The peaks each call was told the claim stage took, in order.
     """
@@ -247,6 +247,7 @@ def stub_known_set(
             SampleMassAccuracy(),
             RunEnvelopeFit(fit_envelope_tolerance(FORM_DEFAULT, EnvelopeLines())),
             frozenset(),
+            None,
             None,
             None,
         )

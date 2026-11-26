@@ -793,6 +793,7 @@ def _ctx(path, *, recorded=False):
         model=V1,
         model_recorded=recorded,
         stage_a_scored=_frame(2),
+        stage_a_absent=pd.DataFrame(),
         seeded_frame=judging_loop.SeededFrame(_frame(1), {}),
         shortlist=None,
         confidence_curve=CURVE,
@@ -857,10 +858,11 @@ class TestWhichPathsRefit:
         assert judging.curve is CURVE
         if refits:
             assert judging.rescore(V1) == {"fits": 1}
-            ((model, stage_a, seeded),) = handed
+            ((model, stage_a, seeded, absent),) = handed
             assert model is V1
             assert stage_a is ctx.stage_a_scored
             assert seeded is ctx.seeded_frame
+            assert absent is ctx.stage_a_absent
         else:
             assert judging.rescore is None
         # Every path reads its rows' rival sets out of the frames it scored

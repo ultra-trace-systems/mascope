@@ -8,9 +8,10 @@ envelope lines a thin file's tolerance is pooled from.
 
 import asyncio
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 
+import numpy as np
 import pandas as pd
 
 from mascope_backend.api.new.cheminfo.utils import to_custom_element_format
@@ -23,14 +24,19 @@ from mascope_backend.api.new.peak_assignments.engine import (
     invert_matches_to_peak_assignments,
     listed_formula_identities,
     record_stage_a_same_ion_readings,
+    reference_mirror_mask,
+    reference_names_by_formula,
     sample_mass_accuracy,
     score_ions_by_fit,
 )
 from mascope_backend.api.new.peak_assignments.envelope_fit import RunEnvelopeFit
 from mascope_backend.api.new.peak_assignments.profiles import ResolvedProfile
+from mascope_backend.api.new.peak_assignments.row_terms import REFERENCE_IDENTITIES_COL
 from mascope_backend.api.new.peak_assignments.sample_inputs import (
     RESOLVE_RESOLUTION,
-    _fetch_known_isotopes,
+    StageAKnown,
+    _fetch_stage_a_known,
+    match_reach,
 )
 from mascope_backend.api.new.peak_assignments.sample_mechanisms import (
     _untargeted_ionization_notations,
@@ -92,17 +98,26 @@ class ConfidenceCurve:
 
     @classmethod
     def of(
-        cls, calibration: Calibration | None, frame: pd.DataFrame
+        cls,
+        calibration: Calibration | None,
+        frame: pd.DataFrame,
+        absent: pd.DataFrame | None = None,
     ) -> "ConfidenceCurve | None":
         """The curve and the notations of the frame Stage A read through it;
-        None where the instrument has no curve, so no row has a number."""
+        None where the instrument has no curve, so no row has a number. The
+        reference ions Stage A left out of the frame (``absent``,
+        ``sample_inputs.StageAKnown``) are of it too."""
         if calibration is None:
             return None
         notations: dict[str, str] = {}
-        if {"ionization_mechanism_id", "ionization_mechanism"}.issubset(frame.columns):
+        for rows in (frame, pd.DataFrame() if absent is None else absent):
+            if not {"ionization_mechanism_id", "ionization_mechanism"}.issubset(
+                rows.columns
+            ):
+                continue
             for mechanism_id, notation in zip(
-                frame["ionization_mechanism_id"],
-                frame["ionization_mechanism"],
+                rows["ionization_mechanism_id"],
+                rows["ionization_mechanism"],
                 strict=True,
             ):
                 if mechanism_id is None or notation is None or pd.isna(notation):
@@ -129,6 +144,9 @@ class _StageAFirstPass:
         did; None where the lists predicted nothing.
     :param curve: The curve the rows' P(correct) was read off, which a re-score
         reads again (:func:`rescore_rows`); None where there is none.
+    :param absent: The reference ions left out of the frame, none of whose
+        lines reaches a peak (``sample_inputs.StageAKnown``): each scores 0 at
+        any model, which a re-score reads (``judging_loop.fits_at``).
     """
 
     rows: list[dict]
@@ -139,6 +157,7 @@ class _StageAFirstPass:
     listed_formulas: frozenset[str]
     assignments_of: Callable[[pd.DataFrame], list[dict]] | None = None
     curve: ConfidenceCurve | None = None
+    absent: pd.DataFrame = field(default_factory=pd.DataFrame)
 
     def rescored_at(
         self, match_params, envelope: RunEnvelopeFit, fallback_sigma_ppm: float
@@ -153,6 +172,89 @@ class _StageAFirstPass:
         )
 
 
+#: What ``pipeline._stage_a_assignments`` returns: the rows, the record of
+#: their confidence curve, the sample's mass accuracy, the run's envelope
+#: tolerance, the neutrals the lists name, the scored frame, the curve, and
+#: the reference ions left out of the frame.
+StageAResult = tuple[
+    list[dict],
+    dict | None,
+    SampleMassAccuracy,
+    RunEnvelopeFit,
+    frozenset[str],
+    pd.DataFrame,
+    ConfidenceCurve | None,
+    pd.DataFrame,
+]
+
+
+async def _read_known_set(
+    sample,
+    match_params,
+    mechanisms: tuple[list[str], list[SimpleNamespace]],
+    excluded_peak_ids: set[str] | None,
+    *,
+    known_window: KnownWindow | None,
+    resolution: Callable[[float], float] | None | object,
+) -> StageAKnown:
+    """The known set :func:`_stage_a_first_pass` matches, with the lines of
+    only the reference ions that may reach one of the sample's peaks
+    (``sample_inputs._fetch_stage_a_known``).
+
+    :param mechanisms: The mode's mechanism ids, which the target library is
+        read through, and the mechanisms the reference lists are read through.
+    :param excluded_peak_ids: The peaks another pass claimed, or None.
+    """
+    mechanism_ids, reference_mechanisms = mechanisms
+    return await _fetch_stage_a_known(
+        sample,
+        match_params.isotope_abundance_threshold,
+        mechanism_ids,
+        reference_mechanisms,
+        known_window=known_window,
+        reach=await match_reach(sample, match_params.mz_tolerance, excluded_peak_ids),
+        resolution=resolution,
+    )
+
+
+def _listed_formulas(known: StageAKnown) -> frozenset[str]:
+    """The neutrals the known set names, matched or not: the absent ions'
+    too (``engine.listed_formula_identities``)."""
+    return listed_formula_identities(known.frame) | listed_formula_identities(
+        known.absent
+    )
+
+
+def _reference_names(frame: pd.DataFrame, known: StageAKnown) -> dict | None:
+    """The lists' names by formula a scored frame's rows take
+    (``engine.reference_names_by_formula``), the absent ions' among them; None,
+    to read them off the frame, where none is absent."""
+    if known.absent.empty:
+        return None
+    return reference_names_with_absent(frame, known.absent, known.reference_order)
+
+
+def reference_names_with_absent(
+    frame: pd.DataFrame, absent: pd.DataFrame, order: dict[str, int]
+) -> dict[str, list]:
+    """The lists' names by formula of a scored frame and the reference ions
+    Stage A left out of it, each formula's from the first of its ions in the
+    known set's order, as one frame of all of them would name it.
+
+    :param frame: The scored frame.
+    :param absent: The reference ions left out (``StageAKnown.absent``).
+    :param order: Every reference ion's position in the known set.
+    :return: The names by formula identity.
+    """
+    if REFERENCE_IDENTITIES_COL not in frame.columns:
+        return {}
+    columns = ["target_ion_id", "target_compound_formula", REFERENCE_IDENTITIES_COL]
+    mirror = frame[reference_mirror_mask(frame)].drop_duplicates("target_ion_id")
+    rows = pd.concat([mirror[columns], absent[columns]], ignore_index=True)
+    rank = rows["target_ion_id"].astype(str).map(order).to_numpy()
+    return reference_names_by_formula(rows.iloc[np.argsort(rank, kind="stable")])
+
+
 def _gate_and_fit(
     frame: pd.DataFrame,
     match_params,
@@ -165,6 +267,14 @@ def _gate_and_fit(
 ) -> tuple[pd.DataFrame, SampleMassAccuracy]:
     """The first pass's matched frame gated and fit-scored, and the mass
     accuracy read off it (:func:`_stage_a_first_pass`).
+
+    The raw matches are gated by the sample's match parameters' mass window
+    and intensity floor, as the targeted Match pipeline does: without it a
+    peak tens of ppm off a target would be tiered "assigned" here while the
+    Match tab reports no match. A line's height is held to the line model's
+    test at the run's tolerance, the one the search's lines are admitted by,
+    not to the parameters' fixed ratio tolerance (:func:`gate_lines`): a line
+    that test turns away is absent to the fit and its peak goes to the search.
 
     Deliberately scored with the fit score (score_pattern_v2): the
     peak-centric engine's scoring engine is the ion-level fit quality, not the
@@ -223,15 +333,15 @@ async def _stage_a_first_pass(
     """
     mass_accuracy = SampleMassAccuracy(reagent=reagent_offset)
     matched_df = match_isotope_df = pd.DataFrame()
-    known_isotopes_df = await _fetch_known_isotopes(
+    known = await _read_known_set(
         sample,
-        match_params.isotope_abundance_threshold,
-        mechanism_ids,
-        mechanisms,
+        match_params,
+        (mechanism_ids, mechanisms),
+        excluded_peak_ids,
         known_window=known_window,
         resolution=resolution,
     )
-    listed_formulas = listed_formula_identities(known_isotopes_df)
+    known_isotopes_df, listed_formulas = known.frame, _listed_formulas(known)
     if not known_isotopes_df.empty:
         match_isotope_df = await compute_match_isotopes(
             filename=sample.filename,
@@ -244,14 +354,7 @@ async def _stage_a_first_pass(
             match_isotope_df = await asyncio.to_thread(
                 drop_ions_claimed_elsewhere, match_isotope_df, excluded_peak_ids
             )
-        # Gate raw matches by the sample's match parameters' mass window and
-        # intensity floor, as the targeted Match pipeline does: without it a
-        # peak tens of ppm off a target would be tiered "assigned" here while
-        # the Match tab reports no match. A line's height is held to the line
-        # model's test at the run's tolerance, the one the search's lines are
-        # admitted by, not to the parameters' fixed ratio tolerance
-        # (:func:`gate_lines`): a line that test turns away is absent to the
-        # fit and its peak goes to the search.
+        # Gated by the match parameters' mass window and floor (:func:`_gate_and_fit`).
         if not match_isotope_df.empty:
             # A decoy reads its control's model, tolerance included, from the
             # start; any other run first today's numbers, since the fit reads
@@ -297,6 +400,7 @@ async def _stage_a_first_pass(
                 max_alternatives=config.max_alternatives,
                 instrument=instrument,
                 calibration=calibration,
+                reference_identities=_reference_names(scored_df, known),
             )
 
         return _StageAFirstPass(
@@ -311,8 +415,9 @@ async def _stage_a_first_pass(
             listed_formulas=listed_formulas,
             assignments_of=assignments_of,
             curve=await asyncio.to_thread(
-                ConfidenceCurve.of, calibration, match_isotope_df
+                ConfidenceCurve.of, calibration, match_isotope_df, known.absent
             ),
+            absent=known.absent,
         )
     return _StageAFirstPass(
         rows=[],

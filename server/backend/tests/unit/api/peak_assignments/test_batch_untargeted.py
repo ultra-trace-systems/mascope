@@ -41,6 +41,7 @@ from mascope_backend.api.new.peak_assignments.row_terms import (
     ROLE_ARTIFACT,
     ROLE_REAGENT,
 )
+from mascope_backend.api.new.peak_assignments.sample_inputs import StageAKnown
 from mascope_backend.api.new.peak_assignments.tiers import TIER_ASSIGNED, TIER_CANDIDATE
 from mascope_match.params import OrbiMatchParams
 from mascope_tools.composition.mass_accuracy import PRED_SIGMA_PPM
@@ -675,8 +676,18 @@ def _searching(
     stand_in(f"{_MR}.load_sample_peaks", mocks["peaks"])
     stand_in(f"{_MR}.fetch_sample_mechanisms", mocks["mechanisms"])
     stand_in(f"{_MR}._resolution_of", mocks["resolution"])
-    stand_in(f"{_SA}._fetch_known_isotopes", mocks["known"])
+    stand_in(f"{_SA}._read_known_set", _stage_a_known(mocks["known"]))
     return stack, mocks
+
+
+def _stage_a_known(known: AsyncMock) -> AsyncMock:
+    """Stage A's known set read through the same stand-in as the search's,
+    with no reference ion left out."""
+
+    async def read(*args, **kwargs):
+        return StageAKnown(await known(*args, **kwargs), pd.DataFrame(), {})
+
+    return AsyncMock(side_effect=read)
 
 
 def _peaks(specs):

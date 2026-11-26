@@ -7,19 +7,21 @@ target library and the reference sources at the file's resolution.
 
 import asyncio
 from collections import OrderedDict
-from collections.abc import Callable
-from dataclasses import asdict
+from collections.abc import Callable, Collection
+from dataclasses import asdict, dataclass
 from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 from sqlalchemy import select
 
+import mascope_file.io as m_io
 from mascope_backend.api.controllers.samples.lib.samples_peaks import extract_peaks
 from mascope_backend.api.controllers.target.lib.compute.target_ions_compute import (
     FileLines,
     generate_target_ions_from_composition,
     ions_at_file,
+    ions_within_reach,
     lines_at_file,
 )
 from mascope_backend.api.new.instrument_configs.lib import read_instrument_functions
@@ -39,6 +41,7 @@ from mascope_backend.db import (
 from mascope_backend.runtime import runtime
 from mascope_file.name import get_instrument_type
 from mascope_match import shift_mz
+from mascope_match.compute.isotopes import MATCH_WINDOW_AMU
 from mascope_reference import iter_known_compositions, known_state_fingerprint
 from mascope_reference.scope import SAMPLE_POLARITIES
 from mascope_signal.compute import (
@@ -337,6 +340,102 @@ async def _fetch_reference_known_isotopes(
     )
 
 
+@dataclass(frozen=True)
+class MatchReach:
+    """Where Stage A can match a line of the sample: what
+    :func:`_fetch_stage_a_known` resolves the reference lists' lines for.
+
+    :ivar peak_mzs: Every peak of the sample's store, on the axis the matcher
+        reads it on (a decoy's moved one included): a superset of the peaks
+        the matcher pairs a line to.
+    :ivar tolerance_ppm: The match parameters' mass window, which the gate
+        holds every line to (``seeded_scoring.gate_lines``), in Stage A's first
+        pass and in its second alike.
+    :ivar claimed_mzs: The m/z of the peaks another pass claimed, which the
+        claim drop reads a line's raw pairing against
+        (``engine.drop_ions_claimed_elsewhere``).
+    """
+
+    peak_mzs: np.ndarray
+    tolerance_ppm: float
+    claimed_mzs: np.ndarray
+
+
+async def match_reach(
+    sample: Sample, tolerance_ppm: float, claimed_peak_ids: Collection[str] | None
+) -> MatchReach:
+    """The sample's :class:`MatchReach`, read off its peak store.
+
+    :param sample: The sample.
+    :param tolerance_ppm: The run's match parameters' mass window.
+    :param claimed_peak_ids: The peaks another pass claimed, or None.
+    :return: The reach.
+    """
+    peak_data = await asyncio.to_thread(m_io.load_peak_data, sample.filename)
+    mzs = np.asarray(shift_mz(np.asarray(peak_data.mz.values, dtype=float)))
+    claimed = {str(peak_id) for peak_id in claimed_peak_ids or ()}
+    on_claimed = np.array(
+        [str(peak_id) in claimed for peak_id in peak_data.peak_id.values],
+        dtype=bool,
+    )
+    return MatchReach(np.sort(mzs), float(tolerance_ppm), np.sort(mzs[on_claimed]))
+
+
+@dataclass(frozen=True)
+class StageAKnown:
+    """The known set Stage A matches, and the reference ions it left out.
+
+    :ivar frame: The known set as :func:`_fetch_known_isotopes` reads it, but
+        for the reference ions no line of which can reach a peak.
+    :ivar absent: Those ions, one row each with their own columns and none
+        of a line's (``target_ions_compute.ions_at_file``), the ions alone that
+        keep a line over the threshold.
+    :ivar reference_order: Every reference ion's position in the order the
+        known set lists them, the left-out ones included.
+    """
+
+    frame: pd.DataFrame
+    absent: pd.DataFrame
+    reference_order: dict[str, int]
+
+
+def _reachable_lines(
+    fine: pd.DataFrame,
+    file_lines: FileLines,
+    isotope_abundance_threshold: float,
+    reach: MatchReach,
+    keep_one: bool,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """:func:`_fetch_stage_a_known`'s reference part: the lines of the ions
+    that may reach a peak, and the other ions without their lines.
+
+    An ion no line of which comes within the gate's window of any peak
+    (``target_ions_compute.ions_within_reach``) has every line turned away by
+    the gate or paired to no peak, and so its base line absent: it commits
+    nothing, is no peak's contender, and scores 0 at any model
+    (``match_score_v2.ion_scores_v2``). Unless a line of it comes within the
+    matcher's own window (``MATCH_WINDOW_AMU``) of a claimed peak, the claim
+    drop leaves it in the frame as well, so the readers that read it there
+    are given it as one of the absent ions (:class:`StageAKnown`). With
+    ``keep_one``, one ion is kept where none would be, so that a known set of
+    the reference lists alone is still matched.
+    """
+    within = ions_within_reach(
+        fine,
+        file_lines,
+        reach.peak_mzs,
+        reach.tolerance_ppm,
+        near_mzs=reach.claimed_mzs,
+        near_window=MATCH_WINDOW_AMU,
+    )
+    if keep_one and not within.any() and within.size:
+        within = (fine["target_ion_id"] == fine["target_ion_id"].iloc[0]).to_numpy()
+    return (
+        lines_at_file(fine[within], file_lines, isotope_abundance_threshold),
+        ions_at_file(fine[~within], file_lines, isotope_abundance_threshold),
+    )
+
+
 async def _reference_fine_lines(
     sample: Sample,
     mechanisms: list[SimpleNamespace],
@@ -502,6 +601,61 @@ async def _fetch_known_isotopes(
         lines=lines,
     )
     return _combine_known_isotopes(target_isotopes_df, reference_isotopes_df)
+
+
+async def _fetch_stage_a_known(
+    sample: Sample,
+    isotope_abundance_threshold: float,
+    mechanism_ids: list[str],
+    mechanisms: list[SimpleNamespace],
+    *,
+    known_window: KnownWindow | None,
+    reach: MatchReach,
+    resolution: Callable[[float], float] | None | object = RESOLVE_RESOLUTION,
+) -> StageAKnown:
+    """The known set Stage A matches (:func:`_fetch_known_isotopes`), with the
+    lines resolved of only the reference ions that may reach a peak.
+
+    Most of the reference lists' ions have no peak anywhere near any line of
+    theirs in a sample (MAS-1282), and resolving their lines at the file was
+    most of an arrival's Stage A. Those ions are told before any line is
+    resolved (:func:`_reachable_lines`) and come back as the absent ions, for
+    the readers that read them in the frame Stage A scored: the neutrals the
+    lists name, the fits a re-score reads, the notations of the confidence
+    curve, and the lists' names for a formula (``stage_a_pass``). The target
+    library's ions are resolved all: they are few.
+
+    :param reach: Where the sample's lines can match (:func:`match_reach`).
+    :return: The frame and the absent ions. The other parameters are
+        :func:`_fetch_known_isotopes`'.
+    """
+    if resolution is RESOLVE_RESOLUTION:
+        resolution = await _resolution_of(sample)
+    file_lines = FileLines(resolution_type_of(sample), resolution)
+    target_isotopes_df = await _fetch_known_target_isotopes(
+        sample, isotope_abundance_threshold, mechanism_ids, file_lines
+    )
+    fine = await _reference_fine_lines(sample, mechanisms, known_window)
+    if fine is None or fine.empty:
+        return StageAKnown(
+            _combine_known_isotopes(target_isotopes_df, pd.DataFrame()),
+            pd.DataFrame(),
+            {},
+        )
+    reference_isotopes_df, absent = await asyncio.to_thread(
+        _reachable_lines,
+        fine,
+        file_lines,
+        isotope_abundance_threshold,
+        reach,
+        target_isotopes_df.empty,
+    )
+    order = pd.unique(fine["target_ion_id"])
+    return StageAKnown(
+        _combine_known_isotopes(target_isotopes_df, reference_isotopes_df),
+        absent,
+        {str(ion): position for position, ion in enumerate(order)},
+    )
 
 
 def load_sample_peaks(sample: Sample) -> pd.DataFrame:
