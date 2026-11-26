@@ -134,7 +134,7 @@ The ledger's own breadcrumb goes, because the shell's says the same.
 | Tier | yes | yes | the tier chip; a capping reason as a mark on the chip |
 | Level | when any row has one | when any row has one | the level chip. In the batch scope a button: it opens where the level comes from (below) |
 | Samples | no | yes | `n/N` |
-| Across the batch | no | yes | up to three badges (section 5), holding-back badges first, then `+n` |
+| Across the batch | no | yes | up to three badges (section 5), holding-back badges first, then `+n`, which opens every badge of the row with its reading |
 | Verdict | yes | yes | an icon only once someone has judged |
 
 Compound shows the neutral formula in both scopes. A batch peak is one ion, so two

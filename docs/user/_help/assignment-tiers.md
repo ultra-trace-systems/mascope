@@ -75,7 +75,9 @@ ledger, through a switch between the sample and the batch and a reload.
 **The badges across the batch.** Each of the batch's readings of a peak is a
 small square badge. The **Batch peaks** ledger draws them in its **Across the
 batch** column, at most three to a row: the ones that hold the reading back
-first, then the others, and **+n** for the rest, named on hover. Each batch line
+first, then the others, and **+n** for the rest. Click **+n** to see every badge
+of the row with its reading in words; a badge there does what it does in the
+row. Each batch line
 in the inspector opens with one too. Click the ratio-stability badge for the
 pairs behind its grade. A badge's glyph says which reading it is, and no two
 readings share one. Its colour says what the reading does to confidence, in the
