@@ -741,9 +741,9 @@ def _context_ratios_ok(
         return _inside_windows(counts, windows)
     if carbon >= 1:
         return n_o <= 2 * carbon + 2 and n_n <= carbon + 1
-    # No carbon-equivalent backbone at all. The organic grid floors carbon at 1,
-    # so a formula reaching this rule carbon-free came from a caller that wanted
-    # it; a context has nothing to say about it either way.
+    # No carbon-equivalent backbone at all, which every run's search proposes now
+    # its grid's carbon floor is open (`formula_shape.GRID_CARBON_FLOOR`). The
+    # windows are per carbon, so they say nothing of it; the carbon-free cap does.
     return True
 
 

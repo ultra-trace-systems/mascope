@@ -237,7 +237,7 @@ class HeuristicFilterConfig:
 
     # Refuse a formula outside the context's windows rather than grade it
     # (`heuristic_filter.rule_context_ratios`). Off: the windows are a floored
-    # factor of the plausibility (`heuristic_filter.graded_in`), on only where a
+    # factor of the plausibility (`formula_shape.graded_in`), on only where a
     # context opts in (`profiles.ChemistryContext.windows_gate`).
     context_windows_gate: bool = False
 
