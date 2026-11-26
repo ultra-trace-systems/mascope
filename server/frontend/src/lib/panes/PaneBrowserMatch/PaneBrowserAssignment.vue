@@ -542,20 +542,23 @@ const families = useFamilyFold(showIsotopologues)
 // through more than one of them - [M+H]+ and [M+NH4]+, [M-H]- and [M+Br]- - and
 // the ledger lists each as a row of its own, at its own m/z. Only an analyte's
 // formula names a neutral; a source ion or a peak nothing explained names none.
+// Nor does an isotope line: one is its M0's reading again, and one standing on
+// its own is a line of its formula through the channel it names, not another
+// channel. So neither joins Group by's Compound groups or counts in the pill.
 const groupKeyOf = (row) =>
-  row.assigned_formula && !ROLE_BUCKETS.includes(row.role) ? neutralKey(row.assigned_formula) : ''
+  row.assigned_formula && !ROLE_BUCKETS.includes(row.role) && row.role !== 'iso_child'
+    ? neutralKey(row.assigned_formula)
+    : ''
 
 // The Ion cell's pill: how many of the sample's own rows read the row's
 // neutral, through how many channels (section 3.2: `xN`, counted on the
 // sample's rows, which needs no batch). Counted over the run's rows, not the
 // rows the filters leave, so the pill says the same whatever the reader has
-// narrowed the ledger to. An isotope line is its M0's reading again and does
-// not count, one standing on its own with no M0 included: it is a line of its
-// formula through the channel it names, not another channel.
+// narrowed the ledger to. An isotope line has no key (`groupKeyOf`), so it
+// does not count.
 const channelsByNeutral = computed(() => {
   const byKey = new Map()
   for (const row of assignments.value.list) {
-    if (isIsotopeLine(row) || row.role === 'iso_child') continue
     const key = groupKeyOf(row)
     if (!key) continue
     if (byKey.has(key)) byKey.get(key).push(row)
@@ -875,7 +878,7 @@ const lens = computed(() => {
 const childLabel = (row) => sampleLineLabel(row, assignments.value.m0Of(row))
 const standingLineTooltip = (row) =>
   `An isotope line of this formula${row.isotope_formula ? ` (${row.isotope_formula})` : ''}, ` +
-  'standing on its own: the run holds no monoisotopic row it belongs to'
+  'standing on its own: it names no monoisotopic row it belongs to'
 
 // Two-way selection tied to the focused peak: clicking a row focuses its peak,
 // and focusing a peak elsewhere (spectrum click, inspector) highlights its row.
