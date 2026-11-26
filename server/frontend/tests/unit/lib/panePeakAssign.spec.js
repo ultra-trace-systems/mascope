@@ -2093,6 +2093,39 @@ describe('PanePeakAssign identification level', () => {
     expect(section(wrapper).find('.rivals-label').exists()).toBe(false)
   })
 
+  it("shows the batch's level beside the row's own where the batch moves it", async () => {
+    focusedAssignment = { ...M0, level: '5a', level_evidence: 'one rival open' }
+    detailRecord = {
+      provenance: { identification_level: levelRecord({ level: '5a' }) },
+      batch_level: {
+        level: '4a',
+        evidence: "two rivals out: one by the batch's isotope checks",
+        lift: 'MS/MS',
+        stated: '5a',
+        borrowed: true,
+        batch_level: '4a'
+      }
+    }
+    const wrapper = await mountPane()
+
+    expect(section(wrapper).find('.level-head .level-tag').attributes('data-level')).toBe('5a')
+    const batch = wrapper.find('[data-testid="level-batch"]')
+    expect(batch.find('.level-tag').attributes('data-level')).toBe('4a')
+    expect(batch.text()).toContain("the batch's")
+    expect(batch.find('[data-testid="level-batch-evidence"]').text()).toContain(
+      "two rivals out: one by the batch's isotope checks"
+    )
+    expect(batch.find('.level-tag').attributes('data-tooltip')).toContain("the row's run stated 5a")
+  })
+
+  it('shows no batch level where the batch moves nothing', async () => {
+    focusedAssignment = M0
+    detailRecord = { provenance: { identification_level: levelRecord() }, batch_level: null }
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('[data-testid="level-batch"]').exists()).toBe(false)
+  })
+
   it('names each rival and the test that put it out, with the sentence the server wrote', async () => {
     focusedAssignment = M0
     detailRecord = { provenance: { identification_level: levelRecord() } }
@@ -2265,6 +2298,18 @@ describe('PanePeakAssign identification level', () => {
       // The engine's rivals are what its level was read against, not the claim's.
       expect(rivals(wrapper)).toHaveLength(0)
       expect(wrapper.find('[data-testid="rivals-unlisted"]').exists()).toBe(false)
+    })
+
+    it("shows no batch level beside a claim's, which states the level in place of both", async () => {
+      focusedAssignment = M0
+      verdictRecord = CLAIM
+      detailRecord = {
+        provenance: { identification_level: levelRecord() },
+        batch_level: { level: '4a', stated: '5a', borrowed: true, evidence: 'the lock' }
+      }
+      const wrapper = await mountPane()
+
+      expect(wrapper.find('[data-testid="level-batch"]').exists()).toBe(false)
     })
 
     it("shows the engine's level where no verdict states one, and says so", async () => {

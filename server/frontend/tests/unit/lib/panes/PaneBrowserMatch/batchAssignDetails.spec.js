@@ -39,7 +39,8 @@ const STAGES = [
   ['co_variation', 'Read co-variation', 'Cross-check across the batch'],
   ['continuity', 'Ratio stability', 'Cross-check across the batch'],
   ['batch_checks', 'Read batch checks', 'Cross-check across the batch'],
-  ['blends', 'Probable blends', 'Cross-check across the batch']
+  ['blends', 'Probable blends', 'Cross-check across the batch'],
+  ['level', 'Identification level', 'Cross-check across the batch']
 ].map(([stage, label, phase]) => ({ stage, label, phase, state: 'current', version: 1 }))
 
 const local = (d, h, m) => new Date(2026, 10, d, h, m).toISOString()
@@ -85,7 +86,14 @@ const OUTCOMES = {
   batch_checks: [
     { status: 'success', message: 'Nothing was checked: no batch peak ...', data: {} }
   ],
-  blends: [{ status: 'success', message: '...', data: { anchors: 120 } }]
+  blends: [{ status: 'success', message: '...', data: { anchors: 120 } }],
+  level: [
+    {
+      status: 'success',
+      message: '...',
+      data: { anchors_read: 90, lifted: 6, refuted: 1 }
+    }
+  ]
 }
 
 /** A pass's summary: `statuses` by stage, every other stage `not_run`. */
@@ -355,7 +363,8 @@ describe('BatchAssignDetails checklist', () => {
       co_variation: 'done',
       continuity: 'done',
       batch_checks: 'done',
-      blends: 'done'
+      blends: 'done',
+      level: 'done'
     }
     const pass = run('run-9', { current: true, summary: summaryOf(statuses, { first: 'series' }) })
     await mountDetails({
@@ -380,7 +389,8 @@ describe('BatchAssignDetails checklist', () => {
       co_variation: 'done',
       continuity: 'done',
       batch_checks: 'done',
-      blends: 'done'
+      blends: 'done',
+      level: 'done'
     })
     expect(stageRow('search').find('[data-testid="stage-state"]').text()).toBe('Not run')
     expect(stageRow('known_species').find('[data-testid="stage-reason"]').text()).toBe(
@@ -418,6 +428,9 @@ describe('BatchAssignDetails checklist', () => {
     expect(result('continuity')).toBe('12 pairs graded, 2 unstable')
     expect(result('batch_checks')).toBe('Nothing was checked')
     expect(result('blends')).toBe('120 batch peaks read again')
+    expect(result('level')).toBe(
+      "90 batch peaks given a level, 6 lifted and 1 refuted by the batch's isotope checks"
+    )
   })
 })
 
@@ -430,7 +443,7 @@ describe('BatchAssignDetails while a pass runs', () => {
     utc_started: local(16, 15, 30),
     stage: 'search',
     stage_index: 2,
-    n_stages: 9,
+    n_stages: 10,
     ...over
   })
 
@@ -453,7 +466,8 @@ describe('BatchAssignDetails while a pass runs', () => {
       co_variation: 'waiting',
       continuity: 'waiting',
       batch_checks: 'waiting',
-      blends: 'waiting'
+      blends: 'waiting',
+      level: 'waiting'
     })
   })
 
@@ -464,7 +478,7 @@ describe('BatchAssignDetails while a pass runs', () => {
       assign: {
         runningIsMine: true,
         pendingProcessId: 'proc-1',
-        progress: { stage: 'search', stage_index: 2, n_stages: 9 }
+        progress: { stage: 'search', stage_index: 2, n_stages: 10 }
       },
       progress: [
         // Another process's progress is not the stage's.
@@ -476,7 +490,7 @@ describe('BatchAssignDetails while a pass runs', () => {
     expect(stageRow('search').find('[data-testid="stage-state"]').text()).toBe('Running · 42%')
 
     // The next packet names the next stage: the checklist moves with it.
-    assignStub.progress = { stage: 'isotope_lines', stage_index: 3, n_stages: 9 }
+    assignStub.progress = { stage: 'isotope_lines', stage_index: 3, n_stages: 10 }
     app.ui.notification.progress = [
       { process_id: 'proc-1', progress: 0 },
       // The next stage's packet, before it has moved: no percent yet, not 0 %.
@@ -492,7 +506,7 @@ describe('BatchAssignDetails while a pass runs', () => {
   it('counts the fold among a pass that folds first', async () => {
     await mountDetails({
       status: statusOf('running', {
-        running: runningPass({ stage: 'fold', stage_index: 0, n_stages: 10 })
+        running: runningPass({ stage: 'fold', stage_index: 0, n_stages: 11 })
       }),
       runs: [run('run-10', { status: 'running' }), run('run-9', { current: true })]
     })
@@ -504,7 +518,7 @@ describe('BatchAssignDetails while a pass runs', () => {
   it('shows a pass started later with the stages before it not run', async () => {
     await mountDetails({
       status: statusOf('running', {
-        running: runningPass({ stage: 'continuity', stage_index: 2, n_stages: 5 })
+        running: runningPass({ stage: 'continuity', stage_index: 2, n_stages: 6 })
       }),
       runs: [run('run-10', { status: 'running' }), run('run-9', { current: true })]
     })
@@ -523,7 +537,7 @@ describe('BatchAssignDetails while a pass runs', () => {
           action: 'search_untargeted',
           stage: 'search',
           stage_index: 0,
-          n_stages: 7
+          n_stages: 8
         })
       }),
       runs: [run('run-9', { current: true, summary: summaryOf(allDone) })]

@@ -17,6 +17,7 @@ import {
   isLevel,
   isOpenRival,
   levelMeta,
+  borrowedLevelOf,
   levelTooltip,
   readerLevel,
   unlistedRivalsLine
@@ -1317,6 +1318,15 @@ export function useAssignmentCard({ showSearch }) {
       unlisted: engine ? unlistedRivalsLine(record?.rivals_unlisted, rivals.length) : null
     }
   })
+  // The batch's level beside the row's own, where the batch's isotope checks
+  // move it (step 5.8c): the row's own rivals read under its batch peak's halogen
+  // lock, stamped lines and label twin, marked as the batch's, as a batch-level
+  // verdict that reaches a sample is. Only beside the engine's level: a claim
+  // states the level a reader is shown in place of both.
+  const batchLevel = computed(() => {
+    if (!identificationLevel.value || identificationLevel.value.source !== 'engine') return null
+    return borrowedLevelOf(focusedDetail.value?.batch_level ?? null)
+  })
   // What a rival's line says on hover: the ion it would be, where the record names
   // one, and whether a test excluded it.
   const rivalTooltip = (rival) =>
@@ -2111,6 +2121,7 @@ export function useAssignmentCard({ showSearch }) {
     batchCoVariation,
     batchCoVariationR,
     batchChecks,
+    batchLevel,
     batchPersistence,
     batchPersistenceHold,
     batchPersistenceNote,

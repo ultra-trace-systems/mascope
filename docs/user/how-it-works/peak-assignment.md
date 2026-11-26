@@ -1503,9 +1503,11 @@ threshold the row stays 5a, and its lift says *more signal*.
 with its test or *open*. The sample ledger has a **Level** column, with a filter in its
 header, and on a run imported from another engine that stated levels it shows the
 engine's level as an outlined chip in that column while **Show › Engine tier and level**
-is on. The *Batch peaks* ledger's **Level** column shows the level most of a batch
-peak's members' runs stated for its formula (a tie reads as the weaker level) until the
-batch states one of its own, and a batch import from another engine that carried its
+is on. The *Batch peaks* ledger's **Level** column shows the batch's own level, below,
+and its hover how the members' runs split. Where the batch states none yet (its last
+pass ran before the level was a stage of it, or the batch peak's reading moved since),
+it shows the level most of the members' runs stated for the formula, a tie reading as
+the weaker level. A batch import from another engine that carried its
 own levels shows the engine's beside it, as an outlined chip, while **Show › Engine tier
 and level** is on. The column shows only once a row of the ledger carries a level. When
 the ledger is narrow, as it is beside the spectrum or the batch chart at the usual
@@ -1517,13 +1519,48 @@ isotope line carries none of its own: its main peak's row shows it. A reagent or
 another engine and a run made before the level show none. A peak you assign by hand
 reads 5a with its rivals not measured, or 5b where its lines refute it.
 
-**From a batch row's level to its samples.** A batch peak's level is the one most of its
-samples' runs stated, so it comes from a set of samples, and some of them may state a
-better one: 4a in three samples and 5a in forty reads 5a. Click the level chip in the
-*Batch peaks* ledger, or press Enter or Space on it, to see where it comes from:
+**The batch's level.** A batch knows some facts no single run does: the isotope lines
+*Isotope lines* stamped across the samples, and the halogen lock and label twin *Read
+batch checks* read ([Reading batch checks](#reading-batch-checks)). The last stage of
+**Assign batch**, *Identification level*, reads them. It runs after those stages and
+after *Probable blends*, so a pass that stamps or checks again states the level again.
+It reads each member whose run committed the batch peak's formula under the batch's
+facts:
 
-- how the samples split over the levels, the one shown marked;
-- **why** the shown level holds and what **would lift it**, as most of its samples' runs
+- **A halogen lock** puts out each open rival whose ion carries none of the lock's
+  chlorine or bromine. A row whose rivals all go reads 4, its letter the split its run
+  read: 5a to 4a or 4b.
+- **A stamped 34S, 29Si or 30Si line** puts out each open rival carrying no sulfur, or no
+  silicon, to make it.
+- **The label twin read present** pins a labelled ion's split: 4b to 4a.
+- **A stamped 37Cl or 81Br line refutes a reading that holds no such halogen.** A batch
+  peak the batch stamped as another peak's 37Cl or 81Br line, whose own reading's ion
+  holds no chlorine or bromine to make it, reads 5b. The evidence line names the line
+  and the peak whose line it is.
+
+Each test is an isotope test the run itself asks of a rival, so a rival that reads the
+peak as another ion's isotope line, a rival the row does not list, or a row whose rivals
+were not measured stays as its run left it. The batch never lowers a member's level but
+by the refutation, and its lifts end at 4 and 4a: a member its run stated at 3b or 2b
+keeps it. The batch's level is the one most of its members then hold, a tie reading as
+the weaker level, with the evidence line and lift of the brightest of them and how many
+members it moved. A batch with none of these facts states its members' level. On a
+sample's peak, the inspector's **Identification level** section shows the batch's level
+beside the row's own, marked *the batch's*, where the batch's facts move that row; the
+row's own level, the sample ledger's **Level** column and its filter stay the run's. The
+batch data export carries the batch peak's level on every member row as `batch_level`,
+`batch_level_evidence` and `batch_level_lift`, and the ledger route as `level`,
+`level_evidence` and `level_lift` beside `member_level`. The level moves no tier, no
+member and no per-sample run.
+
+**From a batch row's level to its samples.** A batch peak's level is the one most of its
+samples hold, read under the batch's facts where the batch states its own. So it comes
+from a set of samples, and some of them may state a better one: 4a in three samples and
+5a in forty reads 5a. Click the level chip in the *Batch peaks* ledger, or press Enter or
+Space on it, to see where it comes from:
+
+- how the samples' own runs split over the levels, the level most of them state marked;
+- **why** that level holds and what **would lift it**, as most of its samples' runs
   wrote it, with how many wrote that where they differ;
 - the best level any sample states, where it is better than the one shown: those
   samples are the nearest answer to what would raise the row;
@@ -1534,8 +1571,10 @@ better one: 4a in three samples and 5a in forty reads 5a. Click the level chip i
 focus, where the inspector's **Identification level** section shows the full evidence,
 the rivals and the lift; **Other samples** on the card then steps through the samples at
 that level. **All** lists them, with their acquisition time and intensity, to open
-another. Where a live batch-level verdict states the level, the popover says so first,
-with its evidence and lift, and the samples' split under it. An earlier run's ledger
+another. Where the batch states its own level, the popover shows it first, with its
+evidence and lift, and under it how the samples' own runs split, before the batch's
+facts. Where a live batch-level verdict states the level, the popover says so before
+either. An earlier run's ledger
 keeps no levels per sample, so there the popover says to open the current run. The row's
 own action, the arrow at its end, still opens the brightest sample of all: that is where
 the species is best measured, not where its level comes from.
@@ -2483,12 +2522,14 @@ flowchart LR
   F --> G[Ratio stability]
   G --> H[Batch checks]
   H --> I[Probable blends]
+  I --> J[Identification level]
 ```
 
 Two rules give the order. A stage runs after every stage whose claims or records it reads:
 the search skips what the source's claims took, the series walks from what the search
 committed, the ratio stability grades a drift by the co-variation, the batch checks read the
-stamps and the co-variation. And every stage that rewrites members runs before every stage
+stamps and the co-variation, and the identification level reads the stamps and the batch
+checks. And every stage that rewrites members runs before every stage
 that only records a reading: a record stands only while its batch peak reads what it was
 made for. The series rewrites members after the isotope lines are recorded, so it moves
 no reading an isotope line's record stands on to another ion (*Detecting series*,
@@ -2499,7 +2540,7 @@ below), and a completed pass leaves every stage current.
   runs them all from the first. A pass started at a stage - *Advanced › Run from a
   stage*, or each step's own API route - runs that stage and every stage after it: one
   started at the series runs the series, then the co-variation, the ratio stability, the
-  batch checks and the probable blends. Where a stage before it is stale or has never
+  batch checks, the probable blends and the identification level. Where a stage before it is stale or has never
   run on the batch, the list starts there instead: no stage runs on what an earlier
   stage has not settled. So a pass started at the co-variation right after a sample is
   folded in runs every stage, and the order stages are asked for in leaves no mark on the
@@ -3551,7 +3592,8 @@ same tags on a sample's peak where the sample reads the peak as the batch does:
 The ledger route and `batch_peaks.list` carry them as `batch_checks`, with a
 `halogen_lock`, a `label_twin` and a `neutral_pair` where each applies, and every member
 row of the ledger's CSV export and of `batch_peaks.members` closes with the batch peak's
-`halogen_lock`, `halogen_element`, `label_twin`, `neutral_pair` and `neutral_pair_r`. A
+`halogen_lock`, `halogen_element`, `label_twin`, `neutral_pair` and `neutral_pair_r`. The
+batch's [identification level](#identification-level) reads the lock and the twin. A
 batch peak keeps its facts for as long as its consensus names the ion, formula and
 ionization they were read for. A lock stands only beside the stamping it read and a pair
 beside the co-variation reading: a later *Stamp isotopologues* or *Read co-variation*

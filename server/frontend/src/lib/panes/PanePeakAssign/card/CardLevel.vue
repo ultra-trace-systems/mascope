@@ -16,6 +16,7 @@ const {
   app,
   chipRole,
   identificationLevel,
+  batchLevel,
   rivalTooltip,
   ledgerServed,
   LEDGER_LEVEL_NOTE
@@ -71,6 +72,25 @@ const summary = computed(() => {
       <div v-if="identificationLevel.lift" class="level-line" data-testid="level-lift">
         <span class="level-key">would lift it</span>
         <span class="level-value">{{ identificationLevel.lift }}</span>
+      </div>
+      <div v-if="batchLevel" class="batch-level" data-testid="level-batch">
+        <div class="level-head">
+          <BaseLevelTag
+            :level="batchLevel.level"
+            :role="chipRole"
+            :tooltip="batchLevel.tooltip"
+          />
+          <span class="level-name">{{ batchLevel.name }}</span>
+          <span class="level-key">the batch's</span>
+        </div>
+        <div v-if="batchLevel.evidence" class="level-line" data-testid="level-batch-evidence">
+          <span class="level-key">why</span>
+          <span class="level-value">{{ batchLevel.evidence }}</span>
+        </div>
+        <div v-if="batchLevel.lift" class="level-line">
+          <span class="level-key">would lift it</span>
+          <span class="level-value">{{ batchLevel.lift }}</span>
+        </div>
       </div>
       <div
         v-if="identificationLevel.inherited"
@@ -148,6 +168,14 @@ const summary = computed(() => {
   display: flex;
   align-items: center;
   gap: 0.4rem;
+}
+/* The batch's level beside the row's own: set apart as a borrowed reading. */
+.batch-level {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding-left: 0.5rem;
+  border-left: 2px solid var(--p-content-border-color);
 }
 .level-name,
 .muted,

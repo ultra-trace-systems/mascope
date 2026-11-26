@@ -38,6 +38,8 @@ import {
   levelRank,
   levelTooltip,
   memberLevelTooltip,
+  batchLevelOf,
+  batchLevelTooltip,
   readerLevel
 } from '@/lib/levels'
 import { VERDICT_META } from '@/lib/verification'
@@ -256,11 +258,12 @@ const engineTierTooltip = (row) => {
         `the members' measurements says ${tierName(row.consensus_tier)}${said}`
 }
 
-// The level most of a batch peak's members' runs stated for its consensus
-// formula (`member_level`, a tie reading as the weaker level), with how the
-// members split (`member_levels`). It is the members' level: the batch states
-// none of its own, and the chip's hover says so. Offered only where some
-// batch peak shown carries one.
+// The batch peak's own level (`level`, step 5.8c): read off its members' runs
+// and the batch's isotope checks, with its two lines, and how the members
+// split (`member_levels`) in its hover. Where no level of the batch stands -
+// its level stage never ran, or the reading moved since - the level most of
+// its members' runs stated (`member_level`, a tie reading as the weaker), as
+// the hover says. Offered only where some batch peak shown carries one.
 //
 // Where the batch-level verdict on the row's present claim states a level of
 // its own, the column shows the claim's in its place (readerLevel), and the
@@ -270,9 +273,12 @@ const engineTierTooltip = (row) => {
 // which members it reaches, which the sample ledger shows.
 const shownLevelOf = (row) => {
   const record = verdictFor(row)
+  const own = batchLevelOf(row)
   return readerLevel({
     verdict: record && !verdicts.value.isStale(record, row) ? record : null,
-    level: row.member_level
+    level: own?.level ?? row.member_level,
+    evidence: own?.evidence ?? null,
+    lift: own?.lift ?? null
   })
 }
 const hasMemberLevels = computed(() =>
@@ -287,6 +293,9 @@ const shownLevelTooltip = (row) => {
   const level = row.shownLevel
   if (!level) return ''
   if (level.source !== 'claim') {
+    if (batchLevelOf(row)) {
+      return [batchLevelTooltip(row), 'No live batch-level verdict states a level'].join('\n')
+    }
     return [
       memberLevelTooltip(row.member_level, row.member_levels),
       'Source: engine - no live batch-level verdict states a level'
@@ -299,9 +308,11 @@ const shownLevelTooltip = (row) => {
       lift: level.lift,
       source: 'claim'
     }),
-    isLevel(row.member_level)
-      ? `The members' runs stated ${row.member_level}`
-      : "The members' runs stated no level for it"
+    batchLevelOf(row)
+      ? `The batch's own level: ${row.level}`
+      : isLevel(row.member_level)
+        ? `The members' runs stated ${row.member_level}`
+        : "The members' runs stated no level for it"
   ].join('\n')
 }
 
@@ -876,7 +887,8 @@ function returnAcrossFocus() {
 }
 
 // --- Where a row's level comes from ------------------------------------------
-// The Level chip opens the members whose run states it (LedgerLevelSources):
+// The Level chip opens the members whose run states it (LedgerLevelSources),
+// under the batch's own level where it states one:
 // one read per batch peak, asked on the click, never on the ledger's list read
 // (MAS-1160). An earlier run's snapshot keeps no member levels, so it asks
 // nothing. The answer is kept for the row it was asked for; a reply that
@@ -1805,6 +1817,7 @@ watch(
         <LedgerLevelSources
           v-if="levelTarget"
           :claim="claimOf(levelTarget)"
+          :batchLevel="batchLevelOf(levelTarget)"
           :memberLevel="levelTarget.member_level ?? null"
           :memberLevels="levelTarget.member_levels ?? null"
           :sources="levelSources.id === levelTarget.batch_peak_id ? levelSources.body : null"

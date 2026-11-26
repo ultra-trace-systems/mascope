@@ -164,7 +164,12 @@ const RESULTS = {
       ? `${plural(d.locked, 'halogen lock')}, ${d.twin_present} of ` +
         `${plural(d.labelled_ions, 'labelled ion')} with their 14N twin`
       : null,
-  blends: (d) => (isCount(d.anchors) ? `${plural(d.anchors, 'batch peak')} read again` : null)
+  blends: (d) => (isCount(d.anchors) ? `${plural(d.anchors, 'batch peak')} read again` : null),
+  level: (d) =>
+    isCount(d.anchors_read) && isCount(d.lifted) && isCount(d.refuted)
+      ? `${plural(d.anchors_read, 'batch peak')} given a level, ${d.lifted} lifted ` +
+        `and ${d.refuted} refuted by the batch's isotope checks`
+      : null
 }
 
 /** The head of an outcome's message: what it says before the detail. */

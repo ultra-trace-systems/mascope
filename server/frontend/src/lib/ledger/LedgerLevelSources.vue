@@ -20,12 +20,15 @@ import {
  * ledger's Level cell; kept apart from the ledger, so a card for a batch row
  * (MAS-1298) can show the same.
  *
- * The batch states no level of its own. The ledger shows the level most of a
- * batch peak's members' runs stated for the consensus formula, so "the sample
- * the level comes from" is a set, and the set can hide better ones. This lists
- * the split, the shown level's lines, the best level any member states where
- * it is better, and the members that state none. A live batch-level claim,
- * where the row shows one, comes first.
+ * The ledger shows the batch's own level (step 5.8c): the one most of a batch
+ * peak's members hold under the batch's isotope checks, else, where the batch
+ * states none, the level most of its members' runs stated for the consensus
+ * formula. Either way "the sample the level comes from" is a set, and the set
+ * can hide better ones. This lists the members' own split, the lines of the
+ * level most of them state, the best level any member states where it is
+ * better, and the members that state none. The batch's own level, where it
+ * states one, comes first, and a live batch-level claim, where the row shows
+ * one, before it.
  *
  * It reads nothing itself: the members are the level-sources read
  * (`GET /batch-peaks/batch/{id}/levels/{batch_peak_id}`), asked by the
@@ -35,7 +38,10 @@ const props = defineProps({
   /** The live batch-level claim's level the row shows instead, or null:
    *  `level`, `evidence` and `lift`. */
   claim: { type: Object, default: null },
-  /** The members' level the ledger shows (`member_level`). */
+  /** The batch's own level, or null where it states none: `level`,
+   *  `evidence` and `lift` (`batchLevelOf` of the row). */
+  batchLevel: { type: Object, default: null },
+  /** The level most members' runs stated (`member_level`). */
   memberLevel: { type: String, default: null },
   /** The ledger's split (`member_levels`), until the read answers. */
   memberLevels: { type: Object, default: null },
@@ -61,8 +67,11 @@ const split = computed(() =>
 const total = computed(() => split.value.reduce((sum, entry) => sum + entry.count, 0))
 const samples = (n) => `${n} ${n === 1 ? 'sample' : 'samples'}`
 
-// The level the row shows: the claim's, else the members'.
-const shown = computed(() => props.claim?.level ?? shownMembers.value)
+// The level the row shows: the claim's, else the batch's, else the members'.
+const shown = computed(() => props.claim?.level ?? props.batchLevel?.level ?? shownMembers.value)
+// Whether the row shows a level other than the members' own: then the split
+// marks the members' level as theirs, not as the one shown.
+const membersShown = computed(() => !props.claim && !props.batchLevel)
 const atShown = computed(() => membersAtLevel(members.value, shownMembers.value))
 const lines = computed(() =>
   ['level_evidence', 'level_lift'].map((key) => ({
@@ -115,7 +124,31 @@ const intensity = (value) => (value == null ? '-' : num.peakIntensity.format(val
       </div>
       <p v-if="claim.evidence" class="line"><b>Why:</b> {{ claim.evidence }}</p>
       <p v-if="claim.lift" class="line"><b>Would lift it:</b> {{ claim.lift }}</p>
-      <p class="note">Under it, what the members' own runs stated.</p>
+      <p class="note">
+        {{
+          batchLevel
+            ? "Under it, the batch's own level and what the members' own runs stated."
+            : "Under it, what the members' own runs stated."
+        }}
+      </p>
+    </section>
+
+    <!-- The batch's own level, read off its members under its isotope checks. -->
+    <section v-if="batchLevel" class="claim" data-testid="level-batch">
+      <div class="heading">
+        <BaseLevelTag
+          :level="batchLevel.level"
+          :evidence="batchLevel.evidence"
+          :lift="batchLevel.lift"
+        />
+        <span class="title">The batch states this level</span>
+      </div>
+      <p v-if="batchLevel.evidence" class="line"><b>Why:</b> {{ batchLevel.evidence }}</p>
+      <p v-if="batchLevel.lift" class="line"><b>Would lift it:</b> {{ batchLevel.lift }}</p>
+      <p class="note">
+        Read off its members' runs under the batch's isotope checks. Under it, what the members' own
+        runs stated, before those checks.
+      </p>
     </section>
 
     <p v-if="snapshot" class="note" data-testid="level-snapshot">
@@ -164,7 +197,7 @@ const intensity = (value) => (value == null ? '-' : num.peakIntensity.format(val
             <td class="count">{{ samples(entry.count) }}</td>
             <td class="mark">
               <span v-if="entry.shown" data-testid="level-shown-mark">{{
-                claim ? "members' level" : 'shown'
+                membersShown ? 'shown' : "members' level"
               }}</span>
             </td>
             <td class="actions">
@@ -246,7 +279,7 @@ const intensity = (value) => (value == null ? '-' : num.peakIntensity.format(val
         </span>
       </div>
 
-      <p v-if="sources && total" class="note">
+      <p v-if="sources && total && !batchLevel" class="note" data-testid="level-no-batch">
         The batch states no level of its own: this is what its members' runs stated for the
         consensus formula, a tie reading as the weaker level.
       </p>
