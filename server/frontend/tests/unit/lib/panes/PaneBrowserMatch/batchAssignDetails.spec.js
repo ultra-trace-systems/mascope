@@ -916,6 +916,10 @@ describe('batchPass helpers', () => {
     expect(search({ anchors_searched: 0, anchors_annotated: 0, anchors_searched_before: 1 })).toBe(
       '1 batch peak not searched again'
     )
+    // Nothing searched and nothing left out: the plain line, zeros and all.
+    expect(search({ anchors_searched: 0, anchors_annotated: 0, anchors_searched_before: 0 })).toBe(
+      '0 of 0 batch peaks assigned a composition'
+    )
   })
 
   it('takes the message’s head where the counts are not there', () => {
