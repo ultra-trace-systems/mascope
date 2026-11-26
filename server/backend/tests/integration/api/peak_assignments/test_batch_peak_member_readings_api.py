@@ -2,7 +2,7 @@
 formula, with what the batch's decisions did to each member's run row
 (``batch_level_sources.get_batch_peak_member_readings``, MAS-1315).
 
-Eleven samples in a batch of their own, each with one glucose peak, folded
+Thirteen samples in a batch of their own, each with one glucose peak, folded
 into one batch peak. Then each member's run row is put in one state: its own
 reading (a level, another formula, none), no row at all, a row a batch stage
 rewrote in place, or a row its run wrote reading a batch decision. The rows'
@@ -31,9 +31,14 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import MARK_SEARCH
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     fold_sample_into_batch_peaks,
 )
+from mascope_backend.api.new.peak_assignments.known_species import (
+    Species,
+    listed_species_row,
+)
 from mascope_backend.api.new.peak_assignments.reagent_pass import (
-    REASON_BATCH_KNOWN_SPECIES,
+    REASON_BATCH_WATER_LADDER,
     BatchSpecies,
+    _provenance,
     batch_species_row,
     water_rung_row,
 )
@@ -49,7 +54,8 @@ from mascope_backend.db import (
     User,
 )
 from mascope_backend.db.id import gen_id
-from mascope_tools.composition.reagents import ReagentCluster
+from mascope_tools.composition.known_species import KIND_LISTED
+from mascope_tools.composition.reagents import ReagentCluster, ReagentHit
 
 
 pytestmark = pytest.mark.asyncio
@@ -64,6 +70,10 @@ LINE = BatchLine(
     parent_batch_peak_id="bp-parent",
     reading={"share": 0.07},
 )
+# A listed compound on the members' own formula (a lift), and one on another.
+LISTED = Species(KIND_LISTED, "C6H13O6+", formula=GLUCOSE)
+LISTED_OTHER = Species(KIND_LISTED, "C6H13O5+", formula="C6H12O5")
+EXEMPLAR = {"sample_peak_mz": 181.0707, "mz_error_ppm": 1.0, "source": "database"}
 
 # Sample -> (intensity, the state its member's run row is put in).
 _MEMBERS = {
@@ -77,6 +87,8 @@ _MEMBERS = {
     "water": (5000.0, "water_ladder"),
     "strip": (4500.0, "strip"),
     "run_ks": (2000.0, "run_known_species"),
+    "run_water": (1500.0, "run_water_ladder"),
+    "run_listed": (1200.0, "run_listed"),
     "run_reads": (1000.0, "run_strip_and_series"),
 }
 
@@ -181,15 +193,9 @@ def _values(state: str, row) -> dict | None:
             ),
         )
     if state == "listed":
+        # The batch lifts its own reading of the listed compound in place.
         return with_row_before(
-            row,
-            {
-                "tier": "candidate",
-                "provenance": {
-                    REASON_BATCH_KNOWN_SPECIES: {"batch_peak_id": "bp"},
-                    "tier_reasons": [{"rule": REASON_BATCH_KNOWN_SPECIES}],
-                },
-            },
+            row, listed_species_row(own, EXEMPLAR, LISTED, {"batch_peak_id": "bp"})
         )
     if state == "water_ladder":
         return with_row_before(
@@ -205,6 +211,27 @@ def _values(state: str, row) -> dict | None:
         # before, and the record cites the stage's version.
         return batch_species_row(
             own, BatchSpecies(ION, {"batch_peak_id": "bp", "version": 3})
+        )
+    if state == "run_water_ladder":
+        # The sample's run claimed a rung its batch's ladder passed: the
+        # reagent block names the ladder, and its record cites the version.
+        hit = ReagentHit(ION, 0, 181.0707, 1500.0, 1.0)
+        batch = BatchSpecies(
+            ION, {"batch_peak_id": "bp", "version": 4}, REASON_BATCH_WATER_LADDER
+        )
+        return {
+            "role": "reagent",
+            "assigned_formula": None,
+            "ion_formula": "BrH2O-",
+            "tier": "unassigned",
+            "level": None,
+            "provenance": _provenance(hit, batch),
+        }
+    if state == "run_listed":
+        # The sample's run elected another listed compound on its batch's
+        # decision, whose record cites the version.
+        return listed_species_row(
+            own, EXEMPLAR, LISTED_OTHER, {"batch_peak_id": "bp", "version": 5}
         )
     if state == "run_strip_and_series":
         # A run read a strip onto one row and, on the same reading, a series.
@@ -437,6 +464,15 @@ async def test_a_decision_the_run_read_is_served_with_its_version(
 
     assert members["run_ks"]["batch_stage"] is None
     assert members["run_ks"]["batch_read"] == [{"stage": "known_species", "version": 3}]
+    assert members["run_water"]["batch_stage"] is None
+    assert members["run_water"]["batch_read"] == [
+        {"stage": "water_ladders", "version": 4}
+    ]
+    assert members["run_listed"]["batch_stage"] is None
+    assert members["run_listed"]["batch_read"] == [
+        {"stage": "known_species", "version": 5}
+    ]
+    assert members["run_listed"]["assigned_formula"] == "C6H12O5"
     assert members["run_reads"]["batch_stage"] is None
     assert members["run_reads"]["batch_read"] == [
         {"stage": "isotope_lines", "version": 2},
