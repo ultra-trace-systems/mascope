@@ -1047,10 +1047,13 @@ export function useAssignmentCard({ showSearch }) {
   // card names over it (batchOpened): the card's formula is the sample's own
   // run's, and may be another. Compared as the consensus is named: by its
   // neutral formula, or by its ion where the batch names an ion and no
-  // compound (a source's claim). A state, not an error. Null where the card
-  // was not opened from the batch, and on a sample with no run of its own:
-  // there the card shows the batch's own reading, and the no-own-run note
-  // says so (MAS-1297).
+  // compound (a source's claim). A run that claimed the peak as a source's
+  // ion, under a batch that names a compound, is read by that ion, as its
+  // headline shows it. A state, not an error. Null where the card was not
+  // opened from the batch, and wherever the card shows the batch ledger's row
+  // rather than a run of the sample's: on a sample with no run of its own,
+  // where the no-own-run note says so (MAS-1297), and on one read on the
+  // ledger by choice, under the ledger's notice (runNotice).
   //   agrees    - the sample's run reads the consensus
   //   differs   - it reads another formula, `formula`
   //   none      - it reads no formula on the peak
@@ -1058,11 +1061,11 @@ export function useAssignmentCard({ showSearch }) {
   //               `formula` is the sample's own where it reads another
   const batchAgreement = computed(() => {
     const opened = batchOpened.value
-    if (!opened || noOwnRun.value) return null
+    if (!opened || derivedRun.value) return null
     const row = focusedAssignment.value
     const byIon = !opened.batch.formula && Boolean(opened.batch.ion)
     const consensus = byIon ? opened.batch.ion : opened.batch.formula
-    const own = (byIon ? row?.ion_formula : row?.assigned_formula) || null
+    const own = (byIon ? row?.ion_formula : row?.assigned_formula || row?.ion_formula) || null
     const other = own && own !== consensus ? own : null
     if (opened.batch.ambiguous) return { state: 'unsettled', formula: other }
     if (!own) return { state: 'none', formula: null }

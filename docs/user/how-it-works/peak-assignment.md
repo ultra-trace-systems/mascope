@@ -1915,8 +1915,10 @@ In a narrow column the four measurements stand one above another, and the chips 
   formula on the peak. The formula that heads the card is the sample's own run's, which
   may not be the batch's: the line then says *This sample's run reads* that formula. It
   says when the sample's run reads no formula there, and where the batch's consensus is
-  not settled it says so instead of *agrees*. On a sample with no run of its own the card
-  shows the batch's reading, so the line says nothing of agreeing. *Other samples* opens
+  not settled it says so instead of *agrees*. Where the sample's run claims the peak as a
+  source's ion, the line names that ion. On a sample with no run of its own, and on one
+  read on the batch ledger by choice, the card shows the batch's reading, so the line says
+  nothing of agreeing. *Other samples* opens
   the next sample, by intensity, with its peak in focus, and wraps round from the dimmest
   to the brightest; the line then reads that sample's agreement. Opened from a sample's
   own ledger, the card has no such line.

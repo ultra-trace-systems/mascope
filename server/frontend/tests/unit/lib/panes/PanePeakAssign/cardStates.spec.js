@@ -758,6 +758,11 @@ describe('card states: opened from the batch scope', () => {
     state.opened = opened({ support_fraction: null })
     wrapper = await mountCard()
     expect(textOf(wrapper, 'batch-count')).toBe('in 3 samples')
+
+    // A share just under all of them keeps the decimal that holds it off 100%.
+    state.opened = opened({ support_fraction: 0.996 })
+    wrapper = await mountCard()
+    expect(textOf(wrapper, 'batch-count')).toBe('in 3 samples, 99.6% of their formulas agree')
   })
 
   it("names the sample's own formula where its run reads another", async () => {
@@ -769,6 +774,19 @@ describe('card states: opened from the batch scope', () => {
     expect(byTestId(wrapper, 'batch-own-formula').text()).toBe('C6H12O6')
     // The card still heads with the sample's own formula.
     expect(wrapper.find('.insp-formula').text()).toBe('C6H12O6')
+  })
+
+  it("names the source's ion a sample's run claimed the peak as, under a compound", async () => {
+    state.opened = opened()
+    state.focusedAssignment = {
+      ...ROW,
+      assigned_formula: null,
+      ion_formula: 'C2H3O2-',
+      role: 'reagent'
+    }
+    const wrapper = await mountCard()
+
+    expect(textOf(wrapper, 'batch-agreement')).toBe("This sample's run reads C2H3O2-.")
   })
 
   it("says when the sample's run reads no formula on the peak", async () => {
@@ -861,6 +879,26 @@ describe('card states: opened from the batch scope', () => {
     expect(textOf(wrapper, 'batch-reading')).toContain('Batch: C3H6O3')
     expect(byTestId(wrapper, 'batch-agreement').exists()).toBe(false)
     expect(byTestId(wrapper, 'no-own-run').exists()).toBe(true)
+  })
+
+  it('leaves the agreement out on a sample read on the batch ledger by choice', async () => {
+    const ledger = {
+      peak_assignment_run_id: 'fold-si-1',
+      sample_item_id: 'si-1',
+      engine: 'batch',
+      status: 'completed'
+    }
+    state.run = ledger
+    state.runs = [RUN_NEW, ledger]
+    state.latest = RUN_NEW
+    state.opened = opened({ consensus_formula: 'C3H6O3' })
+    const wrapper = await mountCard()
+
+    expect(textOf(wrapper, 'batch-reading')).toContain('Batch: C3H6O3')
+    expect(byTestId(wrapper, 'batch-agreement').exists()).toBe(false)
+    // The sample has a run of its own: the ledger's notice, not the no-own-run note.
+    expect(byTestId(wrapper, 'no-own-run').exists()).toBe(false)
+    expect(byTestId(wrapper, 'run-notice-ledger').exists()).toBe(true)
   })
 
   it('says the level the members were opened by, from a row of the batch ledger', async () => {
