@@ -1080,9 +1080,17 @@ What caps a row at candidate:
   the others weigh how the run chose between readings. A peak you assign by hand as
   one of a compound's isotopologues, such as its 81Br line, is not asked: the rule
   reads a formula's lines from its main one. Such a peak is stored as the line, its
-  ion the line's own formula as an untargeted run stores a line, and names no main
-  line it belongs to, so the sample's ledger lists it as a row of its own with its
-  line beside the formula, and the batch's vote on which batch peak a line belongs to
+  ion the line's own formula as an untargeted run stores a line. When the run holds
+  exactly one main line of the formula and adduct, the peak is linked to it, as the
+  run's own lines are: it folds under that row and shows its level, and its tier
+  stays the one its own evidence gives it. A main line assigned by hand later takes
+  the run's hand-assigned lines of its formula and adduct that name no main line.
+  Replacing the main line's compound leaves such a line assigned: a person's choice
+  is not undone as a side effect, so it keeps its formula and names no main line any
+  more, and the run's own lines are unassigned with the compound as before. A line
+  that names no main line, because the run holds none of its formula and adduct or
+  more than one, is a row of its own in the sample's ledger, with its line beside the
+  formula, and the batch's vote on which batch peak a line belongs to
   leaves it out rather than counting it against the family. The vote leaves out every
   line that names no main line, a run's own included, such as one whose main line the
   run gave to another ion. So rebuilding a batch ledger from runs made before this

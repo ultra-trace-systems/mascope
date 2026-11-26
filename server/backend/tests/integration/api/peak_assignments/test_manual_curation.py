@@ -1098,8 +1098,7 @@ async def test_an_isotopologue_is_not_committed_as_a_compounds_main_peak(
     row = await _row(async_session_factory, curated_run["blank_id"])
     assert row.role == "iso_child"
     assert row.isotope_label == "M+1"
-    # No owner is invented for it: the run arbitrated no family for this
-    # formula, and an ownerless isotopologue is ordinary engine output anyway.
+    # No owner is invented for it: the run holds no M0 of this formula.
     assert row.owner_peak_assignment_id is None
 
 
@@ -2765,3 +2764,377 @@ async def test_the_files_resolving_power_shapes_the_prediction(
         if line["line"] == "81Br"
     )
     assert br81["predicted_share"] == pytest.approx(0.9851, abs=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# An isotope line assigned by hand, and the run's M0 it folds under (MAS-1317)
+# ---------------------------------------------------------------------------
+
+#: The level the fixture's M0 is given here, so a line that shows it is told
+#: from one that shows the level of a line with no M0 (5a).
+M0_LEVEL = {"level": "3a", "evidence": "a test's M0 level", "lift": "a test's lift"}
+
+
+async def _give_m0_a_level(async_session_factory, data: dict) -> None:
+    async with async_session_factory() as session:
+        m0 = await session.get(PeakAssignment, data["m0_id"])
+        m0.provenance = {**m0.provenance, "identification_level": dict(M0_LEVEL)}
+        m0.level = M0_LEVEL["level"]
+        await session.commit()
+
+
+def _hand_line(data: dict, formula: str = "C6H12O6", **overrides) -> dict:
+    """A hand M+1 of a formula under the fixture's adduct. Its fit sits between
+    the run's bands, so the hand path tiers it 'candidate' while the M0 it is
+    linked under is 'assigned'."""
+    return {
+        "action": "set_assignment",
+        "assigned_formula": formula,
+        "ionization_mechanism_id": data["mechanism_id"],
+        "isotope_label": "M+1",
+        "isotope_formula": f"[13C]{formula}",
+        "fit_score": 0.62,
+        **overrides,
+    }
+
+
+async def _add_row(async_session_factory, data: dict, peak: str, **fields) -> str:
+    row_id = gen_id(32)
+    async with async_session_factory() as session:
+        session.add(
+            PeakAssignment(
+                peak_assignment_id=row_id,
+                peak_assignment_run_id=data["run_id"],
+                sample_item_id=data["sample_item_id"],
+                sample_peak_id=peak,
+                sample_peak_mz=300.25,
+                sample_peak_intensity=80.0,
+                **{"role": "unassigned", "tier": "unassigned", **fields},
+            )
+        )
+        await session.commit()
+    return row_id
+
+
+@pytest.mark.asyncio
+async def test_a_hand_line_folds_under_the_runs_m0_of_its_compound(
+    editor_client, curated_run, async_session_factory
+):
+    """MAS-1312's option D: the run holds the M0 of the formula and adduct, so
+    the line is that M0's, shows its level, and keeps the tier the hand path
+    gave it."""
+    await _give_m0_a_level(async_session_factory, curated_run)
+
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["blank_id"]), json=_hand_line(curated_run)
+    )
+    assert response.status_code == 200, response.text
+
+    row = await _row(async_session_factory, curated_run["blank_id"])
+    assert row.role == "iso_child"
+    assert row.owner_peak_assignment_id == curated_run["m0_id"]
+    assert row.level == "3a"
+    level = row.provenance["identification_level"]
+    assert level["inherited_from"] == curated_run["m0_id"]
+    assert level["evidence"] == M0_LEVEL["evidence"]
+    assert row.tier == "candidate"
+    assert (
+        response.json()["data"][0]["owner_peak_assignment_id"] == (curated_run["m0_id"])
+    )
+    assert "Linked under C6H12O6's M0 at m/z 181.0707." in response.json()["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_hand_line_with_no_m0_of_its_compound_stands_on_its_own(
+    editor_client, curated_run, async_session_factory
+):
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["blank_id"]),
+        json=_hand_line(curated_run, formula="C12H22O11"),
+    )
+
+    row = await _row(async_session_factory, curated_run["blank_id"])
+    assert row.owner_peak_assignment_id is None
+    assert row.level == "5a"
+    assert "No M0 of C12H22O11 in this run" in response.json()["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_hand_line_is_linked_by_its_adduct_as_well_as_its_formula(
+    editor_client, curated_run, async_session_factory
+):
+    """The same formula's M0 under another adduct is another compound's."""
+    other = gen_id()
+    async with async_session_factory() as session:
+        session.add(
+            IonizationMechanism(
+                ionization_mechanism_id=other,
+                ionization_mechanism_polarity="+",
+                ionization_mechanism=f"+Na+ ({other})",
+            )
+        )
+        await session.commit()
+    try:
+        response = await editor_client.patch(
+            _url(curated_run, curated_run["blank_id"]),
+            json=_hand_line(curated_run, ionization_mechanism_id=other),
+        )
+        assert response.status_code == 200, response.text
+        row = await _row(async_session_factory, curated_run["blank_id"])
+        assert row.owner_peak_assignment_id is None
+        assert "No M0 of C6H12O6 in this run" in response.json()["message"]
+    finally:
+        async with async_session_factory() as session:
+            await session.execute(
+                delete(PeakAssignment).where(
+                    PeakAssignment.peak_assignment_id == curated_run["blank_id"]
+                )
+            )
+            await session.execute(
+                delete(IonizationMechanism).where(
+                    IonizationMechanism.ionization_mechanism_id == other
+                )
+            )
+            await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_hand_line_with_two_m0_rows_of_its_compound_is_left_on_its_own(
+    editor_client, curated_run, async_session_factory
+):
+    """Which of two M0 rows a line is of, the run cannot say."""
+    await _add_row(
+        async_session_factory,
+        curated_run,
+        "cur-4",
+        role="M0",
+        tier="assigned",
+        assigned_formula="C6H12O6",
+        ion_formula="C6H13O6+",
+        ionization_mechanism_id=curated_run["mechanism_id"],
+        isotope_label="M0",
+        source="database",
+    )
+
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["blank_id"]), json=_hand_line(curated_run)
+    )
+
+    row = await _row(async_session_factory, curated_run["blank_id"])
+    assert row.owner_peak_assignment_id is None
+    assert "2 M0 rows of C6H12O6, left on its own." in response.json()["message"]
+
+
+@pytest.mark.asyncio
+async def test_overriding_the_m0_detaches_a_hand_line_and_the_undo_links_it_again(
+    editor_client, curated_run, async_session_factory
+):
+    """A person's choice is never undone as a side effect: the hand line keeps
+    its formula and stands on its own, while the run's own line is demoted and
+    archived as before. Committing the M0 back restores the run's line and
+    links the hand line under it again."""
+    await _give_m0_a_level(async_session_factory, curated_run)
+    await editor_client.patch(
+        _url(curated_run, curated_run["blank_id"]), json=_hand_line(curated_run)
+    )
+
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={"action": "promote_alternative", "alternative_index": 0},
+    )
+    assert response.status_code == 200, response.text
+    message = response.json()["message"]
+    assert "1 isotopologue of 'C6H12O6' demoted to unassigned." in message
+    assert (
+        "1 isotope line of C6H12O6 assigned by hand, at m/z 250.5000, detached"
+        in message
+    )
+    returned = [record["peak_assignment_id"] for record in response.json()["data"]]
+    assert curated_run["blank_id"] in returned
+
+    line = await _row(async_session_factory, curated_run["blank_id"])
+    assert line.role == "iso_child"
+    assert line.assigned_formula == "C6H12O6"
+    assert line.owner_peak_assignment_id is None
+    assert line.level == "5a"
+    assert line.provenance["manual"]["action"] == "set_assignment"
+    assert line.provenance["manual"]["detached_from"] == curated_run["m0_id"]
+    child = await _row(async_session_factory, curated_run["child_id"])
+    assert child.role == "unassigned"
+    m0 = await _row(async_session_factory, curated_run["m0_id"])
+    archived = [
+        entry["peak_assignment_id"] for entry in m0.provenance["manual"]["demoted"]
+    ]
+    assert archived == [curated_run["child_id"]]
+
+    undo = await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={
+            "action": "promote_alternative",
+            "alternative_index": 0,
+            "expected_formula": "C6H12O6",
+        },
+    )
+    assert undo.status_code == 200, undo.text
+    assert (
+        "1 isotope line assigned by hand linked under it, at m/z 250.5000."
+        in (undo.json()["message"])
+    )
+    returned = [record["peak_assignment_id"] for record in undo.json()["data"]]
+    assert curated_run["blank_id"] in returned
+    child = await _row(async_session_factory, curated_run["child_id"])
+    assert (child.role, child.owner_peak_assignment_id) == (
+        "iso_child",
+        curated_run["m0_id"],
+    )
+    line = await _row(async_session_factory, curated_run["blank_id"])
+    m0 = await _row(async_session_factory, curated_run["m0_id"])
+    assert line.owner_peak_assignment_id == curated_run["m0_id"]
+    assert line.level == m0.level
+    assert (
+        line.provenance["identification_level"]["inherited_from"]
+        == (curated_run["m0_id"])
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_hand_m0_takes_the_runs_ownerless_hand_lines_of_its_compound(
+    editor_client, curated_run, async_session_factory
+):
+    """The other direction: the line came first, its M0 second."""
+    await editor_client.patch(
+        _url(curated_run, curated_run["blank_id"]),
+        json=_hand_line(curated_run, formula="C12H22O11"),
+    )
+    m0_id = await _add_row(async_session_factory, curated_run, "cur-4")
+    # Hand lines of another formula, and of the formula under no adduct: not
+    # this compound's.
+    hand = {
+        "role": "iso_child",
+        "tier": "candidate",
+        "isotope_label": "M+1",
+        "source": "manual",
+        "provenance": {"manual": {"action": "set_assignment"}},
+    }
+    others = [
+        await _add_row(
+            async_session_factory,
+            curated_run,
+            "cur-6",
+            assigned_formula="C6H12O6",
+            ionization_mechanism_id=curated_run["mechanism_id"],
+            **hand,
+        ),
+        await _add_row(
+            async_session_factory,
+            curated_run,
+            "cur-7",
+            assigned_formula="C12H22O11",
+            **hand,
+        ),
+    ]
+
+    response = await editor_client.patch(
+        _url(curated_run, m0_id),
+        json={
+            "action": "set_assignment",
+            "assigned_formula": "C12H22O11",
+            "ionization_mechanism_id": curated_run["mechanism_id"],
+            "fit_score": 0.95,
+        },
+    )
+    assert response.status_code == 200, response.text
+
+    line = await _row(async_session_factory, curated_run["blank_id"])
+    m0 = await _row(async_session_factory, m0_id)
+    assert line.owner_peak_assignment_id == m0_id
+    assert line.level == m0.level
+    assert line.provenance["identification_level"]["inherited_from"] == m0_id
+    for other in others:
+        assert (
+            await _row(async_session_factory, other)
+        ).owner_peak_assignment_id is None
+    assert (
+        "1 isotope line assigned by hand linked under it"
+        in (response.json()["message"])
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_second_m0_of_the_compound_takes_no_hand_line(
+    editor_client, curated_run, async_session_factory
+):
+    """The run already holds an M0 of the compound, so a line cannot be told
+    to be the new one's."""
+    blank = curated_run["blank_id"]
+    # Ownerless, as if left so before the run's M0 was there.
+    await _add_row(
+        async_session_factory,
+        curated_run,
+        "cur-5",
+        role="iso_child",
+        tier="candidate",
+        assigned_formula="C6H12O6",
+        ionization_mechanism_id=curated_run["mechanism_id"],
+        isotope_label="M+1",
+        source="manual",
+        provenance={"manual": {"action": "set_assignment"}},
+    )
+
+    response = await editor_client.patch(
+        _url(curated_run, blank),
+        json={
+            "action": "set_assignment",
+            "assigned_formula": "C6H12O6",
+            "ionization_mechanism_id": curated_run["mechanism_id"],
+            "fit_score": 0.95,
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert "linked under it" not in response.json()["message"]
+    async with async_session_factory() as session:
+        line = (
+            await session.execute(
+                select(PeakAssignment).where(
+                    PeakAssignment.peak_assignment_run_id == curated_run["run_id"],
+                    PeakAssignment.sample_peak_id == "cur-5",
+                )
+            )
+        ).scalar_one()
+    assert line.owner_peak_assignment_id is None
+
+
+@pytest.mark.asyncio
+async def test_a_manual_line_no_person_assigned_on_its_own_row_is_demoted(
+    editor_client, curated_run, async_session_factory
+):
+    """A hand line is told by the action on its own row, not by its source: a
+    'manual' line that came with its M0's click goes with that M0, and an
+    ownerless one is not linked under a new M0."""
+    async with async_session_factory() as session:
+        child = await session.get(PeakAssignment, curated_run["child_id"])
+        child.source = "manual"
+        child.provenance = {"manual": {"action": "claim_isotope_line"}}
+        await session.commit()
+    stray = await _add_row(
+        async_session_factory,
+        curated_run,
+        "cur-4",
+        role="iso_child",
+        tier="candidate",
+        assigned_formula="C7H16O5",
+        ionization_mechanism_id=curated_run["mechanism_id"],
+        isotope_label="M+1",
+        source="manual",
+        provenance={"manual": {"action": "claim_isotope_line"}},
+    )
+
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={"action": "promote_alternative", "alternative_index": 0},
+    )
+    assert response.status_code == 200, response.text
+
+    child = await _row(async_session_factory, curated_run["child_id"])
+    assert child.role == "unassigned"
+    assert (await _row(async_session_factory, stray)).owner_peak_assignment_id is None
