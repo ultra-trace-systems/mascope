@@ -24,6 +24,7 @@ import { LEVEL_FILTER_OPTIONS } from '@/lib/levels'
 import { useApp } from '@/stores'
 
 import LedgerListingCell from './LedgerListingCell.vue'
+import LedgerMenuChoice from './LedgerMenuChoice.vue'
 import LedgerTierStrip from './LedgerTierStrip.vue'
 import LedgerVerdictCell from './LedgerVerdictCell.vue'
 import LedgerViewToggle from './LedgerViewToggle.vue'
@@ -63,8 +64,11 @@ import './narrow.css'
  *   level, verdict or action. The row's actions show on hover, on focus
  *   within the row and on the selected row. Clicking an m/z opens the peak
  *   in the inspector (`open-mz`);
- * - the narrow widths: ./narrow.css drops the level, the sample count, the
- *   batch's badges and the intensity's bar, in that order;
+ * - the narrow widths: ./narrow.css drops the Level column, the sample
+ *   count, the batch's badges and the intensity's bar, in that order. The
+ *   level itself stays: where its column drops, its chips move into the Tier
+ *   cell. Show carries the level's filter and sort, so they stay within
+ *   reach with the column gone;
  * - the lens (section 3.5): with `lens` set, a bar above the table names the
  *   group the rows are narrowed to, offers to plot it where the scope can,
  *   and closes with its x or Escape; a Step or Channel column labels each
@@ -253,6 +257,43 @@ const barStyle = (row) => ({
   width: `${(intensityBarShare(row[props.fields.intensity], domain.value) * 100).toFixed(1)}%`
 })
 
+// The level's filter and sort in Show, for the widths that drop its column.
+// The filter is the Level column's own menu filter (the DataTable's
+// `filters`, which the scope binds with v-model): read off the attrs it
+// passes and written back through the same update, so the column's menu and
+// Show never disagree. The attrs are read in the render, not in a computed:
+// Vue updates them on the parent's render, but tracks no change to them.
+const levelChoices = computed(() =>
+  props.levelOptions.map((option) => ({
+    value: option.value,
+    label: option.label,
+    tooltip: option.name
+  }))
+)
+const levelFilterValue = () => attrs.filters?.[props.fields.level]?.constraints?.[0]?.value ?? null
+function setLevelFilter(value) {
+  const filters = attrs.filters
+  const meta = filters?.[props.fields.level]
+  if (!meta) return
+  const [first, ...rest] = meta.constraints
+  attrs['onUpdate:filters']?.({
+    ...filters,
+    [props.fields.level]: { ...meta, constraints: [{ ...first, value }, ...rest] }
+  })
+}
+// Ascending rank reads most identified first (lib/levels.js, LEVEL_RANK).
+const LEVEL_SORTS = [
+  { value: 1, label: 'Strongest first', tooltip: 'Confirmed structure (1) first' },
+  { value: -1, label: 'Weakest first', tooltip: 'A measured mass (5) first' }
+]
+const levelSortValue = computed(() =>
+  props.sortField === props.fields.levelSort ? props.sortOrder : null
+)
+function setLevelSort(order) {
+  emit('update:sortField', order == null ? null : props.fields.levelSort)
+  emit('update:sortOrder', order)
+}
+
 const engineChipTooltip = (row) =>
   props.engineTierTooltip(row) || `The importing engine's own tier: ${tierName(row.engine_tier)}`
 </script>
@@ -324,7 +365,35 @@ const engineChipTooltip = (row) =>
             @show="viewMenuOpen = true"
             @hide="viewMenuOpen = false"
           >
-            <div class="view-menu"><slot name="view-menu" /></div>
+            <div class="view-menu">
+              <slot name="view-menu" />
+              <!-- The level's filter and sort, the Level column's own, here
+                   too: at a narrow width the column drops (./narrow.css),
+                   its header with it, and the level's chips move into the
+                   Tier cell. One filter either way: both write the same
+                   column filter. -->
+              <div v-if="hasLevels" class="menu-section level-menu">
+                <span class="menu-heading">Level</span>
+                <LedgerMenuChoice
+                  :modelValue="levelFilterValue()"
+                  class="level-filter"
+                  label="Only the level"
+                  ariaLabel="Filter by identification level"
+                  :options="levelChoices"
+                  clearable
+                  @update:modelValue="setLevelFilter"
+                />
+                <LedgerMenuChoice
+                  :modelValue="levelSortValue"
+                  class="level-sort"
+                  label="Sort by level"
+                  ariaLabel="Sort the rows by identification level"
+                  :options="LEVEL_SORTS"
+                  clearable
+                  @update:modelValue="setLevelSort"
+                />
+              </div>
+            </div>
           </Popover>
           <Button
             class="overflow-button"
@@ -631,6 +700,14 @@ const engineChipTooltip = (row) =>
                 :tooltip="engineChipTooltip(data)"
                 outlined
               />
+              <!-- The level, where the Level column has no room: the same
+                   chips the column draws (the engine's own with Show > Engine
+                   readings on), compact beside the tier. ./narrow.css shows
+                   this copy only at the widths that drop the column, so a row
+                   never carries the level twice. -->
+              <span v-if="hasLevels" class="tier-level" data-testid="tier-level"
+                ><slot name="level" :data="data"
+              /></span>
             </span>
           </template>
         </Column>
@@ -981,6 +1058,16 @@ const engineChipTooltip = (row) =>
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
+}
+/* The level beside the tier at a narrow width: its chips compact, the
+   number and letter in the band's token. No display of its own here:
+   ./narrow.css alone says at which widths it shows. */
+.tier-level :deep(.level-tag + .level-tag) {
+  margin-left: 0.2rem;
+}
+.tier-level :deep(.level) {
+  min-width: 0;
+  padding: 0 0.3rem;
 }
 
 /* The row's actions: out of sight until the row is hovered, focused or

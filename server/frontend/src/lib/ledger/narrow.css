@@ -1,9 +1,16 @@
 /*
  * The ledger at narrow widths (docs/dev/assignment_ledger_and_card.md,
  * section 3.3): as its column narrows, the ledger drops cells in a fixed
- * order, the least read first - the level, then the batch's sample count,
- * then its badges, then the intensity's bar - so the m/z, the compound, the
- * ion, the number and the tier stay in every width.
+ * order, the least needed first - the Level column, then the batch's sample
+ * count, then its badges, then the intensity's bar - so the m/z, the
+ * compound, the ion, the number, the tier and the level stay in every width.
+ *
+ * The level is what a reader may state of a row, and the tier alone is not a
+ * result (the owner, 2026-11-24): it leaves with the tier, never first. So
+ * the Level column drops, but not the level: at the widths that drop the
+ * column, its chips show in the Tier cell (`.tier-level`, beside the tier
+ * chip), and at the widths that keep the column, that copy is hidden, so a
+ * row never carries the level twice.
  *
  * Measured on the ledger's own width (`container-name: ledger`, set on
  * `.ledger` in AssignmentLedger.vue), not the window's: the ledger shares its
@@ -16,6 +23,12 @@
  * container query, and a copy of the widths in a script would drift from
  * the ones that apply.
  */
+
+@container ledger (min-width: 901px) {
+  .ledger .tier-level {
+    display: none;
+  }
+}
 
 @container ledger (max-width: 900px) {
   .ledger .col-level {

@@ -1062,7 +1062,14 @@ const HEADERS = {
         Mascope's tier.
         </p>
         <p>
-        Every choice here, the search and the tier chips are kept for this
+        <b>Level</b>, once a row carries one, narrows the table to one
+        identification level and sorts the rows by it, as the <b>Level</b>
+        column's header does. When the ledger is narrow, that column gives way
+        and each row shows its level beside its tier; this is then where its
+        filter and sort are.
+        </p>
+        <p>
+        The search, the tier chips and every choice here but the level filter are kept for this
         ledger: they hold when you switch to the batch and back, and after a
         reload. <b>Write listed names in full</b> is under the <b>...</b>
         menu beside this one.

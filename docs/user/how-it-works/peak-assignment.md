@@ -1476,7 +1476,12 @@ is on. The *Batch peaks* ledger's **Level** column shows the level most of a bat
 peak's members' runs stated for its formula (a tie reads as the weaker level) until the
 batch states one of its own, and a batch import from another engine that carried its
 own levels shows the engine's beside it, as an outlined chip, while **Show › Engine tier
-and level** is on. The column shows only once a row of the ledger carries a level. An
+and level** is on. The column shows only once a row of the ledger carries a level. When
+the ledger is narrow, as it is beside the spectrum or the batch chart at the usual
+split, the **Level** column gives way, but the level stays: each row shows it as a
+compact chip beside its tier chip, with the same hover, and the engine's level beside
+the engine's tier. The level's filter and sort are then under **Show › Level**, which
+also offers them at any width. An
 isotope line carries none of its own: its main peak's row shows it. A reagent or artifact peak, an unassigned peak, a run imported from
 another engine and a run made before the level show none. A peak you assign by hand
 reads 5a with its rivals not measured, or 5b where its lines refute it.

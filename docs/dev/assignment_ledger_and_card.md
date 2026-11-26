@@ -158,8 +158,19 @@ chip when *Show › Engine readings* is on. They do not get columns of their own
 - The default sort is intensity, descending, in both scopes; in the batch scope that is
   the brightest sample's intensity. A sort the user picked is remembered per scope, as
   `ledgerSort.js` does now.
-- Narrow columns drop cells in order, by container query: Level, then Samples, then
-  Across the batch, then Intensity's bar.
+- Narrow columns drop cells in order, by container query on the ledger's own width,
+  the least needed first: the Level column (900 px or less), then Samples (780 px),
+  then Across the batch (680 px), then Intensity's bar (560 px). The m/z, the compound,
+  the ion, the number, the tier and the level stay in every width.
+- The level leaves with the tier, never first. It is what a reader may state of a row,
+  and the tier alone is not a result (the plan owner, 2026-11-24). So where the Level
+  column drops, its chips show compact beside the tier chip in the Tier cell, the
+  engine's own level too with Show > Engine readings on, as the engine's tier is. Above
+  that width the Tier cell carries no level, so a row never shows it twice. The level's
+  filter and sort, which go with the column's header, are also in Show's *Level*
+  section, writing the same filter and sort. Decided on 2026-11-26 (MAS-1300), after
+  the ledger, which shares its row with the chart, turned out to be under 900 px at the
+  usual split, so the level was on screen in neither scope.
 
 ### 3.4 The filter bar
 
