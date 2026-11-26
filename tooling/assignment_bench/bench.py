@@ -2,7 +2,7 @@
 
     bench.py init <manifest> [--ref REF] [--rebuild] [--checkout DIR] [--keep-running] [--wait]
     bench.py reference --pin vX.Y.Z [--reinstall] [--jobs N] [--set NAME ...] [--wait]
-    bench.py run <ref> [--sets A,D,...] [--decoys] [--batch] [--baseline] [--post PR] [--fresh] [--no-wait] [--jobs N] [--budget-min M] [--run-limit-min M] [--workers N]
+    bench.py run <ref> [--sets A,D,...] [--decoys] [--batch] [--baseline] [--config JSON | --config-file PATH] [--post PR] [--fresh] [--no-wait] [--jobs N] [--budget-min M] [--run-limit-min M] [--workers N]
     bench.py baseline [CARD]
     bench.py review [--sets A,D,...] [--top N] | --record SHEET [--recalibrate] [--wait]
     bench.py post <ref> --pr N
@@ -2324,6 +2324,8 @@ class Bench:
             print("cards", file=out)
             for card in cards[-5:]:
                 how = f"reused {card['reused']}" if card.get("reused") else "run"
+                if card.get("config"):
+                    how += " with a run config"
                 print(
                     f"  {card.get('at')}  {card.get('ref')} at {str(card.get('sha'))[:9]}  "
                     f"{card.get('verdict') or '-'}  engine {str(card.get('digest') or '-')[:12]}  "
@@ -2475,6 +2477,20 @@ def main(argv: list[str] | None = None) -> int:
         help="diff the card against develop's rolling baseline; a run of develop's "
         "head becomes the next baseline",
     )
+    configs = p_run.add_mutually_exclusive_group()
+    configs.add_argument(
+        "--config",
+        metavar="JSON",
+        help="ask every in-app run with this run config, a JSON object of the "
+        "engine's run options (default none: the engine's defaults); the card "
+        "says so and is never the baseline",
+    )
+    configs.add_argument(
+        "--config-file",
+        type=Path,
+        metavar="PATH",
+        help="--config, read from a file",
+    )
     p_run.add_argument(
         "--post",
         type=int,
@@ -2600,6 +2616,17 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout, sys.stderr = stdout, stderr
 
 
+def run_config(args) -> dict | None:
+    """``bench run``'s run config, from ``--config`` or ``--config-file``."""
+    if args.config_file is not None:
+        try:
+            text = args.config_file.read_text(encoding="utf-8")
+        except OSError as error:
+            raise BenchError(f"--config-file cannot be read: {error}") from None
+        return bench_run.parse_config(text, "--config-file")
+    return bench_run.parse_config(args.config)
+
+
 def _main(args) -> int:
     try:
         home = Home(args.home or default_home())
@@ -2656,6 +2683,9 @@ def _main(args) -> int:
                     "--check asks whether the head would run; --fresh runs it "
                     "regardless"
                 )
+            # Before the PR is read: a config that is no JSON object is
+            # refused before anything opens, waits or runs.
+            config = run_config(args)
             poster = None
             if args.post is not None:
                 # Before the lock: a fork is refused before anything waits or runs.
@@ -2667,6 +2697,7 @@ def _main(args) -> int:
                 "batch": args.batch,
                 "baseline": args.baseline or poster is not None,
                 "post": poster,
+                "config": config,
             }
             if args.check:
                 # No lock: the lookup the reuse makes, stopped before it writes.

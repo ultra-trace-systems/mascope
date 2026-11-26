@@ -243,6 +243,9 @@ class FakeServer:
         self.pass_refuse = {}
         #: The batch's assignment status once a pass has ended.
         self.status = {"state": "current", "stale_stages": []}
+        #: Run options the server does not know: it drops them from the
+        #: config it records, without a word, as the real one does.
+        self.unknown = set()
 
     def assign_batch(self, batch, fold):
         with self.lock:
@@ -287,7 +290,7 @@ class FakeServer:
         return dict(self.status)
 
     def assign(self, sample, config):
-        arm = brun.arm_name(config["decoy"]) if config else None
+        arm = brun.arm_name(config["decoy"]) if (config or {}).get("decoy") else None
         with self.lock:
             self.assigned.append((sample, arm, config))
             if self.busy.get(sample):
@@ -330,13 +333,23 @@ class FakeServer:
                     "engine_version": "0.6.0",
                     "status": "running",
                     "decoy": arm,
+                    # The request's options it knows, beside its own facts.
                     "config": {
-                        "decoy_arm": {
-                            "control_run_id": control["peak_assignment_run_id"]
-                        }
-                    }
-                    if arm
-                    else {},
+                        **{
+                            k: v
+                            for k, v in (config or {}).items()
+                            if k != "decoy" and k not in self.unknown
+                        },
+                        **(
+                            {
+                                "decoy_arm": {
+                                    "control_run_id": control["peak_assignment_run_id"]
+                                }
+                            }
+                            if arm
+                            else {}
+                        ),
+                    },
                     "error": None,
                     "_polls": 0,
                     "_end": end,
@@ -1859,14 +1872,14 @@ def test_the_command_line_runs_a_run(tmp_path, monkeypatch):
         def __init__(self, **kwargs):
             calls.append(kwargs)
 
-        def reuse(self, ref, sets, decoys, baseline, post, batch):
+        def reuse(self, ref, sets, decoys, baseline, post, batch, config):
             # Asked before the lock is taken.
             calls.append(("reuse", ref, sets, decoys, baseline, held()))
             batches.append(("reuse", batch))
             assert post is None
             return None
 
-        def run(self, ref, sets, decoys, baseline, post, fresh, batch):
+        def run(self, ref, sets, decoys, baseline, post, fresh, batch, config):
             calls.append((ref, sets, decoys, baseline, fresh))
             batches.append(("run", batch))
             assert post is None

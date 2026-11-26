@@ -3,8 +3,8 @@
 # The assignment bench: both engines on demand, on the agent box
 
 - **Status:** building
-- **As of:** 2026-11-24
-- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, milestone 6: MAS-64, MAS-835 to MAS-841, MAS-849, MAS-955, MAS-1055, MAS-1057, MAS-1140, MAS-1256)
+- **As of:** 2026-11-26
+- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, milestone 6: MAS-64, MAS-835 to MAS-841, MAS-849, MAS-955, MAS-1055, MAS-1057, MAS-1140, MAS-1256, MAS-893)
 - **What:** One command on the agent box that runs a branch's in-app assignment engine beside peaky at a pinned release on fixed sample sets, prints the plan's metrics as a card, and posts it on the PR; a worker runs it in its own session.
 
 ## 1. Why
@@ -212,7 +212,9 @@ MAS-934), written into the env's own config layer, since an engine run is
 CPU-bound in its worker. It leaves out a sample whose newest
 reference run is not the one `bench reference` published at the pin, and
 runs the in-app engine on every other sample with no run config, the
-engine's own defaults; `--decoys` adds the arms of the set's class (9 ppm
+engine's own defaults (with `--config`, a run config of the caller's on
+every run, each run checked to have taken it, the card saying so and never
+the baseline: MAS-893, the README's "A run config"); `--decoys` adds the arms of the set's class (9 ppm
 either way and the swapped adducts on an Orbitrap, 0.35 Da and the swapped
 adducts on a TOF), each against that run. A set has a time budget of its
 own; one that runs out is left off the card whole. After the runs it checks
