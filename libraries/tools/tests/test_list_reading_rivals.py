@@ -170,8 +170,9 @@ class TestTheFitTiedRivals:
 
 
 class TestTheUnscoredCandidates:
-    """The grid scores 64 candidates a peak, nearest in mass first; the ions
-    it did not score are counted, as rivals whose fit nothing measured."""
+    """The grid scores 64 ions a peak, one reading of each, nearest in mass
+    first; the ions it did not score are counted, as rivals whose fit nothing
+    measured."""
 
     @staticmethod
     def _dense():
@@ -195,7 +196,13 @@ class TestTheUnscoredCandidates:
         """MAS-1284 (#3634): the window is elected to one reading per ion
         before it is cut, as the untargeted search's is, so the splits of one
         ion spend one of the limit's slots."""
-        handed = []
+        handed, elected = [], []
+        elect = finder.elect_same_ion_families
+        monkeypatch.setattr(
+            finder,
+            "elect_same_ion_families",
+            lambda candidates: elected.append(elect(candidates)) or elected[-1],
+        )
         match = finder.match_isotopic_pattern
         monkeypatch.setattr(
             finder,
@@ -210,6 +217,16 @@ class TestTheUnscoredCandidates:
         [candidates] = handed
         ions = {utils.ion_identity(c.get("ion")) for c in candidates}
         assert len(candidates) == len(ions) == ISOTOPE_CANDIDATE_LIMIT
+
+        # The 63 handed over beside the reading are the nearest in mass: no
+        # elected ion left out is nearer than the farthest one scored.
+        def error(candidate):
+            return abs(float(candidate.get("composition_error_ppm") or 0.0))
+
+        [window] = elected
+        left = [c for c in window if utils.ion_identity(c.get("ion")) not in ions]
+        assert left
+        assert max(map(error, candidates[1:])) <= min(map(error, left))
 
     def test_a_window_under_it_leaves_none(self):
         (found,) = _measure(UNRESOLVED)
