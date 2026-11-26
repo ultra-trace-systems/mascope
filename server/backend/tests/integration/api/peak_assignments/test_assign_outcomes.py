@@ -35,6 +35,7 @@ from mascope_backend.db import (
     SampleBatch,
     SampleFile,
     SampleItem,
+    retry,
 )
 from mascope_backend.db.id import gen_id
 
@@ -530,7 +531,7 @@ class TestReclamation:
             raise TooManyConnectionsError("sorry, too many clients already")
 
         monkeypatch.setattr(service_module, "run_stages", _engine_refused)
-        monkeypatch.setattr(service_module, "_FINALIZE_RETRY_DELAYS_S", (0,) * 6)
+        monkeypatch.setattr(retry, "CONNECTION_RETRY_DELAYS_S", (0,) * 6)
 
         with pytest.raises(TooManyConnectionsError):
             await service_module._assign_sample(

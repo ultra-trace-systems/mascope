@@ -24,14 +24,7 @@ from dataclasses import replace
 from datetime import datetime as dt
 from datetime import timezone
 
-from asyncpg.exceptions import (
-    CannotConnectNowError,
-    InsufficientResourcesError,
-    PostgresConnectionError,
-)
 from sqlalchemy import insert, update
-from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
-from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.lib.api_features import api_controller_background_task
@@ -102,6 +95,7 @@ from mascope_backend.api.new.peak_assignments.sample_mechanisms import (
 )
 from mascope_backend.db import PeakAssignment, PeakAssignmentRun, async_session
 from mascope_backend.db.id import gen_id
+from mascope_backend.db.retry import retry_on_connection_error
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.notifications import UserNotification
 from mascope_file.name import get_instrument_type
@@ -204,38 +198,6 @@ async def _adopt_run(peak_assignment_run_id: str) -> PeakAssignmentRun:
     return run
 
 
-#: The waits, in seconds, between attempts at a run's terminal write while the
-#: database refuses a connection. A run whose end is never written stays
-#: non-terminal, and so blocks its sample until the startup reaper or
-#: retention's grace (hours). The refusals seen in practice ("too many clients
-#: already") pass within a minute, so the write is tried for about that long.
-_FINALIZE_RETRY_DELAYS_S = (1, 2, 4, 8, 15, 30)
-
-
-def _is_connection_error(exc: BaseException) -> bool:
-    """Whether ``exc`` says the database could not be reached, not that the
-    write was wrong: the one kind of failure a later attempt can get past.
-
-    A refusal at connect surfaces as asyncpg's own exception, not wrapped by
-    SQLAlchemy (``TooManyConnectionsError`` is an
-    ``InsufficientResourcesError``); one on a live connection is SQLAlchemy's.
-    """
-    if isinstance(exc, DBAPIError) and exc.connection_invalidated:
-        return True
-    return isinstance(
-        exc,
-        (
-            InsufficientResourcesError,
-            CannotConnectNowError,
-            PostgresConnectionError,
-            OperationalError,
-            InterfaceError,
-            PoolTimeoutError,
-            OSError,
-        ),
-    )
-
-
 async def _finalize_run(
     peak_assignment_run_id: str,
     status: str,
@@ -244,8 +206,9 @@ async def _finalize_run(
     """Mark a run completed/failed with its completion timestamp.
 
     Retried while the database refuses a connection
-    (:data:`_FINALIZE_RETRY_DELAYS_S`): the failure that ends a run is often
-    that refusal itself, and a run whose end is lost blocks its sample. The
+    (:func:`~mascope_backend.db.retry.retry_on_connection_error`): the failure
+    that ends a run is often that refusal itself, and a run whose end is lost
+    blocks its sample. The
     timestamp is the run's end, taken before the first attempt, not the moment
     the database answered again. Any other error is raised at once.
 
@@ -257,31 +220,25 @@ async def _finalize_run(
     disagree whatever status the run ends in.
     """
     completed = dt.now(timezone.utc)
-    for attempt, delay in enumerate((*_FINALIZE_RETRY_DELAYS_S, None), start=1):
-        try:
-            async with async_session() as session:
-                await session.execute(
-                    update(PeakAssignmentRun)
-                    .where(
-                        PeakAssignmentRun.peak_assignment_run_id
-                        == peak_assignment_run_id
-                    )
-                    .values(
-                        status=status,
-                        error=error,
-                        peak_assignment_run_utc_completed=completed,
-                    )
+
+    async def _write() -> None:
+        async with async_session() as session:
+            await session.execute(
+                update(PeakAssignmentRun)
+                .where(
+                    PeakAssignmentRun.peak_assignment_run_id == peak_assignment_run_id
                 )
-                await session.commit()
-            return
-        except Exception as exc:
-            if delay is None or not _is_connection_error(exc):
-                raise
-            runtime.logger.warning(
-                f"Could not mark peak assignment run '{peak_assignment_run_id}' "
-                f"{status} (attempt {attempt}): {exc!r}; retrying in {delay} s"
+                .values(
+                    status=status,
+                    error=error,
+                    peak_assignment_run_utc_completed=completed,
+                )
             )
-            await asyncio.sleep(delay)
+            await session.commit()
+
+    await retry_on_connection_error(
+        _write, f"mark peak assignment run '{peak_assignment_run_id}' {status}"
+    )
 
 
 async def _end_run(peak_assignment_run_id: str, status: str, error: str) -> None:

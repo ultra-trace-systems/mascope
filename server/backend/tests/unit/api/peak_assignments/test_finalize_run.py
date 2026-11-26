@@ -26,6 +26,7 @@ from sqlalchemy.exc import (
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from mascope_backend.api.new.peak_assignments import service
+from mascope_backend.db import retry
 
 
 class _Sessions:
@@ -70,7 +71,7 @@ def sleeps(monkeypatch):
     async def _sleep(seconds):
         waited.append(seconds)
 
-    monkeypatch.setattr(service.asyncio, "sleep", _sleep)
+    monkeypatch.setattr(retry.asyncio, "sleep", _sleep)
     return waited
 
 
@@ -92,7 +93,7 @@ async def test_a_refused_write_is_retried_until_the_database_answers(
 
     assert sessions.attempts == 3
     assert sessions.commits == 1
-    assert sleeps == list(service._FINALIZE_RETRY_DELAYS_S[:2])
+    assert sleeps == list(retry.CONNECTION_RETRY_DELAYS_S[:2])
     values = _values(sessions.statements[0])
     assert (values["status"], values["error"]) == ("failed", "engine refused")
 
@@ -122,7 +123,7 @@ async def test_the_run_ends_when_it_ended_not_when_the_database_answered(
 
 @pytest.mark.asyncio
 async def test_it_gives_up_after_the_last_wait(monkeypatch, sleeps):
-    attempts = len(service._FINALIZE_RETRY_DELAYS_S) + 1
+    attempts = len(retry.CONNECTION_RETRY_DELAYS_S) + 1
     sessions = _Sessions(*(_refused() for _ in range(attempts)))
     monkeypatch.setattr(service, "async_session", sessions)
 
@@ -130,7 +131,7 @@ async def test_it_gives_up_after_the_last_wait(monkeypatch, sleeps):
         await service._finalize_run("run-1", "failed", error="engine refused")
 
     assert sessions.attempts == attempts
-    assert sleeps == list(service._FINALIZE_RETRY_DELAYS_S)
+    assert sleeps == list(retry.CONNECTION_RETRY_DELAYS_S)
 
 
 @pytest.mark.asyncio
@@ -167,4 +168,4 @@ async def test_an_error_a_retry_cannot_get_past_is_raised_at_once(monkeypatch, s
     ],
 )
 def test_only_a_database_it_could_not_reach_is_retried(error, retried):
-    assert service._is_connection_error(error) is retried
+    assert retry.is_connection_error(error) is retried

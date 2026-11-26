@@ -66,6 +66,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     recompute_batch_consensus,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
+    close_shielded,
     complete_run,
     fail_run,
     touch_ledger,
@@ -731,8 +732,12 @@ async def perform_batch_import(
             parent_id=parent_id,
         )
     except Exception as exc:
-        await fail_run(
-            sample_batch_id, batch_peak_run_id, f"{type(exc).__name__}: {exc}"
+        # A close that fails too does not take the import's error's place.
+        await close_shielded(
+            fail_run(
+                sample_batch_id, batch_peak_run_id, f"{type(exc).__name__}: {exc}"
+            ),
+            f"import run '{batch_peak_run_id}' as failed",
         )
         raise
     await complete_run(sample_batch_id, batch_peak_run_id, summary=counts)

@@ -9,9 +9,10 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
+from asyncpg.exceptions import TooManyConnectionsError
 from sqlalchemy import select, update
 
-from mascope_backend.api.new.peak_assignments import batch_peaks_routes
+from mascope_backend.api.new.peak_assignments import batch_peaks_routes, batch_runs
 from mascope_backend.api.new.peak_assignments.batch_fold import rebuild_batch_ledger
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     fold_sample_into_batch_peaks,
@@ -25,6 +26,7 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     BatchRunInFlightException,
     complete_run,
     fail_run,
+    in_batch_run,
     start_run,
 )
 from mascope_backend.db import (
@@ -36,6 +38,10 @@ from mascope_backend.db import (
     SampleBatch,
     SampleFile,
     SampleItem,
+    retry,
+)
+from mascope_backend.db.admin.peak_assignments.reset_running_runs import (
+    reset_running_batch_peak_runs,
 )
 from mascope_backend.db.id import gen_id
 
@@ -342,3 +348,93 @@ async def test_the_route_stub_is_not_needed_for_the_runs_read(
     task routes' stubs."""
     monkeypatch.setattr(batch_peaks_routes, "compute_batch_peaks", None)
     assert len(await _runs(guest_client, folded["batch_id"])) == 1
+
+
+@pytest.fixture
+def refusing(monkeypatch):
+    """Makes the batch runs' sessions refuse ``times`` connections, the
+    retry's waits zero; answers the refusals counted so far."""
+    real_session = batch_runs.async_session
+    refusals = []
+    monkeypatch.setattr(retry, "CONNECTION_RETRY_DELAYS_S", (0,) * 6)
+
+    def _refuse(times):
+        def _session():
+            if len(refusals) < times:
+                refusals.append("refused")
+                raise TooManyConnectionsError("sorry, too many clients already")
+            return real_session()
+
+        monkeypatch.setattr(batch_runs, "async_session", _session)
+
+    _refuse.refusals = refusals
+    return _refuse
+
+
+async def test_a_run_whose_failure_the_database_first_refuses_is_failed(
+    guest_client, folded, refusing
+):
+    """The incident this replays: Postgres runs out of connections, the step
+    fails on that, and so do the first attempts at recording the failure. The
+    run has to end failed once the database answers again, not stay running
+    and refuse every later pass on its batch."""
+    batch_id = folded["batch_id"]
+
+    async def _work(run_id):
+        refusing(2)
+        raise TooManyConnectionsError("sorry, too many clients already")
+
+    with pytest.raises(TooManyConnectionsError):
+        await in_batch_run(batch_id, ACTION_SEARCH, _work)
+
+    assert len(refusing.refusals) == 2
+    runs = await _runs(guest_client, batch_id)
+    assert runs[0]["status"] == "failed"
+    assert "too many clients" in runs[0]["error"]
+    assert runs[0]["current"] is False
+    assert runs[1]["current"] is True
+    assert await start_run(batch_id, ACTION_SEARCH)
+
+
+async def test_a_completion_the_database_first_refuses_completes(
+    guest_client, folded, refusing
+):
+    batch_id = folded["batch_id"]
+    run_id = await start_run(batch_id, ACTION_SEARCH)
+    refusing(2)
+
+    await complete_run(batch_id, run_id, summary={"searched": 2})
+
+    assert len(refusing.refusals) == 2
+    runs = await _runs(guest_client, batch_id)
+    assert (runs[0]["batch_peak_run_id"], runs[0]["status"]) == (run_id, "completed")
+    assert runs[0]["current"] is True
+    assert runs[0]["summary"] == {"searched": 2}
+
+
+async def test_a_close_refused_past_the_retries_is_left_to_the_reaper(
+    guest_client, folded, refusing, async_session_factory
+):
+    """What the step raised is the error raised, not the close's; the run is
+    left as the startup reaper reclaims it: running, never current."""
+    batch_id = folded["batch_id"]
+
+    async def _work(run_id):
+        refusing(len(retry.CONNECTION_RETRY_DELAYS_S) + 1)
+        raise RuntimeError("the step broke")
+
+    with pytest.raises(RuntimeError, match="the step broke"):
+        await in_batch_run(batch_id, ACTION_SEARCH, _work)
+
+    assert len(refusing.refusals) == len(retry.CONNECTION_RETRY_DELAYS_S) + 1
+    runs = await _runs(guest_client, batch_id)
+    assert (runs[0]["status"], runs[0]["current"]) == ("running", False)
+    with pytest.raises(BatchRunInFlightException):
+        await start_run(batch_id, ACTION_SEARCH)
+
+    await reset_running_batch_peak_runs()
+
+    runs = await _runs(guest_client, batch_id)
+    assert (runs[0]["status"], runs[0]["current"]) == ("failed", False)
+    assert runs[1]["current"] is True
+    assert await start_run(batch_id, ACTION_SEARCH)

@@ -25,11 +25,14 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
+from asyncpg.exceptions import TooManyConnectionsError
 from sqlalchemy import select
 
+from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 from mascope_backend.api.new.peak_assignments import (
     batch_peaks_routes,
     batch_rejudge,
+    batch_runs,
     batch_skipped,
     batch_stages,
     batch_staleness,
@@ -77,6 +80,7 @@ from mascope_backend.db import (
     SampleBatch,
     SampleFile,
     SampleItem,
+    retry,
 )
 from mascope_backend.db.admin.peak_assignments.reset_running_runs import (
     reset_running_batch_peak_runs,
@@ -1361,3 +1365,32 @@ async def test_a_pass_keeps_one_measurement_across_its_stages(
 
     await _run(folded["batch_id"], from_stage="series")
     assert judgings["judged"][-1][1] is not judgings["judged"][0][1]
+
+
+async def test_a_refused_pass_whose_close_is_refused_too_answers_its_refusal(
+    folded, monkeypatch
+):
+    """The route opened the run and the pass refuses its arguments: the close
+    is retried, and where the database refuses it throughout, the refusal is
+    still what the pass answers, not the close's error."""
+    batch_id = folded["batch_id"]
+    run_id = await start_run(batch_id, "assign")
+    monkeypatch.setattr(retry, "CONNECTION_RETRY_DELAYS_S", (0,) * 6)
+    attempts = []
+
+    def _refusing_session():
+        attempts.append(None)
+        raise TooManyConnectionsError("sorry, too many clients already")
+
+    monkeypatch.setattr(batch_runs, "async_session", _refusing_session)
+
+    with pytest.raises(ApiException) as refused:
+        await assign_batch(
+            sample_batch_id=batch_id,
+            from_stage="everything",
+            batch_peak_run_id=run_id,
+            process_id="pass-1",
+        )
+
+    assert refused.value.status_code == 422
+    assert len(attempts) == len(retry.CONNECTION_RETRY_DELAYS_S) + 1
