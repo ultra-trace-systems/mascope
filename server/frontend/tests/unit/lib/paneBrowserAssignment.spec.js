@@ -795,9 +795,9 @@ describe('PaneBrowserAssignment launcher', () => {
       expect(runLoad).toHaveBeenCalledTimes(1)
       expect(wrapper.vm.configVisible).toBe(false)
       expect(launcher.launchingId).toBe('si-1')
-      expect(
-        wrapper.find('.empty-state-stub [label="Assign sample"]').attributes('disabled')
-      ).toBeDefined()
+      const empty = wrapper.find('.empty-state-stub [label="Assign sample"]')
+      expect(empty.attributes('disabled')).toBeDefined()
+      expect(empty.attributes('loading')).toBeDefined()
       await wrapper.vm.launch()
       expect(assign).toHaveBeenCalledTimes(1)
 
@@ -806,8 +806,27 @@ describe('PaneBrowserAssignment launcher', () => {
       expect(launcher.launchingId).toBeNull()
     })
 
-    it('reads nothing again and lets go for a refused launch', async () => {
+    it('reads the list again for a refusal as busy, holding the sample until it lands', async () => {
+      // A 409 means a run is in flight that the list does not have yet
+      // (another person's, or one started at ingest): reading it holds the button.
+      const read = deferred()
+      runLoad.mockReturnValue(read.promise)
       assign.mockRejectedValue(apiError(409, 'busy'))
+      const launcher = useAssignmentLauncher()
+      const wrapper = await mountPane()
+
+      const launching = wrapper.vm.launch()
+      await flushAll()
+      expect(runLoad).toHaveBeenCalledTimes(1)
+      expect(launcher.launchingId).toBe('si-1')
+
+      read.resolve()
+      await launching
+      expect(launcher.launchingId).toBeNull()
+    })
+
+    it('reads nothing again and lets go for a refusal that is not busy', async () => {
+      assign.mockRejectedValue(apiError(422, 'bad range'))
       const launcher = useAssignmentLauncher()
       const wrapper = await mountPane()
 
@@ -815,6 +834,24 @@ describe('PaneBrowserAssignment launcher', () => {
 
       expect(runLoad).not.toHaveBeenCalled()
       expect(launcher.launchingId).toBeNull()
+    })
+
+    it("leaves another sample's hold alone when its own read lands", async () => {
+      // Launch A, move to B and launch B before A's read lands: A's end must
+      // not clear the hold B's launch took.
+      const read = deferred()
+      runLoad.mockReturnValue(read.promise)
+      const launcher = useAssignmentLauncher()
+      const wrapper = await mountPane()
+
+      const launching = wrapper.vm.launch()
+      await flushAll()
+      expect(launcher.launchingId).toBe('si-1')
+      launcher.launchingId = 'si-2'
+
+      read.resolve()
+      await launching
+      expect(launcher.launchingId).toBe('si-2')
     })
   })
 })
