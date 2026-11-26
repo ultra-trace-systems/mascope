@@ -278,15 +278,20 @@ const popoverCalls = []
 const PopoverStub = {
   name: 'Popover',
   // The cell popovers call these; open or not, the stub renders its slot.
+  // `visible` follows them as PrimeVue's own does.
+  data: () => ({ visible: false }),
   methods: {
     show() {
       popoverCalls.push([this.$attrs['aria-label'], 'show'])
+      this.visible = true
     },
     hide() {
       popoverCalls.push([this.$attrs['aria-label'], 'hide'])
+      this.visible = false
     },
     toggle() {
       popoverCalls.push([this.$attrs['aria-label'], 'toggle'])
+      this.visible = !this.visible
     }
   },
   template: '<div class="view-popover"><slot /></div>'
@@ -3470,6 +3475,39 @@ describe('PaneBrowserBatchPeaks identification level', () => {
       expect(popover().props('memberLevels')).toEqual({ '4a': 3, '5a': 2 })
       expect(popover().props('claim')).toBeNull()
       expect(popover().props('snapshot')).toBe(false)
+    })
+
+    it("asks nothing when a second click closes the open row's popover", async () => {
+      const cells = await cellsOf('member_level', peaks())
+      await chipOf(cells, 'bp-1').trigger('click')
+      await flushPromises()
+
+      await chipOf(cells, 'bp-1').trigger('click')
+      await flushPromises()
+
+      expect(levelReads()).toHaveLength(1)
+      expect(popoverCalls.at(-1)).toEqual(['Where the level comes from', 'toggle'])
+    })
+
+    // Batch peak ids stay the same across a re-fold, so the first read would
+    // still show the split from before an Assign batch run from the popover.
+    it("reads again when the same row's chip reopens a closed popover", async () => {
+      const cells = await cellsOf('member_level', peaks())
+      vi.spyOn(useBatchAssign(), 'assign').mockResolvedValue()
+      await chipOf(cells, 'bp-1').trigger('click')
+      await flushPromises()
+      popover().vm.$emit('assign')
+      const after = { ...body, member_levels: { '4a': 5 } }
+      get.mockImplementation((url) =>
+        Promise.resolve(url.includes('/levels/') ? { data: after } : null)
+      )
+
+      await chipOf(cells, 'bp-1').trigger('click')
+      await flushPromises()
+
+      expect(levelReads()).toHaveLength(2)
+      expect(popoverCalls.at(-1)).toEqual(['Where the level comes from', 'toggle'])
+      expect(popover().props('sources')).toEqual(after)
     })
 
     it('says a failed read in the popover', async () => {
