@@ -532,6 +532,25 @@ def _role_for(isotope_label: str | None) -> str:
     return ROLE_M0
 
 
+def _committed_ion(body) -> str | None:
+    """The ion a `set_assignment` row stores: the hit's ion, or for a hit read
+    at one of its isotope lines, that line's own formula.
+
+    The search hit names its ion (`target_ion_formula`) at the monoisotopic
+    line whichever line it was read at, and the line it was read at in
+    `isotope_formula` (`[81Br]CHBr3-`). An untargeted run stores a line as its
+    own ion (`untargeted_rows.py`); the database path stores the ion's
+    monoisotopic formula, beside a line that names its owner. A hand line names
+    no owner, so its ion is all the batch fold reads it by
+    (`batch_peaks.is_isotope_line`): stored as the monoisotopic ion, the fold
+    filed it as that ion at the line's m/z. A line whose formula the request
+    does not name stores no ion rather than the wrong one.
+    """
+    if _role_for(body.isotope_label) == ROLE_ISO_CHILD:
+        return body.isotope_formula
+    return body.ion_formula
+
+
 def _manual_provenance(
     action: str,
     scored_by: str,
@@ -1189,7 +1208,7 @@ async def curate_assignment(
             chosen = _clean(
                 {
                     "assigned_formula": body.assigned_formula,
-                    "ion_formula": body.ion_formula,
+                    "ion_formula": _committed_ion(body),
                     "ionization_mechanism_id": body.ionization_mechanism_id,
                     "isotope_label": body.isotope_label,
                     "isotope_formula": body.isotope_formula,

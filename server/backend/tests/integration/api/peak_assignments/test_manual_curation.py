@@ -2582,6 +2582,62 @@ async def test_an_imported_runs_configuration_is_its_engines_own(
 
 
 @pytest.mark.asyncio
+async def test_an_isotope_line_by_hand_stores_the_line_as_its_ion(
+    editor_client, curated_run, asks_lines, async_session_factory
+):
+    """The hit names its ion at the monoisotopic line; the row stores the line
+    it was read at, as an untargeted run's line does, so the batch fold does
+    not read a hand line as the monoisotopic ion at the line's m/z
+    (mascope#3661)."""
+    asks_lines.peaks = _bromo_peaks(br81=False)
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["blank_id"]),
+        json=_assign_bromo(
+            curated_run, isotope_label="M+2", isotope_formula="[81Br]C6H12O5+"
+        ),
+    )
+    assert response.status_code == 200, response.text
+
+    row = await _row(async_session_factory, curated_run["blank_id"])
+    assert (row.role, row.isotope_label) == ("iso_child", "M+2")
+    assert row.ion_formula == "[81Br]C6H12O5+"
+    assert row.isotope_formula == "[81Br]C6H12O5+"
+    assert row.owner_peak_assignment_id is None
+
+
+@pytest.mark.asyncio
+async def test_an_isotope_line_by_hand_with_no_line_formula_names_no_ion(
+    editor_client, curated_run, asks_lines, async_session_factory
+):
+    """Without the line's formula the row stores no ion: the monoisotopic one
+    would name the wrong ion at the line's m/z."""
+    asks_lines.peaks = _bromo_peaks(br81=False)
+    await editor_client.patch(
+        _url(curated_run, curated_run["blank_id"]),
+        json=_assign_bromo(curated_run, isotope_label="M+2"),
+    )
+
+    row = await _row(async_session_factory, curated_run["blank_id"])
+    assert row.role == "iso_child"
+    assert row.ion_formula is None
+
+
+@pytest.mark.asyncio
+async def test_a_main_line_by_hand_keeps_the_hit_s_ion(
+    editor_client, curated_run, asks_lines, async_session_factory
+):
+    asks_lines.peaks = _bromo_peaks(br81=False)
+    await editor_client.patch(
+        _url(curated_run, curated_run["blank_id"]),
+        json=_assign_bromo(curated_run, isotope_formula="C6H12BrO5+"),
+    )
+
+    row = await _row(async_session_factory, curated_run["blank_id"])
+    assert row.role == "M0"
+    assert row.ion_formula == "C6H12BrO5+"
+
+
+@pytest.mark.asyncio
 async def test_an_isotopologue_by_hand_is_not_asked(
     editor_client, curated_run, asks_lines, async_session_factory
 ):

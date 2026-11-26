@@ -381,21 +381,26 @@ def vote_turns(row: Row, decisions: dict[str, Optional[str]]) -> bool:
     majority of the members the consensus reads the row from.
 
     A rewritten member carries the parent's formula, so it is read among the
-    assigned members; the members left as they are keep what they carry.
+    assigned members; the members left as they are keep what they carry. An
+    isotopologue left as it is that names no owner abstains, as it does in
+    the vote: it counts toward the population's choice, not the majority.
     """
     follow = sum(1 for d in decisions.values() if d is None or d == ALREADY)
     assigned = follow
     claimed = 0
+    abstaining = 0
     for sample_item_id, member in row.members.items():
         if decisions.get(sample_item_id) in (None, ALREADY):
             continue
         if member.formula:
             assigned += 1
+            if member.role == ROLE_ISO_CHILD and not member.owner_batch_peak_id:
+                abstaining += 1
         elif member.role in SOURCE_ROLES:
             claimed += 1
     if claimed > assigned:
         return False
-    return 2 * follow > assigned
+    return 2 * follow > assigned - abstaining
 
 
 def _rank(pair: Pair) -> tuple:

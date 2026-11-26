@@ -589,6 +589,27 @@ class TestTheVote:
         assert vote_turns(self._row(["Y", "Y", None, None]), decisions)
         assert not vote_turns(self._row(["Y", "Y", "Y", "Y"]), decisions)
 
+    def test_an_ownerless_isotopologue_left_as_it_is_abstains(self):
+        # As in resolve_isotopologue_of: a line that names no owner counts
+        # neither for the parent nor against it.
+        row = self._row(["Y"] * 4)
+        row.members["s3"] = Member(
+            "s3", "x-3", 1.0, 200.0, role="iso_child", formula="Y"
+        )
+        decisions = {"s0": None, "s1": None, "s2": "x", "s3": "x"}
+        assert vote_turns(row, decisions)
+        # The same line naming another owner votes against the parent.
+        row.members["s3"] = Member(
+            "s3",
+            "x-3",
+            1.0,
+            200.0,
+            role="iso_child",
+            owner_batch_peak_id="Z",
+            formula="Y",
+        )
+        assert not vote_turns(row, decisions)
+
     def test_claimed_members_outnumbering_the_rest_hold_the_row(self):
         row = self._row(["Y", "", "", ""])
         assert not vote_turns(row, {"s0": None, "s1": "x", "s2": "x", "s3": "x"})

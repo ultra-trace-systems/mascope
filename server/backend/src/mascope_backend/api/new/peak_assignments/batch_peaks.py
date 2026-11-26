@@ -674,12 +674,13 @@ def resolve_isotopologue_of(
     isotope line, which keeps the ``reagent`` role and names its ion's row.
 
     The members span samples and need not agree - one sample's isotopologue is
-    another's M0, and an ownerless isotopologue names no anchor at all - so this is
-    a vote. It is counted over the population :func:`compute_consensus` reads the
-    anchor from (:func:`_reading_population`): the **assigned** members, or the
-    members a pre-pass claimed where they outnumber them. Prevalence is
-    again kept out of it: an isotopologue detected in six of ten samples and
-    assigned in none of the other four is still an isotopologue. A strict
+    another's M0 - so this is a vote. It is counted over the population
+    :func:`compute_consensus` reads the anchor from (:func:`_reading_population`):
+    the **assigned** members, or the members a pre-pass claimed where they
+    outnumber them. An isotopologue naming no owner anchor is left out: it says
+    the peak is a line, not whose. Prevalence is again kept out of it: an
+    isotopologue detected in six of ten samples and assigned in none of the
+    other four is still an isotopologue. A strict
     majority is required, which is also what makes the winner unique - two owners
     cannot each hold more than half of one set of votes - so no tie-break is
     needed.
@@ -696,17 +697,19 @@ def resolve_isotopologue_of(
     """
     population = _reading_population(list(members))
     votes: dict[str, int] = defaultdict(int)
+    abstaining = 0
     for m in population:
         if _member(m, "role") not in (ROLE_ISO_CHILD, ROLE_REAGENT):
             continue
         owner = _member(m, "owner_batch_peak_id")
+        abstaining += not owner and _member(m, "role") == ROLE_ISO_CHILD
         if not owner or owner == batch_peak_id:
             continue
         votes[owner] += 1
     if not votes:
         return None
     owner, n_votes = max(votes.items(), key=lambda kv: kv[1])
-    return owner if 2 * n_votes > len(population) else None
+    return owner if 2 * n_votes > len(population) - abstaining else None
 
 
 def manual_pin_of(anchor: Any) -> Optional[dict]:

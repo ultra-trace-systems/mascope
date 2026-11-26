@@ -16,6 +16,7 @@ import pytest
 from mascope_backend.api.new.peak_assignments import row_terms
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     ROLE_ISO_CHILD,
+    ROLE_REAGENT,
     SERIES_KEY,
     Anchor,
     AnchorSet,
@@ -547,16 +548,32 @@ def test_two_owners_splitting_the_vote_resolve_to_neither():
     )
 
 
-def test_an_ownerless_isotopologue_abstains_but_still_counts_against_the_majority():
+def test_an_ownerless_isotopologue_abstains_and_counts_neither_way():
     # The engine leaves owner_peak_assignment_id NULL when the family's M0 was
-    # not won by the same ion in that run, and the fold leaves the anchor
-    # unresolved when the owning peak was dropped from it. Either way the member
-    # names no anchor to vote for -- and it is still an assigned member, so it
-    # belongs in the denominator.
-    assert resolve_isotopologue_of([_child("bp-m0"), _child(None)]) is None
+    # not won by the same ion in that run, a line assigned by hand on a sample
+    # with no M0 of it names none (mascope#3661), and the fold leaves the
+    # anchor unresolved when the owning peak was dropped from it. Each row says
+    # the peak is a line, only not whose: it names no anchor to vote for, and
+    # counting it against the majority would read it as a species of its own.
+    assert resolve_isotopologue_of([_child("bp-m0"), _child(None)]) == "bp-m0"
     assert resolve_isotopologue_of(
         [_child("bp-m0"), _child("bp-m0"), _child(None)]
     ) == ("bp-m0")
+    assert resolve_isotopologue_of([_child(None), _child(None)]) is None
+
+
+def test_an_ownerless_isotopologue_does_not_outvote_an_m0():
+    # An M0 member still says the peak is a species of its own.
+    assert resolve_isotopologue_of([_child("bp-m0"), _child(None), _m0()]) is None
+
+
+def test_an_ownerless_reagent_row_still_counts_against_the_majority():
+    # A reagent row with no owner is the ion's monoisotopic line: a species.
+    members = [
+        _child("bp-m0", formula=None, role=ROLE_REAGENT),
+        {"assigned_formula": None, "role": ROLE_REAGENT},
+    ]
+    assert resolve_isotopologue_of(members) is None
 
 
 def test_an_unassigned_member_never_votes_and_never_counts():
