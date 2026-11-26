@@ -8,6 +8,7 @@ import {
   batchTile,
   formatShare,
   isotopeTile,
+  M0_ABUNDANCE_TOOLTIP,
   memberLabel,
   orderedReasons,
   reasonGroup,
@@ -196,9 +197,28 @@ describe('isotopeTile', () => {
     ).toEqual({
       value: '2 of 4',
       caption: 'abundance off by 3.10% · 1 not found · 1 not tested',
+      captionTooltip: null,
       found: 2,
       predicted: 4
     })
+  })
+
+  it("reads the M0's abundance error as a dash: the other lines are measured against it", () => {
+    const tile = isotopeTile({
+      family: [{}, {}],
+      missing: [],
+      abundanceError: 0,
+      reference: true
+    })
+    expect(tile.caption).toBe('abundance error -')
+    expect(tile.captionTooltip).toBe(M0_ABUNDANCE_TOOLTIP)
+    expect(tile.captionTooltip).toContain('the other lines are measured against')
+  })
+
+  it('keeps a zero on any other line, whose error really is zero', () => {
+    const tile = isotopeTile({ family: [{}, {}], missing: [], abundanceError: 0 })
+    expect(tile.caption).toBe('abundance off by 0.00%')
+    expect(tile.captionTooltip).toBeNull()
   })
 
   it('says a lone M0 is all there is', () => {

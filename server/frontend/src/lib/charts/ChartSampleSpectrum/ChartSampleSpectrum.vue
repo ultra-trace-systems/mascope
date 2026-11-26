@@ -155,7 +155,14 @@ watchEffect(() => {
   if (app.data.peak.focused) {
     const mz = preview.peak?.mz ?? app.data.peak.focused.mz
     const factor = scale.value.mode == 'sum' ? sampleLength.value : 1
-    const height = factor * app.data.peak.focused.height
+    // A previewed line is drawn at its expected height, which may stand above
+    // the focused peak's: a dibromide's M+2 over its M0, say
+    const previewed = preview.peak
+      ? (preview.peak.relative_abundance / preview.peak.abundance_reference) *
+        preview.peak.intensity_reference
+      : null
+    const height =
+      factor * Math.max(app.data.peak.focused.height, Number.isFinite(previewed) ? previewed : 0)
     zoom.rangeX = {
       range: [mz - mzHalfWindow.value, mz + mzHalfWindow.value],
       autorange: false

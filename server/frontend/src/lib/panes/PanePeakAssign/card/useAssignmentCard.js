@@ -1,4 +1,4 @@
-import { computed, nextTick, ref, useId, watch } from 'vue'
+import { computed, nextTick, reactive, ref, useId, watch } from 'vue'
 
 import { useApp } from '@/stores'
 import { num } from '@/lib/formatters'
@@ -27,6 +27,7 @@ import { useBatchPeakJump } from '@/lib/panes/PaneBrowserMatch/stores/batchPeakJ
 import { useBatchChartSelection } from '@/lib/panes/PaneBrowserMatch/stores/batchChartSelection.js'
 import { useLedgerLensStore } from '@/lib/ledger/useLedgerLens.js'
 import { useBatchPeakCuration } from '../stores/batchPeakCuration.js'
+import { usePreview } from '../preview.js'
 import { useChangeGate } from '../changeGate.js'
 import {
   bandMissed,
@@ -61,6 +62,9 @@ export function useAssignmentCard({ showSearch }) {
   const app = useApp()
   const curation = useBatchPeakCuration()
   const jump = useBatchPeakJump()
+  // The spectrum chart's preview of a line no peak stands for: the chart
+  // moves to its m/z and draws where it was expected.
+  const preview = usePreview()
 
   // The committed assignment for the focused peak (from the latest run).
   const focusedAssignment = computed(() =>
@@ -585,6 +589,21 @@ export function useAssignmentCard({ showSearch }) {
   const isFamilyHead = (iso) =>
     m0.value != null && iso.peak_assignment_id === m0.value.peak_assignment_id
 
+  // The open or folded state the reader gave each folded section (CardSection),
+  // by the section's test id. It lives here rather than in the section: a click
+  // on a line of the isotope pattern focuses another row, whose detail the card
+  // loads behind its skeleton, and the skeleton takes the sections out of the
+  // page, so a state kept in the section was lost and it folded shut again. It
+  // holds for the lines of one pattern, the M0 and its isotopologues, and goes
+  // back to the card's default, folded, when the card moves to another reading.
+  const sectionFolds = reactive({})
+  const patternKey = computed(
+    () => (m0.value ?? focusedAssignment.value)?.peak_assignment_id ?? null
+  )
+  watch(patternKey, () => {
+    for (const key of Object.keys(sectionFolds)) delete sectionFolds[key]
+  })
+
   // The lines of the M0's predicted envelope that its run asked the spectrum for
   // and did not find there (step 3.4e): listed under the found lines, so an
   // absence reads as one rather than as a row the table happens not to have.
@@ -852,12 +871,45 @@ export function useAssignmentCard({ showSearch }) {
     app.data.peak.list.find((p) => String(p.peak_id) === String(entry.sample_peak_id)) ?? null
   const focusIsotopePeak = (iso) => {
     const peak = peakOf(iso)
-    if (peak) app.data.peak.focus(peak)
+    if (!peak) return
+    // A not-found line previewed before is no longer what the chart shows
+    preview.peak = null
+    app.data.peak.focus(peak)
   }
+
+  // A line the run asked for and found no peak for, or could not test, has no
+  // peak to focus: a click previews it in the spectrum chart instead, which
+  // moves to its predicted m/z and draws a stick where it was expected, at the
+  // M0's height times its predicted share, as the chart's own not-found circle
+  // sits. The focused peak stays as it is. A second click takes the preview
+  // away, as the composition search's lines do.
+  const previewKey = (line) => `missing|${line.line}|${line.predicted_mz}`
+  const isPreviewedLine = (line) => preview.peak?.key === previewKey(line)
+  const previewMissingLine = (line) => {
+    if (!Number.isFinite(line?.predicted_mz)) return
+    if (isPreviewedLine(line)) {
+      preview.peak = null
+      return
+    }
+    const head = m0.value
+    const height = (head && peakOf(head)?.height) ?? head?.sample_peak_intensity ?? null
+    preview.peak = {
+      key: previewKey(line),
+      mz: line.predicted_mz,
+      relative_abundance: line.predicted_share ?? 0,
+      abundance_reference: 1,
+      intensity_reference: height ?? 0
+    }
+  }
+
+  // The line a pattern's others are measured against: the M0, or the head of
+  // a source ion's lines.
+  const isReferenceLine = (iso) =>
+    Boolean(iso) && (iso.role === 'M0' || iso.isotope_label === 'M0' || isFamilyHead(iso))
 
   // Per-isotopologue match quality; M0 is the reference and never "poor".
   const isPoorMatch = (iso) => {
-    if (iso.role === 'M0' || iso.isotope_label === 'M0' || isFamilyHead(iso)) return false
+    if (isReferenceLine(iso)) return false
     const ab = iso.abundance_error != null ? 1 - Math.min(1, Math.abs(iso.abundance_error)) : 1
     const mz = iso.mz_error_ppm != null ? Math.max(0, 1 - 0.01 * Math.abs(iso.mz_error_ppm)) : 1
     return ab * mz < 0.5
@@ -1750,7 +1802,10 @@ export function useAssignmentCard({ showSearch }) {
     isotopeTile({
       family: familyRows.value,
       missing: missingLines.value,
-      abundanceError: evidenceRow.value?.abundance_error ?? null
+      abundanceError: evidenceRow.value?.abundance_error ?? null,
+      // The M0 is the line the others are measured against: the zero it
+      // carries is no error of its own
+      reference: isReferenceLine(evidenceRow.value)
     })
   )
   // The samples the batch peak is in: a derived row's anchor names them, and
@@ -1950,6 +2005,11 @@ export function useAssignmentCard({ showSearch }) {
     formatRel,
     peakOf,
     focusIsotopePeak,
+    previewMissingLine,
+    isPreviewedLine,
+    isReferenceLine,
+    sectionFolds,
+    patternKey,
     isPoorMatch,
     altFit,
     altMzError,

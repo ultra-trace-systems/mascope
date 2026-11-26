@@ -157,6 +157,14 @@ function makeApp() {
 }
 
 vi.mock('@/stores', () => ({ useApp: () => makeApp() }))
+// The spectrum chart's preview store, which a not-found isotope line writes:
+// a reactive stand-in, read back through the mocked module.
+vi.mock('@/lib/panes/PanePeakAssign/preview.js', async () => {
+  const { reactive } = await import('vue')
+  const store = reactive({ peak: null })
+  return { usePreview: () => store }
+})
+
 vi.mock('@/lib/panes/PanePeakAssign/stores/batchPeakCuration.js', () => ({
   useBatchPeakCuration: () => ({ curating: false, curate: vi.fn(), release })
 }))
