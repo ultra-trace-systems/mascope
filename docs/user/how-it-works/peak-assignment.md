@@ -812,9 +812,11 @@ each candidate's **chemical plausibility** on `[0, 1]` from the **Seven Golden R
    without carbon is not judged by them. Neither is a compound a reference list the run
    read names: a cited list naming the compound is stronger evidence than the context's
    idea of a typical shape. Dinitrophenol is one, its aromatic ring just outside the
-   ambient-air windows. A compound only your target library names is judged by them. The
-   windows used to reject a formula outside them, which under the wrong context removed
-   real compounds, glycerol among them.
+   ambient-air windows. A compound only your target library names is judged by them. A
+   formula you assign by hand, or pin as a batch's reading, is not: the windows weigh how
+   a run chose between readings, and your choice is asked only what the spectrum says.
+   The windows used to reject a formula outside them, which under the wrong context
+   removed real compounds, glycerol among them.
 
 Plausibility is **conservative and fail-open**: it *grades* candidates rather than
 hard-rejecting them, and unusual-but-real chemistry (radicals, exotic elements) is never

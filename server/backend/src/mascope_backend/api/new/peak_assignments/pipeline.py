@@ -257,10 +257,10 @@ class Rules(StrEnum):
     RUN = "run"
     #: The rules about the spectrum alone, which a person's choice is asked:
     #: whether the lines its formula predicts are there (``tiering.ask_absent_line``,
-    #: step 3.4e). The others weigh rivals, channels and lists, which a
-    #: person's choice is not; a missing line is missing whoever named the
-    #: formula. Whether the unresolved-peak rule is one of them is MAS-766's
-    #: open call; until it is made, it is not.
+    #: step 3.4e). The others weigh rivals, channels, lists and the context's
+    #: windows, which a person's choice is not; a missing line is missing whoever
+    #: named the formula. Whether the unresolved-peak rule is one of them is
+    #: MAS-766's open call; until it is made, it is not.
     SPECTRUM = "spectrum"
 
 
@@ -2179,23 +2179,23 @@ async def run_stages(ctx: RunContext) -> RunContext:
     """Run the path's stages in order, from its start to the end.
 
     Every stage reads labelled ions at the purity the sample's ionization setup carries
-    (``custom_elements.labelled_purity``) on any path, and every stage after the resolve
-    grades in the run's context (``ResolvedProfile.graded``). A round (:data:`ROUND`)
-    runs again from its first stage while the cap stage leaves the judging unsettled.
+    (``custom_elements.labelled_purity``); on the run's rules (:attr:`Rules.RUN`) every
+    stage after the resolve grades in the run's context (``ResolvedProfile.graded``).
+    A round (:data:`ROUND`) runs again while the cap stage leaves the judging unsettled.
 
     :param ctx: The pass, its inputs set; the stages fill the rest.
     :return: The same context, :attr:`RunContext.ran` naming every stage run.
     """
     stages = ctx.path.stages()
     purity = await sample_label_purity(ctx.sample.sample_item_id)
-    graded = ExitStack()
+    graded, grading = ExitStack(), ctx.path.rules is Rules.RUN
     with labelled_purity(purity), open_memo(kept_measurement.envelopes_of(ctx)), graded:
         index = 0
         while index < len(stages):
             stage = stages[index]
             await STAGE_FUNCTIONS[stage](ctx)
             ctx.ran.append(stage)
-            if stage is Stage.RESOLVE and ctx.resolved_profile is not None:
+            if stage is Stage.RESOLVE and grading and ctx.resolved_profile is not None:
                 graded.enter_context(ctx.resolved_profile.graded())
             if stage is Stage.CAP and ctx.judged is None:
                 index = stages.index(ROUND[0])

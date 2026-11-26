@@ -2306,6 +2306,49 @@ async def test_a_hand_assignment_runs_the_person_s_choice_path(
 
 
 @pytest.mark.asyncio
+async def test_a_hand_assignment_is_tiered_on_the_evidence_it_stores(
+    editor_client, curated_run, async_session_factory, monkeypatch
+):
+    """The context's windows are the run's matrix prior, which a person's
+    choice is not asked (decision MAS-979): its tier is the one the evidence
+    it stores earns. C10H4O2, H/C 0.4, sits outside ambient air's windows,
+    whose grade would hold it below this run's candidate band."""
+    from mascope_backend.api.new.peak_assignments import pipeline
+    from mascope_backend.api.new.peak_assignments.profiles import NamedContext
+
+    async def ambient_air(sample_batch_id, session=None):
+        return NamedContext(batch="ambient-air")
+
+    passes = []
+    run_stages = pipeline.run_stages
+
+    async def recording(ctx):
+        passes.append(ctx)
+        return await run_stages(ctx)
+
+    monkeypatch.setattr(pipeline, "named_context_for", ambient_air)
+    monkeypatch.setattr(curation, "run_stages", recording)
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["blank_id"]),
+        json={
+            "action": "set_assignment",
+            "assigned_formula": "C10H4O2",
+            "ionization_mechanism_id": curated_run["mechanism_id"],
+            "ion_formula": "C10H5O2+",
+            "fit_score": 0.95,
+            "mz_error_ppm": 0.4,
+        },
+    )
+
+    assert response.status_code == 200
+    (ctx,) = passes
+    assert ctx.resolved_profile.context.name == "ambient-air"
+    row = await _row(async_session_factory, curated_run["blank_id"])
+    assert row.provenance["evidence"] == pytest.approx(0.95)
+    assert row.tier == "assigned"  # 0.95 clears this run's 0.9 band
+
+
+@pytest.mark.asyncio
 async def test_a_hand_assignment_whose_81br_line_is_absent_is_held_at_candidate(
     editor_client, curated_run, asks_lines, async_session_factory
 ):

@@ -95,7 +95,8 @@ async def test_every_stage_reads_the_purity_of_its_samples_setup(path):
 async def test_every_stage_after_the_resolve_grades_in_the_runs_context(path):
     # Decision MAS-979: the context's windows are a factor of every formula's
     # plausibility, which the stage list sets once the resolve stage names the
-    # context, and leaves as it found it.
+    # context, and leaves as it found it. A person's choice is asked the
+    # spectrum's rules alone, so its path is not graded in them.
     stuffed = "C10H20N5O3"  # N/C 0.5 against ambient air's 0.4
     bare = formula_plausibility(stuffed)
     seen = []
@@ -129,7 +130,10 @@ async def test_every_stage_after_the_resolve_grades_in_the_runs_context(path):
 
     assert seen[0] == bare
     assert len(seen) == len(path.stages())
-    assert all(value < bare for value in seen[1:])
+    if path.rules is pipeline.Rules.RUN:
+        assert all(value < bare for value in seen[1:])
+    else:
+        assert seen[1:] == [bare] * (len(seen) - 1)
     assert formula_plausibility(stuffed) == bare
 
 
