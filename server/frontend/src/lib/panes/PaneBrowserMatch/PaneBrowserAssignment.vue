@@ -80,6 +80,7 @@ import { useApp } from '@/stores'
 
 import { useAssignmentLauncher } from './stores'
 import { useBatchChartSelection } from './stores/batchChartSelection.js'
+import { useBatchLedgerReturn } from './stores/batchLedgerReturn.js'
 
 /**
  * The sample scope of the assignment ledger (lib/ledger/AssignmentLedger.vue):
@@ -92,6 +93,8 @@ import { useBatchChartSelection } from './stores/batchChartSelection.js'
  */
 const app = useApp()
 const launcher = useAssignmentLauncher()
+// The way back to the batch's Batch peaks ledger, in the header line.
+const ledgerReturn = useBatchLedgerReturn()
 
 // Every choice of the filter bar and its Show menu, held outside the pane and
 // persisted (lib/ledger/useLedgerView.js), so it survives the switch to the
@@ -1093,6 +1096,20 @@ const HEADERS = {
     @toggle-group="toggleGroupLine"
     @close-lens="closeLens"
   >
+    <!-- Back to the batch's ledger, named as its pane is. Only where the batch
+         has one: with no batch peaks yet there is nothing to go back to. -->
+    <template v-if="ledgerReturn.available" #header-end>
+      <Button
+        label="Batch peaks"
+        icon="pi pi-arrow-left"
+        size="small"
+        text
+        data-testid="back-to-batch-peaks"
+        aria-label="Back to Batch peaks"
+        v-tooltip.top="'Back to the batch\'s Batch peaks ledger, as you left it'"
+        @click="ledgerReturn.back()"
+      />
+    </template>
     <template #notices>
       <Message
         v-if="launchError"

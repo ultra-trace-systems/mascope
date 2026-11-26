@@ -37,6 +37,13 @@ let notificationHandlers
 
 vi.mock('@/stores', () => ({ useApp: () => app }))
 
+// The scroll into view is the helper's business (lib/virtualScroll.spec.js);
+// here what matters is which display index the pane asks it for.
+const scrollVirtualRowIntoView = vi.fn()
+vi.mock('@/lib/virtualScroll', () => ({
+  scrollVirtualRowIntoView: (...args) => scrollVirtualRowIntoView(...args)
+}))
+
 vi.mock('@/lib/base', async () => ({
   BaseTabbedPanel: { template: '<div><slot name="menu" /><slot /></div>' },
   // Rendered, so the empty ledger's title and its Assign batch can be read.
@@ -4275,5 +4282,87 @@ describe('PaneBrowserBatchPeaks groups', () => {
     wrapper.vm.applySelection(wrapper.vm.rows)
     expect(app.data.batchPeak.selected.every((row) => !row.ledgerKind)).toBe(true)
     expect(app.data.batchPeak.selected).toHaveLength(7)
+  })
+})
+
+// Back from a sample the ledger opened (stores/batchLedgerReturn.js): the row
+// the reader opened it from comes back selected and scrolled into view, beside
+// whatever was selected already.
+describe('PaneBrowserBatchPeaks back from a sample', () => {
+  const M0 = peak('bp-m0', 'assigned', 0.95, { mz: 181.0707 })
+  const ISO = peak('bp-iso', 'assigned', 0.9, { mz: 182.0741, isotopologue_of: 'bp-m0' })
+  const MID = peak('bp-mid', 'candidate', 0.6, { mz: 250.1, consensus_formula: 'C10H20O5' })
+  const DIM = peak('bp-dim', 'candidate', 0.4, { mz: 300.2, consensus_formula: 'C12H18O5' })
+  const PEAKS = () => [M0, ISO, MID, DIM]
+  const ledgerOf = () => wrapper.findComponent({ name: 'AssignmentLedger' })
+  const selectedIds = () => app.data.batchPeak.selected.map((row) => row.batch_peak_id)
+  const returnStore = async () =>
+    (
+      await import('@/lib/panes/PaneBrowserMatch/stores/batchLedgerReturn.js')
+    ).useBatchLedgerReturn()
+
+  it('selects the row it came from and scrolls it into view, keeping the selection', async () => {
+    wrapper = await mountPane({ peaks: PEAKS() })
+    const dim = wrapper.vm.rows.find((row) => row.batch_peak_id === 'bp-dim')
+    app.data.batchPeak.selected = [dim]
+    const back = await returnStore()
+
+    back.reveal = 'bp-mid'
+    await wrapper.vm.$nextTick()
+    await wrapper.vm.$nextTick()
+
+    expect(selectedIds()).toEqual(['bp-dim', 'bp-mid'])
+    expect(back.reveal).toBeNull()
+    const index = wrapper.vm.rows.findIndex((row) => row.batch_peak_id === 'bp-mid')
+    expect(scrollVirtualRowIntoView).toHaveBeenLastCalledWith(expect.anything(), index, {
+      itemSize: 40
+    })
+    // The table it scrolls is the ledger's own.
+    expect(scrollVirtualRowIntoView.mock.lastCall[0]).toBe(ledgerOf().vm.table)
+  })
+
+  it('does not select a row twice', async () => {
+    wrapper = await mountPane({ peaks: PEAKS() })
+    app.data.batchPeak.selected = [wrapper.vm.rows.find((row) => row.batch_peak_id === 'bp-mid')]
+    const back = await returnStore()
+    back.reveal = 'bp-mid'
+    await wrapper.vm.$nextTick()
+    expect(selectedIds()).toEqual(['bp-mid'])
+  })
+
+  it('brings a folded isotopologue line back as its family row', async () => {
+    wrapper = await mountPane({ peaks: PEAKS() })
+    const back = await returnStore()
+    back.reveal = 'bp-iso'
+    await wrapper.vm.$nextTick()
+    await wrapper.vm.$nextTick()
+    expect(selectedIds()).toEqual(['bp-m0'])
+    expect(scrollVirtualRowIntoView).toHaveBeenLastCalledWith(expect.anything(), 0, {
+      itemSize: 40
+    })
+  })
+
+  it('waits for the rows while the ledger loads', async () => {
+    wrapper = await mountPane({ peaks: PEAKS(), ledger: { pending: true } })
+    const back = await returnStore()
+    back.reveal = 'bp-mid'
+    await wrapper.vm.$nextTick()
+    expect(selectedIds()).toEqual([])
+    expect(back.reveal).toBe('bp-mid')
+
+    app.data.batchPeak.pending = false
+    await wrapper.vm.$nextTick()
+    expect(selectedIds()).toEqual(['bp-mid'])
+    expect(back.reveal).toBeNull()
+  })
+
+  it('brings back nothing the filters hide, and selects nothing without a row to bring', async () => {
+    wrapper = await mountPane({ peaks: PEAKS() })
+    const back = await returnStore()
+    back.reveal = 'bp-gone'
+    await wrapper.vm.$nextTick()
+    expect(selectedIds()).toEqual([])
+    expect(back.reveal).toBeNull()
+    expect(scrollVirtualRowIntoView).not.toHaveBeenCalled()
   })
 })

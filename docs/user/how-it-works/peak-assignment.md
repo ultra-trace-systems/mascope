@@ -1519,6 +1519,13 @@ same mark and the same words.
   its compound, and hovering it says how many lines are folded. The batch and the sample
   are the ones the sidebar and the sample's filter chip name; removing that chip returns
   to the batch.
+- **Batch peaks**, with a back arrow at the right of a sample's header line, returns to
+  the batch's ledger. It shows once the batch has batch peaks. The batch's ledger comes
+  back as you left it: its filters, its sort and its selection. When you opened the
+  sample from a batch peak's row, that row is also selected and scrolled into view.
+  The step is one of the browser's history, so the browser's **Back** button goes from
+  a sample opened from a row back to the batch's ledger, and **Forward** opens the
+  sample again.
 - **The columns** keep one name and one order in both (*The columns*, below). Formulas
   are set in the monospaced face. A cell with nothing to say is blank, with no dash and no
   *unassigned*: the tier chip says what the row is.

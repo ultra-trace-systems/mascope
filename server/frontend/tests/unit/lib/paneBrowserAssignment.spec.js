@@ -93,6 +93,8 @@ let queueList
 // the Ion column names.
 let detailRecord = null
 let mechanismList = []
+// The focused batch's Batch peaks ledger: empty is a batch with none yet.
+let batchPeakList = []
 
 // Minimal help-mode facade: the pane registers help cards through these calls;
 // the tests only need them to resolve.
@@ -120,7 +122,10 @@ function makeApp() {
         },
         unfocus: sampleUnfocus
       },
-      batch: { focused: { ...BATCH, assignment_settings: batchSettings } },
+      batch: {
+        focused: { ...BATCH, assignment_settings: batchSettings },
+        focusedId: BATCH.sample_batch_id
+      },
       peak: {
         // Read live, through `peakRev`: a test that lands the peaks after
         // mounting bumps it, so the pane's watchers see the change.
@@ -141,7 +146,7 @@ function makeApp() {
         unfocus: peakUnfocus
       },
       batchPeak: {
-        list: [],
+        list: batchPeakList,
         selected: [],
         isSelected: () => false,
         select: vi.fn(),
@@ -502,6 +507,7 @@ beforeEach(() => {
   runRecord = null
   tierCountsRecord = {}
   queueList = []
+  batchPeakList = []
   seed()
 })
 
@@ -4059,5 +4065,53 @@ describe('PaneBrowserAssignment rows and their actions', () => {
     wrapper.vm.engineView = false
     await wrapper.vm.$nextTick()
     expect(ledger(wrapper).props('engineReadings')).toBe(false)
+  })
+})
+
+// The way back to the batch's Batch peaks ledger, in the header line, through
+// the real store (stores/batchLedgerReturn.js has the history's own spec).
+describe('PaneBrowserAssignment back to Batch peaks', () => {
+  const backButton = (wrapper) => wrapper.find('[data-testid="back-to-batch-peaks"]')
+  let pushState
+  beforeEach(() => {
+    window.history.replaceState({ position: 1, current: '/' }, '')
+    pushState = vi.spyOn(window.history, 'pushState')
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+    sampleUnfocus.mockClear()
+  })
+
+  it('is offered on a sample of a batch with batch peaks, named as that ledger is', async () => {
+    batchPeakList = [{ batch_peak_id: 'bp-1' }]
+    const wrapper = await mountPane()
+    const button = backButton(wrapper)
+    expect(button.exists()).toBe(true)
+    expect(button.attributes('label')).toBe('Batch peaks')
+    expect(button.attributes('aria-label')).toBe('Back to Batch peaks')
+    // In the ledger's header line.
+    expect(wrapper.find('.header-end [data-testid="back-to-batch-peaks"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('is not offered while the batch has no batch peaks yet', async () => {
+    const wrapper = await mountPane()
+    expect(backButton(wrapper).exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it("goes back to the batch's ledger as a step of the browser's history", async () => {
+    batchPeakList = [{ batch_peak_id: 'bp-1' }]
+    const wrapper = await mountPane()
+    await backButton(wrapper).trigger('click')
+
+    expect(sampleUnfocus).toHaveBeenCalledTimes(1)
+    expect(pushState).toHaveBeenCalledTimes(1)
+    expect(window.history.state.mascopeLedger).toEqual({
+      level: 'batch',
+      batchId: 'sb-1',
+      batchPeakId: null
+    })
+    wrapper.unmount()
   })
 })
