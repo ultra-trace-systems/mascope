@@ -18,17 +18,22 @@ the status the batch holds. A batch without samples still goes to
 ``ready``, and the socket event carries the status each batch holds, not the
 one asked for. A calibration apply to one file of a batch pending a
 recalibration leaves the batch at ``recalibrate``, and keeps one set while
-the apply ran. A batch **Recalibrate** that fails keeps the ``recalibrate``
+the apply ran; one that raises releases the batches it held, to
+``recalibrate`` or ``rematch``, and leaves a status set meanwhile. A batch **Recalibrate** that fails keeps the ``recalibrate``
 it did not do, and one that succeeds keeps another batch's.
 """
 
+import asyncio
+import functools
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import anyio
 import pytest
 import pytest_asyncio
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import DBAPIError
 from test_utils import captured_logs
 
 from mascope_backend.api.controllers.calibration import calibration_controller
@@ -884,16 +889,32 @@ async def _file_in_batches(async_session_factory, ctx, statuses, batch_type=None
     return file_id, batch_ids
 
 
-async def _apply_calibration(monkeypatch, file_id, during_apply=None):
+class _ApplyFailed(Exception):
+    """The error a step of a mocked calibration apply raises."""
+
+
+#: The steps of the apply after its ``processing`` write that a test can make
+#: raise, in the order they run.
+_APPLY_STEPS = ["apply", "get_sum_signal", "update_sample_file", "match_remove"]
+
+
+async def _apply_calibration(monkeypatch, file_id, during_apply=None, fail_at=None):
     """Run ``calibration_mz_apply`` on ``file_id`` with the file work mocked out.
 
     The batch lookups and status writes are real; ``during_apply`` runs where
     the fit is applied, while the batches are held at ``processing``.
+    ``fail_at``, one of ``_APPLY_STEPS``, makes that step raise
+    ``_ApplyFailed`` (after ``during_apply`` has run).
     """
+
+    def _step(name):
+        if fail_at == name:
+            raise _ApplyFailed(name)
 
     async def _apply(_fit):
         if during_apply is not None:
             await during_apply()
+        _step("apply")
 
     handler = SimpleNamespace(apply=_apply)
     sample_file = SimpleNamespace(
@@ -910,13 +931,25 @@ async def _apply_calibration(monkeypatch, file_id, during_apply=None):
     monkeypatch.setattr(
         ctrl, "get_calibration_handler", MagicMock(return_value=handler)
     )
-    monkeypatch.setattr(ctrl, "get_sum_signal", MagicMock(return_value=sum_signal))
+    monkeypatch.setattr(
+        ctrl,
+        "get_sum_signal",
+        MagicMock(side_effect=lambda _f: _step("get_sum_signal") or sum_signal),
+    )
     monkeypatch.setattr(ctrl, "fit_seal_valid", MagicMock(return_value=True))
     monkeypatch.setattr(ctrl, "stamp_quality_verdict", MagicMock(return_value=[]))
     monkeypatch.setattr(ctrl, "carry_acquisition_drift", MagicMock(return_value=False))
-    monkeypatch.setattr(ctrl, "update_sample_file", AsyncMock())
+    monkeypatch.setattr(
+        ctrl,
+        "update_sample_file",
+        AsyncMock(side_effect=lambda *a, **k: _step("update_sample_file")),
+    )
     monkeypatch.setattr(ctrl, "SampleFileUpdate", MagicMock())
-    monkeypatch.setattr(ctrl, "match_remove_sample", AsyncMock())
+    monkeypatch.setattr(
+        ctrl,
+        "match_remove_sample",
+        AsyncMock(side_effect=lambda **k: _step("match_remove")),
+    )
 
     await ctrl.calibration_mz_apply.__wrapped__(
         fit={"verified": True}, filename=f"test-orbion_{file_id}.raw", user_id=None
@@ -997,6 +1030,176 @@ async def test_a_calibration_apply_leaves_an_acquisition_batch_alone(
 
     assert seen["start"] == "recalibrate"
     assert await _status(async_session_factory, batch_id) == during
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_at", _APPLY_STEPS)
+async def test_a_failed_calibration_apply_releases_its_batches(
+    async_session_factory, status_dataset, sample_view, monkeypatch, fail_at
+):
+    """An apply that raises after its ``processing`` write puts each batch it
+    held back: one pending a recalibration at ``recalibrate``, any other at
+    ``rematch``, since the file's axis and matches may already have changed.
+    The apply's own error propagates."""
+    file_id, (pending, idle) = await _file_in_batches(
+        async_session_factory, status_dataset, ["recalibrate", "ready"]
+    )
+    seen = {}
+
+    async def _during():
+        seen["pending"] = await _status(async_session_factory, pending)
+        seen["idle"] = await _status(async_session_factory, idle)
+
+    with pytest.raises(_ApplyFailed):
+        await _apply_calibration(
+            monkeypatch, file_id, during_apply=_during, fail_at=fail_at
+        )
+
+    assert seen == {"pending": "processing", "idle": "processing"}
+    assert await _status(async_session_factory, pending) == "recalibrate"
+    assert await _status(async_session_factory, idle) == "rematch"
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_calibration_apply_releases_its_batches(
+    async_session_factory, status_dataset, sample_view, monkeypatch
+):
+    """A cancelled apply releases the batches it held as a failed one does.
+
+    The app runs a background task inside the http middlewares' anyio task
+    group, whose cancellation is level-triggered: every later await of the
+    cancelled task is cancelled too, the release's writes included unless
+    they are shielded. So the apply is cancelled through a real anyio scope,
+    not by raising ``CancelledError``, which only the first await sees."""
+    file_id, (pending, idle) = await _file_in_batches(
+        async_session_factory, status_dataset, ["recalibrate", "ready"]
+    )
+    applying = asyncio.Event()
+
+    async def _during():
+        applying.set()
+        await asyncio.Event().wait()
+
+    before = asyncio.all_tasks()
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(
+            functools.partial(
+                _apply_calibration, monkeypatch, file_id, during_apply=_during
+            )
+        )
+        await applying.wait()
+        tg.cancel_scope.cancel()
+
+    # The shielded writes run on past the cancelled task: wait for them
+    await asyncio.gather(*(asyncio.all_tasks() - before - {asyncio.current_task()}))
+    assert await _status_after_cancel(async_session_factory, pending) == "recalibrate"
+    assert await _status_after_cancel(async_session_factory, idle) == "rematch"
+
+
+async def _status_after_cancel(async_session_factory, batch_id):
+    """``_status``, read once more when the first read meets a pooled
+    connection the cancel tore down (``InterfaceError: connection is
+    closed``)."""
+    try:
+        return await _status(async_session_factory, batch_id)
+    except DBAPIError:
+        return await _status(async_session_factory, batch_id)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_calibration_apply_leaves_a_batch_held_by_another_run(
+    async_session_factory, status_dataset, sample_view, monkeypatch
+):
+    """A batch already at ``processing`` when the apply started is held by
+    another run, a batch **Recalibrate** applying each of its files or a
+    forced rematch. The failed apply leaves it to that run to release."""
+    file_id, (held,) = await _file_in_batches(
+        async_session_factory, status_dataset, ["processing"]
+    )
+
+    with pytest.raises(_ApplyFailed):
+        await _apply_calibration(monkeypatch, file_id, fail_at="apply")
+
+    assert await _status(async_session_factory, held) == "processing"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("before", "during"), [("recalibrate", "rematch"), ("ready", "ready")]
+)
+async def test_a_failed_calibration_apply_keeps_a_status_set_while_it_ran(
+    async_session_factory, status_dataset, sample_view, monkeypatch, before, during
+):
+    """A status written over the apply's ``processing`` while it ran is not
+    the apply's hold: the release leaves it, whether the batch waited on a
+    recalibration or not."""
+    file_id, (batch_id,) = await _file_in_batches(
+        async_session_factory, status_dataset, [before]
+    )
+
+    async def _during():
+        await service.update_sample_batch_status(
+            sample_batch_ids=[batch_id], status=during
+        )
+
+    with pytest.raises(_ApplyFailed):
+        await _apply_calibration(
+            monkeypatch, file_id, during_apply=_during, fail_at="apply"
+        )
+
+    assert await _status(async_session_factory, batch_id) == during
+
+
+@pytest.mark.asyncio
+async def test_a_failed_calibration_apply_leaves_an_acquisition_batch_alone(
+    async_session_factory, status_dataset, sample_view, monkeypatch
+):
+    """The apply never holds an ACQUISITION batch, so its release does not
+    write one either, not even the ``recalibrate`` it read at the start."""
+    file_id, (batch_id,) = await _file_in_batches(
+        async_session_factory,
+        status_dataset,
+        ["recalibrate"],
+        batch_type="ACQUISITION",
+    )
+
+    async def _during():
+        await service.update_sample_batch_status(
+            sample_batch_ids=[batch_id], status="processing"
+        )
+
+    with pytest.raises(_ApplyFailed):
+        await _apply_calibration(
+            monkeypatch, file_id, during_apply=_during, fail_at="apply"
+        )
+
+    assert await _status(async_session_factory, batch_id) == "processing"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_release_still_raises_the_apply_error(
+    async_session_factory, status_dataset, sample_view, monkeypatch
+):
+    """When releasing the batches fails too, the failure is logged and the
+    apply's own error is the one raised."""
+    file_id, (batch_id,) = await _file_in_batches(
+        async_session_factory, status_dataset, ["ready"]
+    )
+    real_update = calibration_controller.update_sample_batch_status
+
+    async def _update(**kwargs):
+        if kwargs["status"] != "processing":
+            raise RuntimeError("database gone")
+        return await real_update(**kwargs)
+
+    monkeypatch.setattr(calibration_controller, "update_sample_batch_status", _update)
+
+    with captured_logs("ERROR") as records:
+        with pytest.raises(_ApplyFailed):
+            await _apply_calibration(monkeypatch, file_id, fail_at="apply")
+
+    assert await _status(async_session_factory, batch_id) == "processing"
+    assert any("database gone" in r["message"] for r in records)
 
 
 # ============= A batch recalibration =============
