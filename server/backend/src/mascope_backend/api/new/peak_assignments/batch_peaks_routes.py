@@ -38,6 +38,10 @@ from mascope_backend.api.new.peak_assignments.batch_import import (
     import_batch_run,
     validate_batch_import,
 )
+from mascope_backend.api.new.peak_assignments.batch_level_sources import (
+    BatchPeakLevelSourcesResponse,
+    get_batch_peak_level_sources,
+)
 from mascope_backend.api.new.peak_assignments.batch_peak_verification import (
     get_anchor_context,
     get_batch_peak_verdicts,
@@ -308,6 +312,24 @@ async def get_batch_peak_ledger_route(
         tier_disagrees=tier_disagrees,
     )
     return BatchPeakRecordsResponse.model_validate(result)
+
+
+@batch_peaks_router.get(
+    "/batch/{sample_batch_id}/levels/{batch_peak_id}",
+    response_model=BatchPeakLevelSourcesResponse,
+)
+@api_route()
+async def get_batch_peak_level_sources_route(
+    sample_batch_id: str, batch_peak_id: str, user: User = Depends(current_active_user)
+) -> BatchPeakLevelSourcesResponse:
+    """Where a ledger row's level comes from: one batch peak's members whose
+    run states a level of its consensus formula, with each level's evidence
+    and lift, brightest first, and the members stating none counted by why
+    (``batch_level_sources``). Read on the reader's click, per batch peak.
+    Requires workspace guest role; 404 for a batch peak of another batch."""
+    await check_batch_access(sample_batch_id, user, "guest")
+    result = await get_batch_peak_level_sources(sample_batch_id, batch_peak_id)
+    return BatchPeakLevelSourcesResponse.model_validate(result)
 
 
 @batch_peaks_router.get(
