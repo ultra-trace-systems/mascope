@@ -728,11 +728,11 @@ def evidence_for(fit_score: float | None, formula: str | None) -> float | None:
     the formula string would be a second, divergeable source of the same number.
 
     Plausibility is recomputed from the formula rather than read off whatever the
-    row carries: it is a pure function of the formula (Seven Golden Rules), so
-    there is nothing to gain from trusting a number a caller could have made up,
-    and an imported row can then be checked without asking its author to declare
-    one. It never decides whether a write happens, so a formula that cannot be
-    parsed fails open at plausibility 1.0 and the evidence is the fit alone.
+    row carries: it is a function of the formula (Seven Golden Rules), and inside a
+    run's block of its windows (``formula_shape.graded_in``), so nothing is gained
+    by trusting a number a caller could have made up, and an imported row is checked
+    without asking its author to declare one. It never decides whether a write
+    happens: an unparsable formula fails open at plausibility 1.0, the fit alone.
 
     :param fit_score: The row's fit score, or None.
     :param formula: The committed neutral formula, or None.
