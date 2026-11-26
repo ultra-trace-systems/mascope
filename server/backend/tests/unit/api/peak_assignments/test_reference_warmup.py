@@ -5,7 +5,9 @@ through the cache's one way in (``sample_inputs.reference_fine_lines_built``).
 Pinned here: an entry it built is the one a run then reads, with one build; a
 run arriving while it builds waits for that build and makes no second copy;
 a run needing another entry does not wait behind it; a warm-up that raises
-leaves the lazy path working; and a worker's start does not wait for it. The
+leaves the lazy path working; a worker's start does not wait for it; and a
+shutdown cancelled while it waits for the warm-up still raises that
+cancellation to its caller. The
 database edges are faked; ``tests/integration/.../test_reference_warmup_samples.py``
 reads the samples it warms from a real database.
 """
@@ -140,6 +142,9 @@ def _resolving_to(monkeypatch, searched, given=()):
         resolved.append(ctx.sample.sample_item_name)
         assert ctx.path is pipeline.INGEST_FOLD
         assert ctx.config.run_untargeted is False
+        # As the ingest fold resolves: an instrument with no function of its
+        # own falls back to the class default rather than refusing the sample.
+        assert ctx.strict_instrument is False
         ctx.searched_mechanisms = list(searched)
         ctx.secondary_mechanisms = list(given)
         ctx.resolved_profile = SimpleNamespace(
@@ -196,8 +201,11 @@ async def test_an_arrival_during_the_warm_up_waits_for_its_build(cache, monkeypa
     _samples(monkeypatch, [_sample()])
 
     warming = asyncio.create_task(reference_warmup.warm_reference_lists())
-    while not build.calls:
+    # Ends also on a warm-up that returned without building, so a failure
+    # inside it fails the test rather than spinning here for ever.
+    while not build.calls and not warming.done():
         await asyncio.sleep(0)
+    assert build.calls, "the warm-up ended without building"
     arrival = asyncio.create_task(
         sample_inputs._reference_fine_lines(_sample("Arrival"), mechanisms, None)
     )
@@ -466,3 +474,37 @@ async def test_a_worker_switched_off_starts_no_warm_up(stubbed_start, monkeypatc
         assert reference_warmup._task is None
 
     warm.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_shutdown_still_reaches_its_caller(monkeypatch):
+    """A shutdown cancelled while it waits for the warm-up to end raises the
+    cancellation to its own caller: waiting for the warm-up never swallows
+    it."""
+    release = asyncio.Event()
+    cancel_seen = asyncio.Event()
+
+    async def slow_to_stop():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            # A warm-up thread still running: it ends a while after the cancel.
+            cancel_seen.set()
+            await release.wait()
+            raise
+
+    monkeypatch.setattr(reference_warmup, "_task", asyncio.create_task(slow_to_stop()))
+    await asyncio.sleep(0)
+    warmup = reference_warmup._task
+
+    stopper = asyncio.create_task(reference_warmup.stop_reference_warmup())
+    await asyncio.wait_for(cancel_seen.wait(), 1)
+    stopper.cancel()
+    async with asyncio.timeout(5):
+        await asyncio.wait({stopper})
+    try:
+        assert stopper.cancelled()
+    finally:
+        release.set()
+        await asyncio.wait({warmup})
+    assert reference_warmup._task is None
