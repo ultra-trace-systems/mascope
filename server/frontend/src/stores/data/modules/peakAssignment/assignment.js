@@ -1,4 +1,4 @@
-import { computed, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 
 import { api } from '@/api'
@@ -361,6 +361,14 @@ export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
   // spectrum colouring and the tier histogram all read the one list. The reload
   // clears the detail cache with it (see the watch above), so the inspector
   // re-fetches the alternatives the override rewrote.
+  //
+  // Once the reload is in, the row the click wrote is announced as `written`,
+  // for the ledger to show it: open the family it folds into, keep it in view,
+  // and say which filter hides it when one does (PaneBrowserAssignment.vue).
+  // Every hand edit of a sample's row comes through here, the formula search's
+  // and the card's Use alike, so the ledger hears of each one.
+  const written = ref(null)
+  let writes = 0
   async function curate(peakAssignmentId, action) {
     const sample_item_id = useSample().focusedId
     if (!sample_item_id || !peakAssignmentId) return null
@@ -375,7 +383,12 @@ export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
     // store-wide error ref, which belongs to whichever sync wrote it last.
     const outcome = await data.load('curation')
     if (outcome.error) throw outcome.error
-    return byId.value.get(peakAssignmentId) ?? null
+    const row = byId.value.get(peakAssignmentId) ?? null
+    // A fresh object each time, so the same row written twice is announced
+    // twice. The sample goes with it: a ledger showing another sample by the
+    // time the reload lands has nothing of it to show.
+    if (row) written.value = { sampleItemId: sample_item_id, row, seq: ++writes }
+    return row
   }
 
   // Confidence-tier histogram for the run summary (see tierHistogram).
@@ -391,6 +404,7 @@ export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
     m0Of,
     familyOf,
     curate,
+    written: computed(() => written.value),
     tierCounts,
     detailOf: detail.detailOf,
     loadDetail: detail.loadDetail,
