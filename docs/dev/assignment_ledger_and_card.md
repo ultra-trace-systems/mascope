@@ -421,16 +421,18 @@ What a sample's card does not answer:
 | Consensus, tier, role, `support_fraction`, `is_ambiguous`, `n_present` | the batch-peaks read, per row | nothing |
 | The batch's readings and groups | the batch-peaks read, per row, and `batch_groups` | nothing |
 | The members' level split | the batch-peaks read, `member_levels` | nothing |
-| Each member's level, evidence and lift | the members read, whole batch, paged | a read for one batch peak: MAS-1301 adds it, for the members on the consensus formula |
-| What each dissenting member reads | the members read, whole batch, paged | the same read for one batch peak, with every member, any formula |
+| Each member's level, evidence and lift | the members read, whole batch, paged; for one batch peak, the levels read (MAS-1301) for the members on the consensus formula, and the member readings read (MAS-1315) for every member | nothing |
+| What each dissenting member reads | the member readings read, `GET /api/batch-peaks/batch/{sample_batch_id}/members/{batch_peak_id}` (MAS-1315): every member, any formula, with why it states no level of the consensus | nothing |
 | Presence and intensity per sample | the series read, per batch peak | the absent samples are the sample list minus the members, worked out by the client |
-| What the batch overrode in each sample | the claim records name the samples kept | a per-member flag "the batch changed this sample's reading", from those records |
+| What the batch overrode in each sample | the member readings read, per member: `batch_stage`, the stage that rewrote its run row (known species, water ladder, the merged-isotopologue strip); `batch_read`, the decisions its run read onto the row; `member_stage`, the stage whose mark the member carries | a batch pin leaves no mark on a member or a row: only the batch peak's pin names the members it displaced |
 | The batch-level verdict | the verdicts read | nothing |
 
 So every option needs one new read: **one batch peak's members**, each with its sample,
 intensity, formula, tier, level, evidence, lift and whether a batch decision wrote it.
 MAS-1301's route is that read narrowed to the consensus formula. Widened to every member,
 it serves all the options below.
+MAS-1315 serves it as a sibling of MAS-1301's route, on the same member query: all
+members in one response, about 30 ms for a batch peak of 547 members.
 
 #### Option A: a batch card
 
