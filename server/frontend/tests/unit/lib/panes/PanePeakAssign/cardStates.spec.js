@@ -571,6 +571,18 @@ describe('card states: opened from the batch scope', () => {
     expect(stepTo).toHaveBeenCalledWith(1)
   })
 
+  it('says the level the members were opened by, from a row of the batch ledger', async () => {
+    state.opened = { ...opened(), level: '4a' }
+    const wrapper = await mountCard()
+
+    expect(byTestId(wrapper, 'batch-opened').text()).toContain(
+      'In Sample one: the brightest of 3 samples whose run states 4a for this batch peak'
+    )
+    state.opened = opened()
+    const plain = await mountCard()
+    expect(byTestId(plain, 'batch-opened').text()).toContain('that hold this batch peak')
+  })
+
   it('names a later member by its place, and wraps from the last to the first', async () => {
     state.opened = opened()
     state.sampleId = 'si-3'

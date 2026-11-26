@@ -435,6 +435,90 @@ export function memberLevelTooltip(memberLevel, memberLevels) {
     .join('\n')
 }
 
+// --- Where a batch peak's level comes from ---------------------------------------
+
+/**
+ * How a batch peak's members split over the levels their runs stated, in the
+ * scale's order, the level the ledger shows for them marked.
+ *
+ * @param {Object<string, number>|null} memberLevels level -> members
+ * @param {string|null} shown the members' level the ledger shows (`member_level`)
+ * @returns {Array<{level: string, count: number, shown: boolean}>}
+ */
+export function levelSplit(memberLevels, shown) {
+  if (!memberLevels || typeof memberLevels !== 'object') return []
+  return LEVELS.filter(
+    (level) => Number.isInteger(memberLevels[level]) && memberLevels[level] > 0
+  ).map((level) => ({ level, count: memberLevels[level], shown: level === shown }))
+}
+
+/**
+ * The best level any member states: the first of the scale's order.
+ *
+ * @param {Object<string, number>|null} memberLevels level -> members
+ * @returns {string|null}
+ */
+export function bestStatedLevel(memberLevels) {
+  return levelSplit(memberLevels, null)[0]?.level ?? null
+}
+
+/**
+ * The members at one level, brightest first, as the level-sources read
+ * serves them (`GET /batch-peaks/batch/{id}/levels/{batch_peak_id}`).
+ *
+ * @param {Array<object>|null} members its `data`
+ * @param {string} level
+ * @returns {Array<object>}
+ */
+export function membersAtLevel(members, level) {
+  return (Array.isArray(members) ? members : [])
+    .filter((member) => member?.level === level)
+    .sort((a, b) => (b.intensity ?? -Infinity) - (a.intensity ?? -Infinity))
+}
+
+/**
+ * The line most of the members say, of one of a level's two lines, and how
+ * many say it. Equal counts keep the line of the brighter member, so the
+ * choice is stable from read to read.
+ *
+ * @param {Array<object>} members the members at one level, brightest first
+ * @param {'level_evidence'|'level_lift'} key which line
+ * @returns {{text: string, count: number, of: number}|null} null where no
+ *   member wrote one
+ */
+export function commonLine(members, key) {
+  const counts = new Map()
+  for (const member of members ?? []) {
+    const text = member?.[key]
+    if (typeof text === 'string' && text) counts.set(text, (counts.get(text) ?? 0) + 1)
+  }
+  let best = null
+  for (const [text, count] of counts) if (!best || count > best.count) best = { text, count }
+  return best ? { ...best, of: (members ?? []).length } : null
+}
+
+/**
+ * The members of a batch peak that state no level of its consensus, in words,
+ * one line per reason the level-sources read counts (`unstated`).
+ *
+ * @param {Object<string, number>|null} unstated why -> members
+ * @returns {string[]}
+ */
+export function unstatedLines(unstated) {
+  const one = (n) => n === 1
+  const runs = (n, verb) => (one(n) ? `1 sample's run ${verb}s` : `${n} samples' runs ${verb}`)
+  const words = {
+    no_run: (n) =>
+      one(n) ? '1 sample has no run of its own' : `${n} samples have no run of their own`,
+    no_formula: (n) => `${runs(n, 'commit')} no formula on this peak`,
+    other_formula: (n) => `${runs(n, 'commit')} another formula`,
+    no_level: (n) => `${runs(n, 'state')} no level for it`
+  }
+  return Object.entries(words)
+    .filter(([why]) => Number.isInteger(unstated?.[why]) && unstated[why] > 0)
+    .map(([why, line]) => line(unstated[why]))
+}
+
 /**
  * The options a level filter offers: every level in the scale's order, by its
  * label, with its name beside it so a reader picking "3c" knows what it is.

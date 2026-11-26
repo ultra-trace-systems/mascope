@@ -2,6 +2,7 @@
 // (docs/dev/assignment_ledger_and_card.md, section 3.1), and the pieces both
 // scopes share.
 export { default as AssignmentLedger } from './AssignmentLedger.vue'
+export { default as LedgerLevelSources } from './LedgerLevelSources.vue'
 export { default as LedgerListingCell } from './LedgerListingCell.vue'
 export { default as LedgerMenuChoice } from './LedgerMenuChoice.vue'
 export { default as LedgerTierStrip } from './LedgerTierStrip.vue'

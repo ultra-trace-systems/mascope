@@ -1,6 +1,9 @@
 <script setup>
 import { reactive, ref, computed, nextTick, watch } from 'vue'
 
+import { api } from '@/api'
+import { getApiErrorMessage } from '@/api/utils'
+
 import Button from 'primevue/button'
 import Column from 'primevue/column'
 import Message from 'primevue/message'
@@ -49,6 +52,7 @@ import {
   GROUP_CO_VARIATION,
   GROUP_SERIES,
   LEDGER_ROW_HEIGHT,
+  LedgerLevelSources,
   LedgerMenuChoice,
   LedgerVerdictPopover,
   LedgerViewToggle,
@@ -803,12 +807,71 @@ const {
   menu: verdictMenu,
   target: verdictTarget,
   open: openVerdict
-} = useRowPopover(findDecorated, idOf, { beforeOpen: () => continuityMenu.value?.hide() })
+} = useRowPopover(findDecorated, idOf, {
+  beforeOpen: () => [continuityMenu, levelMenu].forEach((menu) => menu.value?.hide())
+})
 const {
   menu: continuityMenu,
   target: continuityTarget,
   open: openContinuity
-} = useRowPopover(findDecorated, idOf, { beforeOpen: () => verdictMenu.value?.hide() })
+} = useRowPopover(findDecorated, idOf, {
+  beforeOpen: () => [verdictMenu, levelMenu].forEach((menu) => menu.value?.hide())
+})
+const {
+  menu: levelMenu,
+  target: levelTarget,
+  open: openLevelPopover
+} = useRowPopover(findDecorated, idOf, {
+  beforeOpen: () => [verdictMenu, continuityMenu].forEach((menu) => menu.value?.hide())
+})
+
+// --- Where a row's level comes from ------------------------------------------
+// The Level chip opens the members whose run states it (LedgerLevelSources):
+// one read per batch peak, asked on the click, never on the ledger's list read
+// (MAS-1160). An earlier run's snapshot keeps no member levels, so it asks
+// nothing. The answer is kept for the row it was asked for; a reply that
+// arrives after the popover moved to another row is dropped.
+const levelSources = reactive({ id: null, body: null, loading: false, error: null })
+const viewingSnapshot = computed(() => Boolean(runs.value?.viewingId))
+async function loadLevelSources(row) {
+  const batchId = app.data.batch.focusedId
+  Object.assign(levelSources, { id: row.batch_peak_id, body: null, loading: false, error: null })
+  if (!batchId || viewingSnapshot.value) return
+  levelSources.loading = true
+  try {
+    const response = await api.http.get(
+      `/batch-peaks/batch/${batchId}/levels/${row.batch_peak_id}`,
+      { type: 'load_batch_peak_level_sources', errors: 'inline' }
+    )
+    if (levelSources.id !== row.batch_peak_id) return
+    levelSources.body = response?.data ?? null
+  } catch (err) {
+    if (levelSources.id !== row.batch_peak_id) return
+    levelSources.error = getApiErrorMessage(err, "Could not read the members' levels.")
+  } finally {
+    if (levelSources.id === row.batch_peak_id) levelSources.loading = false
+  }
+}
+function openLevelSources(event, row) {
+  // A second click on the open row's chip closes it and asks nothing.
+  const closing = levelTarget.value?.batch_peak_id === row.batch_peak_id
+  openLevelPopover(event, row)
+  if (!closing || levelSources.id !== row.batch_peak_id) loadLevelSources(row)
+}
+// The claim the row shows in place of the members' level, for the popover.
+const claimOf = (row) => (row?.shownLevel?.source === 'claim' ? row.shownLevel : null)
+// "Open a sample": the member it names, in the sample's ledger with the peak
+// focused and the inspector card stepping through that level's members.
+function openLevelMember(member, members, level) {
+  const row = levelTarget.value
+  if (!row) return
+  levelMenu.value?.hide()
+  jump.openMember(row, member, members, level)
+}
+function assignFromLevel() {
+  levelMenu.value?.hide()
+  assign.assign()
+}
 
 // --- Selection --------------------------------------------------------------
 
@@ -1516,11 +1579,18 @@ watch(
     <!-- The members' level, and with Show > Engine readings on, the
          importing engine's own, outlined beside it. -->
     <template #level="{ data }">
-      <BaseLevelTag
+      <!-- The chip opens where the level comes from: the members that state
+           it, their evidence, and the way to them. -->
+      <button
         v-if="data.shownLevel"
-        :level="data.shownLevel.level"
-        :tooltip="shownLevelTooltip(data)"
-      />
+        type="button"
+        class="badge-button level-button"
+        data-testid="level-sources"
+        :aria-label="`Level ${data.shownLevel.level}: open the samples it comes from`"
+        @click.stop="openLevelSources($event, data)"
+      >
+        <BaseLevelTag :level="data.shownLevel.level" :tooltip="shownLevelTooltip(data)" />
+      </button>
       <BaseLevelTag
         v-if="engineReadings && isLevel(data.engine_level)"
         class="engine-chip"
@@ -1633,7 +1703,10 @@ watch(
         class="jump-cell"
         :disabled="jump.pendingId != null || !data.n_present"
         aria-label="Open the brightest sample with this peak in focus"
-        v-tooltip.top="'Open the brightest sample with this peak in focus (Sample tab)'"
+        v-tooltip.top="
+          'Open the brightest sample with this peak in focus (Sample tab). The brightest ' +
+          'sample, not where the level comes from: click the level for those samples'
+        "
         @click.stop="openBrightest(data)"
       >
         <span
@@ -1652,6 +1725,23 @@ watch(
           v-if="continuityTarget"
           :row="continuityTarget"
           :isotopeLine="Boolean(continuityTarget.parentId)"
+        />
+      </Popover>
+
+      <Popover ref="levelMenu" aria-label="Where the level comes from">
+        <LedgerLevelSources
+          v-if="levelTarget"
+          :claim="claimOf(levelTarget)"
+          :memberLevel="levelTarget.member_level ?? null"
+          :memberLevels="levelTarget.member_levels ?? null"
+          :sources="levelSources.id === levelTarget.batch_peak_id ? levelSources.body : null"
+          :loading="levelSources.loading"
+          :error="levelSources.id === levelTarget.batch_peak_id ? levelSources.error : null"
+          :snapshot="viewingSnapshot"
+          :canAssign="assign.canAssign"
+          :assignBlocked="assign.blockedReason || null"
+          @open-member="openLevelMember"
+          @assign="assignFromLevel"
         />
       </Popover>
 

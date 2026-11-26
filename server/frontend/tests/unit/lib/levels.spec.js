@@ -18,6 +18,11 @@ import {
   levelTooltip,
   memberLevelTooltip,
   memberLevelsSummary,
+  levelSplit,
+  bestStatedLevel,
+  membersAtLevel,
+  commonLine,
+  unstatedLines,
   readerLevel,
   rivalTestLabel,
   unlistedRivalsLine
@@ -342,5 +347,60 @@ describe('levelTooltip source line', () => {
     expect(levelTooltip({ level: '4a', source: 'engine' })).toContain(
       'Source: engine - no live verdict states a level'
     )
+  })
+})
+
+describe("where a batch peak's level comes from", () => {
+  it("splits the members over the scale's order, the shown level marked", () => {
+    expect(levelSplit({ '5a': 40, '4a': 3, '5b': 0 }, '5a')).toEqual([
+      { level: '4a', count: 3, shown: false },
+      { level: '5a', count: 40, shown: true }
+    ])
+    expect(levelSplit(null, '5a')).toEqual([])
+  })
+
+  it('names the best level any member states', () => {
+    expect(bestStatedLevel({ '5a': 40, '4b': 1, '4a': 3 })).toBe('4a')
+    expect(bestStatedLevel({})).toBeNull()
+  })
+
+  it("lists one level's members brightest first, one without an intensity last", () => {
+    const members = [
+      { sample_item_id: 'a', level: '5a', intensity: null },
+      { sample_item_id: 'b', level: '4a', intensity: 9 },
+      { sample_item_id: 'c', level: '5a', intensity: 3 },
+      { sample_item_id: 'd', level: '5a', intensity: 7 }
+    ]
+    expect(membersAtLevel(members, '5a').map((m) => m.sample_item_id)).toEqual(['d', 'c', 'a'])
+    expect(membersAtLevel(null, '5a')).toEqual([])
+  })
+
+  it('gives the line most members wrote and how many wrote it, a tie the brighter', () => {
+    const members = [
+      { level_evidence: 'one rival open', level_lift: 'measure it' },
+      { level_evidence: 'two rivals open', level_lift: 'measure it' },
+      { level_evidence: 'two rivals open', level_lift: null }
+    ]
+    expect(commonLine(members, 'level_evidence')).toEqual({
+      text: 'two rivals open',
+      count: 2,
+      of: 3
+    })
+    expect(commonLine(members, 'level_lift')).toEqual({ text: 'measure it', count: 2, of: 3 })
+    expect(commonLine(members.slice(0, 2), 'level_evidence').text).toBe('one rival open')
+    expect(commonLine([{ level_lift: null }], 'level_lift')).toBeNull()
+  })
+
+  it('says each reason a member states no level, one line per reason', () => {
+    expect(unstatedLines({ no_run: 12, no_formula: 0, other_formula: 1, no_level: 2 })).toEqual([
+      '12 samples have no run of their own',
+      "1 sample's run commits another formula",
+      "2 samples' runs state no level for it"
+    ])
+    expect(unstatedLines({ no_run: 1, no_formula: 3 })).toEqual([
+      '1 sample has no run of its own',
+      "3 samples' runs commit no formula on this peak"
+    ])
+    expect(unstatedLines(null)).toEqual([])
   })
 })

@@ -1491,6 +1491,29 @@ isotope line carries none of its own: its main peak's row shows it. A reagent or
 another engine and a run made before the level show none. A peak you assign by hand
 reads 5a with its rivals not measured, or 5b where its lines refute it.
 
+**From a batch row's level to its samples.** A batch peak's level is the one most of its
+samples' runs stated, so it comes from a set of samples, and some of them may state a
+better one: 4a in three samples and 5a in forty reads 5a. Click the level chip in the
+*Batch peaks* ledger, or press Enter or Space on it, to see where it comes from:
+
+- how the samples split over the levels, the one shown marked;
+- **why** the shown level holds and what **would lift it**, as most of its samples' runs
+  wrote it, with how many wrote that where they differ;
+- the best level any sample states, where it is better than the one shown: those
+  samples are the nearest answer to what would raise the row;
+- how many samples state no level, and why: no run of their own, or a run that reads
+  another formula on the peak. An editor can run **Assign batch** from there.
+
+**Open a sample** beside a level opens the brightest sample at that level with the peak in
+focus, where the inspector's **Identification level** section shows the full evidence,
+the rivals and the lift; **Other samples** on the card then steps through the samples at
+that level. **All** lists them, with their acquisition time and intensity, to open
+another. Where a live batch-level verdict states the level, the popover says so first,
+with its evidence and lift, and the samples' split under it. An earlier run's ledger
+keeps no levels per sample, so there the popover says to open the current run. The row's
+own action, the arrow at its end, still opens the brightest sample of all: that is where
+the species is best measured, not where its level comes from.
+
 **A verdict's level comes first.** Where a live verdict states a level, the chip beside
 the tier, the **Identification level** section, the sample ledger's **Level** column and
 its filter show the verdict's level in place of the engine's. That verdict is the peak's
