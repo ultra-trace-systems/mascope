@@ -3,7 +3,9 @@ sample's assignments, numbered in launch order and listed newest first. The
 ledger shows the selected run; pick an older one to revisit it. A run marked
 with &hellip; is still in progress. While it is, **Assign sample** waits with
 a spinner: a sample runs one assignment at a time. It is offered again once
-the run ends, whether it completed, failed or was cancelled.
+the run completes. A run you launched from this page, or one in a batch pass
+you ran, also lets go when it fails or is cancelled. Another person's run that
+fails or is cancelled lets go when you move to another sample and back.
 
 A run also carries **who produced it**, shown as a chip beside its number:
 

@@ -376,12 +376,16 @@ async function launch() {
   formError.value = null
   submitting.value = true
   launcher.launchingId = sampleItemId
-  let started = false
+  // Whether the run list is read again below: after a launch, and after a
+  // refusal as busy, which means the list lacks a run in flight (another
+  // person's, or one started at ingest) that will hold the button once read.
+  let reread
   try {
     await runs.value.assign(sampleItemId, runConfig(runModel, {}, runSaved))
     launchError.value = null
-    started = true
+    reread = true
   } catch (error) {
+    reread = error?.response?.status === 409
     // A refusal is an answer, not a crash: the request was understood and
     // declined. Either way the dialog has nothing left to do - closing it puts
     // the reason in view rather than behind a modal.
@@ -395,10 +399,11 @@ async function launch() {
   // server's reload comes at the run's end. Until it lands, the launch itself
   // holds the button, so there is no moment between the two when it is offered.
   try {
-    if (started) await runs.value.load('assign')
+    if (reread) await runs.value.load('assign')
   } catch {
     // The run list shows its own load error.
   } finally {
+    // Another sample's launch may have taken the hold meanwhile; it is its own.
     if (launcher.launchingId === sampleItemId) launcher.launchingId = null
   }
 }
