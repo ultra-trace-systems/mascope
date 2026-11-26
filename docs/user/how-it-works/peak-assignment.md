@@ -974,6 +974,21 @@ band is where the row stands before any rule, so the reasons after it say what e
 it down, or what it has going for it: a row can be seen through a second channel and
 still stand below assignability on a poor fit.
 
+A *candidate* row's **Why** box opens with one line that says what holds it there, before
+the evidence bar: *Held at candidate: expected line absent (15N)*. A high fit at
+*candidate* reads as a mistake until its reason stands beside it, and the reasons below
+it list what the row kept as well as what holds it. The line names:
+
+- the rules that cap the row, each with the isotope line or the number it turned on;
+- the evidence band, when fit × plausibility is under the assigned band: a fit of 90 % at
+  a plausibility of 70 % is evidence of 63 %, under a band of 75 %;
+- for an isotopologue, the rules that capped its M0 (*Held at candidate with its M0*);
+- the batch's decision, for a listed compound the batch put at *candidate*.
+
+A row the run judged that names nothing holding it reads *no reason recorded*. That is
+the engine's to answer. The tier chip names the same rules when you hover it, on the card
+and in the ledger.
+
 What caps a row at candidate:
 
 - **radical neutral** — the committed neutral breaks the even-valence rule, the first of
