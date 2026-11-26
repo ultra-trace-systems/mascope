@@ -25,8 +25,18 @@ const {
   isPoorMatch,
   isoRowTooltip,
   focusIsotopePeak,
+  previewMissingLine,
+  isPreviewedLine,
   isotopeMeasure
 } = useCard()
+
+// A not-found line's hover text: why it reads so, and what a click does.
+const missingTooltip = (line) =>
+  `${notFoundTooltip(line, m0Provenance.value)}\n${
+    isPreviewedLine(line)
+      ? 'Click to take it off the spectrum'
+      : 'Click to show where it was expected in the spectrum'
+  }`
 
 const summary = computed(() => {
   const tile = isotopeMeasure.value
@@ -98,7 +108,8 @@ const STICK = 2.4
             <p>
             The list gives each line's measured m/z, its m/z error and its
             predicted relative abundance (<b>abu.</b>, a fraction of the most
-            abundant line). Click a line to focus its peak. A line the run
+            abundant line). Click a line to focus its peak; a line with no
+            peak moves the spectrum to where it was expected. A line the run
             expected and found no peak for reads <b>not found</b> and holds the
             assignment at <i>candidate</i> at most; one only an artifact's peak
             sits on, or beyond the ends of the spectrum, reads <b>not tested</b>.
@@ -153,8 +164,12 @@ const STICK = 2.4
             current: iso.sample_peak_id === focusedAssignment.sample_peak_id,
             poor: isPoorMatch(iso)
           }"
+          role="button"
+          tabindex="0"
           v-tooltip.left="isoRowTooltip(iso)"
           @click="focusIsotopePeak(iso)"
+          @keydown.enter.prevent="focusIsotopePeak(iso)"
+          @keydown.space.prevent="focusIsotopePeak(iso)"
         >
           <span class="iso-label"
             ><span v-if="isPoorMatch(iso)" class="pi ph ph-warning poor-icon" />{{
@@ -171,8 +186,15 @@ const STICK = 2.4
           v-for="line in missingLines"
           :key="`missing-${line.line}-${line.predicted_mz}`"
           class="iso-row missing"
+          :class="{ current: isPreviewedLine(line) }"
           data-testid="iso-missing"
-          v-tooltip.left="notFoundTooltip(line, m0Provenance)"
+          role="button"
+          tabindex="0"
+          :aria-pressed="isPreviewedLine(line) ? 'true' : 'false'"
+          v-tooltip.left="missingTooltip(line)"
+          @click="previewMissingLine(line)"
+          @keydown.enter.prevent="previewMissingLine(line)"
+          @keydown.space.prevent="previewMissingLine(line)"
         >
           <span class="iso-label">{{ formatIsotopeLabel(line.line) || line.line }}</span>
           <span class="iso-mz">{{ num.mz.format(line.predicted_mz) }}</span>
@@ -249,16 +271,16 @@ const STICK = 2.4
 .iso-row:hover {
   background: var(--p-content-hover-background);
 }
+.iso-row:focus-visible {
+  outline: 1px solid var(--p-focus-ring-color, var(--p-text-muted-color));
+  outline-offset: -1px;
+}
 .iso-row.current {
   background: var(--p-highlight-background);
 }
 .iso-row.missing {
   color: var(--p-text-muted-color);
-  cursor: default;
   font-style: italic;
-}
-.iso-row.missing:hover {
-  background: none;
 }
 .iso-row .iso-missing {
   font-family: var(--font-sans, inherit);

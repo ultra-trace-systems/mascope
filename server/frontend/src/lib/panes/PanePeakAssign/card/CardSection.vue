@@ -1,19 +1,23 @@
 <script setup>
-import { ref, useId } from 'vue'
+import { useId } from 'vue'
+
+import { useSectionOpen } from './useCard.js'
 
 // One folded section of the card: a heading line with its summary, which
 // unfolds the section's body (docs/dev/assignment_ledger_and_card.md, section
 // 4.1). Folded by default, so the card's first screen is the answer, the
 // reasons and the verdict. The body is kept in the page while folded
 // (`v-show`), so what it holds is in the document for the screen reader that
-// unfolds it and for the tooltips it binds.
-defineProps({
+// unfolds it and for the tooltips it binds. Its open state is the card's, by
+// the section's test id (`useSectionOpen`), so it holds while the card moves
+// between the lines of one isotope pattern.
+const props = defineProps({
   title: { type: String, required: true },
   summary: { type: String, default: '' },
   testid: { type: String, default: null }
 })
 
-const open = ref(false)
+const open = useSectionOpen(props.testid)
 const bodyId = useId()
 </script>
 

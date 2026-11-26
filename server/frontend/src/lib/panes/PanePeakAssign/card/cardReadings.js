@@ -177,6 +177,10 @@ export function reasonGroup(reason, groups, series = null) {
 // it the same (lib/ledger/groups.js), so the card and the lens agree.
 export { memberLabel } from '@/lib/ledger/groups.js'
 
+/** Why the M0's abundance error reads `-` rather than the zero it carries. */
+export const M0_ABUNDANCE_TOOLTIP =
+  'The monoisotopic line (M0) is the line the other lines are measured against, so it has no abundance error of its own.'
+
 /**
  * The isotope tile: the lines found of those predicted, from the family the
  * card lists and the lines the run asked for and did not find.
@@ -185,25 +189,39 @@ export { memberLabel } from '@/lib/ledger/groups.js'
  * @param {Array<object>} options.family - the family's rows, the head included
  * @param {Array<object>} options.missing - `notFoundLines` of the head
  * @param {number|null} options.abundanceError - the row's abundance error
- * @returns {{value: string, caption: string, found: number, predicted: number}}
+ * @param {boolean} [options.reference] - the row is the line the others are
+ *   measured against (the M0), whose zero is no error of its own: its error
+ *   reads `-`, and the caption's tooltip says why
+ * @returns {{value: string, caption: string, captionTooltip: string|null, found: number, predicted: number}}
  */
-export function isotopeTile({ family, missing, abundanceError }) {
+export function isotopeTile({ family, missing, abundanceError, reference = false }) {
   const found = Math.max(0, (family?.length ?? 0) - 1)
   const absent = (missing ?? []).filter((line) => line?.state !== LINE_UNTESTABLE).length
   const untested = (missing ?? []).length - absent
   const predicted = found + (missing ?? []).length
   const parts = []
-  if (abundanceError != null) {
+  let captionTooltip = null
+  if (abundanceError != null && reference) {
+    parts.push('abundance error -')
+    captionTooltip = M0_ABUNDANCE_TOOLTIP
+  } else if (abundanceError != null) {
     parts.push(`abundance off by ${num.relativeAbundanceError.format(Math.abs(abundanceError))}`)
   }
   if (absent) parts.push(`${absent} not found`)
   if (untested) parts.push(`${untested} not tested`)
   if (!predicted) {
-    return { value: 'M0 only', caption: 'no isotope line found or asked for', found, predicted }
+    return {
+      value: 'M0 only',
+      caption: 'no isotope line found or asked for',
+      captionTooltip: null,
+      found,
+      predicted
+    }
   }
   return {
     value: `${found} of ${predicted}`,
     caption: parts.length ? parts.join(' · ') : 'isotope lines found of those predicted',
+    captionTooltip,
     found,
     predicted
   }

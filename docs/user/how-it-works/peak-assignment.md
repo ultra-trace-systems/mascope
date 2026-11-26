@@ -1777,7 +1777,8 @@ flowchart TD
   - the **mass error**, in ppm, and under it how many widths of the run's own mass
     calibration it sits from the run's centre;
   - the **isotope lines**, found of those predicted, with the abundance error and the lines
-    not found or not tested;
+    not found or not tested. On the M0 the abundance error reads *-*: the other lines are
+    measured against it, so it has no error of its own;
   - the **confidence**, the formula's share of the evidence among the peak's candidates,
     with a tie written out;
   - the **batch**: the samples its batch peak is in, and how many of the batch's readings
@@ -1786,11 +1787,17 @@ flowchart TD
   Undo*, or *Curated for the batch in place of C3H4O4 · Release*. Hover the line for the
   whole account of what changed and what undoing it brings back. *Undo* is *Use* on the
   assignment the change replaced, the first of the alternatives.
-- **Sections**, folded until you open them, each with a summary on its folded line:
+- **Sections**, folded until you open them, each with a summary on its folded line. A
+  section stays as you left it while you move between the lines of one isotope pattern,
+  and folds again when the card moves to another reading:
   - **Isotope pattern**: a stick plot of each line's predicted share, drawn as an outline,
     against its measured share, filled beside it. A line the run asked for and did not
     find, or could not test, is drawn hollow. The list under it gives each line's m/z,
     m/z error and predicted share ([the fit score](#the-fit-score-a-pure-measurement)).
+    Click a line, or reach it with Tab and press Enter, to focus its peak. A line not
+    found or not tested has no peak: clicking it moves the spectrum to its predicted m/z
+    and draws a stick where it was expected, and the focused peak stays as it was. Click
+    it again to take the stick away.
   - **Alternatives**: the close alternatives with their fit, mass error and kind, and
     *Use* on each one that can be committed ([assigning a peak
     yourself](#assigning-a-peak-yourself)).

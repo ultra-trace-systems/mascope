@@ -107,7 +107,12 @@ const confidence = computed(() => {
         <span class="tile-value" v-tooltip.top="EVIDENCE_TOOLTIPS.abundanceError">{{
           isotopeMeasure.value
         }}</span>
-        <span class="tile-caption">{{ isotopeMeasure.caption }}</span>
+        <span
+          class="tile-caption"
+          data-testid="isotope-caption"
+          v-tooltip.top="isotopeMeasure.captionTooltip || null"
+          >{{ isotopeMeasure.caption }}</span
+        >
       </div>
       <div class="tile" data-testid="tile-confidence">
         <span class="tile-value" v-tooltip.top="confidence.tooltip">{{ confidence.value }}</span>

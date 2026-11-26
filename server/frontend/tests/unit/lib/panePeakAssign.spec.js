@@ -156,6 +156,14 @@ vi.mock('@/lib/panes/PaneBrowserMatch/stores/batchPeakJump.js', () => ({
   useBatchPeakJump: () => ({ opened: null, stepTo: vi.fn() })
 }))
 
+// The spectrum chart's preview store, which a not-found isotope line writes:
+// a reactive stand-in, read back through the mocked module.
+vi.mock('@/lib/panes/PanePeakAssign/preview.js', async () => {
+  const { reactive } = await import('vue')
+  const store = reactive({ peak: null })
+  return { usePreview: () => store }
+})
+
 // The batch curation a derived row's "use this" goes through.
 const batchCurate = vi.fn()
 const batchRelease = vi.fn()
@@ -3931,6 +3939,230 @@ describe('PanePeakAssign lines the run did not find', () => {
   })
 })
 
+// The isotope pattern's lines as the reader moves down them: the section keeps
+// the state the reader gave it across the lines of one pattern, a line with no
+// peak previews where it was expected in the spectrum, and every line is
+// reached by the keyboard as by the mouse.
+describe('PanePeakAssign moving down the isotope pattern', () => {
+  const M0_PEAK = { peak_id: 'p-1', mz: 258.98227, height: 800, area: 999 }
+  const CHILD_PEAK = { peak_id: 'p-2', mz: 259.98563, height: 52, area: 99 }
+  const OTHER_PEAK = { peak_id: 'p-9', mz: 301.1, height: 500, area: 9 }
+  const BR81 = {
+    line: '81Br',
+    predicted_mz: 260.98023,
+    predicted_share: 0.9728,
+    expected_snr: 97.28,
+    state: 'absent'
+  }
+  const UNTESTED = {
+    line: '13C2',
+    predicted_mz: 260.989,
+    predicted_share: 0.002,
+    state: 'untestable',
+    untestable: 'out_of_range'
+  }
+  let preview
+
+  function pattern() {
+    const m0 = {
+      ...assignment({ formula: 'C6H12O6', tier: 'candidate', mz: 258.98227, intensity: 1000 }),
+      ion_formula: 'C6H12O6Br-',
+      isotope_label: 'M0'
+    }
+    const child = {
+      ...isotopologue(m0),
+      sample_peak_mz: 259.98563,
+      sample_peak_intensity: 65.4,
+      abundance_error: 0,
+      isotope_label: '13C'
+    }
+    return { m0, child }
+  }
+  const toggle = (wrapper) =>
+    wrapper.find('[data-testid="section-isotopes"] [data-testid="section-toggle"]')
+  const isOpen = (wrapper) => toggle(wrapper).attributes('aria-expanded') === 'true'
+  // What the peak store does on a focus: the card follows the focused peak.
+  async function moveTo(row, peak) {
+    focusedAssignment = row
+    focusedPeak.value = peak
+    await flushPromises()
+  }
+
+  beforeEach(async () => {
+    ;({ usePreview: preview } = await import('@/lib/panes/PanePeakAssign/preview.js'))
+    preview().peak = null
+    peakList = [M0_PEAK, CHILD_PEAK, OTHER_PEAK]
+    focusedPeak.value = M0_PEAK
+  })
+
+  it('stays open across a click on each line of the pattern', async () => {
+    const { m0, child } = pattern()
+    focusedAssignment = m0
+    familyRows = [m0, child]
+    detailRecord = { provenance: { predicted_envelope: { lines: [BR81] } } }
+    const wrapper = await mountPane()
+    await toggle(wrapper).trigger('click')
+    expect(isOpen(wrapper)).toBe(true)
+
+    // The isotopologue's detail is not loaded yet: the card draws its
+    // skeleton in place of the sections until it lands.
+    let land
+    loadDetail.mockImplementationOnce(() => new Promise((resolve) => (land = resolve)))
+    const rows = wrapper.findAll('.isotopologues .iso-row:not(.missing)')
+    await rows[1].trigger('click')
+    expect(peakFocus).toHaveBeenCalledWith(CHILD_PEAK)
+    detailRecord = null
+    await moveTo(child, CHILD_PEAK)
+    expect(wrapper.find('[data-testid="section-isotopes"]').exists()).toBe(false)
+    land()
+    await flushPromises()
+    expect(isOpen(wrapper)).toBe(true)
+
+    // And back up to the M0.
+    await wrapper.findAll('.isotopologues .iso-row:not(.missing)')[0].trigger('click')
+    expect(peakFocus).toHaveBeenLastCalledWith(M0_PEAK)
+    await moveTo(m0, M0_PEAK)
+    expect(isOpen(wrapper)).toBe(true)
+
+    // A not-found line moves the spectrum, not the card.
+    await wrapper.find('[data-testid="iso-missing"]').trigger('click')
+    expect(isOpen(wrapper)).toBe(true)
+  })
+
+  it('stays folded across the lines where the reader folded it', async () => {
+    const { m0, child } = pattern()
+    focusedAssignment = m0
+    familyRows = [m0, child]
+    const wrapper = await mountPane()
+    await toggle(wrapper).trigger('click')
+    await toggle(wrapper).trigger('click')
+    await moveTo(child, CHILD_PEAK)
+    expect(isOpen(wrapper)).toBe(false)
+  })
+
+  it("follows the card's default, folded, on another reading", async () => {
+    const { m0, child } = pattern()
+    focusedAssignment = m0
+    familyRows = [m0, child]
+    const wrapper = await mountPane()
+    await toggle(wrapper).trigger('click')
+    expect(isOpen(wrapper)).toBe(true)
+
+    const other = {
+      ...assignment({ formula: 'C7H8O3', tier: 'candidate', mz: 301.1 }),
+      peak_assignment_id: 'pa-9',
+      sample_peak_id: 'p-9'
+    }
+    familyRows = [other]
+    await moveTo(other, OTHER_PEAK)
+    expect(isOpen(wrapper)).toBe(false)
+  })
+
+  it('previews a not-found line at its predicted m/z, and selects no peak', async () => {
+    const { m0, child } = pattern()
+    focusedAssignment = m0
+    familyRows = [m0, child]
+    detailRecord = { provenance: { predicted_envelope: { lines: [BR81] } } }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    const missing = wrapper.find('[data-testid="iso-missing"]')
+    expect(missing.attributes('data-tooltip')).toContain(
+      'Click to show where it was expected in the spectrum'
+    )
+    await missing.trigger('click')
+    // The chart zooms to the preview's m/z and draws its stick at the M0's
+    // measured height times the line's predicted share.
+    expect(preview().peak).toMatchObject({
+      mz: BR81.predicted_mz,
+      relative_abundance: BR81.predicted_share,
+      abundance_reference: 1,
+      intensity_reference: M0_PEAK.height
+    })
+    expect(peakFocus).not.toHaveBeenCalled()
+    expect(missing.classes()).toContain('current')
+    expect(missing.attributes('aria-pressed')).toBe('true')
+    expect(missing.attributes('data-tooltip')).toContain('Click to take it off the spectrum')
+
+    // A second click takes it away again.
+    await missing.trigger('click')
+    expect(preview().peak).toBeNull()
+    expect(missing.classes()).not.toContain('current')
+  })
+
+  it('previews a line not tested as a line not found', async () => {
+    const { m0, child } = pattern()
+    focusedAssignment = m0
+    familyRows = [m0, child]
+    detailRecord = { provenance: { predicted_envelope: { lines: [UNTESTED] } } }
+    const wrapper = await mountPane()
+
+    await wrapper.find('[data-testid="iso-missing"]').trigger('click')
+    expect(preview().peak).toMatchObject({ mz: UNTESTED.predicted_mz })
+    expect(peakFocus).not.toHaveBeenCalled()
+  })
+
+  it("takes a previewed line off the spectrum when a found line's peak is focused", async () => {
+    const { m0, child } = pattern()
+    focusedAssignment = m0
+    familyRows = [m0, child]
+    detailRecord = { provenance: { predicted_envelope: { lines: [BR81] } } }
+    const wrapper = await mountPane()
+
+    await wrapper.find('[data-testid="iso-missing"]').trigger('click')
+    expect(preview().peak).not.toBeNull()
+    // The M0 is the focused peak already, so no focus change clears it.
+    await wrapper.findAll('.isotopologues .iso-row:not(.missing)')[0].trigger('click')
+    expect(peakFocus).toHaveBeenCalledWith(M0_PEAK)
+    expect(preview().peak).toBeNull()
+  })
+
+  it('reaches every line from the keyboard, found or not', async () => {
+    const { m0, child } = pattern()
+    focusedAssignment = m0
+    familyRows = [m0, child]
+    detailRecord = { provenance: { predicted_envelope: { lines: [BR81] } } }
+    const wrapper = await mountPane()
+
+    const rows = wrapper.findAll('.isotopologues .iso-row')
+    expect(rows).toHaveLength(3)
+    for (const row of rows) {
+      expect(row.attributes('tabindex')).toBe('0')
+      expect(row.attributes('role')).toBe('button')
+    }
+    await rows[1].trigger('keydown', { key: 'Enter' })
+    expect(peakFocus).toHaveBeenCalledWith(CHILD_PEAK)
+    await rows[0].trigger('keydown', { key: ' ' })
+    expect(peakFocus).toHaveBeenLastCalledWith(M0_PEAK)
+    await rows[2].trigger('keydown', { key: 'Enter' })
+    expect(preview().peak).toMatchObject({ mz: BR81.predicted_mz })
+    await rows[2].trigger('keydown', { key: ' ' })
+    expect(preview().peak).toBeNull()
+  })
+
+  it("reads the M0's abundance error as a dash, and says why on hover", async () => {
+    const { m0, child } = pattern()
+    focusedAssignment = { ...m0, abundance_error: 0 }
+    familyRows = [focusedAssignment, child]
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    const caption = wrapper.find('[data-testid="isotope-caption"]')
+    expect(caption.text()).toBe('abundance error -')
+    expect(caption.attributes('data-tooltip')).toContain('the other lines are measured against')
+  })
+
+  it('keeps 0.00% on an isotopologue whose error really is zero', async () => {
+    const { m0, child } = pattern()
+    focusedAssignment = child
+    focusedPeak.value = CHILD_PEAK
+    familyRows = [m0, child]
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    const caption = wrapper.find('[data-testid="isotope-caption"]')
+    expect(caption.text()).toBe('abundance off by 0.00%')
+    expect(caption.attributes('data-tooltip')).toBe('')
+  })
+})
+
 // Where a row's mass error sits against the run's own calibration, in that
 // calibration's widths: the number the run's mass gate judged, which the ppm
 // error beside it cannot say without the run's width.
@@ -5346,7 +5578,8 @@ describe('PanePeakAssign the card, answer first', () => {
       })
       expect(tile(wrapper, 'isotopes')).toEqual({
         value: '1 of 2',
-        caption: 'abundance off by 12.00% · 1 not found'
+        // The M0 is the line the others are measured against: no error of its own
+        caption: 'abundance error - · 1 not found'
       })
       expect(tile(wrapper, 'confidence')).toEqual({
         value: '62%',
