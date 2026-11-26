@@ -70,9 +70,9 @@ const Column = {
   inject: ['ledgerRows'],
   template:
     '<div class="column" :data-field="field ?? selectionMode ?? \'\'">' +
-    '<div class="head"><slot name="header" /></div>' +
-    '<div v-for="(row, i) in ledgerRows.list" :key="i" class="cell" :data-row="row.id">' +
-    '<slot name="body" :data="row" /></div></div>'
+    '<div class="head" :class="headerClass"><slot name="header" /></div>' +
+    '<div v-for="(row, i) in ledgerRows.list" :key="i" class="cell" :class="bodyClass" ' +
+    ':data-row="row.id"><slot name="body" :data="row" /></div></div>'
 }
 const STUBS = {
   DataTable,
@@ -100,6 +100,7 @@ const STUBS = {
 }
 
 const { default: AssignmentLedger } = await import('@/lib/ledger/AssignmentLedger.vue')
+const { shownAt } = await import('./narrowRules.js')
 
 const SCOPES = {
   sample: {
@@ -248,7 +249,8 @@ describe.each(Object.keys(SCOPES))('AssignmentLedger, %s scope', (scope) => {
 
   // The engine's own tier is a chip in the Tier cell, never a column of its
   // own (owner's decision of 2026-11-22); the level is a column where any row
-  // has one, dropped first at a narrow width.
+  // has one, the first column dropped at a narrow width (its chips then show
+  // in the Tier cell).
   it('adds the level only where a row carries one, and no engine column', () => {
     expect(fields(mountLedger(scope))).not.toContain(SCOPES[scope].fields.level)
     const wrapper = mountLedger(scope, { props: { engineReadings: true, hasLevels: true } })
@@ -260,6 +262,127 @@ describe.each(Object.keys(SCOPES))('AssignmentLedger, %s scope', (scope) => {
     expect(level.props('sortField')).toBe(SCOPES[scope].fields.levelSort)
     expect(level.props('headerClass')).toBe('col-level')
     expect(level.props('bodyClass')).toBe('col-level')
+  })
+
+  // The level stays at every width (the owner, 2026-11-24): where the Level
+  // column drops, its chips show in the Tier cell, and nowhere twice. The
+  // narrow rules are applied to the mounted ledger, as a browser would at
+  // that ledger width.
+  describe('the level at a width', () => {
+    const levelRows = () => [
+      { id: 'a', ...row(scope, { formula: 'C2H6', intensity: 500 }), engine_tier: 'assigned' }
+    ]
+    const mountLevels = (props = {}) =>
+      mountLedger(scope, {
+        props: { rows: levelRows(), hasLevels: true, ...props },
+        slots: {
+          tier: () => h('span', { class: 'own-tier' }),
+          level: () => [
+            h('span', { class: 'own-level' }),
+            props.engineReadings ? h('span', { class: 'engine-level' }) : null
+          ]
+        }
+      })
+    // Where a chip shows at `width`: the Tier cell, the Level column, both.
+    const placesAt = (wrapper, selector, width) => {
+      const f = SCOPES[scope].fields
+      return [
+        ['tier', cell(wrapper, 'tierRank', 'a')],
+        ['level', cell(wrapper, f.level, 'a')]
+      ]
+        .filter(([, at]) => at.findAll(selector).some((chip) => shownAt(chip.element, width)))
+        .map(([place]) => place)
+    }
+
+    it.each([
+      [600, ['tier']],
+      [800, ['tier']],
+      [900, ['tier']],
+      [901, ['level']],
+      [1000, ['level']]
+    ])('at %i px shows the level in %j', (width, places) => {
+      const wrapper = mountLevels()
+      expect(placesAt(wrapper, '.own-level', width)).toEqual(places)
+      // The tier stays at every width, in its own cell.
+      expect(placesAt(wrapper, '.own-tier', width)).toEqual(['tier'])
+    })
+
+    // Show > Engine readings: the engine's level goes where the engine's tier
+    // does at a narrow width, beside its own in the Tier cell.
+    it.each([
+      [600, ['tier']],
+      [1000, ['level']]
+    ])("at %i px shows the engine's level in %j", (width, places) => {
+      const wrapper = mountLevels({ engineReadings: true })
+      expect(placesAt(wrapper, '.engine-level', width)).toEqual(places)
+      expect(
+        cell(wrapper, 'tierRank', 'a')
+          .findAll('[data-testid="engine-tier-chip"]')
+          .some((chip) => shownAt(chip.element, width))
+      ).toBe(true)
+    })
+
+    it('puts no level in the Tier cell where no row has one', () => {
+      const wrapper = mountLevels({ hasLevels: false })
+      expect(cell(wrapper, 'tierRank', 'a').find('.tier-level').exists()).toBe(false)
+      expect(cell(wrapper, 'tierRank', 'a').find('.own-level').exists()).toBe(false)
+    })
+  })
+
+  // With the column dropped, its header - the filter menu and the sort - goes
+  // with it, so Show carries both, writing the same filter and sort.
+  describe("the level's filter and sort in Show", () => {
+    const f = SCOPES[scope].fields
+    const filtersWith = (value) => ({
+      [f.level]: { operator: 'and', constraints: [{ value, matchMode: 'equals' }] }
+    })
+    const menu = (wrapper) => wrapper.find('.level-menu')
+
+    it('is offered only where the ledger has levels', () => {
+      expect(menu(mountLedger(scope)).exists()).toBe(false)
+      expect(menu(mountLedger(scope, { props: { hasLevels: true } })).exists()).toBe(true)
+    })
+
+    it("writes the Level column's own filter, and reads it back", async () => {
+      const updates = []
+      const wrapper = mountLedger(scope, {
+        props: {
+          hasLevels: true,
+          filters: filtersWith(null),
+          'onUpdate:filters': (next) => updates.push(next)
+        }
+      })
+      await menu(wrapper).find('.level-filter [data-value="4a"]').trigger('click')
+      expect(updates.at(-1)[f.level].constraints[0]).toEqual({ value: '4a', matchMode: 'equals' })
+
+      await wrapper.setProps({ filters: filtersWith('4a') })
+      const chip = menu(wrapper).find('.level-filter [data-value="4a"]')
+      expect(chip.attributes('aria-pressed')).toBe('true')
+      // Clicking the chip that is on clears the filter.
+      await chip.trigger('click')
+      expect(updates.at(-1)[f.level].constraints[0].value).toBe(null)
+    })
+
+    it("sorts on the level's rank, and turns the sort off", async () => {
+      const wrapper = mountLedger(scope, { props: { hasLevels: true } })
+      await menu(wrapper).find('.level-sort [data-value="1"]').trigger('click')
+      expect(wrapper.emitted('update:sortField').at(-1)).toEqual([f.levelSort])
+      expect(wrapper.emitted('update:sortOrder').at(-1)).toEqual([1])
+
+      await wrapper.setProps({ sortField: f.levelSort, sortOrder: -1 })
+      const weakest = menu(wrapper).find('.level-sort [data-value="-1"]')
+      expect(weakest.attributes('aria-pressed')).toBe('true')
+      await weakest.trigger('click')
+      expect(wrapper.emitted('update:sortField').at(-1)).toEqual([null])
+      expect(wrapper.emitted('update:sortOrder').at(-1)).toEqual([null])
+    })
+
+    it('shows no sort as on while another column sorts', () => {
+      const wrapper = mountLedger(scope, {
+        props: { hasLevels: true, sortField: f.mz, sortOrder: 1 }
+      })
+      expect(menu(wrapper).findAll('.level-sort [aria-pressed="true"]')).toHaveLength(0)
+    })
   })
 
   it('shows the compact intensity and its bar, the exact number on hover', () => {

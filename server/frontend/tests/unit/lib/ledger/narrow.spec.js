@@ -2,34 +2,14 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-// Read as text: the test run compiles no CSS.
-const rules = readFileSync(
-  join(import.meta.dirname, '..', '..', '..', '..', 'src', 'lib', 'ledger', 'narrow.css'),
-  'utf8'
-)
+import { hiddenAt, parseNarrowRules } from './narrowRules.js'
 
 // The ledger at narrow widths (docs/dev/assignment_ledger_and_card.md, section
-// 3.3): a container query drops the level, then the samples, then the batch's
-// badges, then the intensity's bar. jsdom evaluates no container query, so
-// these read the rules the ledger loads and work out what each width hides.
-
-/** The rules as `{ maxWidth, selector }`, each hiding one selector. */
-function parse(css) {
-  const found = []
-  const query = /@container\s+ledger\s*\(max-width:\s*(\d+)px\)\s*\{([^@]*?\})\s*\}/g
-  for (const [, width, body] of css.matchAll(query)) {
-    for (const [, selector] of body.matchAll(/([^{}]+)\{\s*display:\s*none;\s*\}/g)) {
-      found.push({ maxWidth: Number(width), selector: selector.trim() })
-    }
-  }
-  return found
-}
-
-/** The cells hidden in a ledger of `width` px. */
-const hiddenAt = (width) =>
-  parse(rules)
-    .filter((rule) => width <= rule.maxWidth)
-    .map((rule) => rule.selector)
+// 3.3): a container query drops the Level column, then the samples, then the
+// batch's badges, then the intensity's bar, and the level's chips show in the
+// Tier cell only where the Level column is gone. jsdom evaluates no container
+// query, so these read the rules the ledger loads and work out what each width
+// hides.
 
 const LEDGER = readFileSync(
   join(import.meta.dirname, '..', '..', '..', '..', 'src', 'lib', 'ledger', 'AssignmentLedger.vue'),
@@ -44,13 +24,15 @@ describe('the narrow ledger', () => {
     expect(LEDGER).toMatch(/\.ledger \{[^}]*container: ledger \/ inline-size;/)
   })
 
-  it('names the ledger as the container it measures', () => {
-    expect(parse(rules)).toHaveLength(4)
+  it('reads every rule it holds', () => {
+    expect(parseNarrowRules()).toHaveLength(5)
   })
 
-  it('drops the level first, then the samples, then the badges, then the bar', () => {
-    const byWidth = [...parse(rules)].sort((a, b) => b.maxWidth - a.maxWidth)
-    expect(byWidth.map((rule) => rule.selector)).toEqual([
+  it('drops the Level column first, then the samples, then the badges, then the bar', () => {
+    const drops = parseNarrowRules()
+      .filter((rule) => rule.maxWidth != null)
+      .sort((a, b) => b.maxWidth - a.maxWidth)
+    expect(drops.map((rule) => rule.selector)).toEqual([
       '.ledger .col-level',
       '.ledger .col-samples',
       '.ledger .col-across',
@@ -58,8 +40,22 @@ describe('the narrow ledger', () => {
     ])
   })
 
+  // The level moves rather than drops: its chips in the Tier cell are hidden
+  // at exactly the widths that keep the Level column, and shown at exactly the
+  // widths that drop it, so a row carries the level once at every width.
+  it('shows the level in the Tier cell exactly where the Level column is gone', () => {
+    for (let width = 300; width <= 1600; width++) {
+      const hidden = hiddenAt(width)
+      const column = hidden.includes('.ledger .col-level')
+      const inTier = hidden.includes('.ledger .tier-level')
+      expect(column !== inTier, `at ${width} px`).toBe(true)
+    }
+  })
+
   it('keeps every cell at a wide width, and drops them in order as it narrows', () => {
-    expect(hiddenAt(1200)).toEqual([])
+    expect(hiddenAt(1200)).toEqual(['.ledger .tier-level'])
+    expect(hiddenAt(901)).toEqual(['.ledger .tier-level'])
+    expect(hiddenAt(900)).toEqual(['.ledger .col-level'])
     expect(hiddenAt(850)).toEqual(['.ledger .col-level'])
     expect(hiddenAt(640)).toEqual([
       '.ledger .col-level',
