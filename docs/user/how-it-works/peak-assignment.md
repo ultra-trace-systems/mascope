@@ -982,7 +982,8 @@ it list what the row kept as well as what holds it. The line names:
 - the rules that cap the row, each with the isotope line or the number it turned on;
 - the evidence band, when fit × plausibility is under the assigned band: a fit of 90 % at
   a plausibility of 70 % is evidence of 63 %, under a band of 75 %;
-- for an isotopologue, the rules that capped its M0 (*Held at candidate with its M0*);
+- for an isotopologue no rule of its own caps, what holds its M0, its evidence band with
+  the M0's evidence and the rules that capped it (*Held at candidate with its M0*);
 - the batch's decision, for a listed compound the batch put at *candidate*.
 
 A row the run judged that names nothing holding it reads *no reason recorded*. That is
