@@ -297,6 +297,23 @@ def _seeded_chain(
     return rescore
 
 
+async def _known_set_as_read(
+    sample, match_params, mechanisms, _claimed, *, known_window, resolution
+):
+    """``stage_a_pass._read_known_set`` through ``sample_inputs``' own reads,
+    which the tests stand in for, with no reference ion left out."""
+    from mascope_backend.api.new.peak_assignments import sample_inputs
+
+    frame = await sample_inputs._fetch_known_isotopes(
+        sample,
+        match_params.isotope_abundance_threshold,
+        *mechanisms,
+        known_window=known_window,
+        resolution=resolution,
+    )
+    return sample_inputs.StageAKnown(frame, pd.DataFrame(), {})
+
+
 def _patches(
     recorder: _Recorder,
     peaks: pd.DataFrame,
@@ -336,6 +353,13 @@ def _patches(
             "mascope_backend.api.new.peak_assignments.sample_inputs._fetch_reference_known_isotopes",
             new_callable=AsyncMock,
             return_value=pd.DataFrame(),
+        ),
+        # The known set as a run reads it, with no reference ion left out:
+        # the frames above stand in for the lists, and the sample has no
+        # peak store to read where its lines reach.
+        "known_set": patch(
+            "mascope_backend.api.new.peak_assignments.stage_a_pass._read_known_set",
+            new=_known_set_as_read,
         ),
         # The matcher already ran upstream in production; hand back the rows.
         "matcher": patch(

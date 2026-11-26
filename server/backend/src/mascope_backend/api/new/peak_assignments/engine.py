@@ -1533,6 +1533,24 @@ def base_snr_by_ion(references: pd.DataFrame) -> dict[str, float]:
     }
 
 
+def reference_names_by_formula(match_isotope_df: pd.DataFrame) -> dict[str, list]:
+    """The reference lists' names for each formula of a Stage A frame, by
+    :func:`formula_identity`: the first reference row's of the formula.
+
+    :param match_isotope_df: The frame, or the reference rows to read.
+    :return: The names by formula identity.
+    """
+    if REFERENCE_IDENTITIES_COL not in match_isotope_df.columns:
+        return {}
+    rows = match_isotope_df[reference_mirror_mask(match_isotope_df)]
+    return {
+        str(formula): group.iloc[0][REFERENCE_IDENTITIES_COL]
+        for formula, group in rows.groupby(
+            rows["target_compound_formula"].map(formula_identity)
+        )
+    }
+
+
 def invert_matches_to_peak_assignments(
     match_isotope_df: pd.DataFrame,
     sample_item_id: str,
@@ -1542,6 +1560,7 @@ def invert_matches_to_peak_assignments(
     max_alternatives: int = 5,
     instrument: str | None = None,
     calibration: "Calibration | None | object" = _CALIBRATION_UNSET,
+    reference_identities: dict[str, list] | None = None,
 ) -> list[dict]:
     """Invert target-first match results into per-peak assignments (Stage A).
 
@@ -1575,6 +1594,9 @@ def invert_matches_to_peak_assignments(
         falls back to the in-code registry via ``calibration_for(instrument)``; pass ``None``
         explicitly to force uncalibrated. Its ``corroboration_weights`` drive the P3 adduct
         co-occurrence fold-in on ``p_correct``.
+    :param reference_identities: The lists' names by formula
+        (:func:`reference_names_by_formula`), or None to read them off
+        the frame.
     :return: One assignment dict per matched peak, ready for bulk insert.
     """
     if match_isotope_df.empty:
@@ -1605,15 +1627,8 @@ def invert_matches_to_peak_assignments(
     # target_compound_id while still surfacing the known-compound name(s) that
     # share its formula (the convergence precedence: target owns the FK, reference
     # identity rides alongside).
-    reference_identities_by_formula: dict[str, list] = {}
-    if REFERENCE_IDENTITIES_COL in match_isotope_df.columns:
-        reference_rows = match_isotope_df[reference_mirror_mask(match_isotope_df)]
-        for formula, group in reference_rows.groupby(
-            reference_rows["target_compound_formula"].map(formula_identity)
-        ):
-            reference_identities_by_formula[str(formula)] = group.iloc[0][
-                REFERENCE_IDENTITIES_COL
-            ]
+    if reference_identities is None:
+        reference_identities = reference_names_by_formula(match_isotope_df)
 
     # Reference isotope per ion - the monoisotopic isotopologue, the M0 an isotope
     # table counts from - used for role attribution and isotope labelling. For a
@@ -1735,7 +1750,7 @@ def invert_matches_to_peak_assignments(
             {
                 **_alternative_dict(
                     row,
-                    reference_identities_by_formula,
+                    reference_identities,
                     main_isotope_ids,
                     main_mz_by_ion,
                 ),
@@ -1750,9 +1765,7 @@ def invert_matches_to_peak_assignments(
         # FKs. Separately, any winner (target or reference) whose *formula* is in the
         # reference mirror inherits those identities in provenance.
         winner_is_reference_row = _row_reference_identities(winner) is not None
-        formula_identities = reference_identities_by_formula.get(
-            str(winner["_formula_key"])
-        )
+        formula_identities = reference_identities.get(str(winner["_formula_key"]))
         is_main = winner["target_isotope_id"] in main_isotope_ids
         isotope_label = (
             "M0"

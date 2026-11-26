@@ -156,7 +156,7 @@ from mascope_backend.api.new.peak_assignments.seeded_scoring import (
     score_seeds,
 )
 from mascope_backend.api.new.peak_assignments.stage_a_pass import (
-    ConfidenceCurve,
+    StageAResult,
     _stage_a_first_pass,
 )
 from mascope_backend.api.new.peak_assignments.tiering import LineGate, ask_absent_line
@@ -179,7 +179,7 @@ from mascope_tools.composition.envelope_tolerance import (
 )
 from mascope_tools.composition.finder import assign_compositions
 from mascope_tools.composition.known_window import KnownWindow
-from mascope_tools.composition.mass_accuracy import ReagentOffset, SampleMassAccuracy
+from mascope_tools.composition.mass_accuracy import ReagentOffset
 from mascope_tools.composition.measurement_model import MeasurementModel
 
 
@@ -544,6 +544,7 @@ class RunContext:
     # -- propose
     stage_a: list[dict] = field(default_factory=list)
     stage_a_scored: pd.DataFrame | None = None
+    stage_a_absent: pd.DataFrame | None = None
     confidence_calibration: dict | None = None
     confidence_curve: Any = None
     mass_accuracy: Any = None
@@ -867,6 +868,7 @@ async def _propose_known_set(ctx: RunContext) -> None:
         ctx.listed_formulas,
         ctx.stage_a_scored,
         ctx.confidence_curve,
+        ctx.stage_a_absent,
     ) = await _stage_a_assignments(
         sample,
         ctx.config,
@@ -1761,7 +1763,8 @@ def _judging_for(ctx: RunContext) -> judging_loop.Judging:
     refits = ctx.path.measurement is Measurement.FITTED or (
         ctx.path.measurement is Measurement.RECORDED and not ctx.model_recorded
     )
-    stage_a_scored, seeded_frame = ctx.stage_a_scored, ctx.seeded_frame
+    # What the re-score reads, as the stages left it here.
+    stage_a = (ctx.stage_a_scored, ctx.seeded_frame, ctx.stage_a_absent)
     return judging_loop.Judging(
         ctx.stage_a + ctx.stage_b,
         model=ctx.model,
@@ -1778,9 +1781,7 @@ def _judging_for(ctx: RunContext) -> judging_loop.Judging:
         resolution=ctx.resolution,
         refits=refits,
         rescore=(
-            (lambda model: judging_loop.fits_at(model, stage_a_scored, seeded_frame))
-            if refits
-            else None
+            (lambda model: judging_loop.fits_at(model, *stage_a)) if refits else None
         ),
         curve=ctx.confidence_curve,
         floors=ctx.floors,
@@ -1794,8 +1795,8 @@ def _judging_for(ctx: RunContext) -> judging_loop.Judging:
         nox_skeleton=resolved_profile.nox_skeleton,
         fragment_ladders=fragment_ladders_for(resolved_profile.profile.name),
         rival_frames=rival_set.RivalFrames(
-            stage_a_scored,
-            (seeded_frame, None if ctx.shortlist is None else ctx.shortlist[0]),
+            ctx.stage_a_scored,
+            (ctx.seeded_frame, None if ctx.shortlist is None else ctx.shortlist[0]),
             base=ctx.model,
             shortlists=None if ctx.shortlist is None else ctx.shortlist[1],
         ),
@@ -2269,15 +2270,7 @@ async def _stage_a_assignments(
     inherited_model: MeasurementModel | None = None,
     inherited_envelope: RunEnvelopeFit | None = None,
     resolution: Callable[[float], float] | None | object = RESOLVE_RESOLUTION,
-) -> tuple[
-    list[dict],
-    dict | None,
-    SampleMassAccuracy,
-    RunEnvelopeFit,
-    frozenset[str],
-    pd.DataFrame,
-    ConfidenceCurve | None,
-]:
+) -> StageAResult:
     """Stage A: database-first assignment from the known composition set.
 
     The curated target library plus (when loaded) the reference mirror, matched
@@ -2352,14 +2345,14 @@ async def _stage_a_assignments(
         Stage A first scores at today's numbers, since it is its commits that
         the fit reads, and gates and scores its frame again at the fitted
         tolerance, at the width and offset the first pass measured.
-        And the neutrals the lists it read name, matched or not
+        The neutrals the lists it read name, matched or not
         (:func:`listed_formula_identities`), which corroborate a search row
-        through a secondary channel (``engine.cap_second_channel``).
-        And the gated frame its rows were scored on, which the run
-        scores again at its v2 model where the mass gate's refit takes one
-        (``mass_gate.measure_mass_gate``). And last the curve its rows'
+        through a secondary channel (``engine.cap_second_channel``). The
+        gated frame its rows were scored on, which the run scores again at
+        its v2 model (``mass_gate.measure_mass_gate``), the curve their
         P(correct) was read off, which that re-score reads again
-        (:func:`rescore_rows`); None where the instrument has none.
+        (:func:`rescore_rows`; None where the instrument has none), and the
+        reference ions left out of the frame (``StageAKnown.absent``).
     """
     first = await _stage_a_first_pass(
         sample,
@@ -2389,6 +2382,7 @@ async def _stage_a_assignments(
             first.listed_formulas,
             first.scored,
             first.curve,
+            first.absent,
         )
     # The tolerance is fitted on what Stage A committed, which a sample with no
     # library match has nothing of: it can still take its neighbours' curve,
@@ -2421,6 +2415,7 @@ async def _stage_a_assignments(
         first.listed_formulas,
         scored,
         first.curve,
+        first.absent,
     )
 
 

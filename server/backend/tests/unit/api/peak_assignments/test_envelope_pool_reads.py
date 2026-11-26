@@ -286,7 +286,7 @@ class TestStageAReadsItsNeighboursUnderItsOwnInputs:
                 AsyncMock(return_value=EnvelopeLines()),
             ) as read,
         ):
-            _rows, _, _, envelope, _, _, _ = await pipeline._stage_a_assignments(
+            _rows, _, _, envelope, _, _, _, _ = await pipeline._stage_a_assignments(
                 _neighbour(sample_item_id="si-1"),
                 config,
                 match_params,

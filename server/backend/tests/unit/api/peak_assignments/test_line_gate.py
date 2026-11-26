@@ -29,6 +29,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     score_ions_by_fit,
 )
 from mascope_backend.api.new.peak_assignments.envelope_fit import RunEnvelopeFit
+from mascope_backend.api.new.peak_assignments.sample_inputs import StageAKnown
 from mascope_backend.api.new.peak_assignments.seeded_scoring import (
     gate_and_score,
     gate_lines,
@@ -231,8 +232,10 @@ class TestStageA:
         scored = MagicMock(side_effect=lambda df, **_kwargs: df)
         patches = [
             patch(
-                "mascope_backend.api.new.peak_assignments.stage_a_pass._fetch_known_isotopes",
-                AsyncMock(return_value=self.FRAME.copy()),
+                "mascope_backend.api.new.peak_assignments.stage_a_pass._read_known_set",
+                AsyncMock(
+                    return_value=StageAKnown(self.FRAME.copy(), pd.DataFrame(), {})
+                ),
             ),
             patch(
                 "mascope_backend.api.new.peak_assignments.stage_a_pass.listed_formula_identities",
@@ -380,8 +383,8 @@ class TestStageAMassAccuracy:
         arbitrated = MagicMock(return_value=[])
         with (
             patch(
-                "mascope_backend.api.new.peak_assignments.stage_a_pass._fetch_known_isotopes",
-                AsyncMock(return_value=frame),
+                "mascope_backend.api.new.peak_assignments.stage_a_pass._read_known_set",
+                AsyncMock(return_value=StageAKnown(frame, pd.DataFrame(), {})),
             ),
             patch(
                 "mascope_backend.api.new.peak_assignments.stage_a_pass.listed_formula_identities",
@@ -408,7 +411,7 @@ class TestStageAMassAccuracy:
                 AsyncMock(return_value=fitted),
             ),
         ):
-            _, _, accuracy, _, _, _, _ = await pipeline._stage_a_assignments(
+            _, _, accuracy, _, _, _, _, _ = await pipeline._stage_a_assignments(
                 SimpleNamespace(
                     sample_item_id="si-1", filename="tof-sample.h5", polarity="-"
                 ),

@@ -21,6 +21,7 @@ from mascope_backend.api.new.peak_assignments import pipeline, stage_a_pass
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import SampleMassAccuracy
 from mascope_backend.api.new.peak_assignments.envelope_fit import RunEnvelopeFit
+from mascope_backend.api.new.peak_assignments.sample_inputs import StageAKnown
 from mascope_tools.composition.calibration import Calibration
 from mascope_tools.composition.envelope_tolerance import (
     FORM_CURVE,
@@ -47,8 +48,8 @@ def _first_pass_patches(
 ):
     return [
         patch(
-            "mascope_backend.api.new.peak_assignments.stage_a_pass._fetch_known_isotopes",
-            AsyncMock(return_value=FRAME.copy()),
+            "mascope_backend.api.new.peak_assignments.stage_a_pass._read_known_set",
+            AsyncMock(return_value=StageAKnown(FRAME.copy(), pd.DataFrame(), {})),
         ),
         patch(
             "mascope_backend.api.new.peak_assignments.stage_a_pass.compute_match_isotopes",
@@ -164,6 +165,7 @@ async def test_the_rescore_at_the_fitted_tolerance_arbitrates_off_the_loop():
         listed_formulas=frozenset(),
         assignments_of=_recording(threads, "arbitrate", rescored),
         curve=stage_a_pass.ConfidenceCurve(Calibration(a=1.0, b=0.0), {}),
+        absent=pd.DataFrame({"target_ion_id": ["ion-2"]}),
     )
     fitted = RunEnvelopeFit(
         fit_envelope_tolerance(
@@ -188,7 +190,7 @@ async def test_the_rescore_at_the_fitted_tolerance_arbitrates_off_the_loop():
             _recording(threads, "fit", lambda df, *_: df),
         ),
     ):
-        rows, _, _, envelope, _, _, curve = await pipeline._stage_a_assignments(
+        rows, _, _, envelope, _, _, curve, absent = await pipeline._stage_a_assignments(
             SimpleNamespace(sample_item_id="si-1", filename="orbi-sample.raw"),
             PeakAssignmentConfig(),
             SimpleNamespace(isotope_abundance_threshold=0.01),
@@ -202,5 +204,7 @@ async def test_the_rescore_at_the_fitted_tolerance_arbitrates_off_the_loop():
     assert (rows, envelope) == (rescored, fitted)
     # The curve the rows' P(correct) was read off goes on to the run.
     assert curve is first.curve
+    # And the reference ions it left out, which the run's re-score reads.
+    assert absent is first.absent
     assert threads["fit"] is not threading.main_thread()
     assert threads["arbitrate"] is not threading.main_thread()

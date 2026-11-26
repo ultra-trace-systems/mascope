@@ -822,3 +822,116 @@ def ions_at_file(
         .drop(columns=list(_LINE_COLUMNS), errors="ignore")
         .reset_index(drop=True)
     )
+
+
+#: How far apart, in FWHM, two fine lines of one ion may sit and still be
+#: read as one stretch of it by :func:`ions_within_reach`. The line model
+#: merges lines less than one FWHM apart (``line_model.resolve_lines``), so
+#: one would do where the resolving power read at the ion's fine lines is
+#: the one it reads at a merged line's centre; two leaves room for a centre
+#: whose resolving power is down to half of that, as on the far side of a
+#: stitched file's run boundary.
+REACH_GAP_FWHM = 2.0
+
+#: The rounding slack of :func:`ions_within_reach`'s windows, relative: a
+#: peak on a window's edge is in it, however the matcher's ppm rounds.
+_REACH_SLACK = 1e-9
+
+
+def _fine_widths(mz: np.ndarray, power: Callable[[float], float] | None) -> np.ndarray:
+    """Each fine line's FWHM at the resolving power, 0 where there is none
+    or it cannot be read: such a line reaches no other line."""
+    if power is None or not mz.size:
+        return np.zeros(mz.shape)
+    try:
+        resolving = np.broadcast_to(np.asarray(power(mz), dtype=float), mz.shape)
+    except (TypeError, ValueError, ArithmeticError):
+        resolving = np.array([_resolving_power_at(power, value) for value in mz])
+    with np.errstate(divide="ignore", invalid="ignore"):
+        widths = mz / resolving
+    return np.where(np.isfinite(widths) & (widths > 0), widths, 0.0)
+
+
+def _resolving_power_at(power: Callable[[float], float], mz: float) -> float:
+    try:
+        return float(power(float(mz)))
+    except (TypeError, ValueError, ArithmeticError):
+        return float("nan")
+
+
+def ions_within_reach(
+    fine: pd.DataFrame,
+    file_lines: FileLines,
+    peak_mzs: np.ndarray,
+    tolerance_ppm: float,
+    *,
+    near_mzs: np.ndarray | None = None,
+    near_window: float = 0.0,
+) -> np.ndarray:
+    """Which ions of a frame of fine lines may have a line at the file within
+    reach of a peak, read before any line is resolved.
+
+    A line :func:`lines_at_file` resolves sits within its members' span: at
+    their abundance-weighted centre, or on a file read by heights at its
+    dominant member. Its members are one stretch of the ion's fine lines, no
+    two neighbours of which are more than one FWHM apart: the line model
+    takes into one line only lines less than one FWHM from it, the first step
+    half a FWHM from its brightest member (``line_model.resolve_lines``). So
+    the ion's fine lines are cut into stretches wherever two neighbours are
+    more than :data:`REACH_GAP_FWHM` times the widest FWHM read at them apart,
+    and every line the ion resolves to sits within one stretch. An ion keeps
+    a line within ``tolerance_ppm`` of a peak only where some peak lies within
+    ``tolerance_ppm`` of one of its stretches, and the ions that do not are the
+    ones this says False for. ``near_mzs`` and ``near_window`` ask the same of
+    a second set of peaks at a window in Da.
+
+    :param fine: One row per fine line: ``target_ion_id`` and ``mz``.
+    :param file_lines: The file the lines would be resolved at.
+    :param peak_mzs: The peaks a line may be matched to, on the axis the
+        lines are read on.
+    :param tolerance_ppm: The match window, either side, in ppm of the line's
+        m/z.
+    :param near_mzs: A second set of peaks, or None for none.
+    :param near_window: Its window, either side, in Da.
+    :return: Per row of ``fine``, in its order, whether its ion may reach a
+        peak.
+    """
+    if fine.empty:
+        return np.zeros(0, dtype=bool)
+    ordinal, ions = pd.factorize(fine["target_ion_id"])
+    mz = fine["mz"].to_numpy(dtype=float)
+    order = np.lexsort((mz, ordinal))
+    mz, of_ion = mz[order], ordinal[order]
+    widths = _fine_widths(mz, file_lines.resolving_power())
+    widest = np.zeros(len(ions))
+    np.maximum.at(widest, of_ion, widths)
+    starts = np.r_[
+        True,
+        (of_ion[1:] != of_ion[:-1])
+        | (np.diff(mz) > REACH_GAP_FWHM * widest[of_ion[1:]]),
+    ]
+    first = np.flatnonzero(starts)
+    low, high = mz[first], mz[np.r_[first[1:] - 1, mz.size - 1]]
+    slack = tolerance_ppm * 1e-6 + _REACH_SLACK
+    reached = _any_within(
+        np.sort(np.asarray(peak_mzs, dtype=float)),
+        low * (1 - slack),
+        high * (1 + slack),
+    )
+    if near_mzs is not None and len(near_mzs):
+        reach = near_window + _REACH_SLACK * np.abs(high)
+        reached |= _any_within(
+            np.sort(np.asarray(near_mzs, dtype=float)), low - reach, high + reach
+        )
+    by_ion = np.zeros(len(ions), dtype=bool)
+    np.logical_or.at(by_ion, of_ion[first], reached)
+    return by_ion[ordinal]
+
+
+def _any_within(
+    sorted_mzs: np.ndarray, low: np.ndarray, high: np.ndarray
+) -> np.ndarray:
+    """Per window, whether a value of ``sorted_mzs`` lies in ``[low, high]``."""
+    return np.searchsorted(sorted_mzs, low, side="left") < np.searchsorted(
+        sorted_mzs, high, side="right"
+    )

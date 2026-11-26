@@ -772,6 +772,7 @@ def fits_at(
     model: MeasurementModel,
     stage_a: pd.DataFrame | None,
     seeded: SeededFrame | None,
+    absent: pd.DataFrame | None = None,
 ) -> dict[str, dict[tuple[str, str], float]]:
     """Every scored reading's fit at a model, from the frames the run scored
     its rows on: Stage A's and the seeded re-score's.
@@ -785,6 +786,10 @@ def fits_at(
     :param model: The model to score at.
     :param stage_a: Stage A's gated, scored frame, or None.
     :param seeded: The seeded re-score's frame, or None.
+    :param absent: The reference ions Stage A left out of its frame
+        (``sample_inputs.StageAKnown``), or None. No line of one reaches a
+        peak, so its base line is absent and it scores 0 at any model
+        (``match_score_v2.ion_scores_v2``), as it would in the frame.
     :return: Fit by reading, under :data:`SOURCE_DATABASE` for Stage A's
         frame and :data:`SOURCE_UNTARGETED` for the re-score's.
     """
@@ -808,6 +813,14 @@ def fits_at(
             if formula is None or mechanism_id is None or pd.isna(fit):
                 continue
             fits.setdefault((str(formula), str(mechanism_id)), float(fit))
+    if absent is not None and not absent.empty:
+        for formula, mechanism_id in zip(
+            absent["target_compound_formula"],
+            absent["ionization_mechanism_id"],
+            strict=True,
+        ):
+            if formula is not None and mechanism_id is not None:
+                fits.setdefault((str(formula), str(mechanism_id)), 0.0)
     if seeded is not None:
         scores = score_frame_at(seeded.scored, model)
         fit_by_ion: dict[str, float] = {}
