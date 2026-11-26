@@ -27,7 +27,9 @@ const {
   focusIsotopePeak,
   previewMissingLine,
   isPreviewedLine,
-  isotopeMeasure
+  isotopeMeasure,
+  ledgerServed,
+  LEDGER_ISOTOPE_NOTE
 } = useCard()
 
 // A not-found line's hover text: why it reads so, and what a click does.
@@ -202,11 +204,28 @@ const STICK = 2.4
           <span class="iso-rel">{{ formatRel(missingRel(line)) }}</span>
         </div>
       </div>
+      <!-- A row the batch ledger serves: its numbers are measured for the view,
+           and no run asked which lines it expected, so none reads not found. -->
+      <div v-if="ledgerServed" class="ledger-note" data-testid="iso-ledger-note">
+        <span class="pi ph ph-stack" aria-hidden="true" />
+        {{ LEDGER_ISOTOPE_NOTE }}
+      </div>
     </div>
   </CardSection>
 </template>
 
 <style scoped>
+.ledger-note {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  margin-top: 0.3rem;
+  color: var(--p-text-muted-color);
+  font-size: var(--card-text-sm);
+}
+.ledger-note .ph {
+  color: var(--state-info);
+}
 .isotopologues {
   display: flex;
   flex-direction: column;

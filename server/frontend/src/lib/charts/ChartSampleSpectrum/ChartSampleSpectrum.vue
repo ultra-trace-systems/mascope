@@ -43,6 +43,12 @@ const spectrumHelp = peakAssignmentEnabled
         Click a peak to focus it: the view zooms in, the inspector shows its
         assignment, and the predicted isotope pattern is drawn in crimson with
         circles at the expected peak heights.
+        </p>
+        <p>
+        A sample the batch ledger serves, with no run of its own, has no
+        stored errors to place them by: its circles appear once the inspector
+        has measured the pattern for the view, and their hover reads
+        <i>predicted, not measured in this sample by a run of its own</i>.
         </p>`,
       doc: app.ui.help.docUrl('how-it-works/peak-assignment/#confidence-tiers')
     }

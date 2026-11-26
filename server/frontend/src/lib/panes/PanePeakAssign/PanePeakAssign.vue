@@ -6,6 +6,7 @@ import CardFindFormulas from './card/CardFindFormulas.vue'
 import CardIsotopePattern from './card/CardIsotopePattern.vue'
 import CardLevel from './card/CardLevel.vue'
 import CardMeasurements from './card/CardMeasurements.vue'
+import CardNoOwnRun from './card/CardNoOwnRun.vue'
 import CardNotes from './card/CardNotes.vue'
 import CardRunNotice from './card/CardRunNotice.vue'
 import CardSkeleton from './card/CardSkeleton.vue'
@@ -21,6 +22,7 @@ import { provideCard } from './card/useCard.js'
 // foot. Each part is a component under card/, and all of them read the one
 // model this file makes (card/useAssignmentCard.js). Its states are section
 // 4.2's: a notice under the answer on a run that is not the sample's result,
+// a note there on a sample the batch ledger serves with no run of its own,
 // skeletons while the detail loads, and a card of its own for a focused peak
 // with no ledger row.
 
@@ -61,6 +63,7 @@ const { app, focusedAssignment, peakSummary, showWhy, showMeasurements, loading,
     <section v-if="focusedAssignment" class="inspector">
       <CardAnswer />
       <CardRunNotice />
+      <CardNoOwnRun />
       <CardSkeleton v-if="loading" />
       <template v-else>
         <CardWhy v-if="showWhy" />
@@ -84,6 +87,7 @@ const { app, focusedAssignment, peakSummary, showWhy, showMeasurements, loading,
         <div class="insp-sub" data-testid="peak-summary">{{ peakSummary }}</div>
       </div>
       <CardRunNotice />
+      <CardNoOwnRun />
       <CardFindFormulas />
     </section>
     <div v-else class="center no-peak">

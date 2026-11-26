@@ -61,6 +61,11 @@ const curate = vi.fn(() => Promise.resolve(null))
 const stepTo = vi.fn(() => Promise.resolve('peak'))
 const loadDetail = vi.fn(() => Promise.resolve())
 
+// The browser's paradigm switch and the Assign sample launcher, which the
+// card's own Assign sample sets: one object each, so a test reads them back.
+const matchMode = reactive({ mode: 'targets' })
+const launcher = reactive({ configVisible: false })
+
 // What a test sets, read by the app through getters so a change after the
 // mount reaches the card's computeds.
 const state = reactive({})
@@ -151,6 +156,7 @@ function makeApp() {
       ionization: { mechanism: { list: [] } }
     },
     ui: {
+      matchMode,
       help: { set: vi.fn(), docUrl: (path = '') => `/docs/${path}` }
     }
   }
@@ -165,6 +171,9 @@ vi.mock('@/lib/panes/PanePeakAssign/preview.js', async () => {
   return { usePreview: () => store }
 })
 
+vi.mock('@/lib/panes/PaneBrowserMatch/stores/assignmentLauncher.js', () => ({
+  useAssignmentLauncher: () => launcher
+}))
 vi.mock('@/lib/panes/PanePeakAssign/stores/batchPeakCuration.js', () => ({
   useBatchPeakCuration: () => ({ curating: false, curate: vi.fn(), release })
 }))
@@ -233,6 +242,8 @@ const buttonsLabelled = (wrapper, label) =>
 
 beforeEach(() => {
   reset()
+  matchMode.mode = 'targets'
+  launcher.configVisible = false
   loadDetail.mockImplementation(() => Promise.resolve())
 })
 afterEach(() => vi.clearAllMocks())
@@ -544,6 +555,138 @@ describe('card states: a focused peak with no ledger row', () => {
     const wrapper = await mountCard()
 
     expect(byTestId(wrapper, 'no-row-line').text()).toBe('No run has assigned this sample yet.')
+  })
+})
+
+describe('card states: a sample with no run of its own', () => {
+  // The batch ledger's run for the sample, and a row it serves: the batch's
+  // formula, tier and fit for the peak, with none of a run's provenance.
+  const LEDGER = {
+    peak_assignment_run_id: 'fold-si-1',
+    sample_item_id: 'si-1',
+    engine: 'batch',
+    status: 'completed',
+    peak_assignment_run_utc_completed: '2026-11-21T10:00:00Z'
+  }
+  const DERIVED = {
+    ...ROW,
+    peak_assignment_id: 'fold-bp-1',
+    peak_assignment_run_id: 'fold-si-1',
+    batch_peak_id: 'bp-1'
+  }
+  const serveFromLedger = (runs = [LEDGER]) => {
+    state.run = LEDGER
+    state.runs = runs
+    state.latest = runs.find((run) => run.status === 'completed') ?? null
+    state.focusedAssignment = DERIVED
+    state.detail = { ...DERIVED, provenance: {}, alternatives: [] }
+  }
+  const NOTES = ['why-ledger-note', 'iso-ledger-note', 'level-ledger-note']
+
+  it('says so under the answer, offers Assign sample, and says why each part is missing', async () => {
+    serveFromLedger()
+    const wrapper = await mountCard()
+
+    const note = byTestId(wrapper, 'no-own-run')
+    expect(note.exists()).toBe(true)
+    expect(byTestId(wrapper, 'no-own-run-text').text()).toBe(
+      "No run of its own: this is the batch's reading for this sample, from the batch ledger."
+    )
+    // Under the answer, in the place of a run notice: a state, not a lock.
+    expect(byTestId(wrapper, 'answer').element.nextElementSibling).toBe(note.element)
+    expect(wrapper.find('.run-notice').exists()).toBe(false)
+
+    expect(byTestId(wrapper, 'why-ledger-note').text()).toContain(
+      "The tier's reasons and the other channels of this neutral come from an assignment run"
+    )
+    expect(byTestId(wrapper, 'iso-ledger-note').text()).toContain(
+      'Lines expected and not found come from an assignment run of the sample.'
+    )
+    expect(byTestId(wrapper, 'level-ledger-note').text()).toBe(
+      'The identification level comes from an assignment run of the sample.'
+    )
+    expect(byTestId(wrapper, 'section-level').text()).toContain('none: no run of this sample')
+    // A verdict can still be recorded on it, as on the sample's own result.
+    expect(buttonsLabelled(wrapper, 'Confirm')[0].attributes('disabled')).toBeUndefined()
+  })
+
+  it("opens the bar's run configuration over the Assignments ledger", async () => {
+    serveFromLedger()
+    const wrapper = await mountCard()
+
+    const assign = byTestId(wrapper, 'no-own-run-assign')
+    expect(assign.text()).toBe('Assign sample')
+    expect(assign.attributes('disabled')).toBeUndefined()
+    await assign.trigger('click')
+    expect(launcher.configVisible).toBe(true)
+    expect(matchMode.mode).toBe('assignments')
+  })
+
+  it('offers a viewer Assign sample disabled, with what would enable it', async () => {
+    serveFromLedger()
+    state.role = 'viewer'
+    const wrapper = await mountCard()
+
+    const assign = byTestId(wrapper, 'no-own-run-assign')
+    expect(assign.attributes('disabled')).toBeDefined()
+    const reason = 'Ask an editor of this workspace to assign the sample'
+    expect(assign.element.parentElement.getAttribute('data-tooltip')).toBe(reason)
+    const described = assign.attributes('aria-describedby')
+    expect(wrapper.find(`[id="${described}"]`).text()).toBe(reason)
+    wrapper.vm.assignSample()
+    expect(launcher.configVisible).toBe(false)
+  })
+
+  it('counts a running run, a failed one and a decoy as no run of its own', async () => {
+    const running = { peak_assignment_run_id: 'run-3', status: 'running' }
+    const failed = { peak_assignment_run_id: 'run-2', status: 'failed' }
+    const decoy = { peak_assignment_run_id: 'run-1', status: 'completed', decoy: 'swap' }
+    serveFromLedger([running, failed, decoy, LEDGER])
+    state.latest = LEDGER
+    const wrapper = await mountCard()
+
+    expect(byTestId(wrapper, 'no-own-run').exists()).toBe(true)
+  })
+
+  it("leaves a sample read on the batch ledger by choice to the ledger's notice", async () => {
+    serveFromLedger([RUN_NEW, LEDGER])
+    const wrapper = await mountCard()
+
+    expect(byTestId(wrapper, 'no-own-run').exists()).toBe(false)
+    expect(byTestId(wrapper, 'run-notice-ledger').exists()).toBe(true)
+    // The row is still the ledger's: each missing part still says why.
+    for (const id of NOTES) expect(byTestId(wrapper, id).exists()).toBe(true)
+  })
+
+  it('shows none of it on a sample read on its own run', async () => {
+    state.focusedAssignment = { ...ROW }
+    const wrapper = await mountCard()
+
+    expect(byTestId(wrapper, 'no-own-run').exists()).toBe(false)
+    expect(byTestId(wrapper, 'no-own-run-assign').exists()).toBe(false)
+    for (const id of NOTES) expect(byTestId(wrapper, id).exists()).toBe(false)
+    expect(byTestId(wrapper, 'section-isotopes').exists()).toBe(true)
+  })
+
+  it("says nothing of the ledger on the rows of the sample's first run, still running", async () => {
+    const running = { peak_assignment_run_id: 'run-1', sample_item_id: 'si-1', status: 'running' }
+    state.run = running
+    state.runs = [running]
+    state.latest = null
+    state.focusedAssignment = { ...ROW, peak_assignment_run_id: 'run-1' }
+    const wrapper = await mountCard()
+
+    expect(byTestId(wrapper, 'no-own-run').exists()).toBe(false)
+    for (const id of NOTES) expect(byTestId(wrapper, id).exists()).toBe(false)
+  })
+
+  it('says so on the card of a peak the batch ledger has no row for', async () => {
+    serveFromLedger()
+    state.focusedAssignment = null
+    const wrapper = await mountCard()
+
+    const card = byTestId(wrapper, 'no-row-card')
+    expect(card.element.contains(byTestId(wrapper, 'no-own-run').element)).toBe(true)
   })
 })
 

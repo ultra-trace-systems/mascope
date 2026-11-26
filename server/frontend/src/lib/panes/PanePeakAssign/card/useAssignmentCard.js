@@ -25,6 +25,7 @@ import { sourceLabel } from '@/lib/assignmentSources'
 import { EVIDENCE_LEVELS, VERDICT_META, claimCandidates, claimStatement } from '@/lib/verification'
 import { useBatchPeakJump } from '@/lib/panes/PaneBrowserMatch/stores/batchPeakJump.js'
 import { useBatchChartSelection } from '@/lib/panes/PaneBrowserMatch/stores/batchChartSelection.js'
+import { useAssignmentLauncher } from '@/lib/panes/PaneBrowserMatch/stores/assignmentLauncher.js'
 import { useLedgerLensStore } from '@/lib/ledger/useLedgerLens.js'
 import { useBatchPeakCuration } from '../stores/batchPeakCuration.js'
 import { usePreview } from '../preview.js'
@@ -1002,6 +1003,52 @@ export function useAssignmentCard({ showSearch }) {
     'Arbitration confidence comes from an assignment run of this sample, which weighs the ' +
     "peak's candidates against each other; a row served from the batch ledger carries one " +
     'identity and no such contest'
+
+  // --- A sample with no run of its own -----------------------------------------
+  // A sample the batch ledger serves, with no completed run of its own: its card
+  // reads what the batch holds for each peak, and the parts a run fills - the
+  // tier's reasons, the other channels of the neutral, the level, the lines the
+  // run expected and did not find - are not there. The card says so once under
+  // the answer, with the action that fills them, and each part where it would
+  // be (docs/dev/assignment_ledger_and_card.md, section 4.2). A sample that has
+  // a run of its own, read on the batch ledger by choice, gets the ledger's
+  // read-only notice instead (runNotice), which says how to go back to it.
+  // Nothing is borrowed from the batch's other samples to stand in for them.
+  const noOwnRun = computed(
+    () =>
+      derivedRun.value &&
+      !(app.data.peakAssignment.run?.list ?? []).some(
+        (run) => run.engine !== 'batch' && !run.decoy && run.status === 'completed'
+      )
+  )
+  const NO_OWN_RUN_TEXT =
+    "No run of its own: this is the batch's reading for this sample, from the batch ledger."
+  const NO_OWN_RUN_TOOLTIP =
+    'The formula, ion, tier and fit are what the batch holds for this peak in this sample. ' +
+    "The tier's reasons, the other channels of the neutral, the identification level and " +
+    'the isotope lines not found come from an assignment run of the sample. Assign sample ' +
+    'runs one.'
+  // The bar's Assign sample needs an editor (the server answers a viewer 403);
+  // the reason is written as what enables it.
+  const assignRefusal = computed(() =>
+    canEdit.value ? '' : 'Ask an editor of this workspace to assign the sample'
+  )
+  // The same action as the bar's: the run configuration, which the ledger owns,
+  // opens over the Assignments ledger, so the browser switches to it first.
+  function assignSample() {
+    if (assignRefusal.value) return
+    app.ui.matchMode.mode = 'assignments'
+    useAssignmentLauncher().configVisible = true
+  }
+  // Where each missing part would be. A row the ledger serves carries none of
+  // them whether or not the sample also has a run, so these follow the row.
+  const LEDGER_WHY_NOTE =
+    "The tier's reasons and the other channels of this neutral come from an assignment run " +
+    'of the sample.'
+  const LEDGER_ISOTOPE_NOTE =
+    "Measured now against this sample's peaks. Lines expected and not found come from an " +
+    'assignment run of the sample.'
+  const LEDGER_LEVEL_NOTE = 'The identification level comes from an assignment run of the sample.'
 
   // --- Measuring a batch identity before it is pinned (step 3.4c) ------------
   // A derived row's alternatives are the batch peak's other identities, each
@@ -2024,6 +2071,14 @@ export function useAssignmentCard({ showSearch }) {
     derivedRun,
     ledgerServed,
     LEDGER_CONFIDENCE_TOOLTIP,
+    noOwnRun,
+    NO_OWN_RUN_TEXT,
+    NO_OWN_RUN_TOOLTIP,
+    assignRefusal,
+    assignSample,
+    LEDGER_WHY_NOTE,
+    LEDGER_ISOTOPE_NOTE,
+    LEDGER_LEVEL_NOTE,
     peakStore,
     sampleBatchId,
     derivedCandidates,
