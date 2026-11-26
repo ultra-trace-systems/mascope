@@ -34,6 +34,7 @@ from mascope_tools.composition.heuristic_filter import (
     SAME_ION_ALTERNATIVES,
     apply_heuristic_rules,
     complete_same_ion_family,
+    elect_same_ion_families,
     formula_plausibility,
     match_isotopic_pattern,
     neutral_is_closed_shell,
@@ -792,13 +793,12 @@ def _score_reading(
             or neutral_is_closed_shell(str(candidate.get("formula") or ""))
         )
     ]
-    # The candidates the scorer would keep for this peak, with the reading among
-    # them whatever its mass error: without it there is nothing to count around.
-    grid_candidates.sort(
-        key=lambda candidate: abs(float(candidate.get("composition_error_ppm") or 0.0))
-    )
+    # The nearest ions, each elected from its splits as the untargeted search's
+    # are, with the reading among them whatever its mass error.
+    hypotheses = elect_same_ion_families(grid_candidates)
+    hypotheses.sort(key=lambda c: abs(float(c.get("composition_error_ppm") or 0.0)))
     scored, isotopes = match_isotopic_pattern(
-        [own["candidate"], *grid_candidates[: ISOTOPE_CANDIDATE_LIMIT - 1]],
+        [own["candidate"], *hypotheses[: ISOTOPE_CANDIDATE_LIMIT - 1]],
         peaks_df,
         scoring,
     )

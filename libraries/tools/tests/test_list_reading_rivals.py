@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from mascope_tools.composition import finder, utils
 from mascope_tools.composition.arbitration import candidate_density, unseparated
 from mascope_tools.composition.envelope_tolerance import EnvelopeTolerance
 from mascope_tools.composition.finder import (
@@ -29,6 +30,7 @@ from mascope_tools.composition.finder import (
     rivals_of_readings,
 )
 from mascope_tools.composition.heuristic_filter import (
+    ISOTOPE_CANDIDATE_LIMIT,
     PATTERN_BASE_SNR,
     PATTERN_REQUIRED_LINES,
     formula_plausibility,
@@ -171,8 +173,9 @@ class TestTheUnscoredCandidates:
     """The grid scores 64 candidates a peak, nearest in mass first; the ions
     it did not score are counted, as rivals whose fit nothing measured."""
 
-    def test_a_window_past_the_limit_counts_the_ions_it_left(self):
-        (found,) = _readings_peak(
+    @staticmethod
+    def _dense():
+        return _readings_peak(
             "C20H30O8",
             ionizations="[M+H]+,[M+Na]+,[M+K]+,[M+NH4]+",
             box="C1-40 H0-80 N0-10 O0-20 S0-3",
@@ -180,11 +183,33 @@ class TestTheUnscoredCandidates:
             sigma=5.0,
         )
 
-        # 90 candidates: the reading and the 63 nearest are scored. The 27
-        # past the limit are 22 ions the scoring did not read; the rest split
-        # an ion another candidate makes, and one ion is one hypothesis.
+    def test_a_window_past_the_limit_counts_the_ions_it_left(self):
+        (found,) = self._dense()
+
+        # 90 candidates make 69 ions besides the reading's: the reading and the
+        # 63 nearest ions are scored, and the 6 past the limit are counted.
         assert found.candidates == 90
-        assert found.unscored == 22
+        assert found.unscored == 6
+
+    def test_the_limit_counts_ions_not_their_splits(self, monkeypatch):
+        """MAS-1284 (#3634): the window is elected to one reading per ion
+        before it is cut, as the untargeted search's is, so the splits of one
+        ion spend one of the limit's slots."""
+        handed = []
+        match = finder.match_isotopic_pattern
+        monkeypatch.setattr(
+            finder,
+            "match_isotopic_pattern",
+            lambda candidates, *args: (
+                handed.append(candidates) or match(candidates, *args)
+            ),
+        )
+
+        self._dense()
+
+        [candidates] = handed
+        ions = {utils.ion_identity(c.get("ion")) for c in candidates}
+        assert len(candidates) == len(ions) == ISOTOPE_CANDIDATE_LIMIT
 
     def test_a_window_under_it_leaves_none(self):
         (found,) = _measure(UNRESOLVED)

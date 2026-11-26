@@ -1413,8 +1413,10 @@ flowchart TD
   candidates the run competed for it, each with its fit, and the formula search's rivals
   it could not separate. Those include the formulas whose fit ties the list's and that
   only their chemical plausibility put behind it: plausibility excludes nothing, so they
-  are listed, *open*. The search scores at most 64 formulas a peak, nearest in mass first;
-  where its window held more, the ones it did not score are counted as rivals not tested,
+  are listed, *open*. The search scores at most 64 ions a peak, nearest in mass first,
+  and one reading of each: an ion two neutrals or channels can make takes one place, as
+  the untargeted search counts it. Where its window held more ions, the ones it did not
+  score are counted as rivals not tested,
   and the row reads 5a with *candidates of the formula search past its limit, not
   scored*. A run that does not search, or a peak the search could not read,
   competed it against the lists' formulas alone, so it reads 5a with *rivals not
