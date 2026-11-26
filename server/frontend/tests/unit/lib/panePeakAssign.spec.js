@@ -1612,6 +1612,16 @@ describe("PanePeakAssign the other channels' peaks", () => {
     )
   })
 
+  // An isotope line standing with no owner (mascope#3661) is a line of its
+  // formula through the channel it names, not another channel's reading.
+  it('leaves out an isotope line that names no owner', async () => {
+    const STANDING = { ...OWN_LINE, peak_assignment_id: 'pa-hand', owner_peak_assignment_id: null }
+    ledgerRows = [PROTONATED, STANDING, SODIATED]
+    const wrapper = await openBadge()
+
+    expect(links(wrapper).map((link) => link.find('.reading-channel').text())).toEqual(['[M+Na]+'])
+  })
+
   // #2025: a run from before the sample's peaks were found again names peaks the
   // sample no longer has, and a link to one would do nothing at all.
   it('lists a reading whose peak is gone, but not as a link', async () => {

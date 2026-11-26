@@ -780,8 +780,8 @@ export function useAssignmentCard({ showSearch }) {
   // So the peaks are read off the ledger's rows, by neutral formula, the way the
   // ledger's "group by formula" reads them (PaneBrowserAssignment.vue): every
   // analyte row of the same neutral but the family's own M0, strongest first.
-  // Isotope lines are their M0's peak again, and a source ion or a peak nothing
-  // explained names no neutral of the sample.
+  // Isotope lines are their M0's peak again, one standing with no M0 included,
+  // and a source ion or a peak nothing explained names no neutral of the sample.
   const otherReadings = computed(() => {
     const own = app.data.peakAssignment.peak.m0Of(focusedAssignment.value)
     const key = neutralKey(own?.assigned_formula)
@@ -791,6 +791,7 @@ export function useAssignmentCard({ showSearch }) {
         (row) =>
           row.peak_assignment_id !== own.peak_assignment_id &&
           !isIsotopeLine(row) &&
+          row.role !== 'iso_child' &&
           !ROLE_BUCKETS.includes(row.role) &&
           neutralKey(row.assigned_formula) === key
       )
