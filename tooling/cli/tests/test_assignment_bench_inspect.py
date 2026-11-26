@@ -699,6 +699,116 @@ def test_a_card_s_ref_is_the_card_s_own_word(rig):
     assert f"card      {CARD_END}, topic at bbbbbbbbb, pass;" in text
 
 
+def test_a_card_whose_database_was_put_back_says_its_runs_are_gone(rig):
+    home, instance = rig
+    # A ``--batch`` card, or a ref that migrates, ran on a restore point that
+    # ``_cleanup`` put back: its runs and ledger rows are no longer there.
+    folder = home.cards / "topic" / "20261125-100000"
+    (folder / "run.json").write_text(
+        json.dumps(
+            {
+                "started": CARD_START,
+                "finished": CARD_END,
+                "migration": {"restored": True},
+            }
+        )
+    )
+    code, text = _inspect(home, instance)
+
+    assert code == 0, text
+    assert (
+        "card      its database was put back after the run: its runs are gone"
+    ) in text
+    assert "no in-app runs in its window" not in text
+    assert "ledger    " not in text
+    assert not [s for s in instance._query.sql if "select sample_item_id" in s]
+    assert not [s for s in instance._query.sql if "join peak_assignment a" in s]
+
+    # A restore that failed left the runs in the database: they are read.
+    (folder / "run.json").write_text(
+        json.dumps(
+            {
+                "started": CARD_START,
+                "finished": CARD_END,
+                "migration": {"restored": False},
+            }
+        )
+    )
+    _, text = _inspect(home, instance)
+    assert "card      set A control: completed 1, failed 1" in text
+
+
+def test_a_name_of_the_command_s_own_words_holds_no_line_back(rig):
+    home, instance = rig
+    # A workspace named after the app, and a calibration file: each word is
+    # one the command prints of its own, a table's, a column's or an engine's.
+    instance.names["names"] += [
+        "Mascope demo",
+        "Peaky trial",
+        "Verification anchor run",
+        "Residual survey",
+    ]
+    state = json.loads(home.state.read_text())
+    state["sets"]["A"]["samples"]["h2"]["name"] = "calibration_mix_01.raw"
+    home.state.write_text(json.dumps(state))
+    q = instance._query
+    answer = q.__class__.__call__
+
+    def query(sql):
+        rows = answer(q, sql)
+        if "from pg_class" in sql:
+            rows = rows + [
+                {
+                    "table_name": table,
+                    "column_name": "residual_summary",
+                    "type": "json",
+                }
+                for table in (
+                    "assignment_calibration",
+                    "assignment_verification",
+                    "batch_peak_run_anchor",
+                )
+            ]
+        if "reltuples" in sql:
+            rows = rows + [
+                {
+                    "table_name": "assignment_calibration",
+                    "rows": 10,
+                    "table_bytes": 4096,
+                    "index_bytes": 1024,
+                }
+            ]
+        if "from pg_stats" in sql:
+            rows = rows + [
+                {
+                    "table_name": "assignment_calibration",
+                    "column_name": "residual_summary",
+                    "avg_width": 50,
+                    "null_frac": 0,
+                }
+            ]
+        return rows
+
+    instance._query = query
+    code, text = _inspect(home, instance)
+
+    assert code == 0, text
+    assert "(a line held back" not in text
+    assert "runs      mascope control: completed 12, failed 2" in text
+    assert "runs      peaky control: completed 3" in text
+    assert (
+        "storage   assignment_calibration: about 10 rows, 4.0 kB stored, 1.0 kB "
+        "of indexes; json about residual_summary 500 B (50 B a row)"
+    ) in text
+    for table in (
+        "assignment_verification",
+        "batch_peak_run_anchor",
+    ):
+        assert f"storage   {table}: no planner statistics yet" in text, table
+    for planted in ("demo", "trial", "survey", "calibration_mix_01", "mix_01"):
+        assert planted not in text.lower(), planted
+
+
 def test_the_checkout_probe_writes_no_bytecode(tmp_path, monkeypatch):
     monkeypatch.delenv("PYTHONDONTWRITEBYTECODE", raising=False)
     seen = []

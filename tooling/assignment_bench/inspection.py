@@ -14,7 +14,8 @@ no path is taken from the caller. It prints
   knows them;
 - the runs: the assignment runs by engine, arm and status, the batch runs by
   status; the newest card that ran, its runs per set by arm and status and
-  its failed runs by the shape of their error; and the runs of the run that
+  its failed runs by the shape of their error (or, when its run put the
+  database back, that they are gone); and the runs of the run that
   holds the lock, while one does;
 - the storage: per assignment table its rows and each JSON column's stored
   bytes as the planner's statistics hold them, its stored size and its
@@ -507,6 +508,14 @@ class Inspect:
             start=start or "?",
             end=end or "?",
         )
+        if (summary.get("migration") or {}).get("restored") is True:
+            # ``BenchRun._cleanup`` put the database back from the dump the
+            # run took (a ``--batch`` card, a ref that migrates): its runs
+            # and their ledger rows are gone, not missing.
+            self.say(
+                "card      its database was put back after the run: its runs are gone"
+            )
+            return None
         if stamp(start) is None:
             self.say("card      its run.json names no start: its runs are not read")
             return None
@@ -635,8 +644,15 @@ class Inspect:
         own = set()
         for line in self.lines:
             own |= set(bench_run._words(line.text))
-        own |= set(TABLES) | {c for cs in self._tables.values() for c in cs}
-        own |= set(LEDGER_COLUMNS)
+        # The tables and columns word by word, as ``deny_tokens`` reads its
+        # vocabulary, and the engines the bench runs, as a card names its
+        # own (``_card_words``). An engine read off a row stays scrubbed.
+        for name in (*TABLES, *LEDGER_COLUMNS):
+            own |= set(bench_run._words(name))
+        for columns in self._tables.values():
+            for column in columns:
+                own |= set(bench_run._words(column))
+        own |= {bench_run.ENGINE, bench_run.REFERENCE_ENGINE}
         # The refs the cards were run for, as ``run.json``'s scrub lets a
         # card name its own ref (``BenchRun._outputs``).
         for card in self.state.get("cards") or []:
