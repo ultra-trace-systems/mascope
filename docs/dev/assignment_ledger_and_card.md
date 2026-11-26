@@ -545,19 +545,51 @@ flowchart LR
 | Level source, evidence, lift | level block, first screen | level block in the banner, folded to a line | level block, first screen | level block in the panel |
 | Where the peak is in the batch | strip, first screen | folded section | strip, first screen | strip in the panel |
 | The batch's verdict | its own verdict bar | borrowed, as today | its own verdict bar | the ledger's popover |
-| New screen area | an inspector column in the Batch tab | none | an inspector column in the Batch tab | none |
+| New screen area | the card's column, MAS-713's (interim: the Batch tab) | none | the card's column, MAS-713's (interim: the Batch tab) | none |
 | Cost | L | S to M | L | M |
 
 Every option needs the members read for one batch peak. Every option reuses MAS-1301's
 level block.
 
+#### The column is MAS-713's
+
+Options A and C put the batch card in an inspector column of the Batch tab. That column
+is already decided. MAS-713 lays the main area out as the ledger, with its *This sample*
+/ *Whole batch* switch, and one detail column, the inspector card on top, in both
+scopes. So the batch card is not a card of its own in a screen area of its own. It is
+the card's second scope, in the column the sample card already has. It reuses the
+card's answer, its Why box and its verdict bar with a batch peak's data. What is new is
+the scope's model, the strip and the members table.
+
+Until MAS-713 ships, the Batch tab has only its chart (`PaneTabBatch.vue`). A batch card
+built before it needs an interim column there, beside the chart, which MAS-713 then
+moves into its detail column. That interim column, and a card model apart from
+`useAssignmentCard`, are most of the L in A and C. Built as a scope of the card, in the
+column MAS-713 brings, they cost less.
+
 #### Recommendation
 
-**Option C**, built in two steps:
+**Option C**, built in four steps. The first two are needed by any answer to MAS-1311,
+so they need not wait for it.
 
-1. The batch card's first screen in a new column of the Batch tab: the answer and its
-   firmness line, the level block, the strip, and the up line on the sample card.
-2. The folded sections, the members table, and the batch verdict bar.
+1. **The consensus line on the sample card** (MAS-1314). A card the batch ledger opens
+   names the batch's consensus formula and tier and how many members agree, and says
+   whether this sample agrees. It replaces section 4.2's "In *sample*" line. It reads the
+   batch row the ledger already holds, so it needs no new read. It is option C's up line
+   without its link, and it answers the case seen on the demo instance whatever is
+   chosen. MAS-1092 goes with it: the batch tile's sample count on a run's own row.
+2. **One batch peak's members, served.** MAS-1301's route widened to every member, any
+   formula, with the per-member flag "the batch changed this sample's reading" from the
+   claim records. Backend only.
+3. **The batch card's first screen**, after MAS-1301: the answer and its firmness line,
+   the level block and the strip, as the card's batch scope. The up line gains its link.
+   It goes in MAS-713's detail column where that has shipped, else in the interim
+   column.
+4. **The folded sections, the members table, and the batch verdict bar.**
+
+Between steps 2 and 3, a click-through on a demo batch tells whether the sample card
+with its consensus line already answers the batch reader. If it does, MAS-1311 can
+still settle on B, or on nothing more, before the L of step 3 is spent.
 
 It is the one option where each card answers one reader's question. A batch row is about
 the batch, a sample row about the sample. The owner's three things sit on the batch
@@ -650,11 +682,12 @@ help card gains its legend.
 
 4. **What card a batch ledger row opens** (4.4). A batch card, the sample's card in
    batch dress, both by scope, or a panel unfolding under the row. The recommendation is
-   both by scope. *Open: the Decision issue MAS-1311.*
+   both by scope, built in the four steps of 4.4. *Open: the Decision issue MAS-1311.*
 
 The first is built as written here and raised on its PR. The second and third are
-settled, and MAS-1064's brief carries them. Nothing is built for the fourth until
-MAS-1311 is answered.
+settled, and MAS-1064's brief carries them. For the fourth, only the first two steps of
+4.4 are built before MAS-1311 is answered: the consensus line (MAS-1314) and the members
+read, which every option needs.
 
 ## 8. Docs
 
@@ -691,6 +724,7 @@ relations hold the order.
 | MAS-1066 | 2 · The card | The batch's readings and groups, served on the batch-peaks read and the detail row (3.5, 4.3) | MAS-983 | M |
 | MAS-1067 | 2 · The card | The card: answer, why, measurements, sections, verdict bar (4.1) | MAS-1063, MAS-1066 | L |
 | MAS-1068 | 2 · The card | The card's states (4.2) | MAS-1067 | S |
+| MAS-1314 | 2 · The card | The consensus line on a card the batch ledger opens (4.4, step 1) | MAS-1297, MAS-1291 | S |
 
 MAS-1063 is the one step that can start at once. The other two roots wait on files other
 work is rewriting:
