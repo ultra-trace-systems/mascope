@@ -131,7 +131,7 @@ The ledger's own breadcrumb goes, because the shell's says the same.
 | Ion | yes | yes | the sample scope: the mechanism. The batch scope: the ion formula the read already serves (`consensus_ion_formula`). Either way, a `×N` pill when the neutral is seen through N channels. In the sample scope it counts the sample's own rows (`channelRows`, as today), which needs no batch; in the batch scope it counts the groups the batch-peaks read serves (3.5) |
 | Intensity | yes | yes, as *Max intensity* | a compact number (`8.31k`, `1.20M`) and a log-scale bar. The batch scope's is `max_intensity`, the brightest sample's, and its header says so in its tooltip |
 | Tier | yes | yes | the tier chip; a capping reason as a mark on the chip |
-| Level | when any row has one | when any row has one | the level chip |
+| Level | when any row has one | when any row has one | the level chip. In the batch scope a button: it opens where the level comes from (below) |
 | Samples | no | yes | `n/N` |
 | Across the batch | no | yes | up to three badges (section 5), holding-back badges first, then `+n` |
 | Verdict | yes | yes | an icon only once someone has judged |
@@ -142,6 +142,20 @@ tell them apart.
 
 Imported engine tiers and levels show in the Tier and Level cells as a second, outlined
 chip when *Show › Engine readings* is on. They do not get columns of their own.
+
+The batch scope's level cell shows the level most of the batch peak's members' runs
+stated for the consensus formula, a tie reading as the weaker level, or a live
+batch-level claim's in its place. That level is a set of samples, and the set can hide
+better ones, so the chip opens a popover (MAS-1301, `lib/ledger/LedgerLevelSources.vue`):
+the claim first where there is one, then the members' split in the scale's order, the
+shown level's evidence and lift (the most common line of each, with how many members
+wrote it), the best level any member states where it is better, and the members that
+state none, by why, with **Assign batch** for an editor. **Open a sample** opens the
+brightest member at a level in the sample scope, the card stepping through that level's
+members; a list picks another. The members come from one read per batch peak, on the
+click (`GET /batch-peaks/batch/{id}/levels/{batch_peak_id}`), never from the ledger's
+list read. The content is a component of its own, for the batch row's card to reuse
+(MAS-1298).
 
 ### 3.3 Rows
 

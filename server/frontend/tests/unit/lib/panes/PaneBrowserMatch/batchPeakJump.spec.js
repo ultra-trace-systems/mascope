@@ -119,8 +119,62 @@ describe('useBatchPeakJump', () => {
       members: [
         { sample_item_id: 's-2', sample_peak_id: 'p2', intensity: 300 },
         { sample_item_id: 's-1', sample_peak_id: 'p1', intensity: 10 }
-      ]
+      ],
+      level: null
     })
+  })
+
+  it("opens a level's member on its peak, the card stepping through that level's members", async () => {
+    const jump = useBatchPeakJump()
+    const at4a = [
+      { sample_item_id: 's-3', sample_peak_id: 'p3', intensity: 90, level: '4a' },
+      { sample_item_id: 's-9', sample_peak_id: 'p9', intensity: 50, level: '4a' },
+      { sample_item_id: 's-1', sample_peak_id: 'p1', intensity: 10, level: '4a' }
+    ]
+
+    expect(await jump.openMember({ batch_peak_id: 'bp-1' }, at4a[2], at4a, '4a')).toBe('peak')
+
+    // No series read: the members came with the level's read.
+    expect(post).not.toHaveBeenCalled()
+    expect(focusSamplePeak).toHaveBeenCalledWith(app, SAMPLES[0], 'p1')
+    // s-9 is not among the loaded samples; the order stays brightest first.
+    expect(jump.opened).toEqual({
+      batch_peak_id: 'bp-1',
+      sample_batch_id: 'b-1',
+      members: [at4a[0], at4a[2]],
+      level: '4a'
+    })
+  })
+
+  it("marks the way back to the row before opening a level's member", async () => {
+    const { useBatchLedgerReturn } =
+      await import('@/lib/panes/PaneBrowserMatch/stores/batchLedgerReturn.js')
+    const jump = useBatchPeakJump()
+    const ledgerReturn = useBatchLedgerReturn()
+    const leave = vi.spyOn(ledgerReturn, 'leaveFromRow')
+    const member = { sample_item_id: 's-3', sample_peak_id: 'p3', intensity: 90, level: '4a' }
+    focusSamplePeak.mockImplementationOnce(() => {
+      expect(leave).toHaveBeenCalledWith('bp-1', 's-3')
+      return Promise.resolve('peak')
+    })
+
+    await jump.openMember({ batch_peak_id: 'bp-1' }, member, [member], '4a')
+
+    expect(focusSamplePeak).toHaveBeenCalled()
+    ledgerReturn.$dispose()
+  })
+
+  it("says when a level's member is not among the loaded samples, and opens nothing", async () => {
+    const jump = useBatchPeakJump()
+    const member = { sample_item_id: 's-9', sample_peak_id: 'p9', intensity: 50, level: '5a' }
+
+    expect(await jump.openMember({ batch_peak_id: 'bp-1' }, member, [member], '5a')).toBeNull()
+
+    expect(focusSamplePeak).not.toHaveBeenCalled()
+    expect(jump.opened).toBeNull()
+    expect(app.ui.notification.push).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('not among the loaded samples') })
+    )
   })
 
   it('opens another member of the batch peak it opened, on its peak', async () => {

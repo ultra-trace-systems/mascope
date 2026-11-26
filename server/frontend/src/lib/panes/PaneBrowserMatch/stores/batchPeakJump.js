@@ -109,29 +109,72 @@ export const useBatchPeakJump = defineStore('browser.match.batchPeakJump', () =>
         },
         { use: 'read', type: 'load_batch_peak_series', errors: 'inline' }
       )
-      const member = brightestMember(records?.[0])
-      const sample =
-        member && app.data.sample.list.find((s) => s.sample_item_id === member.sample_item_id)
-      if (!sample) {
+      const opening = await openIn(
+        row,
+        batchId,
+        brightestMember(records?.[0]),
+        measuredMembers(records?.[0])
+      )
+      if (opening === null) {
         notify('This batch peak has no measured member among the loaded samples.')
-        return
-      }
-      // The samples the card steps through: the measured members the sample
-      // list holds, brightest first, so the one opened here is the first.
-      const loaded = new Set(app.data.sample.list.map((s) => s.sample_item_id))
-      const members = measuredMembers(records?.[0]).filter((m) => loaded.has(m.sample_item_id))
-      opened.value = { batch_peak_id: row.batch_peak_id, sample_batch_id: batchId, members }
-      // A step of the browser's history, so Back returns to this row.
-      ledgerReturn.leaveFromRow(row.batch_peak_id, sample.sample_item_id)
-      const outcome = await focusSamplePeak(app, sample, member.sample_peak_id)
-      if (outcome === 'missing') {
-        notify("The peak is not in the sample's loaded peak list, so only the sample was opened.")
       }
     } catch (err) {
       notify(getApiErrorMessage(err, 'Could not read where this batch peak is brightest.'), 'error')
     } finally {
       pendingId.value = null
     }
+  }
+
+  /**
+   * Open one member of a batch peak in its sample, with its peak in focus,
+   * and keep the members the card steps through: those the sample list
+   * holds, brightest first, and the level they were chosen by, if any.
+   *
+   * @returns {Promise<string|null>} what `focusSamplePeak` focused, or null
+   *   when the member's sample is not loaded
+   */
+  async function openIn(row, batchId, member, members, level = null) {
+    const sample =
+      member && app.data.sample.list.find((s) => s.sample_item_id === member.sample_item_id)
+    if (!sample) return null
+    const loaded = new Set(app.data.sample.list.map((s) => s.sample_item_id))
+    const stepping = members.filter((m) => loaded.has(m.sample_item_id))
+    opened.value = {
+      batch_peak_id: row.batch_peak_id,
+      sample_batch_id: batchId,
+      members: stepping,
+      level
+    }
+    // A step of the browser's history, so Back returns to this row.
+    ledgerReturn.leaveFromRow(row.batch_peak_id, sample.sample_item_id)
+    const outcome = await focusSamplePeak(app, sample, member.sample_peak_id)
+    if (outcome === 'missing') {
+      notify("The peak is not in the sample's loaded peak list, so only the sample was opened.")
+    }
+    return outcome
+  }
+
+  /**
+   * The level popover's "Open a sample": one member of the batch peak whose
+   * run states a level, opened as the brightest is, with the card stepping
+   * through the members at that level. The members come from the
+   * level-sources read, brightest first, the one to open among them.
+   *
+   * @param {object} row - the ledger row
+   * @param {object} member - the member to open (`sample_item_id`, `sample_peak_id`)
+   * @param {Array<object>} members - the members at its level, brightest first
+   * @param {string|null} level - the level they state
+   * @returns {Promise<string|null>} what was focused, or null when the
+   *   member's sample is not loaded
+   */
+  async function openMember(row, member, members = [member], level = null) {
+    const batchId = app.data.batch.focusedId
+    if (!batchId || !row?.batch_peak_id || !member) return null
+    const outcome = await openIn(row, batchId, member, members, level)
+    if (outcome === null) {
+      notify("This member's sample is not among the loaded samples.")
+    }
+    return outcome
   }
 
   /**
@@ -155,5 +198,5 @@ export const useBatchPeakJump = defineStore('browser.match.batchPeakJump', () =>
     return outcome
   }
 
-  return { pendingId, opened, jumpToBrightest, stepTo }
+  return { pendingId, opened, jumpToBrightest, openMember, stepTo }
 })

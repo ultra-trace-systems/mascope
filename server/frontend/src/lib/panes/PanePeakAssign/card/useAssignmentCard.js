@@ -177,6 +177,9 @@ export function useAssignmentCard({ showSearch }) {
     return {
       index,
       count,
+      // The level the members were chosen by, when the level's popover
+      // opened them; null for the brightest of every member.
+      level: opened.level ?? null,
       name: nameOf(sampleId),
       next: count > 1 ? nameOf(opened.members[(index + 1) % count].sample_item_id) : null
     }

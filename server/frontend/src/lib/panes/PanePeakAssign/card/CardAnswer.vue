@@ -47,6 +47,7 @@ const {
 
 // Which sample the card shows when the batch ledger opened the peak: the
 // brightest of those that hold it, or the one *Other samples* stepped to.
+// Opened from a row's level, the samples are those whose run states it.
 const batchOpenedLine = computed(() => {
   const opened = batchOpened.value
   if (!opened) return ''
@@ -54,7 +55,10 @@ const batchOpenedLine = computed(() => {
     opened.index === 0
       ? `the brightest of ${opened.count} samples`
       : `${opened.index + 1} of ${opened.count} samples, by intensity`
-  return `In ${opened.name}: ${place} that hold this batch peak`
+  const which = opened.level
+    ? `whose run states ${opened.level} for this batch peak`
+    : 'that hold this batch peak'
+  return `In ${opened.name}: ${place} ${which}`
 })
 
 // The ion line: how the ion was made and what it is, where its peak sits, and

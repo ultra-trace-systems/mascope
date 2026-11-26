@@ -97,6 +97,26 @@ vi.mock('@/lib/panes/PaneBrowserMatch/BatchPeakContinuityPopover.vue', () => ({
     template: '<div class="continuity-popover-stub" />'
   }
 }))
+// Stubbed with its props, so a test reads what the pane handed it and makes it
+// emit; the popover's content has a spec of its own (ledgerLevelSources.spec.js).
+vi.mock('@/lib/ledger/LedgerLevelSources.vue', () => ({
+  default: {
+    name: 'LedgerLevelSources',
+    props: [
+      'claim',
+      'memberLevel',
+      'memberLevels',
+      'sources',
+      'loading',
+      'error',
+      'snapshot',
+      'canAssign',
+      'assignBlocked'
+    ],
+    emits: ['open-member', 'assign'],
+    template: '<div class="level-sources-stub" />'
+  }
+}))
 vi.mock('@/lib/ledger/LedgerVerdictPopover.vue', () => ({
   default: { name: 'LedgerVerdictPopover', template: '<div class="verdict-popover-stub" />' }
 }))
@@ -3415,6 +3435,126 @@ describe('PaneBrowserBatchPeaks identification level', () => {
       })
 
       expect(cells['bp-1'].find('.level-tag').attributes('data-level')).toBe('4a')
+    })
+  })
+
+  // The chip opens where the level comes from (LedgerLevelSources): one read
+  // for the one batch peak, asked on the click.
+  describe('where the level comes from', () => {
+    const body = { batch_peak_id: 'bp-1', member_levels: { '4a': 3, '5a': 2 }, data: [] }
+    const chipOf = (cells, id) => cells[id].find('[data-testid="level-sources"]')
+    const popover = () => wrapper.findComponent({ name: 'LedgerLevelSources' })
+    const levelReads = () => get.mock.calls.filter(([url]) => url.includes('/levels/'))
+
+    beforeEach(() => {
+      popoverCalls.length = 0
+      get.mockImplementation((url) =>
+        Promise.resolve(url.includes('/levels/') ? { data: body } : null)
+      )
+    })
+
+    it("reads the one batch peak's members on the click, and hands them to the popover", async () => {
+      const cells = await cellsOf('member_level', peaks())
+      expect(levelReads()).toHaveLength(0)
+      expect(popover().exists()).toBe(false)
+
+      await chipOf(cells, 'bp-1').trigger('click')
+      await flushPromises()
+
+      expect(levelReads()).toEqual([
+        ['/batch-peaks/batch/b-1/levels/bp-1', expect.objectContaining({ errors: 'inline' })]
+      ])
+      expect(popoverCalls).toContainEqual(['Where the level comes from', 'show'])
+      expect(popover().props('sources')).toEqual(body)
+      expect(popover().props('memberLevel')).toBe('4a')
+      expect(popover().props('memberLevels')).toEqual({ '4a': 3, '5a': 2 })
+      expect(popover().props('claim')).toBeNull()
+      expect(popover().props('snapshot')).toBe(false)
+    })
+
+    it('says a failed read in the popover', async () => {
+      get.mockImplementation((url) =>
+        url.includes('/levels/')
+          ? Promise.reject(apiError(403, 'Not a member of this workspace'))
+          : Promise.resolve(null)
+      )
+      const cells = await cellsOf('member_level', peaks())
+
+      await chipOf(cells, 'bp-2').trigger('click')
+      await flushPromises()
+
+      expect(popover().props('sources')).toBeNull()
+      expect(popover().props('error')).toBe('Not a member of this workspace')
+    })
+
+    it("asks nothing on an earlier run's ledger, whose snapshot keeps no member levels", async () => {
+      const tableRows = await cellsOf('member_level', peaks())
+      app.data.batchPeakRun.viewingId = 'run-old'
+      await wrapper.vm.$nextTick()
+
+      await chipOf(tableRows, 'bp-1').trigger('click')
+      await flushPromises()
+
+      expect(levelReads()).toHaveLength(0)
+      expect(popover().props('snapshot')).toBe(true)
+    })
+
+    it("hands a live claim's level, evidence and lift to the popover", async () => {
+      const claim = {
+        batch_peak_verification_id: 'v-bp-2',
+        batch_peak_id: 'bp-2',
+        assigned_formula: 'C6H12O6',
+        verdict: 'confirmed',
+        level: 1,
+        level_letter: null,
+        context: { claim: { evidence: 'a standard', lift: null } },
+        superseded_utc: null
+      }
+      const cells = await cellsOf('member_level', peaks(), { 'bp-2': claim })
+
+      await chipOf(cells, 'bp-2').trigger('click')
+      await flushPromises()
+
+      expect(popover().props('claim')).toMatchObject({
+        level: '1',
+        source: 'claim',
+        evidence: 'a standard',
+        lift: null
+      })
+      expect(popover().props('memberLevel')).toBe('5a')
+    })
+
+    it("opens the member the popover names, through the batch ledger's jump", async () => {
+      const cells = await cellsOf('member_level', peaks())
+      const { useBatchPeakJump } =
+        await import('@/lib/panes/PaneBrowserMatch/stores/batchPeakJump.js')
+      const openMember = vi.spyOn(useBatchPeakJump(), 'openMember').mockResolvedValue('peak')
+      await chipOf(cells, 'bp-1').trigger('click')
+      await flushPromises()
+      const member = { sample_item_id: 's-1', sample_peak_id: 'p1', level: '5a' }
+      popoverCalls.length = 0
+
+      popover().vm.$emit('open-member', member, [member], '5a')
+
+      expect(openMember).toHaveBeenCalledWith(
+        expect.objectContaining({ batch_peak_id: 'bp-1' }),
+        member,
+        [member],
+        '5a'
+      )
+      expect(popoverCalls).toContainEqual(['Where the level comes from', 'hide'])
+    })
+
+    it('runs Assign batch from the popover', async () => {
+      const cells = await cellsOf('member_level', peaks())
+      const assign = useBatchAssign()
+      const run = vi.spyOn(assign, 'assign').mockResolvedValue()
+      await chipOf(cells, 'bp-1').trigger('click')
+      await flushPromises()
+
+      popover().vm.$emit('assign')
+
+      expect(run).toHaveBeenCalled()
     })
   })
 
