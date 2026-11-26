@@ -364,6 +364,14 @@ def _provenance_scalars(
     card reads them for every committed row of a run, and a whole ledger's
     worth of detail reads took it about an hour over the gate sets.
 
+    ``manual_action`` is the hand edit that wrote a ``manual`` row
+    (``provenance.manual.action``): ``set_assignment`` or
+    ``promote_alternative`` for a formula a person chose, a demotion for an
+    isotopologue stripped with its M0, or the action of a line a hand M0
+    claimed. The ledger marks a hand line folded under its M0 and says on
+    hover which of these it is; the slim row carries no provenance to read it
+    from. None on a row no hand edit wrote.
+
     ``level_evidence`` and ``level_lift`` are the two lines beside the row's
     identification level, which is the row's own ``level`` column
     (:func:`~mascope_backend.api.new.peak_assignments.identification_level.level_lines`):
@@ -383,9 +391,22 @@ def _provenance_scalars(
         "candidate_density": provenance.get(CANDIDATE_DENSITY),
         "mass_z": provenance.get("mass_z"),
         "reference_listing": reference_listing(provenance.get("reference_identities")),
+        "manual_action": _manual_action(provenance),
         **_rule_records(provenance),
         **level_lines(provenance),
     }
+
+
+def _manual_action(provenance: dict) -> str | None:
+    """The hand edit that wrote a row (``provenance.manual.action``), or None.
+
+    ``manual`` is not a server-owned key, so an imported run keeps whatever an
+    external engine sent under it: anything but a dict, or an action that is
+    not a string, reads as no hand edit rather than failing the ledger read.
+    """
+    manual = provenance.get("manual")
+    action = manual.get("action") if isinstance(manual, dict) else None
+    return action if isinstance(action, str) else None
 
 
 def _rule_records(provenance: dict) -> dict:

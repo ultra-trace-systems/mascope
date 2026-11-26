@@ -371,10 +371,11 @@ class PeakAssignmentsResource(BaseResource):
         flattened provenance scalars (``evidence``, ``p_correct``,
         ``p_correct_provisional``, ``corroboration_adducts``,
         ``corroboration_channels``, ``candidate_density``, ``mass_z``,
-        ``reference_listing``, the four rule records ``tier_reason_rules``,
-        ``mass_gate_corroborated``, ``envelope_absent_lines`` and
-        ``peak_unseparated``, and the identification level's
-        ``level_evidence`` and ``level_lift`` beside its ``level``). The
+        ``reference_listing``, ``manual_action``, the four rule records
+        ``tier_reason_rules``, ``mass_gate_corroborated``,
+        ``envelope_absent_lines`` and ``peak_unseparated``, and the
+        identification level's ``level_evidence`` and ``level_lift`` beside
+        its ``level``). The
         inspector-detail JSON (``alternatives``, ``provenance``) of a single
         assignment is served by :meth:`detail`.
 
@@ -503,6 +504,10 @@ class PeakAssignmentsResource(BaseResource):
                    neither names. The full list is
                    ``provenance.reference_identities`` in :meth:`detail`,
                    whose ``reference_listing`` carries the same ``target``.
+                 - ``manual_action``: the hand edit that wrote the row
+                   (``provenance.manual.action`` in :meth:`detail`), such as
+                   ``set_assignment`` or ``promote_alternative``; null on a
+                   row no hand edit wrote.
                  - ``tier_reason_rules``: the ``rule`` of each of the row's
                    tier reasons, in order (``provenance.tier_reasons`` in
                    :meth:`detail` has their details); null where it records

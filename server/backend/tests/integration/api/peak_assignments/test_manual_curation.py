@@ -1298,6 +1298,11 @@ async def test_a_curated_row_is_an_ordinary_ledger_row(editor_client, curated_ru
     assert curated["assigned_formula"] == "C7H16O5"
     # No calibrated probability is flattened onto it, because it carries none.
     assert curated["p_correct"] is None
+    # Which hand edit wrote each row is flattened onto the slim row, so the
+    # ledger can say of a hand line which kind it is without the detail read.
+    assert curated["manual_action"] == "promote_alternative"
+    demoted = next(row for row in rows if row["sample_peak_id"] == "cur-2")
+    assert demoted["manual_action"] == "demote_isotopologue"
 
 
 @pytest.mark.asyncio
