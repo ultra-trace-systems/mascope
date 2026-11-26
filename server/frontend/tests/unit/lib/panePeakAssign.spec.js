@@ -9,6 +9,7 @@ import { isIsotopeLine } from '@/lib/isotopeLines'
 import { EVIDENCE_LEVELS } from '@/lib/verification'
 import { TIERING_PROVISIONAL } from '@/lib/tiers'
 import { EMPTY_REASONS } from '@/lib/panes/PanePeakAssign/card/cardReadings.js'
+import { CAPPING_RULES, tierReasonLabel } from '@/lib/tierReasons'
 
 // The inspector card for a peak with no committed formula. Two states reach it:
 // a ledger row of tier `unassigned` (a real assignment row, just formula-less),
@@ -209,7 +210,12 @@ vi.mock('@/lib/base', async () => ({
     template:
       '<div class="claim-structure" :data-candidates="JSON.stringify(candidates)" :data-evidence="evidence" :data-initial="initial?.claimed_inchikey ?? \'\'" />'
   },
-  BaseTierTag: { props: ['tier'], template: '<span class="tier-tag" />' },
+  // Says what holds the tier, as its cap mark and its hover do.
+  BaseTierTag: {
+    props: ['tier', 'cap'],
+    template:
+      '<span class="tier-tag" :data-cap-label="cap?.label ?? null" :data-cap="cap?.tooltip ?? null" />'
+  },
   // Says which level it was handed, so the level row's tests can read it off;
   // the chip itself has a spec of its own (base/BaseLevelTag.spec.js).
   BaseLevelTag: {
@@ -1799,6 +1805,30 @@ describe('PanePeakAssign tier reasons', () => {
       )
     }
     expect(rows[1].find('.reason-detail').text()).toBe(RADICAL.detail)
+  })
+
+  it("leads an isotopologue's Why box with what holds its M0", async () => {
+    focusedAssignment = isotopologue(M0)
+    familyRows = [M0, focusedAssignment]
+    detailRecord = { provenance: { tier_reasons: [follows(true)] } }
+    otherDetails.set(M0.peak_assignment_id, { provenance: { tier_reasons: [RADICAL, NO_RIVAL] } })
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('[data-testid="why-hold"]').text()).toBe(
+      'Held at candidate with its M0: radical neutral'
+    )
+    expect(wrapper.find('[data-testid="chips"] .tier-tag').attributes('data-cap-label')).toBe(
+      'Held down by: radical neutral, via its M0'
+    )
+  })
+
+  it('leads with nothing on a row served from the batch ledger', async () => {
+    runRecord = { engine: 'batch' }
+    focusedAssignment = { ...M0, batch_peak_id: 'bp-1' }
+    detailRecord = { provenance: { tier_reasons: [RADICAL] } }
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('[data-testid="why-hold"]').exists()).toBe(false)
   })
 
   // The band caps nothing, yet it is why the M0 stands where it does, so it is
@@ -5323,6 +5353,114 @@ describe('PanePeakAssign the card, answer first', () => {
       expect(field(wrapper, 'why').find('[data-testid="corroboration"]').text()).toContain(
         'Supported by 2 channels'
       )
+    })
+
+    // A high fit at candidate reads as a mistake unless what holds it stands
+    // beside it (MAS-1296): the Why box leads with it, under its title, and
+    // the tier chip's hover names it.
+    describe('what holds a candidate row there', () => {
+      const HIGH = { ...ROW, tier: 'candidate', fit_score: 0.95, evidence: 0.95 }
+      const blocks = (wrapper) =>
+        [...field(wrapper, 'why').element.children].map(
+          (node) => node.dataset.testid ?? node.classList[0]
+        )
+      const tierChip = (wrapper) => field(wrapper, 'chips').find('.tier-tag')
+
+      it.each(CAPPING_RULES)('leads with %s, and the tier chip names it', async (rule) => {
+        focusedAssignment = HIGH
+        detailRecord = {
+          provenance: {
+            plausibility: 1,
+            tier_reasons: [
+              { rule: 'in_source_fragment', detail: 'a heavier ion may shed it', caps: false },
+              { rule, detail: 'the rule held it', caps: true }
+            ]
+          }
+        }
+        const wrapper = await mountPane()
+        const text = `Held at candidate: ${tierReasonLabel(rule)}`
+
+        expect(blocks(wrapper).slice(0, 2)).toEqual(['why-title', 'why-hold'])
+        expect(field(wrapper, 'why-hold').text()).toBe(text)
+        expect(tierChip(wrapper).attributes('data-cap')).toBe(text)
+        expect(tierChip(wrapper).attributes('data-cap-label')).toBe(
+          `Held down by: ${tierReasonLabel(rule)}`
+        )
+      })
+
+      it('names the isotope line an absent-line reason found missing', async () => {
+        focusedAssignment = HIGH
+        detailRecord = {
+          provenance: {
+            plausibility: 1,
+            tier_reasons: [
+              {
+                rule: 'absent_line',
+                line: '15N',
+                detail: 'its 15N line, predicted at 0.37% of its own line, is not in the spectrum',
+                caps: true
+              }
+            ]
+          }
+        }
+        const wrapper = await mountPane()
+
+        expect(field(wrapper, 'why-hold').text()).toBe(
+          'Held at candidate: expected line absent (15N)'
+        )
+      })
+
+      // The fit is not the evidence: a high fit at a low plausibility is held
+      // by the band, which is no rule, so the chip carries no cap mark.
+      it('says the evidence is under the assigned band when the band holds it', async () => {
+        focusedAssignment = { ...HIGH, fit_score: 0.9, evidence: 0.63 }
+        detailRecord = {
+          provenance: {
+            plausibility: 0.7,
+            tier_reasons: [
+              {
+                rule: 'evidence_band',
+                detail:
+                  'evidence 63% (fit 90% x plausibility 70%) is under the assigned band of 75%',
+                caps: false
+              }
+            ]
+          }
+        }
+        const wrapper = await mountPane()
+
+        expect(field(wrapper, 'why-hold').text()).toBe(
+          'Held at candidate: evidence 63% is under the assigned band of 75%'
+        )
+        expect(tierChip(wrapper).attributes('data-cap')).toBeUndefined()
+      })
+
+      it('says so when the run judged the row and names nothing that holds it', async () => {
+        focusedAssignment = HIGH
+        detailRecord = {
+          provenance: {
+            plausibility: 1,
+            tier_reasons: [{ rule: 'no_close_rival', detail: 'no rival within reach', caps: false }]
+          }
+        }
+        const wrapper = await mountPane()
+
+        expect(field(wrapper, 'why-hold').text()).toBe(
+          'Held at candidate: no reason recorded - the run names no rule that holds this row'
+        )
+      })
+
+      it.each([
+        ['an assigned row', { tier: 'assigned' }, [{ rule: 'lone_peak', caps: true }]],
+        ['a row no tiering pass judged', {}, []]
+      ])('is not drawn on %s', async (_, row, reasons) => {
+        focusedAssignment = { ...HIGH, ...row }
+        detailRecord = { provenance: { plausibility: 1, tier_reasons: reasons } }
+        const wrapper = await mountPane()
+
+        expect(field(wrapper, 'why-hold').exists()).toBe(false)
+        expect(tierChip(wrapper).attributes('data-cap')).toBeUndefined()
+      })
     })
 
     describe('a reason that spans rows', () => {

@@ -35,7 +35,9 @@ import {
   barPosition,
   bandsOf,
   batchTile,
+  candidateHold,
   formatShare,
+  holdCap,
   isotopeTile,
   orderedReasons,
   reasonGroup,
@@ -1740,6 +1742,19 @@ export function useAssignmentCard({ showSearch }) {
   })
   const whyReasons = computed(() => orderedReasons(tierReasons.value))
   const whyOwnerReasons = computed(() => orderedReasons(ownerReasons.value))
+  // What holds a candidate row there, in plain words: the Why box leads with
+  // it and the tier chip's hover names it, so a high fit at candidate reads
+  // with its reason beside it (MAS-1296).
+  const whyHold = computed(() =>
+    candidateHold({
+      tier: focusedAssignment.value?.tier,
+      reasons: tierReasons.value,
+      ownerReasons: ownerReasons.value,
+      evidence: evidenceValue.value,
+      bands: tierBands.value
+    })
+  )
+  const tierChipCap = computed(() => holdCap(whyHold.value))
   const showWhy = computed(
     () =>
       Boolean(focusedAssignment.value?.assigned_formula) &&
@@ -2149,6 +2164,8 @@ export function useAssignmentCard({ showSearch }) {
     evidenceText,
     whyReasons,
     whyOwnerReasons,
+    whyHold,
+    tierChipCap,
     showWhy,
     batchGroups,
     batchSeries,

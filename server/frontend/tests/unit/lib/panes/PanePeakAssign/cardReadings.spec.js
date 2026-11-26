@@ -7,7 +7,9 @@ import {
   barPosition,
   batchTile,
   EMPTY_REASONS,
+  candidateHold,
   formatShare,
+  holdCap,
   isotopeTile,
   M0_ABUNDANCE_TOOLTIP,
   memberLabel,
@@ -72,6 +74,105 @@ describe('the reasons', () => {
       'supports',
       'neutral'
     ])
+  })
+})
+
+// What holds a candidate row at candidate, for the Why box's first line and
+// the tier chip's hover (MAS-1296).
+describe('candidateHold', () => {
+  const BANDS = { candidate: 0.45, assigned: 0.75 }
+  const BAND = { rule: 'evidence_band', label: 'evidence band', detail: '', caps: false }
+  const LONE = { rule: 'lone_peak', label: 'one peak only', detail: 'one peak', caps: true }
+  const RIVALS = {
+    rule: 'candidate_density',
+    label: 'rivals left standing',
+    detail: "3 formulas this peak's evidence could not separate",
+    caps: true
+  }
+  const RADICAL = {
+    rule: 'odd_electron',
+    label: 'radical neutral',
+    detail: 'C10H11 is an odd-electron neutral',
+    caps: true
+  }
+  const KEPT = { rule: 'no_close_rival', label: 'no close rival', detail: '', caps: false }
+  const follows = (caps) => ({ rule: 'inherited_from_owner', label: 'follows its M0', caps })
+  const hold = (options) => candidateHold({ tier: 'candidate', bands: BANDS, ...options })
+
+  it('names every rule that holds the row, with the measure it turned on', () => {
+    expect(hold({ reasons: [KEPT, LONE, RIVALS], evidence: 0.9 })).toEqual({
+      text: 'Held at candidate: one peak only, rivals left standing (3 formulas)',
+      caps: [LONE, RIVALS],
+      viaM0: false,
+      band: false
+    })
+  })
+
+  it("leaves out a formula the sentence names, which is the row's own", () => {
+    expect(hold({ reasons: [RADICAL], evidence: 0.9 }).text).toBe(
+      'Held at candidate: radical neutral'
+    )
+  })
+
+  it('leads with the band where the evidence is under the assigned one, then the rules', () => {
+    const result = hold({ reasons: [BAND, LONE], evidence: 0.6 })
+    expect(result.text).toBe(
+      'Held at candidate: evidence 60% is under the assigned band of 75%; also one peak only'
+    )
+    expect(result.band).toBe(true)
+  })
+
+  it('writes the evidence finely enough not to read as the band', () => {
+    expect(hold({ reasons: [BAND], evidence: 0.746 }).text).toBe(
+      'Held at candidate: evidence 74.6% is under the assigned band of 75.0%'
+    )
+  })
+
+  // A candidate row under the candidate band was not held there by the band:
+  // something put it up, and the line must not say the band held it.
+  it('does not name the assigned band for evidence under the candidate one', () => {
+    expect(hold({ reasons: [BAND], evidence: 0.3 }).band).toBe(false)
+  })
+
+  it("reads an isotopologue's hold off its M0", () => {
+    const result = hold({ reasons: [follows(true)], ownerReasons: [BAND, LONE] })
+    expect(result.text).toBe('Held at candidate with its M0: one peak only')
+    expect(result.viaM0).toBe(true)
+    // Before the M0's detail arrives.
+    expect(hold({ reasons: [follows(true)] }).text).toBe('Held at candidate with its M0')
+  })
+
+  it("says a row stands on the batch's decision rather than held", () => {
+    const decided = { rule: 'batch_known_species', label: 'batch known species', caps: false }
+    expect(hold({ reasons: [BAND, decided], evidence: 0.3 }).text).toMatch(
+      /^At candidate on the batch's decision/
+    )
+  })
+
+  it('says no reason is recorded where the judged row names none', () => {
+    expect(hold({ reasons: [KEPT, follows(false)], evidence: 0.9 }).text).toBe(
+      'Held at candidate: no reason recorded - the run names no rule that holds this row'
+    )
+  })
+
+  it('is null off candidate, and on a row no pass judged', () => {
+    expect(hold({ tier: 'assigned', reasons: [LONE] })).toBeNull()
+    expect(hold({ tier: 'below_assignability', reasons: [LONE] })).toBeNull()
+    expect(hold({ reasons: [] })).toBeNull()
+    expect(hold({ reasons: null })).toBeNull()
+  })
+
+  it('gives the tier chip a cap mark for a rule, none for the band alone', () => {
+    expect(holdCap(hold({ reasons: [LONE, RIVALS], evidence: 0.9 }))).toEqual({
+      label: 'Held down by: one peak only, rivals left standing',
+      tooltip: 'Held at candidate: one peak only, rivals left standing (3 formulas)'
+    })
+    expect(holdCap(hold({ reasons: [follows(true)] }))).toEqual({
+      label: 'Held down with its M0',
+      tooltip: 'Held at candidate with its M0'
+    })
+    expect(holdCap(hold({ reasons: [BAND], evidence: 0.6 }))).toBeNull()
+    expect(holdCap(null)).toBeNull()
   })
 })
 
