@@ -167,7 +167,20 @@ describe('tierHistogram', () => {
   })
 
   it('counts a family once, under its M0', () => {
-    expect(tierHistogram([row('M0', 'assigned'), row('iso_child', 'assigned')]).assigned).toBe(1)
+    const line = { ...row('iso_child', 'assigned'), owner_peak_assignment_id: 'pa-m0' }
+    expect(tierHistogram([row('M0', 'assigned'), line]).assigned).toBe(1)
+  })
+
+  // An isotopologue with no owner - one assigned by hand on a sample whose run
+  // holds no M0 of its formula (mascope#3661) - folds under nothing and is a
+  // row of its own in the ledger, so the strip counts it under its tier.
+  it('counts an isotopologue with no owner under its tier', () => {
+    const counts = tierHistogram([
+      row('M0', 'assigned'),
+      { ...row('iso_child', 'candidate'), owner_peak_assignment_id: null }
+    ])
+    expect(counts.assigned).toBe(1)
+    expect(counts.candidate).toBe(1)
   })
 
   it('counts nothing for no rows, every bucket present', () => {

@@ -124,7 +124,9 @@ export function linesByOwner(records) {
  * accounts for a peak without a formula.
  *
  * iso_child isotopologues are folded into their M0 and NOT counted, so the tiers
- * count assigned formulas (and unassigned peaks), not every isotopologue peak. A
+ * count assigned formulas (and unassigned peaks), not every isotopologue peak.
+ * One with no owner folds under nothing and stands as a row of its own
+ * (isIsotopeLine), so it is counted under its tier as the row the ledger shows. A
  * reagent or artifact peak is counted under its role, each apart from the other
  * and from every tier: the engine writes those rows at tier `unassigned`, and
  * counting them there would put the source's own brightest ions among the peaks
@@ -145,7 +147,7 @@ export function tierHistogram(records) {
     artifact: 0
   }
   for (const record of records ?? []) {
-    if (record.role === 'iso_child') continue
+    if (record.role === 'iso_child' && isIsotopeLine(record)) continue
     if (record.role === 'reagent' || record.role === 'artifact') {
       counts[record.role] += 1
     } else {
