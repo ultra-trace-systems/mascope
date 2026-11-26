@@ -17,6 +17,9 @@ from mascope_backend.api.new.metadata.environment_routes import environments_rou
 from mascope_backend.api.new.metadata.routes import metadata_router
 from mascope_backend.api.new.notifications.routes import notifications_router
 from mascope_backend.api.new.params import params_router
+from mascope_backend.api.new.peak_assignments.batch_member_routes import (
+    batch_member_router,
+)
 from mascope_backend.api.new.peak_assignments.batch_peaks_routes import (
     batch_peaks_router,
 )
@@ -152,6 +155,7 @@ routers = [
     match_isotopes_router,
     peak_assignments_router,
     batch_peaks_router,
+    batch_member_router,
     visualization_router,
     temp_router,
     cheminfo_router,
