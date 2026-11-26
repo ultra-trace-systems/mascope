@@ -160,7 +160,7 @@ _SPECS = {
 _MZ_ERROR_PPM = 1.0
 
 
-async def _seed(session, now):
+async def _seed(session, now, specs=None):
     """Seed workspace -> dataset -> batch -> three samples with owner links.
 
     The owner reference is written the way the engine writes it -- the owning
@@ -194,7 +194,7 @@ async def _seed(session, now):
         )
     )
     samples = {}
-    for index, (name, rows) in enumerate(_SPECS.items()):
+    for index, (name, rows) in enumerate((specs or _SPECS).items()):
         sf, si, run = gen_id(), gen_id(), gen_id()
         session.add(
             SampleFile(
@@ -348,6 +348,51 @@ async def test_an_isotopologue_whose_owner_is_unknown_stays_a_top_level_anchor(
     # not won by the same ion in that run. There is no anchor to point at, and
     # inventing one would put the row under a compound it was never linked to.
     assert peaks[400].isotopologue_of is None
+
+
+# A line assigned by hand on a sample whose run holds no M0 of it
+# (mascope#3661): `set_assignment` writes it as an iso_child with no owner, its
+# ion the line's own (curation._committed_ion), as an untargeted run writes one.
+_HAND_LINE_SPECS = {
+    "A": [s for s in _SPECS["A"] if s[0] in ("m0", "iso")],
+    "B": [
+        (
+            "iso",
+            182.0741,
+            "C6H12O6",
+            "[13C]C5H13O6+",
+            "iso_child",
+            "candidate",
+            0.80,
+            300.0,
+            None,
+        )
+    ],
+}
+
+
+async def test_a_line_assigned_by_hand_with_no_m0_keeps_the_family_link(
+    async_session_factory, patch_db, pa_sample_view
+):
+    """The hand line names no owner, so it abstains: it neither votes for the
+    family nor, counted against the majority, turns the line into a species of
+    its own (resolve_isotopologue_of). Its registry entry names the line's ion,
+    not the monoisotopic one."""
+    async with async_session_factory() as session:
+        batch, samples = await _seed(
+            session, datetime.now(timezone.utc), _HAND_LINE_SPECS
+        )
+    for name in ("A", "B"):
+        await fold_sample_into_batch_peaks(samples[name])
+    peaks = await _by_mz(async_session_factory, batch)
+
+    assert peaks[182].isotopologue_of == peaks[181].batch_peak_id
+    assert peaks[182].consensus_formula == "C6H12O6"
+    assert {
+        entry["ion_formula"]
+        for entry in peaks[182].candidates
+        if entry.get("formula") == "C6H12O6"
+    } == {"C6H13O6+", "[13C]C5H13O6+"}
 
 
 async def test_an_unassigned_anchor_is_nobody_s_isotopologue(
