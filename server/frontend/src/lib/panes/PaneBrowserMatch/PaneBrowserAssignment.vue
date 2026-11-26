@@ -341,7 +341,7 @@ watch(
 
 // Every open starts on the batch's settings and with no stale refusal. Also
 // scope help mode to the dialog's cards while it is open.
-watch(configVisible, (open) => {
+function onConfigVisible(open) {
   if (open) {
     launchError.value = null
     formError.value = null
@@ -352,7 +352,14 @@ watch(configVisible, (open) => {
     }
   }
   app.ui.help.set(open ? 'dialog_peak_assign' : null)
-})
+}
+watch(configVisible, onConfigVisible)
+// Opened before this pane mounted: the inspector card's Assign sample switches
+// the browser to the Assignments ledger and opens the flag in one go, so the
+// flag is already true when this pane's setup runs, and the watcher above
+// never sees it change. The flag is cleared when the pane goes away, so a true
+// here is always that fresh open, never a stale one.
+if (configVisible.value) onConfigVisible(true)
 
 async function launch() {
   const sampleItemId = app.data.sample.focusedId
