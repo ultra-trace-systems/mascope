@@ -557,8 +557,9 @@ async def assign_batch_route(
     Folds every sample first where ``fold`` asks for it or the ledger cannot
     be a starting point; then water ladders, known species, the untargeted
     search, the isotope lines (strip, then stamp), the series, the
-    co-variation, the ratio stability, the batch checks and the probable
-    blends: each reads what the stages before it wrote, so they run in that
+    co-variation, the ratio stability, the batch checks, the probable blends
+    and the identification level: each reads what the stages before it wrote,
+    so they run in that
     order, from ``from_stage`` to the end, or from the first stage a fold or
     an earlier stage left stale. The ledger (``GET /batch-peaks/batch/{id}``)
     says where each stage stands.
