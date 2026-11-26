@@ -94,6 +94,7 @@ from mascope_backend.db import (
     async_session,
 )
 from mascope_backend.db.id import gen_id
+from mascope_backend.db.retry import retry_on_connection_error
 from mascope_backend.runtime import runtime
 
 
@@ -557,39 +558,50 @@ async def complete_run(
 ) -> None:
     """Close a run as completed: it becomes the current run, the previous one
     keeps the snapshot taken when this one started, and the batch's older runs
-    beyond :data:`BATCH_RUN_KEEP` are pruned."""
+    beyond :data:`BATCH_RUN_KEEP` are pruned.
 
-    async with async_session() as session:
-        await _acquire_batch_fold_lock(session, sample_batch_id)
-        runs = (
-            (
-                await session.execute(
-                    select(BatchPeakRun).where(
-                        BatchPeakRun.sample_batch_id == sample_batch_id
+    Retried while the database refuses a connection, as :func:`_close_run` is:
+    each attempt is one transaction, rolled back whole where it fails.
+    """
+
+    async def _write() -> None:
+        async with async_session() as session:
+            await _acquire_batch_fold_lock(session, sample_batch_id)
+            runs = (
+                (
+                    await session.execute(
+                        select(BatchPeakRun).where(
+                            BatchPeakRun.sample_batch_id == sample_batch_id
+                        )
                     )
                 )
+                .scalars()
+                .all()
             )
-            .scalars()
-            .all()
-        )
-        now = dt.now(timezone.utc)
-        for run in runs:
-            if run.batch_peak_run_id == batch_peak_run_id:
-                run.status = STATUS_COMPLETED
-                run.is_current = 1
-                run.summary = summary
-                run.batch_peak_run_utc_completed = now
-                # The live ledger is what this run wrote
-                run.ledger_utc_modified = now
-            elif run.is_current:
-                run.is_current = 0
-        for stale_id in runs_to_prune(runs, BATCH_RUN_KEEP):
-            if stale_id == batch_peak_run_id:
-                continue
-            await session.execute(
-                delete(BatchPeakRun).where(BatchPeakRun.batch_peak_run_id == stale_id)
-            )
-        await session.commit()
+            now = dt.now(timezone.utc)
+            for run in runs:
+                if run.batch_peak_run_id == batch_peak_run_id:
+                    run.status = STATUS_COMPLETED
+                    run.is_current = 1
+                    run.summary = summary
+                    run.batch_peak_run_utc_completed = now
+                    # The live ledger is what this run wrote
+                    run.ledger_utc_modified = now
+                elif run.is_current:
+                    run.is_current = 0
+            for stale_id in runs_to_prune(runs, BATCH_RUN_KEEP):
+                if stale_id == batch_peak_run_id:
+                    continue
+                await session.execute(
+                    delete(BatchPeakRun).where(
+                        BatchPeakRun.batch_peak_run_id == stale_id
+                    )
+                )
+            await session.commit()
+
+    await retry_on_connection_error(
+        _write, f"mark batch run '{batch_peak_run_id}' completed"
+    )
 
 
 async def _close_run(
@@ -599,17 +611,33 @@ async def _close_run(
     error: Optional[str],
     summary: Optional[dict],
 ) -> None:
-    async with async_session() as session:
-        run = await session.get(BatchPeakRun, batch_peak_run_id)
-        if run is None or run.sample_batch_id != sample_batch_id:
-            return
-        run.status = status
-        if error is not None:
-            run.error = error[:2000]
-        if summary is not None:
-            run.summary = summary
-        run.batch_peak_run_utc_completed = dt.now(timezone.utc)
-        await session.commit()
+    """A run's terminal write, as failed or cancelled.
+
+    Retried while the database refuses a connection
+    (:func:`~mascope_backend.db.retry.retry_on_connection_error`), as a
+    sample's run's is: the failure that ends a pass is often that refusal
+    itself, and a run left running holds its batch, every later pass refused,
+    until the startup reaper. The end is taken before the first attempt, not
+    when the database answered again. Any other error is raised at once.
+    """
+    completed = dt.now(timezone.utc)
+
+    async def _write() -> None:
+        async with async_session() as session:
+            run = await session.get(BatchPeakRun, batch_peak_run_id)
+            if run is None or run.sample_batch_id != sample_batch_id:
+                return
+            run.status = status
+            if error is not None:
+                run.error = error[:2000]
+            if summary is not None:
+                run.summary = summary
+            run.batch_peak_run_utc_completed = completed
+            await session.commit()
+
+    await retry_on_connection_error(
+        _write, f"mark batch run '{batch_peak_run_id}' {status}"
+    )
 
 
 async def fail_run(
@@ -650,7 +678,10 @@ async def close_shielded(close: Awaitable[None], what: str) -> None:
         # interrupted it.
         pass
     except Exception as exc:  # noqa: BLE001 - never replace what interrupted it
-        runtime.logger.warning(f"Could not close {what}: {exc}")
+        runtime.logger.error(
+            f"Could not close {what}: {exc!r}. It stays running until the "
+            "startup reaper reclaims it."
+        )
 
 
 async def in_batch_run(

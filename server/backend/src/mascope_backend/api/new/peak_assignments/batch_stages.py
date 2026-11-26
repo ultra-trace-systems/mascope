@@ -1550,11 +1550,11 @@ async def assign_batch(
             )
     except ApiException as exc:
         if batch_peak_run_id is not None:
-            # The route opened the run: refused, it is closed all the same,
-            # never left running to hold the batch.
-            await fail_run(
-                sample_batch_id, batch_peak_run_id, f"{type(exc).__name__}: {exc}"
-            )
+            # The route opened the run: refused, it is closed all the same, and
+            # a close that fails too never takes the refusal's place.
+            error = f"{type(exc).__name__}: {exc}"
+            close = fail_run(sample_batch_id, batch_peak_run_id, error)
+            await close_shielded(close, f"pass '{batch_peak_run_id}' as failed")
         raise
     asked = BatchStage(from_stage) if from_stage is not None else None
     if config is None or settings_source is None:

@@ -2337,7 +2337,12 @@ restart, an update, a crash - cannot finish or fail itself. At its next start
 the backend marks every run still in a state a server task owns as `failed`,
 with the error "Interrupted: the server restarted while this run was in
 progress.", so the run no longer holds its sample against new work; re-run the
-assignment. An import a client started and did not finish is
+assignment. A batch run (a pass of **Assign batch**, a rebuild, a search, an
+import) is reset the same way, so its batch takes a new pass again. The same
+holds for a run that fails while Postgres refuses connections ("too many
+clients already"): the backend retries recording its end for about a minute,
+and a run whose end it still cannot write stays running until that next
+start; the backend log then has an error saying so. An import a client started and did not finish is
 not a server task and is left to `MASCOPE_PRUNE_KEEP_IMPORTING_HOURS` above.
 On a database not yet migrated to the release's head the step warns and the
 server starts anyway.
