@@ -550,11 +550,12 @@ const groupKeyOf = (row) =>
 // sample's rows, which needs no batch). Counted over the run's rows, not the
 // rows the filters leave, so the pill says the same whatever the reader has
 // narrowed the ledger to. An isotope line is its M0's reading again and does
-// not count.
+// not count, one standing on its own with no M0 included: it is a line of its
+// formula through the channel it names, not another channel.
 const channelsByNeutral = computed(() => {
   const byKey = new Map()
   for (const row of assignments.value.list) {
-    if (isIsotopeLine(row)) continue
+    if (isIsotopeLine(row) || row.role === 'iso_child') continue
     const key = groupKeyOf(row)
     if (!key) continue
     if (byKey.has(key)) byKey.get(key).push(row)

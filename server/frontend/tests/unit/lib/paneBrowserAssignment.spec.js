@@ -1311,6 +1311,18 @@ describe('PaneBrowserAssignment an isotope line with no M0', () => {
     expect(levels.every(([level, role]) => level === '5a' && role === undefined)).toBe(true)
   })
 
+  // It reads its formula through the channel it names: no second channel of
+  // the M0 row's neutral.
+  it('is no channel of its neutral', async () => {
+    const m0 = family({ id: 'm', mz: 438.872, intensity: 900, formula: 'C6H11Br2O5' })
+    m0.parent.ionization_mechanism_id = 'mech-1'
+    seed(m0, { parent: { ...LINE, ionization_mechanism_id: 'mech-1' }, kids: [] })
+    const wrapper = await mountPane()
+    const rows = Object.fromEntries(wrapper.vm.rows.map((r) => [r.peak_assignment_id, r]))
+    expect(wrapper.vm.channelCount(rows.m)).toBe(1)
+    expect(wrapper.vm.channelCount(rows.hand)).toBe(1)
+  })
+
   it('is found by its m/z in the search', async () => {
     seed(FAMILY_A, standing())
     const wrapper = await mountPane()
