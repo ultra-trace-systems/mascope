@@ -336,7 +336,13 @@ class BatchPeaksResource(BaseResource):
                  :meth:`~mascope_sdk.resources.peak_assignments.PeakAssignmentsResource.get`
                  serves them; null where that row commits another formula
                  than the member reads, and absent from a server that
-                 predates them), ``owner_batch_peak_id``, and
+                 predates them), ``batch_level``, ``batch_level_evidence``
+                 and ``batch_level_lift`` (the anchor's own identification
+                 level, which the pass's *Identification level* stage read
+                 off its members' runs and the batch's isotope checks, with
+                 its two lines, repeated on each member as the consensus is;
+                 null where none stands for the consensus, and absent from a
+                 server that predates them), ``owner_batch_peak_id``, and
                  ``stamped_isotopologue_of`` and ``stamp_source``: where a
                  *Stamp isotopologues* run stamped the member as a diagnostic
                  isotopologue (15N, 18O, 34S, 29Si, 30Si, 37Cl or 81Br) of
@@ -835,8 +841,8 @@ class BatchPeaksResource(BaseResource):
         :type batch_id: str
         :param from_stage: The stage to start at: ``water_ladders``,
             ``known_species``, ``search``, ``isotope_lines``, ``series``,
-            ``co_variation``, ``continuity``, ``batch_checks`` or ``blends``.
-            None starts at the first stage that is not current.
+            ``co_variation``, ``continuity``, ``batch_checks``, ``blends`` or
+            ``level``. None starts at the first stage that is not current.
         :type from_stage: str, optional
         :param fold: ``"auto"`` or ``"always"``.
         :type fold: str

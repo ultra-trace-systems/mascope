@@ -34,6 +34,16 @@ put it out &mdash; by mass, by isotopes or by a second channel &mdash; or
 *open*. An isotope line shows its main peak's level. The level never changes
 the tier.
 
+The batch states a level of its own too, from checks that read every sample
+at once. A bromine or chlorine line found at the exact spacing across the
+batch, or a sulfur or silicon line the batch found, puts out the rivals that
+cannot make it: a row with no rival left open then reads 4a or 4b. The 14N
+twin of a labelled ion, found across the batch, pins its split: 4b to 4a. A
+peak the batch reads as another peak's 37Cl or 81Br line reads 5b, where its
+own formula holds no such atom. The batch ledger's **Level** column shows the
+batch's level. On a sample's row, it shows under the row's own, marked **the
+batch's**, where it differs. The batch never lowers a 3b or 2b a run stated.
+
 Where a verdict you or a colleague recorded states a level, the chip and the
 **Level** column show that level instead, and the hover says *claim*; with
 none, it says *engine*. A claim recorded before the letters shows its number
