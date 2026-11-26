@@ -26,6 +26,7 @@ import { useCard } from './useCard.js'
 const {
   app,
   focusedAssignment,
+  chipRole,
   headlineIsIon,
   peakSummary,
   ionization,
@@ -207,7 +208,7 @@ const provisional = TIERING_PROVISIONAL
       <BaseTierTag
         :tier="focusedAssignment.tier"
         :evidence="focusedAssignment.evidence"
-        :role="focusedAssignment.role"
+        :role="chipRole"
         :source="focusedAssignment.source"
         :cap="tierChipCap"
         v-help.right="{
@@ -227,7 +228,7 @@ const provisional = TIERING_PROVISIONAL
       <BaseLevelTag
         v-if="identificationLevel"
         :level="identificationLevel.level"
-        :role="focusedAssignment.role"
+        :role="chipRole"
         :tooltip="identificationLevel.tooltip"
       />
       <!-- The producing engine's own level, beside the run's as its tier is

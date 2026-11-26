@@ -14,7 +14,7 @@ import { useCard } from './useCard.js'
 // mass. Folded by default; the chip row carries the level itself.
 const {
   app,
-  focusedAssignment,
+  chipRole,
   identificationLevel,
   rivalTooltip,
   ledgerServed,
@@ -55,7 +55,7 @@ const summary = computed(() => {
       <div class="level-head">
         <BaseLevelTag
           :level="identificationLevel.level"
-          :role="focusedAssignment.role"
+          :role="chipRole"
           :tooltip="identificationLevel.tooltip"
         />
         <span class="level-name">{{ identificationLevel.name }}</span>

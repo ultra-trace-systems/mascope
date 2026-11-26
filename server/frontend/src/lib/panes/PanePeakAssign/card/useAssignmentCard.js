@@ -73,6 +73,14 @@ export function useAssignmentCard({ showSearch }) {
   const focusedAssignment = computed(() =>
     app.data.peakAssignment.peak.forPeak(app.data.peak.focused?.peak_id)
   )
+  // The role the tier and level chips read. An isotopologue that names no M0
+  // stands on its own (isIsotopeLine): its tier and level are its own, not an
+  // M0's, so the chips are told no role, as the ledger's are.
+  const chipRole = computed(() => {
+    const row = focusedAssignment.value
+    if (!row) return null
+    return row.role === 'iso_child' && !isIsotopeLine(row) ? null : row.role
+  })
 
   // Names the chip beside it, because two tier chips in a row are otherwise a
   // puzzle: they are not two readings of one scale but two different judgements,
@@ -1263,8 +1271,8 @@ export function useAssignmentCard({ showSearch }) {
     return {
       ...shown,
       name: levelMeta(shown.level).name,
-      tooltip: levelTooltip({ ...shown, role: row.role }),
-      inherited: row.role === 'iso_child' || record?.inherited_from != null,
+      tooltip: levelTooltip({ ...shown, role: chipRole.value }),
+      inherited: chipRole.value === 'iso_child' || record?.inherited_from != null,
       rivals,
       unlisted: engine ? unlistedRivalsLine(record?.rivals_unlisted, rivals.length) : null
     }
@@ -1992,6 +2000,7 @@ export function useAssignmentCard({ showSearch }) {
     app,
     curation,
     focusedAssignment,
+    chipRole,
     loading,
     viewedRun,
     notice,

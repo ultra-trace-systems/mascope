@@ -212,9 +212,10 @@ vi.mock('@/lib/base', async () => ({
   },
   // Says what holds the tier, as its cap mark and its hover do.
   BaseTierTag: {
-    props: ['tier', 'cap'],
+    props: ['tier', 'cap', 'role'],
     template:
-      '<span class="tier-tag" :data-cap-label="cap?.label ?? null" :data-cap="cap?.tooltip ?? null" />'
+      '<span class="tier-tag" :data-cap-label="cap?.label ?? null" :data-cap="cap?.tooltip ?? null" ' +
+      ':data-role="role" />'
   },
   // Says which level it was handed, so the level row's tests can read it off;
   // the chip itself has a spec of its own (base/BaseLevelTag.spec.js).
@@ -2169,6 +2170,28 @@ describe('PanePeakAssign identification level', () => {
       'An isotopologue: this is the level of its M0'
     )
     expect(rivals(wrapper)).toHaveLength(0)
+    expect(wrapper.findAll('.level-tag').map((tag) => tag.attributes('data-role'))).toEqual([
+      'iso_child',
+      'iso_child'
+    ])
+  })
+
+  // An isotope line that names no M0 (mascope#3661) stands on its own: its
+  // tier and level are its own, and no chip or line says they are an M0's.
+  it("reads an isotopologue that names no M0 as its own, not its M0's", async () => {
+    focusedAssignment = { ...isotopologue(M0), owner_peak_assignment_id: null }
+    detailRecord = { provenance: { identification_level: levelRecord() } }
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('[data-testid="level-inherited"]').exists()).toBe(false)
+    expect(wrapper.findAll('.level-tag').map((tag) => tag.attributes('data-role'))).toEqual([
+      undefined,
+      undefined
+    ])
+    expect(wrapper.findAll('.tier-tag').map((tag) => tag.attributes('data-role'))).toEqual([
+      undefined
+    ])
+    expect(section(wrapper).find('.level-tag').attributes('data-tooltip')).not.toMatch(/its M0/)
   })
 
   it('leaves an M0 unmarked as inherited', async () => {
