@@ -589,10 +589,10 @@ so they need not wait for it.
    batch row the ledger already holds, so it needs no new read. It is option C's up line
    without its link, and it answers the case seen on the demo instance whatever is
    chosen. MAS-1092 goes with it: the batch tile's sample count on a run's own row.
-2. **One batch peak's members, served.** MAS-1301's route widened to every member, any
-   formula, with the per-member flag "the batch changed this sample's reading" from the
-   claim records. Backend only.
-3. **The batch card's first screen**, after MAS-1301: the answer and its firmness line,
+2. **One batch peak's members, served** (MAS-1315). MAS-1301's route widened to every
+   member, any formula, with the per-member flag "the batch changed this sample's
+   reading" from the claim records. Backend only.
+3. **The batch card's first screen**, after MAS-1315: the answer and its firmness line,
    the level block and the strip, as the card's batch scope. The up line gains its link.
    It goes in MAS-713's detail column where that has shipped, else in the interim
    column.
@@ -698,7 +698,7 @@ help card gains its legend.
 The first is built as written here and raised on its PR. The second and third are
 settled, and MAS-1064's brief carries them. For the fourth, only the first two steps of
 4.4 are built before MAS-1311 is answered: the consensus line (MAS-1314) and the members
-read, which every option needs.
+read (MAS-1315), which every option needs.
 
 ## 8. Docs
 
@@ -736,6 +736,7 @@ relations hold the order.
 | MAS-1067 | 2 · The card | The card: answer, why, measurements, sections, verdict bar (4.1) | MAS-1063, MAS-1066 | L |
 | MAS-1068 | 2 · The card | The card's states (4.2) | MAS-1067 | S |
 | MAS-1314 | 2 · The card | The consensus line on a card the batch ledger opens (4.4, step 1) | MAS-1297, MAS-1291 | S |
+| MAS-1315 | 2 · The card | One batch peak's members on any formula, with what the batch changed (4.4, step 2) | MAS-1301 | S to M |
 
 MAS-1063 is the one step that can start at once. The other two roots wait on files other
 work is rewriting:
