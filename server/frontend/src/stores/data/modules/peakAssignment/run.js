@@ -4,6 +4,8 @@ import { defineStore } from 'pinia'
 import { api } from '@/api'
 import { useData } from '@/lib/store'
 import { peakAssignmentEnabled } from '@/lib/features'
+import { isRunInFlight } from '@/lib/runStatus'
+import { useNotification } from '@/stores/ui/notification'
 
 import { useSample } from '../sample'
 
@@ -78,6 +80,20 @@ export const usePeakAssignmentRun = defineStore('app.data.peakAssignment.run', (
     },
     { immediate: true }
   )
+
+  // A run that ends any other way than completed - failed, cancelled - sends no
+  // peak_assignment_reload: the server emits that on success only. Without a
+  // read the list would hold the run as running until the next reload, and
+  // Assign sample, which waits for the sample's run to end, would wait with
+  // it. The end of the process that ran it is the signal: a sample's own run
+  // (assign_sample_peaks), or the batch pass that assigned it (assign_batch).
+  // Read again only while the list holds a run in flight, so a process that
+  // could not have moved one costs nothing.
+  useNotification().on(['assign_sample_peaks', 'assign_batch'], (notification) => {
+    if (!notification || notification.status === 'pending') return
+    if (!data.list.value.some(isRunInFlight)) return
+    data.load('run ended')
+  })
 
   // Launch a new assignment run. Resolves with the created run's id; completion
   // arrives via the peak_assignment_reload event (see events above), and the

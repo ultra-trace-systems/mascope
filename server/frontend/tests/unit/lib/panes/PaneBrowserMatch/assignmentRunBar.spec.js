@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount } from '@vue/test-utils'
+import { ref } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 
 import { useAssignmentLauncher } from '@/lib/panes/PaneBrowserMatch/stores'
@@ -12,6 +13,9 @@ import { useAssignmentLauncher } from '@/lib/panes/PaneBrowserMatch/stores'
 let runList
 let runError
 let focusedSample
+// Bumped to tell the bar the three above changed after it mounted: a run that
+// ends, or the reader moving to another sample.
+const rev = ref(0)
 
 const runFocus = vi.fn()
 const runUnfocus = vi.fn()
@@ -30,12 +34,26 @@ const helpStub = {
 function makeApp() {
   return {
     data: {
-      sample: { focused: focusedSample },
+      sample: {
+        get focused() {
+          rev.value
+          return focusedSample
+        }
+      },
       peakAssignment: {
         run: {
-          list: runList,
-          error: runError,
-          focused: runList[0] ?? null,
+          get list() {
+            rev.value
+            return runList
+          },
+          get error() {
+            rev.value
+            return runError
+          },
+          get focused() {
+            rev.value
+            return runList[0] ?? null
+          },
           focus: runFocus,
           unfocus: runUnfocus
         }
@@ -318,5 +336,101 @@ describe('AssignmentRunBar states', () => {
     // The bar holds no dialog of its own: the launch, its configuration and the
     // refusal it may come back with all stay beside the ledger they are about.
     expect(useAssignmentLauncher().configVisible).toBe(true)
+  })
+})
+
+// A run of the focused sample still in flight holds the sample: the server
+// refuses a second one as busy, so the button waits for it rather than inviting
+// a click that does nothing useful.
+describe('AssignmentRunBar while a run is in flight', () => {
+  const assignButton = (wrapper) => wrapper.find('[label="Assign sample"]')
+  const assignWrap = (wrapper) => wrapper.find('[data-testid="assign-sample-wrap"]')
+  const run = (status) => ({ ...IN_APP, peak_assignment_run_id: `run-${status}`, status })
+
+  it.each(['pending', 'running', 'importing'])(
+    'waits with a spinner while the run is %s, and says why',
+    async (status) => {
+      runList = [run(status), IN_APP]
+      const wrapper = await mountBar()
+
+      expect(assignButton(wrapper).attributes('disabled')).toBeDefined()
+      expect(assignButton(wrapper).attributes('loading')).toBe('true')
+      expect(assignWrap(wrapper).attributes('data-tooltip')).toContain(
+        "This sample's assignment run is in progress"
+      )
+    }
+  )
+
+  it.each(['completed', 'failed', 'cancelled'])(
+    'is offered once the newest run is %s',
+    async (status) => {
+      runList = [run(status), IN_APP]
+      const wrapper = await mountBar()
+
+      expect(assignButton(wrapper).attributes('disabled')).toBeUndefined()
+      expect(assignButton(wrapper).attributes('loading')).toBe('false')
+      expect(assignWrap(wrapper).attributes('data-tooltip')).toBe('')
+    }
+  )
+
+  it('is offered for a sample whose run list failed to load, with no run to wait for', async () => {
+    runError = new Error('nope')
+    const wrapper = await mountBar()
+
+    expect(assignButton(wrapper).attributes('disabled')).toBeUndefined()
+  })
+
+  it.each(['failed', 'cancelled', 'completed'])(
+    'comes back when the run ends %s',
+    async (status) => {
+      runList = [run('running')]
+      const wrapper = await mountBar()
+      expect(assignButton(wrapper).attributes('disabled')).toBeDefined()
+
+      runList = [run(status)]
+      rev.value++
+      await wrapper.vm.$nextTick()
+
+      expect(assignButton(wrapper).attributes('disabled')).toBeUndefined()
+      expect(assignWrap(wrapper).attributes('data-tooltip')).toBe('')
+    }
+  )
+
+  it('comes back when the reader moves to a sample with no run in flight', async () => {
+    runList = [run('running')]
+    const wrapper = await mountBar()
+    expect(assignButton(wrapper).attributes('disabled')).toBeDefined()
+
+    // The run list holds the focused sample's runs only.
+    focusedSample = { sample_item_id: 'si-2', sample_item_name: 'Sample 2' }
+    runList = [IN_APP]
+    rev.value++
+    await wrapper.vm.$nextTick()
+
+    expect(assignButton(wrapper).attributes('disabled')).toBeUndefined()
+  })
+
+  // The run list learns of a new run only when it is read again, so the launch
+  // itself holds the button until it does.
+  it('waits while a launch is on its way for this sample', async () => {
+    runList = [IN_APP]
+    const wrapper = await mountBar()
+    useAssignmentLauncher().launchingId = 'si-1'
+    await wrapper.vm.$nextTick()
+
+    expect(assignButton(wrapper).attributes('disabled')).toBeDefined()
+    expect(assignWrap(wrapper).attributes('data-tooltip')).toContain('Starting the assignment run')
+
+    useAssignmentLauncher().launchingId = null
+    await wrapper.vm.$nextTick()
+    expect(assignButton(wrapper).attributes('disabled')).toBeUndefined()
+  })
+
+  it('is not held by a launch for another sample', async () => {
+    runList = [IN_APP]
+    useAssignmentLauncher().launchingId = 'si-other'
+    const wrapper = await mountBar()
+
+    expect(assignButton(wrapper).attributes('disabled')).toBeUndefined()
   })
 })

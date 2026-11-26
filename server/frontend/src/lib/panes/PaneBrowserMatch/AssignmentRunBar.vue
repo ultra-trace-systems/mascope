@@ -6,10 +6,10 @@ import Select from 'primevue/select'
 import Tag from 'primevue/tag'
 
 import { BaseRunProvenance } from '@/lib/base'
-import { runStatusLabel } from '@/lib/runStatus'
+import { isRunInFlight, runStatusLabel } from '@/lib/runStatus'
 import { useApp } from '@/stores'
 
-import { useAssignmentLauncher } from './stores'
+import { assignBlockedReason, useAssignmentLauncher } from './stores'
 
 /**
  * Which run the assignment ledger is showing, and the way to start another one.
@@ -34,8 +34,7 @@ const runs = computed(() => app.data.peakAssignment.run)
 // One dropdown option per run, labelled with its ordinal and its status in
 // words (runStatus.js) rather than the API's value. The ellipsis marks only
 // runs still in flight - failed/cancelled runs are done, just not completed
-// (mirrors the backend's non-terminal statuses).
-const IN_FLIGHT_STATUSES = ['pending', 'running', 'importing']
+// (runStatus.js, mirroring the backend's non-terminal statuses).
 
 // Label a run from the run itself rather than from a property carried on the
 // option copy. The `#value` slot is handed the raw v-model value - the record
@@ -46,7 +45,7 @@ function runLabel(run) {
   const list = runs.value.list
   const index = list.findIndex((r) => r.peak_assignment_run_id === run.peak_assignment_run_id)
   const ordinal = index === -1 ? '' : `#${list.length - index} · `
-  return `${ordinal}${runStatusLabel(run.status)}${IN_FLIGHT_STATUSES.includes(run.status) ? '…' : ''}`
+  return `${ordinal}${runStatusLabel(run.status)}${isRunInFlight(run) ? '…' : ''}`
 }
 
 const runOptions = computed(() => runs.value.list.map((run) => ({ ...run, _label: runLabel(run) })))
@@ -80,6 +79,12 @@ const selectedRun = computed({
 // PaneBrowserMatch stubs the ledger at the module boundary. Change one branch,
 // read the other.
 const canAssign = computed(() => runs.value.list.length > 0 || Boolean(runs.value.error))
+
+// A run of this sample still in flight, or a launch on its way for it: the
+// server would refuse another run as busy, so the button waits with a spinner
+// and says why. It comes back once the run list shows the run ended - failed
+// and cancelled included - or the reader moves to a sample with none running.
+const blockedReason = computed(() => assignBlockedReason(app, launcher))
 </script>
 
 <template>
@@ -144,26 +149,36 @@ const canAssign = computed(() => runs.value.list.length > 0 || Boolean(runs.valu
       </template>
     </Select>
 
-    <Button
+    <!-- The tooltip sits on a wrapper: a disabled button gets no hover of
+         its own, and the reason is what a disabled button most needs. -->
+    <span
       v-if="canAssign"
-      label="Assign sample"
-      icon="pi ph ph-magic-wand"
-      size="small"
-      :disabled="!app.data.sample.focused"
-      @click="launcher.configVisible = true"
-      :pt="
-        app.ui.help.bottom(
-          `
-          <h1>Assign Sample</h1>
-          <p>
-          Launches an assignment run for this sample: every peak is matched
-          against the known target library first, then optionally through the
-          untargeted composition search. Opens the run configuration.
-          </p>`,
-          { doc: app.ui.help.docUrl('how-it-works/peak-assignment/#the-two-stages') }
-        )
-      "
-    />
+      v-tooltip.bottom="blockedReason"
+      class="assign-wrap"
+      data-testid="assign-sample-wrap"
+    >
+      <Button
+        label="Assign sample"
+        icon="pi ph ph-magic-wand"
+        size="small"
+        :loading="Boolean(blockedReason)"
+        :disabled="!app.data.sample.focused || Boolean(blockedReason)"
+        @click="launcher.configVisible = true"
+        :pt="
+          app.ui.help.bottom(
+            `
+            <h1>Assign Sample</h1>
+            <p>
+            Launches an assignment run for this sample: every peak is matched
+            against the known target library first, then optionally through the
+            untargeted composition search. Opens the run configuration. While a
+            run of the sample is in progress, it waits for that run to end.
+            </p>`,
+            { doc: app.ui.help.docUrl('how-it-works/peak-assignment/#the-two-stages') }
+          )
+        "
+      />
+    </span>
   </div>
 </template>
 
@@ -205,6 +220,10 @@ const canAssign = computed(() => runs.value.list.length > 0 || Boolean(runs.valu
 /* Never squeezed out by the label beside it: the mark is what tells a reader
    the run cannot be opened against the current peaks. */
 .stale-run {
+  flex: none;
+}
+.assign-wrap {
+  display: inline-flex;
   flex: none;
 }
 .run-name {
