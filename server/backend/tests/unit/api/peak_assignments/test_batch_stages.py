@@ -51,6 +51,7 @@ ORDER = [
     "continuity",
     "batch_checks",
     "blends",
+    "level",
 ]
 
 
@@ -59,7 +60,7 @@ def test_the_stages_run_in_the_order_their_reads_give():
     # stage that rewrites members before every stage that only reads.
     assert [spec.stage.value for spec in STAGES] == ORDER
     rewriting = [spec.rewrites for spec in STAGES]
-    assert rewriting == [True] * 5 + [False] * 4
+    assert rewriting == [True] * 5 + [False] * 5
 
 
 def test_the_stage_marks_read_the_stage_lists_order_and_keys():
@@ -107,7 +108,8 @@ def test_each_record_key_names_the_stage_that_writes_it():
 def test_stages_from_and_after():
     assert [s.value for s in stages_from("series")] == ORDER[4:]
     assert [s.value for s in stages_after(BatchStage.SERIES)] == ORDER[5:]
-    assert stages_after(BatchStage.BLENDS) == ()
+    assert stages_after(BatchStage.BLENDS) == (BatchStage.LEVEL,)
+    assert stages_after(BatchStage.LEVEL) == ()
 
 
 class TestThePlan:
@@ -380,3 +382,39 @@ class TestThePassesSettings:
         # No pass: nothing.
         assert settings_moved(None, "b") is False
         assert settings_moved({"settings_hash": "a"}, None) is False
+
+
+@pytest.mark.asyncio
+async def test_the_level_stage_reads_the_batch_inside_the_pass(monkeypatch):
+    # The pass's last stage states the batch's levels in the pass's own run,
+    # nested under its process (``batch_level.read_batch_levels``).
+    asked = []
+
+    async def read_batch_levels(**kwargs):
+        asked.append(kwargs)
+        return {"status": "success", "data": {"anchors_read": 3}}
+
+    monkeypatch.setattr(batch_stages, "read_batch_levels", read_batch_levels)
+    spec = batch_stages.STAGE_BY_NAME[BatchStage.LEVEL]
+    call = batch_stages.StageCall(
+        sample_batch_id="b-1",
+        config=None,
+        user_id=7,
+        parent_id="proc-1",
+        batch_peak_run_id="run-1",
+    )
+
+    outcomes = await spec.run(call)
+
+    assert outcomes == [{"status": "success", "data": {"anchors_read": 3}}]
+    [kwargs] = asked
+    assert {key: kwargs[key] for key in ("sample_batch_id", "batch_peak_run_id")} == {
+        "sample_batch_id": "b-1",
+        "batch_peak_run_id": "run-1",
+    }
+    assert (kwargs["parent_id"], kwargs["independent_transaction"]) == ("proc-1", False)
+    assert (spec.label, spec.rewrites, spec.record_keys) == (
+        "Identification level",
+        False,
+        ("identification_level",),
+    )

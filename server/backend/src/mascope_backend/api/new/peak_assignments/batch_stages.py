@@ -1,7 +1,7 @@
 """The batch stages: the batch passes in one fixed order, with one staleness rule.
 
-The batch ledger is read and rewritten by nine passes, each built as a step of
-its own. Five of them rewrite members and four only record a reading, and each
+The batch ledger is read and rewritten by ten passes, each built as a step of
+its own. Five of them rewrite members and five only record a reading, and each
 reads what another wrote: the search skips what the source's claims took, the
 series walks from what the search committed, the co-variation normalises by
 the reagent ions the source's claims named, the ratio stability grades a drift
@@ -25,8 +25,10 @@ while its batch peak's consensus names the reading it was made for.
    the stages before committed.
 6. **Co-variation** (``batch_coherence.py``), 7. **ratio stability**
    (``continuity.py``), 8. **batch checks** (``batch_checks.py``) and 9.
-   **probable blends** (the consensus of every batch peak recomputed): the
-   readings, which move no member.
+   **probable blends** (the consensus of every batch peak recomputed) and 10.
+   the **identification level** (``batch_level.py``), read last off the
+   members' runs, the stamped lines and the batch checks, on the consensus
+   the blends left: the readings, which move no member.
 
 One entry runs them (:func:`assign_batch`, a *pass*): from a given stage to
 the end, or from the first stage that is not current, whichever comes first.
@@ -135,6 +137,7 @@ from mascope_backend.api.new.peak_assignments.batch_isotopologues import (
 from mascope_backend.api.new.peak_assignments.batch_known_species import (
     decide_batch_known_species,
 )
+from mascope_backend.api.new.peak_assignments.batch_level import read_batch_levels
 from mascope_backend.api.new.peak_assignments.batch_library import _iso, library_read
 from mascope_backend.api.new.peak_assignments.batch_lock import _acquire_batch_fold_lock
 from mascope_backend.api.new.peak_assignments.batch_merged_isotopologues import (
@@ -402,6 +405,13 @@ async def _run_blends(call: StageCall) -> list[dict]:
     ]
 
 
+async def _run_level(call: StageCall) -> list[dict]:
+    """The identification level of every batch peak (``batch_level.py``), read
+    off the members' runs and the batch's isotope checks as the ledger serves
+    them: last, so every record it reads is the pass's."""
+    return [await read_batch_levels(**_dependent(call))]
+
+
 #: The stages, in order.
 STAGES: tuple[StageSpec, ...] = (
     StageSpec(
@@ -486,6 +496,15 @@ STAGES: tuple[StageSpec, ...] = (
         STAGE_RECORD_KEYS[BatchStage.BLENDS],
         False,
         _run_blends,
+    ),
+    StageSpec(
+        BatchStage.LEVEL,
+        "Identification level",
+        PHASE_CROSS_CHECK,
+        (),
+        STAGE_RECORD_KEYS[BatchStage.LEVEL],
+        False,
+        _run_level,
     ),
 )
 

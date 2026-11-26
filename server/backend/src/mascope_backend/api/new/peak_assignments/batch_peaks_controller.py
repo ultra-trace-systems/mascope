@@ -33,6 +33,7 @@ from mascope_backend.api.new.instrument_configs.lib import read_instrument_funct
 from mascope_backend.api.new.ionization.modes.versions import root_ids
 from mascope_backend.api.new.peak_assignments import batch_peaks
 from mascope_backend.api.new.peak_assignments.batch_blend import BLEND_TIERS
+from mascope_backend.api.new.peak_assignments.batch_level import batch_level_record_of
 from mascope_backend.api.new.peak_assignments.batch_lock import _acquire_batch_fold_lock
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     DIAGNOSTIC_ISOTOPOLOGUES_KEY,
@@ -695,6 +696,7 @@ def _consensus_of(
         persistence=persistence,
         flat_series=flat_series_record_of(bp, stale=True),
         water_ladder=water_ladder_record_of(bp, stale=True),
+        batch_level=batch_level_record_of(bp, stale=True),
     )
     searched_empty = searched_empty_record_of(bp)
     if searched_empty is not None and consensus.consensus_tier == TIER_UNASSIGNED:

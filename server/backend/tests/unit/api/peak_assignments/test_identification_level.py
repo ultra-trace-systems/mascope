@@ -37,6 +37,7 @@ from mascope_backend.api.new.peak_assignments.identification_level import (
     LEVEL_RULES_VERSION,
     LEVELS,
     OPEN,
+    SPLIT,
     TEST_ISOTOPES,
     TEST_MASS,
     TEST_SECOND_CHANNEL,
@@ -204,8 +205,8 @@ class TestTheScale:
     def test_the_rules_version_is_pinned(self):
         # A fact, a rule or the order of the rules that changes bumps this, and
         # a test that pins it is where the bump is noticed. The run records it.
-        assert LEVEL_RULES_VERSION == 5
-        assert apply_levels(measured(*[m0()]))["level_rules_version"] == 5
+        assert LEVEL_RULES_VERSION == 6
+        assert apply_levels(measured(*[m0()]))["level_rules_version"] == 6
         assert "level_mapping_version" not in level(m0())
 
     def test_the_vocabulary_is_the_shared_scale(self):
@@ -382,6 +383,51 @@ class TestFiveA:
         assert entry["test"] == OPEN
         assert entry["fit"] == 0.85
         assert "within the tie margin" in entry["detail"]
+
+    def test_a_row_left_at_5a_records_the_split_it_would_read_at_4(self):
+        # The batch's isotope checks lift such a row (step 5.8c): the letter of
+        # 4 it then reads is its own split, which only its run can read.
+        pinned = level(m0(alternatives=[rival("C7H16O5", 0.85, "C7H17O5+")]))
+        opened = level(
+            m0(
+                alternatives=[rival("C7H16O5", 0.85, "C7H17O5+")],
+                provenance={
+                    "cross_channel": {
+                        "channels": [PROTON],
+                        REASON_AMBIGUOUS_ADDUCT: {"alternative": "C6H14O7", "via": "x"},
+                    }
+                },
+            )
+        )
+
+        assert pinned["level"] == opened["level"] == "5a"
+        assert pinned[SPLIT]["level"] == "4a"
+        assert pinned[SPLIT]["fact"]["fact"] == "one_decomposition"
+        assert opened[SPLIT]["level"] == "4b"
+        assert opened[SPLIT]["evidence"].startswith("the split is open")
+
+    def test_a_row_whose_shortlist_was_not_measured_records_no_split(self):
+        record = level(m0(source="untargeted"))
+
+        assert record["level"] == "5a"
+        assert SPLIT not in record
+
+    def test_a_rival_reading_another_ions_line_says_so(self):
+        # The batch's isotope checks ask such a rival nothing (``batch_level``),
+        # as the run's own isotope tests do not.
+        row = m0(
+            alternatives=[
+                rival("C7H16O5", 0.85, "C7H17O5+"),
+                rival("C5H10O5", 0.85, "C5H11O5+", isotope_label="13C"),
+            ]
+        )
+
+        record = level(row)
+
+        flags = {
+            entry["formula"]: entry.get("monoisotopic") for entry in record["rivals"]
+        }
+        assert flags == {"C7H16O5": None, "C5H10O5": False}
 
     def test_the_evidence_names_three_open_rivals_and_counts_the_rest(self):
         row = m0(

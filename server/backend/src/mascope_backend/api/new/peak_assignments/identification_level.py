@@ -42,7 +42,7 @@ Each committed monoisotopic row is read in order:
   Untestable: the instrument did not separate its peak from a neighbour
   (``tiering.REASON_UNRESOLVED_PEAK``, step 3.4f), so neither its mass nor its
   height was measured. A stamped line under a halogen-free reading is the
-  batch's fact, read from step 5.8c.
+  batch's fact, read by step 5.8c (``batch_level``).
 - **5a, rivals remain.** The row's measured shortlist holds a rival no test
   excluded; the row lists each. The shortlist is the row's rival set
   (``rival_set.RIVAL_SET``), the one the density and the arbitration read:
@@ -210,11 +210,21 @@ from mascope_tools.composition.profiles import (
 #: the formula search left unscored past its candidate limit. 5 (MAS-1185):
 #: an untargeted winner's unlisted rivals count, of the formulas the cap on
 #: its stored alternatives cut, the formula-only entries and the contenders
-#: its rival set does not hold, not every formula cut.
-LEVEL_RULES_VERSION = 5
+#: its rival set does not hold, not every formula cut. 6 (MAS-940): a row at
+#: 5a with a measured shortlist records the split it would read at 4
+#: (:data:`SPLIT`), and a rival that reads the peak as another ion's isotope
+#: line says so, for the batch's level to read (``batch_level``); a batch peak
+#: states a level of its own from its members' and the batch's isotope checks.
+LEVEL_RULES_VERSION = 6
 
 #: The provenance key a committed row's level is recorded under.
 IDENTIFICATION_LEVEL = "identification_level"
+
+#: The key a row at 5a with a measured shortlist records its molecule-reagent
+#: split under (``level``, ``evidence``, ``lift``, ``fact``): the letter of 4
+#: it reads once no rival is left open, which a batch's isotope check that
+#: puts its open rivals out lifts it to (step 5.8c, ``batch_level``).
+SPLIT = "split"
 
 #: The key the run's tiering record carries the level pass's summary under.
 LEVEL_SUMMARY = "identification_level"
@@ -1182,11 +1192,13 @@ def _level(
     """:func:`level_of` over the row's shortlist (:func:`shortlist`)."""
     record: dict = {}
     evidence, lift, facts = _refuted(row)
-    tested = (
-        [judge_rival(row, rival, own_lines, ctx) for rival in rivals]
-        if rivals is not None
-        else []
-    )
+    # A reading of another ion's isotope line is asked by mass and channel
+    # alone, here and by the batch's isotope checks (``batch_level``).
+    tested = [
+        judge_rival(row, rival, own_lines, ctx)
+        | ({} if rival.monoisotopic else {"monoisotopic": False})
+        for rival in rivals or []
+    ]
     record["rivals"] = tested
     if unlisted:
         record["rivals_unlisted"] = unlisted
@@ -1230,6 +1242,7 @@ def _level(
     for entry in tested:
         if entry["test"] != OPEN:
             facts.append(_fact(entry["test"], entry["record"], entry["formula"]))
+    level, split, split_lift, split_fact = _split(row, ctx)
     if five_a is not None:
         return {
             **record,
@@ -1237,8 +1250,13 @@ def _level(
             "evidence": "; ".join(five_a[0]),
             "lift": "; ".join(five_a[1]),
             "facts": facts,
+            SPLIT: {
+                "level": level,
+                "evidence": split,
+                "lift": split_lift,
+                "fact": split_fact,
+            },
         }
-    level, split, split_lift, split_fact = _split(row, ctx)
     facts.append(split_fact)
     excluded = (
         _tested_summary(tested) if tested else "no rival on the measured shortlist"
@@ -1381,11 +1399,12 @@ def apply_levels(
 def members_level(counts: dict[str, int] | None) -> str | None:
     """The level most of a batch peak's members' runs stated.
 
-    The batch ledger's reading of the level until the batch states one of its
-    own (step 5.8c): of the members whose run committed the consensus
-    formula, the level the most of them carry. A tie reads as the level
-    further down the scale (:data:`LEVELS`), so a batch peak is never shown at
-    more than its members stated.
+    The batch ledger's members' split beside the batch's own level, and the
+    rule the batch's level is read by (step 5.8c, ``batch_level``): of the
+    members whose run committed the consensus formula, the level the most of
+    them carry. A tie reads as the level further down the scale
+    (:data:`LEVELS`), so a batch peak is never shown at more than most of its
+    members hold.
 
     :param counts: Level -> how many such members carry it.
     :return: The level, or None where no member states one.
