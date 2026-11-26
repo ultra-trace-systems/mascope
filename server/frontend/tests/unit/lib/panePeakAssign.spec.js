@@ -8,6 +8,7 @@ import { num } from '@/lib/formatters'
 import { isIsotopeLine } from '@/lib/isotopeLines'
 import { EVIDENCE_LEVELS } from '@/lib/verification'
 import { TIERING_PROVISIONAL } from '@/lib/tiers'
+import { EMPTY_REASONS } from '@/lib/panes/PanePeakAssign/card/cardReadings.js'
 
 // The inspector card for a peak with no committed formula. Two states reach it:
 // a ledger row of tier `unassigned` (a real assignment row, just formula-less),
@@ -5636,6 +5637,18 @@ describe('PanePeakAssign the card, answer first', () => {
       expect(dash('batch').text()).toBe('—')
       expect(dash('batch').attributes('data-tooltip')).toMatch(/^No batch peak holds this peak/)
       expect(tile(wrapper, 'batch').caption).toBe('in no batch peak')
+    })
+
+    // In a batch peak with no sample count served: the samples line's dash
+    // carries its reason on hover, the readings line its own count.
+    it('gives the reason behind the samples dash of a batch peak', async () => {
+      detailRecord = { provenance: {}, batch_groups: [] }
+      const wrapper = await mountPane({ recordTooltips: true })
+      const value = (key) => wrapper.find(`[data-testid="batch-${key}"] .tile-value`)
+
+      expect(value('samples').text()).toBe('—')
+      expect(value('samples').attributes('data-tooltip')).toBe(EMPTY_REASONS.samples)
+      expect(value('readings').attributes('data-tooltip')).toMatch(/^0 readings of the batch/)
     })
 
     it('writes the tie out', async () => {
