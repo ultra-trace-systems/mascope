@@ -6,6 +6,8 @@ import { getApiErrorMessage } from '@/api/utils'
 import { focusSamplePeak } from '@/lib/panes/PaneBrowserSample/stores/focusSamplePeak.js'
 import { useApp } from '@/stores'
 
+import { useBatchLedgerReturn } from './batchLedgerReturn.js'
+
 /**
  * The brightest member of a batch peak's series: the sample it was measured
  * in and the peak to focus there.
@@ -73,6 +75,7 @@ export function measuredMembers(record) {
  */
 export const useBatchPeakJump = defineStore('browser.match.batchPeakJump', () => {
   const app = useApp()
+  const ledgerReturn = useBatchLedgerReturn()
 
   /** The batch peak whose jump is in flight, or null. */
   const pendingId = ref(null)
@@ -118,6 +121,8 @@ export const useBatchPeakJump = defineStore('browser.match.batchPeakJump', () =>
       const loaded = new Set(app.data.sample.list.map((s) => s.sample_item_id))
       const members = measuredMembers(records?.[0]).filter((m) => loaded.has(m.sample_item_id))
       opened.value = { batch_peak_id: row.batch_peak_id, sample_batch_id: batchId, members }
+      // A step of the browser's history, so Back returns to this row.
+      ledgerReturn.leaveFromRow(row.batch_peak_id, sample.sample_item_id)
       const outcome = await focusSamplePeak(app, sample, member.sample_peak_id)
       if (outcome === 'missing') {
         notify("The peak is not in the sample's loaded peak list, so only the sample was opened.")
@@ -142,6 +147,7 @@ export const useBatchPeakJump = defineStore('browser.match.batchPeakJump', () =>
     const sample =
       member && app.data.sample.list.find((s) => s.sample_item_id === member.sample_item_id)
     if (!sample) return null
+    ledgerReturn.stepped(sample.sample_item_id)
     const outcome = await focusSamplePeak(app, sample, member.sample_peak_id)
     if (outcome === 'missing') {
       notify("The peak is not in the sample's loaded peak list, so only the sample was opened.")

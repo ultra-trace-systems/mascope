@@ -143,6 +143,37 @@ describe('useBatchPeakJump', () => {
     expect(focusSamplePeak).not.toHaveBeenCalled()
   })
 
+  // The way back (stores/batchLedgerReturn.js): the jump is a step of the
+  // browser's history, written before the sample opens, and a step through
+  // the members moves that step to the new sample.
+  it("writes the jump as a history step back to its row, and moves it with a member's step", async () => {
+    const { useBatchLedgerReturn } =
+      await import('@/lib/panes/PaneBrowserMatch/stores/batchLedgerReturn.js')
+    post.mockResolvedValue([series(['s-1', 's-2'], [10, 300], ['p1', 'p2'])])
+    const jump = useBatchPeakJump()
+    const ledgerReturn = useBatchLedgerReturn()
+    const leave = vi.spyOn(ledgerReturn, 'leaveFromRow')
+    const stepped = vi.spyOn(ledgerReturn, 'stepped')
+    focusSamplePeak.mockImplementationOnce(() => {
+      expect(leave).toHaveBeenCalledWith('bp-1', 's-2')
+      return Promise.resolve('peak')
+    })
+
+    await jump.jumpToBrightest({ batch_peak_id: 'bp-1' })
+    expect(leave).toHaveBeenCalledTimes(1)
+    expect(ledgerReturn.origin).toMatchObject({ batch_peak_id: 'bp-1', sample_item_id: 's-2' })
+
+    await jump.stepTo(1)
+    expect(stepped).toHaveBeenCalledWith('s-1')
+    expect(ledgerReturn.origin).toMatchObject({ batch_peak_id: 'bp-1', sample_item_id: 's-1' })
+
+    // No member, no step.
+    stepped.mockClear()
+    await jump.stepTo(5)
+    expect(stepped).not.toHaveBeenCalled()
+    ledgerReturn.$dispose()
+  })
+
   it('reads the run on screen, so an earlier run opens where it was brightest then', async () => {
     app = makeApp({ viewingId: 'run-old' })
     post.mockResolvedValue([series(['s-1'], [10], ['p1'])])

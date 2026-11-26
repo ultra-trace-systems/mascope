@@ -1,5 +1,5 @@
 <script setup>
-import { reactive, ref, computed, watch } from 'vue'
+import { reactive, ref, computed, nextTick, watch } from 'vue'
 
 import Button from 'primevue/button'
 import Column from 'primevue/column'
@@ -48,6 +48,7 @@ import {
   GROUP_CHECK_PAIR,
   GROUP_CO_VARIATION,
   GROUP_SERIES,
+  LEDGER_ROW_HEIGHT,
   LedgerMenuChoice,
   LedgerVerdictPopover,
   LedgerViewToggle,
@@ -70,6 +71,7 @@ import {
   verdictRank
 } from '@/lib/ledger'
 import { useApp } from '@/stores'
+import { scrollVirtualRowIntoView } from '@/lib/virtualScroll'
 
 import { useBatchPeakJump } from './stores/batchPeakJump.js'
 import { INSTRUMENT_TYPE_LABELS } from '@/lib/batchChart'
@@ -78,6 +80,7 @@ import { runLabel } from '@/stores/data/modules/batchPeak/run.js'
 
 import { useBatchAssign } from './stores/batchAssign.js'
 import { useBatchChartSelection } from './stores/batchChartSelection.js'
+import { useBatchLedgerReturn } from './stores/batchLedgerReturn.js'
 import BatchPeakContinuityPopover from './BatchPeakContinuityPopover.vue'
 
 /**
@@ -1048,6 +1051,34 @@ const openBrightest = (row) => {
   if (jump.pendingId == null && row.n_present) jump.jumpToBrightest(row)
 }
 
+// Back from a sample this ledger opened (stores/batchLedgerReturn.js): the
+// row it was opened from, selected and scrolled into view. The filters, the
+// sort and the rest of the selection are as the reader left them, held in
+// stores that outlive the pane. A folded isotopologue line comes back as its
+// family's row; a row the filters now hide is not brought back. Waits for the
+// rows when they are still loading, and is done after one try.
+const ledgerReturn = useBatchLedgerReturn()
+const ledgerRef = ref()
+watch(
+  [() => ledgerReturn.reveal, () => rows.value.length, () => ledger.value.pending],
+  ([batchPeakId]) => {
+    if (batchPeakId == null || ledger.value.pending || !ledger.value.list.length) return
+    ledgerReturn.reveal = null
+    const parentId = decoratedById.value.get(batchPeakId)?.parentId
+    let index = rows.value.findIndex((row) => row.batch_peak_id === batchPeakId)
+    if (index < 0 && parentId) index = rows.value.findIndex((row) => row.batch_peak_id === parentId)
+    if (index < 0) return
+    const row = rows.value[index]
+    if (!isLine(row) && !ledger.value.selected.some((s) => s.batch_peak_id === row.batch_peak_id)) {
+      applySelection([...ledger.value.selected, row])
+    }
+    nextTick(() =>
+      scrollVirtualRowIntoView(ledgerRef.value?.table, index, { itemSize: LEDGER_ROW_HEIGHT })
+    )
+  },
+  { immediate: true }
+)
+
 // Whatever was in flight, went wrong, or was selected belonged to the previous
 // batch. The selection itself is reset by the ledger's own reload.
 watch(
@@ -1062,6 +1093,7 @@ watch(
 
 <template>
   <AssignmentLedger
+    ref="ledgerRef"
     scope="batch"
     label="Batch peaks"
     icon="pi ph ph-atom"
