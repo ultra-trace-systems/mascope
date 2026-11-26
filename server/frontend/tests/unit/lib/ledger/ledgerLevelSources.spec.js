@@ -216,6 +216,16 @@ describe('LedgerLevelSources', () => {
     expect(testid(wrapper, 'level-claim').text()).toContain("the batch's own level and what")
   })
 
+  it("measures a better level against the claim's, which the row shows, not the batch's", () => {
+    // The members' 4a is better than the batch's 4b, not than the claim's 1.
+    const wrapper = mountIt({
+      claim: { level: '1', evidence: 'a reference standard', lift: null },
+      batchLevel: { level: '4b', evidence: null, lift: null }
+    })
+
+    expect(testid(wrapper, 'level-better').exists()).toBe(false)
+  })
+
   it("shows the ledger's split while the read is asked, with no way to a member yet", () => {
     const wrapper = mountIt({ sources: null, loading: true })
 

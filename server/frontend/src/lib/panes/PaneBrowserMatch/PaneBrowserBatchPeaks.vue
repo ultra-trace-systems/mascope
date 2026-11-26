@@ -1131,9 +1131,10 @@ const HEADER_TOOLTIPS = {
     "Consensus tier: an evidence-weighted vote over the members' per-sample tiers, " +
     'assigned only when a weighted majority reach it',
   level:
-    "Identification level the members' runs stated for the consensus formula, by majority, " +
-    'a tie reading as the weaker level: what may be stated of it, from 5 (a measured mass) ' +
-    'to 1 (a confirmed structure). The batch states none of its own, and no tier moves on it',
+    "Identification level the batch states for the consensus formula: what its members' runs " +
+    "stated, read under the batch's isotope checks, by majority, a tie reading as the weaker " +
+    'level. What may be stated of it, from 5 (a measured mass) to 1 (a confirmed structure). ' +
+    "Where the batch states none, the level most members' runs stated; no tier moves on it",
   samples: "Samples: how many of the batch's samples this species is seen in",
   across:
     "Across the batch: what the batch's own steps read of this species - a series, " +
@@ -1642,8 +1643,8 @@ watch(
       <BaseTierTag :tier="data.consensus_tier" :role="data.consensus_role" :cap="cap" />
     </template>
 
-    <!-- The members' level, and with Show > Engine readings on, the
-         importing engine's own, outlined beside it. -->
+    <!-- The batch's own level, else the members', and with Show > Engine
+         readings on, the importing engine's own, outlined beside it. -->
     <template #level="{ data }">
       <!-- The chip opens where the level comes from: the members that state
            it, their evidence, and the way to them. -->
