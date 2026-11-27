@@ -8,7 +8,10 @@ import { num } from '@/lib/formatters'
 import { isIsotopeLine } from '@/lib/isotopeLines'
 import { EVIDENCE_LEVELS } from '@/lib/verification'
 import { TIERING_PROVISIONAL } from '@/lib/tiers'
-import { EMPTY_REASONS } from '@/lib/panes/PanePeakAssign/card/cardReadings.js'
+import {
+  CONFIDENCE_OFF_TOOLTIP,
+  EMPTY_REASONS
+} from '@/lib/panes/PanePeakAssign/card/cardReadings.js'
 import { CAPPING_RULES, tierReasonLabel } from '@/lib/tierReasons'
 
 // The inspector card for a peak with no committed formula. Two states reach it:
@@ -2225,6 +2228,22 @@ describe('PanePeakAssign identification level', () => {
       undefined
     ])
     expect(section(wrapper).find('.level-tag').attributes('data-tooltip')).not.toMatch(/its M0/)
+  })
+
+  // A run from before MAS-1336 stored a lift no reader could act on: the card
+  // shows it in the engine's words now.
+  it("rewords an older run's lift that named no step a reader can take", async () => {
+    focusedAssignment = {
+      ...M0,
+      level: '5a',
+      level_evidence: 'rivals not measured',
+      level_lift: 'measure the shortlist'
+    }
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('[data-testid="level-lift"] .level-value').text()).toBe(
+      'its rivals measured: this run did not measure them'
+    )
   })
 
   it('leaves an M0 unmarked as inherited', async () => {
@@ -5890,6 +5909,90 @@ describe('PanePeakAssign the card, answer first', () => {
       expect(dash('batch').text()).toBe('—')
       expect(dash('batch').attributes('data-tooltip')).toMatch(/^No batch peak holds this peak/)
       expect(tile(wrapper, 'batch').caption).toBe('in no batch peak')
+    })
+
+    // An untargeted winner carries a confidence only where its run measured
+    // the search's shortlist (winner confidence, off by default): the tile
+    // reads the run's record of the option, never the missing value alone.
+    describe("an untargeted winner's confidence", () => {
+      const UNTARGETED = { ...ROW, source: 'untargeted' }
+      const withOption = (on, extra = {}) => ({
+        engine: 'mascope',
+        config: { stage_b_confidence: on, stage_b_confidence_peaks: 200, ...extra }
+      })
+
+      it('says winner confidence was off for the run, and how it is set', async () => {
+        focusedAssignment = UNTARGETED
+        detailRecord = { provenance: {} }
+        runRecord = withOption(false)
+        const wrapper = await mountPane({ recordTooltips: true })
+
+        expect(tile(wrapper, 'confidence')).toEqual({
+          value: '—',
+          caption: 'not measured: winner confidence was off for this run'
+        })
+        const hover = wrapper
+          .find('[data-testid="tile-confidence"] .tile-value')
+          .attributes('data-tooltip')
+        expect(hover).toBe(CONFIDENCE_OFF_TOOLTIP)
+        expect(hover).toMatch(/run settings do not offer it/)
+      })
+
+      it('shows the share where the run measured it', async () => {
+        focusedAssignment = UNTARGETED
+        detailRecord = { provenance: { confidence: 0.62 } }
+        runRecord = withOption(true)
+        const wrapper = await mountPane()
+
+        expect(tile(wrapper, 'confidence')).toEqual({
+          value: '62%',
+          caption: 'its share of the evidence among the candidates'
+        })
+      })
+
+      it("names the run's budget where the option was on and the row past it", async () => {
+        focusedAssignment = UNTARGETED
+        detailRecord = { provenance: {} }
+        runRecord = withOption(true, { stage_b_confidence_peaks: 50 })
+        const wrapper = await mountPane({ recordTooltips: true })
+
+        expect(tile(wrapper, 'confidence').caption).toBe(
+          'not measured: the run measured its 50 most intense winners only'
+        )
+        expect(
+          wrapper.find('[data-testid="tile-confidence"] .tile-value').attributes('data-tooltip')
+        ).toMatch(/^Winner confidence was on for this run/)
+      })
+
+      it('reads the source off the detail where the slim row carries none', async () => {
+        focusedAssignment = ROW
+        detailRecord = { source: 'untargeted', provenance: {} }
+        runRecord = withOption(false)
+        const wrapper = await mountPane()
+
+        expect(tile(wrapper, 'confidence').caption).toBe(
+          'not measured: winner confidence was off for this run'
+        )
+      })
+
+      // The option is the untargeted stage's: a database-stage row with no
+      // confidence, or a run that recorded no option at all, says no more
+      // than "not recorded".
+      it('says only "not recorded" for a database row or a run with no record of it', async () => {
+        detailRecord = { provenance: {} }
+        focusedAssignment = { ...ROW, source: 'database' }
+        runRecord = withOption(false)
+        const database = await mountPane({ recordTooltips: true })
+        expect(tile(database, 'confidence').caption).toBe('not recorded by the run')
+        expect(
+          database.find('[data-testid="tile-confidence"] .tile-value').attributes('data-tooltip')
+        ).toBe(EMPTY_REASONS.confidence)
+
+        focusedAssignment = UNTARGETED
+        runRecord = { engine: 'mascope', config: {} }
+        const older = await mountPane()
+        expect(tile(older, 'confidence').caption).toBe('not recorded by the run')
+      })
     })
 
     // In a batch peak with no sample count served: the samples line's dash

@@ -43,6 +43,8 @@ from mascope_backend.api.new.peak_assignments.batch_staleness import (
 from mascope_backend.api.new.peak_assignments.engine import GRID_RIVALS
 from mascope_backend.api.new.peak_assignments.identification_level import (
     LIFT_4A,
+    LIFT_RIVALS_UNMEASURED,
+    LIFT_RIVALS_UNMEASURED_BEFORE,
     SPLIT,
     LevelContext,
     level_of,
@@ -293,7 +295,14 @@ class TestTheHalogenLock:
 
         assert record["lift"] == "measure the rivals past the stored shortlist"
 
-    def test_its_lift_asks_for_the_shortlist_while_an_unmeasured_rival_is_open(self):
+    # A member's lift is read as its run stored it: a run from before MAS-1336
+    # asked to "measure the shortlist", one since says the rivals were not.
+    @pytest.mark.parametrize(
+        "unmeasured", [LIFT_RIVALS_UNMEASURED, LIFT_RIVALS_UNMEASURED_BEFORE]
+    )
+    def test_its_lift_asks_for_the_shortlist_while_an_unmeasured_rival_is_open(
+        self, unmeasured
+    ):
         unmeasured_br = {
             "formula": WITH_BR[0],
             "ion_formula": WITH_BR[1],
@@ -301,7 +310,7 @@ class TestTheHalogenLock:
         }
         unmeasured_no_br = {**unmeasured_br, "formula": "C7H8O3", "ion_formula": None}
         # The run names its measured open rivals, its unmeasured ones not.
-        lift = "measure the shortlist; exclude {}: an isotope line"
+        lift = unmeasured + "; exclude {}: an isotope line"
 
         kept = overlay(
             five_a(open_rival(*NO_BR), unmeasured_br, lift=lift.format(NO_BR[0])),
@@ -319,7 +328,7 @@ class TestTheHalogenLock:
             LOCK,
         )
 
-        assert kept["lift"] == "measure the shortlist"
+        assert kept["lift"] == unmeasured
         assert gone["level"] == "5a"
         assert gone["lift"] == f"exclude {WITH_BR[0]}: an isotope line"
 

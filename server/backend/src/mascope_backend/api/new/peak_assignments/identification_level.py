@@ -55,7 +55,7 @@ Each committed monoisotopic row is read in order:
   search's candidate limit left unscored are counted as rivals not tested. An untargeted winner's is complete only
   where step 4.15 measured its formula-only shortlist
   (``engine.MEASURED_SHORTLIST``), which is off by default; a row without one
-  reads 5a with "rivals not measured" and the lift "measure the shortlist",
+  reads 5a with "rivals not measured" and the lift :data:`LIFT_RIVALS_UNMEASURED`,
   since the level does not assume an exclusion it did not see. Nor does it
   assume one of a rival the set does not name, or, on an untargeted winner, a
   formula the cap on stored alternatives left out that the set does not hold:
@@ -257,6 +257,19 @@ LEVEL_5B = "5b"
 #: reference source names for its formula, each with the cross-references its
 #: list carries (``listing.reference_listing``).
 REFERENCE_IDENTITIES = "reference_identities"
+
+#: What would lift a row at 5a whose rivals no pass measured: an untargeted
+#: winner's shortlist where step 4.15 did not run, or a formula-only entry
+#: of one. It names no action: the run option that measures them
+#: (``stage_b_confidence``) is offered by no setting of the app, so a lift
+#: telling a reader to "measure the shortlist" named a step no reader could
+#: take (MAS-1336). A run from before it stored "measure the shortlist"
+#: (:data:`LIFT_RIVALS_UNMEASURED_BEFORE`). Wording only: the rules' version
+#: is not bumped for it, since no level, fact or rule moves.
+LIFT_RIVALS_UNMEASURED = "its rivals measured: this run did not measure them"
+
+#: :data:`LIFT_RIVALS_UNMEASURED` as runs before MAS-1336 stored it.
+LIFT_RIVALS_UNMEASURED_BEFORE = "measure the shortlist"
 
 #: What would lift a row at 4a that no chemistry data lifts.
 LIFT_4A = "a context list for the run's chemistry; MS/MS"
@@ -1098,7 +1111,7 @@ def _open_lift(row: dict, open_rivals: Sequence[dict], ctx: LevelContext) -> str
     measured = [entry for entry in open_rivals if "fit" in entry]
     parts: list[str] = []
     if unmeasured:
-        parts.append("measure the shortlist")
+        parts.append(LIFT_RIVALS_UNMEASURED)
     if measured:
         names = ", ".join(entry["formula"] for entry in measured[:3])
         if ctx.tof:
@@ -1206,7 +1219,7 @@ def _level(
     # first; then it is named in the evidence line (the order, point 4).
     five_a: tuple[list[str], list[str]] | None = None
     if rivals is None:
-        five_a = (["rivals not measured"], ["measure the shortlist"])
+        five_a = (["rivals not measured"], [LIFT_RIVALS_UNMEASURED])
     else:
         unscored = unscored_rivals(row)
         if unscored:
