@@ -46,7 +46,7 @@ import {
   levelFilterOptions,
   levelMeta,
   levelRank,
-  readerLevel
+  rowLevel
 } from '@/lib/levels'
 import { queueReason, queueRows, queueTooltip } from '@/lib/verificationQueue'
 import { scrollVirtualRowIntoView } from '@/lib/virtualScroll'
@@ -153,15 +153,16 @@ const tierChips = computed(() =>
 // What a reader may state of each row, in the scale peaky and this server share
 // (lib/levels.js), shown in a column of its own beside the tier and never in
 // its place. Offered only where some row of the run carries one, as the engine
-// tier is: a run from before the level, an imported run and a ledger the batch
-// serves carry none, and a column of empty cells would read as rows judged and
-// found wanting.
+// tier is: a run from before the level and an imported run carry none, and a
+// column of empty cells would read as rows judged and found wanting.
 //
 // The level a row shows is the live claim's where its verdict states one, else
-// the engine's (readerLevel): its own verdict's, else the batch-level verdict
-// reaching it, which the server serves with no level to a sample a level-1
-// claim's window leaves out. So a run with no engine levels still offers the
-// column where a claim states one. Defined below the verdicts it reads.
+// the engine's, else on a row the batch ledger serves its batch peak's own
+// (rowLevel): its own verdict's, else the batch-level verdict reaching it,
+// which the server serves with no level to a sample a level-1 claim's window
+// leaves out. So a run with no engine levels still offers the column where a
+// claim states one, and a ledger the batch serves where its batch peaks state
+// one. Defined below the verdicts it reads.
 const hasLevels = computed(() =>
   assignments.value.list.some((row) => isShownLevel(shownLevelOf(row)?.level))
 )
@@ -237,14 +238,17 @@ const conflictFor = (row) => {
 // shows a badge.
 const effectiveVerdictFor = (row) => verdictFor(row) ?? overlayFor(row)
 
-// The level the row shows, and whose it is. An isotopologue reads its M0's
-// verdict, as its badge does, and carries its M0's engine level already.
+// The level the row shows, and whose it is, by the rule the card reads it by
+// (rowLevel): the live claim's, else the row's run's, else on a row the batch
+// ledger serves its batch peak's own. One from the batch - a batch-level
+// verdict's or the batch peak's - wears the batch's mark. An isotopologue
+// reads its M0's verdict, as its badge does, and its M0's batch peak level; it
+// carries its M0's run level already.
 const shownLevelOf = (row) =>
-  readerLevel({
-    verdict: effectiveVerdictFor(row),
-    level: row.level,
-    evidence: row.level_evidence,
-    lift: row.level_lift
+  rowLevel(row, {
+    m0: assignments.value.m0Of(row),
+    ownVerdict: verdictFor(row),
+    batchVerdict: verdictFor(row) ? null : overlayFor(row)
   })
 const levelOptions = computed(() =>
   levelFilterOptions(decoratedRows.value.map((row) => row.shownLevel?.level))
@@ -1549,6 +1553,7 @@ const HEADERS = {
         :role="chipRoleOf(data)"
         :source="data.shownLevel.source"
         :engineLevel="data.shownLevel.engineLevel"
+        :fromBatch="data.shownLevel.fromBatch"
       />
       <BaseLevelTag
         v-if="engineReadings && isLevel(data.engine_level)"

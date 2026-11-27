@@ -48,6 +48,13 @@ const props = defineProps({
     type: String,
     default: null
   },
+  // The level comes from the batch - a batch-level verdict's, or the batch
+  // peak's own on a row the batch ledger serves (readerLevel): the batch's own
+  // mark, the `#` an inherited verdict wears, small at the chip's upper right.
+  fromBatch: {
+    type: Boolean,
+    default: false
+  },
   tooltip: {
     type: String,
     default: null
@@ -71,18 +78,28 @@ const autoTooltip = computed(() =>
         lift: props.lift,
         role: props.role,
         source: props.source,
-        engineLevel: props.engineLevel
+        engineLevel: props.engineLevel,
+        fromBatch: props.fromBatch
       })
 )
 </script>
 
 <template>
-  <span v-if="meta" class="level-tag" :class="{ outlined }" v-tooltip.top="autoTooltip">
+  <span
+    v-if="meta"
+    class="level-tag"
+    :class="{ outlined, 'from-batch': fromBatch }"
+    v-tooltip.top="autoTooltip"
+  >
     <span
       :class="['level', `level-${meta.number}`, `level-band-${meta.band}`]"
       :style="{ '--level-color': `var(${meta.token})` }"
-      >{{ meta.label }}</span
-    >
+      >{{ meta.label }}</span><span
+      v-if="fromBatch"
+      class="pi pi-hashtag batch-mark"
+      data-testid="level-batch-mark"
+      aria-hidden="true"
+    />
   </span>
 </template>
 
@@ -109,6 +126,20 @@ const autoTooltip = computed(() =>
   font-size: 11px;
   font-weight: 600;
   line-height: 1.4;
+}
+/* From the batch: its mark at the chip's upper right, at 9 px, as an inherited
+   verdict wears it (BaseVerdictBadge); the one difference from a level the
+   sample's own run or verdict states. */
+.level-tag.from-batch {
+  position: relative;
+  margin-right: 5px;
+}
+.batch-mark {
+  position: absolute;
+  top: -4px;
+  right: -6px;
+  font-size: 9px;
+  line-height: 1;
 }
 /* An engine's own level, beside the members': the border and the word, with
    no ground, as the engine's tier chip is. */

@@ -1,7 +1,7 @@
 # The assignment ledger and the inspector card
 
 - **Status:** building
-- **As of:** 2026-11-26
+- **As of:** 2026-11-27
 - **Tracked in:** [Assignment ledger and inspector card](https://linear.app/ultra-trace/project/assignment-ledger-and-inspector-card-8caa997cc3da)
   (Linear, P-MAS-23: milestone 1 "One ledger", MAS-1062 to MAS-1065 and MAS-1069;
   milestone 2 "The card", MAS-1066 to MAS-1068, and the batch card's four steps,
@@ -332,10 +332,28 @@ place of C3H4O4 · Undo"); their full sentence is the tooltip.
   under the answer in `--state-info`, not a warning, says the card is the batch's reading
   for the sample, with *Assign sample* beside it (the bar's action, disabled with its
   reason for a viewer). Each part a run fills says so where it would be: the Why box where
-  the channels' line would be, the isotope pattern under its lines, the level as a folded
-  section reading *none*. The spectrum draws the predicted pattern from the card's
-  on-demand measurement and names it *predicted, not measured in this sample*. Nothing is
-  borrowed from the batch's other samples.
+  the channels' line would be, the isotope pattern under its lines. The spectrum draws
+  the predicted pattern from the card's on-demand measurement and names it *predicted,
+  not measured in this sample*. Nothing is borrowed from the batch's other samples to
+  stand in for this sample's measurements: the card shows none of its own isotope lines,
+  errors or rivals, because there are none.
+- **The level a row shows, one rule for the ledger and the card** (MAS-1330, owner's
+  decision of 2026-11-27). Every level a row shows names its source. A level a run of the
+  sample stated, or the sample's own verdict, is unmarked. A level from the batch, a
+  person's batch-level verdict or the batch peak's own (step 5.8c), carries the batch's
+  mark (`#`, as an inherited verdict does), with a hover that says whose it is. A row the
+  batch ledger serves shows the batch's level, in this order: the live batch-level
+  verdict's where one reaches the row (inside its window); else the batch peak's own,
+  served on the row as `batch_level` (`fold_view.member_batch_level`) on the member that
+  is the consensus reading; else none. Where it shows none, the level section says the
+  true reason, *none: this sample has no run of its own* (or, for a sample read on the
+  ledger by choice, that the row is the ledger's), never that the batch states none.
+  Why the batch's level may stand on such a row: the row *is* the batch's reading of this
+  sample's peak, so the batch's level is a statement about the same reading. The sample
+  ledger's Level cell and the card read the level from one function (`rowLevel` in
+  `lib/levels.js`), so the two cannot differ. A row from the sample's own run is
+  unchanged: its own level, with the batch's beside it in the card where the batch's
+  checks move it (`batch_level`, marked *borrowed*).
 
 ### 4.3 What the card needs from the server
 

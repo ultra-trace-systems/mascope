@@ -246,9 +246,12 @@ export function readableLift(lift) {
  * @param {string|null} [options.evidence] the line naming what earned it
  * @param {string|null} [options.lift] what would raise it
  * @param {string|null} [options.role] the row's role; an isotopologue's level is its M0's
- * @param {'claim'|'engine'|null} [options.source] whose level it is, where a
- *   reader could be shown either (readerLevel); left out where only one can be
+ * @param {'claim'|'engine'|'batch'|null} [options.source] whose level it is,
+ *   where a reader could be shown more than one (readerLevel); left out where
+ *   only one can be
  * @param {string|null} [options.engineLevel] the engine's level, under a claim
+ * @param {boolean} [options.fromBatch] the level comes from the batch: a
+ *   batch-level verdict's, or the batch peak's own (readerLevel)
  * @returns {string} the lines joined, or '' for a row with no level
  */
 export function levelTooltip({
@@ -257,13 +260,14 @@ export function levelTooltip({
   lift = null,
   role = null,
   source = null,
-  engineLevel = null
+  engineLevel = null,
+  fromBatch = false
 }) {
   const meta = levelMeta(level)
   if (!meta) return ''
   return [
     meta.description,
-    source ? sourceLine(source, engineLevel) : null,
+    source ? sourceLine(source, engineLevel, fromBatch) : null,
     evidence ? `Why: ${evidence}` : null,
     lift ? `Would lift it: ${readableLift(lift)}` : null,
     role === 'iso_child' ? 'An isotopologue: it holds the level of its M0' : null
@@ -272,22 +276,36 @@ export function levelTooltip({
     .join('\n')
 }
 
-// Whose level a chip shows: the live claim's, or the engine's.
-function sourceLine(source, engineLevel) {
+// Whose level a chip shows: the live claim's, the engine's, or the batch
+// peak's own.
+function sourceLine(source, engineLevel, fromBatch) {
   if (source === 'claim') {
     const engine = levelMeta(engineLevel)
     return (
-      'Source: claim - the live verdict states this level' +
+      (fromBatch
+        ? 'Source: the batch - the batch-level verdict states this level'
+        : 'Source: claim - the live verdict states this level') +
       (engine ? `; the engine read ${engine.label}` : '')
     )
   }
+  if (source === 'batch') return BATCH_SOURCE_LINE
   return 'Source: engine - no live verdict states a level'
 }
 
 /**
+ * Whose level a row shows where it is the batch peak's own: the row is the
+ * batch's reading of this sample's peak, so the level the batch states of that
+ * reading is about the same one.
+ */
+export const BATCH_SOURCE_LINE =
+  "Source: the batch - its batch peak's own level, read off its members' runs and its " +
+  "isotope checks; this row is the batch ledger's reading, not a run of this sample's"
+
+/**
  * The level a reader is shown for a row: the live claim's where a verdict
  * states one, else the engine's (docs/dev/identification_claims.md, section 3
- * rule 4 and section 6.1). A verdict states a level when it carries an integer
+ * rule 4 and section 6.1), else - on a row the batch ledger serves - the batch
+ * peak's own (docs/dev/assignment_ledger_and_card.md, section 4.2). A verdict states a level when it carries an integer
  * `level`: a confirmation that names a structure, a class or the formula under
  * the claims' mapping. A rejection, an unsure verdict, a confirmation on visual
  * evidence and a refuting standard state none, and nor does a batch-level claim
@@ -298,16 +316,34 @@ function sourceLine(source, engineLevel) {
  * recorded under version 1 has no letter and reads as the number alone
  * (isVersionOneLevel). Its two lines are the claim's own, from `context.claim`.
  *
+ * Every level names its source, and one that comes from the batch carries its
+ * mark (`fromBatch`): a batch-level verdict's claim, and the batch peak's own
+ * level (`source` `batch`). A level a run of the sample stated, or the
+ * sample's own verdict, is unmarked. The batch peak's own stands only where
+ * the row has no level of its own: it is what a row the batch ledger serves
+ * carries (`batch_level`, fold_view.py), and a run's borrowed overlay
+ * (borrowedLevelOf) is shown beside the run's level, never in its place.
+ *
  * @param {object} options
  * @param {?object} [options.verdict] the live verdict that reaches the row: its
  *   own, else the batch-level one
+ * @param {boolean} [options.verdictFromBatch] the verdict is the batch-level one
  * @param {?string} [options.level] the engine's level
  * @param {?string} [options.evidence] the line naming what earned the engine's
  * @param {?string} [options.lift] what would raise the engine's
- * @returns {?{level: string, source: 'claim'|'engine', evidence: ?string, lift: ?string, engineLevel: ?string}}
- *   null where neither states a level the scale can show
+ * @param {?object} [options.batchLevel] the batch peak's own level on a row the
+ *   batch ledger serves: `level`, `evidence`, `lift`
+ * @returns {?{level: string, source: 'claim'|'engine'|'batch', fromBatch: boolean, evidence: ?string, lift: ?string, engineLevel: ?string}}
+ *   null where none states a level the scale can show
  */
-export function readerLevel({ verdict = null, level = null, evidence = null, lift = null } = {}) {
+export function readerLevel({
+  verdict = null,
+  verdictFromBatch = false,
+  level = null,
+  evidence = null,
+  lift = null,
+  batchLevel = null
+} = {}) {
   const claimed = claimLevelOf(verdict)
   const engineLevel = isLevel(level) ? level : null
   if (claimed) {
@@ -316,13 +352,68 @@ export function readerLevel({ verdict = null, level = null, evidence = null, lif
     return {
       level: claimed,
       source: 'claim',
+      fromBatch: Boolean(verdictFromBatch),
       evidence: lines.evidence ?? null,
       lift: lines.lift ?? null,
       engineLevel
     }
   }
-  if (!engineLevel) return null
-  return { level: engineLevel, source: 'engine', evidence, lift: readableLift(lift), engineLevel }
+  if (engineLevel) {
+    return {
+      level: engineLevel,
+      source: 'engine',
+      fromBatch: false,
+      evidence,
+      lift: readableLift(lift),
+      engineLevel
+    }
+  }
+  if (batchLevel && !batchLevel.borrowed && isLevel(batchLevel.level)) {
+    return {
+      level: batchLevel.level,
+      source: 'batch',
+      fromBatch: true,
+      evidence: batchLevel.evidence ?? null,
+      lift: readableLift(batchLevel.lift ?? null),
+      engineLevel: null
+    }
+  }
+  return null
+}
+
+/**
+ * The level a sample's row shows, as the sample ledger's Level cell and the
+ * inspector card both read it: one function, so the two cannot differ.
+ *
+ * The verdict is the row's own, read through its M0, else the batch-level one
+ * that reaches it; the level and its lines the row's own, with `fallback` for
+ * what the card reads off the detail before the slim row has it; the batch
+ * peak's own level the M0's (`batch_level`), which an isotope line holds as it
+ * holds its M0's level.
+ *
+ * @param {?object} row the ledger row
+ * @param {object} [options]
+ * @param {?object} [options.m0] the row's family M0 (the row itself for an M0)
+ * @param {?object} [options.ownVerdict] the M0's own live verdict
+ * @param {?object} [options.batchVerdict] the batch-level verdict reaching it
+ * @param {?{level: ?string, evidence: ?string, lift: ?string}} [options.fallback]
+ *   the row's own level and lines where the slim row has none
+ * @returns {ReturnType<typeof readerLevel>}
+ */
+export function rowLevel(
+  row,
+  { m0 = null, ownVerdict = null, batchVerdict = null, fallback = null } = {}
+) {
+  if (!row) return null
+  const verdict = ownVerdict ?? batchVerdict
+  return readerLevel({
+    verdict,
+    verdictFromBatch: !ownVerdict && Boolean(batchVerdict),
+    level: row.level ?? fallback?.level ?? null,
+    evidence: row.level_evidence ?? fallback?.evidence ?? null,
+    lift: row.level_lift ?? fallback?.lift ?? null,
+    batchLevel: (m0 ?? row).batch_level ?? null
+  })
 }
 
 /**

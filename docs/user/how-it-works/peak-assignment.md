@@ -1598,8 +1598,30 @@ the weaker level, with the evidence line and lift of the brightest of them and h
 members it moved. A batch with none of these facts states its members' level. On a
 sample's peak, the inspector's **Identification level** section shows the batch's level
 beside the row's own, marked *the batch's*, where the batch's facts move that row; the
-row's own level, the sample ledger's **Level** column and its filter stay the run's. The
-batch data export carries the batch peak's level on every member row as `batch_level`,
+row's own level, the sample ledger's **Level** column and its filter stay the run's.
+
+**A sample with no run of its own** is served from the batch ledger: each of its rows is
+the batch's reading of that sample's peak. So the batch's level is a statement about
+the same reading, and the row shows it. The sample ledger's **Level** cell and the
+inspector show, in this order, the level of a live batch-level verdict that reaches the
+row, else the batch peak's own level, else none. The inspector's **Identification level**
+section shows the batch's **why** and **would lift it** as the batch recorded them, with
+a line that says the level is the batch's and the sample has no run of its own. It
+lists no rivals: no run measured any in this sample. Where the row shows none, the
+section says *none: this sample has no run of its own*. An isotope line shows its main
+peak's level, as on a run's row. A row the batch reads as another formula than its
+consensus, and a reagent, show no batch level. The level's filter and sort in the sample ledger follow what the cell
+shows. The API serves the batch peak's level on such a row as `batch_level`, with
+`level`, `evidence` and `lift`; the row's own `level` stays empty.
+
+**The batch's mark on a level.** Every level names its source. A level the sample's own
+run stated, or a verdict on the sample's own peak, is unmarked. A level that comes from
+the batch wears the batch's **#**, small at the chip's upper right, as a batch-level
+verdict's badge does: the level of a batch-level verdict that reaches the row, and the
+batch peak's own level on a sample with no run of its own. The chip's hover says whose
+it is.
+
+The batch data export carries the batch peak's level on every member row as `batch_level`,
 `batch_level_evidence` and `batch_level_lift`, and the ledger route as `level`,
 `level_evidence` and `level_lift` beside `member_level`. The level moves no tier, no
 member and no per-sample run.
@@ -1634,8 +1656,9 @@ the species is best measured, not where its level comes from.
 **A verdict's level comes first.** Where a live verdict states a level, the chip beside
 the tier, the **Identification level** section, the sample ledger's **Level** column and
 its filter show the verdict's level in place of the engine's. That verdict is the peak's
-own, else the batch-level verdict that reaches it. The chip's hover says whose level it
-is, *claim* or *engine*, and under a claim what the engine read. **Why** and **would lift
+own, else the batch-level verdict that reaches it, whose level wears the batch's **#**.
+The chip's hover says whose level it is, *claim*, *the batch* or *engine*, and under a
+claim what the engine read. **Why** and **would lift
 it** are then the claim's, and the rivals, which the engine's level was read against,
 are not listed. A level-1 batch claim reaches only the samples inside its window: a
 sample outside it reads the engine's level. The *Batch peaks* ledger's **Level** column

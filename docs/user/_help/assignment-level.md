@@ -43,8 +43,10 @@ peak the batch reads as another peak's 37Cl or 81Br line reads 5b, where its
 own formula holds no such atom. The batch ledger's **Level** column shows the
 batch's level. On a sample's row, it shows under the row's own, marked **the
 batch's**, where it differs. The batch never lowers a 3b or 2b a run stated.
+A sample with no run of its own shows its batch peak's level, marked with the
+batch's **#**, as a batch-level verdict is.
 
 Where a verdict you or a colleague recorded states a level, the chip and the
 **Level** column show that level instead, and the hover says *claim*; with
-none, it says *engine*. A claim recorded before the letters shows its number
-alone.
+none, it says *engine*. A batch-level verdict's level wears the **#** too. A
+claim recorded before the letters shows its number alone.

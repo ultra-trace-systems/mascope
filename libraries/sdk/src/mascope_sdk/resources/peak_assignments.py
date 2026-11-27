@@ -549,6 +549,13 @@ class PeakAssignmentsResource(BaseResource):
                    import sent it beside its ``engine_tier``. Null on an
                    in-app row, whose level is ``level``, and wherever the
                    engine stated none. It moves no tier.
+                 - ``batch_level``: on a row derived from the batch ledger
+                   (a sample with no run of its own), the batch peak's own
+                   identification level, a dict of ``level``, ``evidence``,
+                   ``lift``, ``batch_peak_id`` and ``batch_level``, on the
+                   row that is the batch peak's consensus reading; the row's
+                   own ``level`` stays null. Null on a run's rows, whose
+                   batch overlay is in :meth:`detail`.
                  - ``target_compound_id``, ``target_ion_id`` (set for
                    database-sourced assignments)
                  - ``owner_peak_assignment_id`` (for isotope children, the

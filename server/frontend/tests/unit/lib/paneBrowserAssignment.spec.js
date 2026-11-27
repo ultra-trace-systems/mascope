@@ -15,6 +15,7 @@ import { isIsotopeLine } from '@/lib/isotopeLines'
 import { TIERING_PROVISIONAL, tierRank } from '@/lib/tiers'
 import { LEVELS } from '@/lib/levels'
 import { SORT_FIELDS } from '@/lib/ledger/useLedgerView.js'
+import { BATCH_PEAK_LEVEL, LEVEL_ROW_CASES } from './levelRowCases.js'
 
 // The per-sample launcher's job after the assign endpoint became synchronous:
 // a run that is refused (409) or a sample that cannot be assigned (422) arrives
@@ -224,11 +225,11 @@ vi.mock('@/lib/base', async () => ({
   // Says what it was handed, so the level column's tests can read it off; the
   // chip has a spec of its own (base/BaseLevelTag.spec.js).
   BaseLevelTag: {
-    props: ['level', 'evidence', 'lift', 'role', 'tooltip', 'source', 'engineLevel'],
+    props: ['level', 'evidence', 'lift', 'role', 'tooltip', 'source', 'engineLevel', 'fromBatch'],
     template:
       '<span class="level-tag-stub" :data-level="level" :data-evidence="evidence" ' +
       ':data-lift="lift" :data-role="role" :data-source="source" ' +
-      ':data-engine-level="engineLevel" />'
+      ':data-engine-level="engineLevel" :data-from-batch="fromBatch ? \'yes\' : \'no\'" />'
   },
   BaseVerdictBadge: true,
   BaseEvidenceBadge: (await vi.importActual('@/lib/base/BaseEvidenceBadge.vue')).default,
@@ -3152,6 +3153,83 @@ describe('PaneBrowserAssignment identification level column', () => {
 
   // The level a reader is shown is the live claim's where a verdict states
   // one, else the engine's (docs/dev/identification_claims.md, section 6.1).
+  // One rule for the level a row shows, read by the card too (rowLevel): a
+  // level from the batch - a batch-level verdict's, or on a row the batch
+  // ledger serves its batch peak's own - is marked as the batch's. The same
+  // rows are read in panePeakAssign.spec.js, which must show the same.
+  describe('the one level rule', () => {
+    afterEach(() => {
+      overlayRecord = null
+    })
+    const chipOf = (wrapper) => cell(wrapper, 'a').find('.level-tag-stub')
+
+    for (const testCase of LEVEL_ROW_CASES) {
+      it(`shows ${testCase.name} as the card does`, async () => {
+        const fam = family({ id: 'a', mz: 100.1, intensity: 10, formula: 'C6H6' })
+        Object.assign(fam.parent, testCase.row)
+        // Another row with a level of its own, so the column is there to read
+        // where this one shows none.
+        seed(fam, leveled({ id: 'z', mz: 500.1, intensity: 50, formula: 'C10H14' }, '4b'))
+        overlayRecord = testCase.batchVerdict
+          ? { ...testCase.batchVerdict, sample_peak_id: 'p-a' }
+          : null
+        const wrapper = await renderedTable()
+
+        const chip = chipOf(wrapper)
+        if (!testCase.shows) {
+          expect(chip.exists()).toBe(false)
+          return
+        }
+        expect(chip.attributes('data-level')).toBe(testCase.shows.level)
+        expect(chip.attributes('data-source')).toBe(testCase.shows.source)
+        expect(chip.attributes('data-from-batch')).toBe(testCase.shows.fromBatch ? 'yes' : 'no')
+      })
+    }
+
+    it('offers the column on a ledger the batch serves where its batch peaks state a level', async () => {
+      const fam = family({ id: 'a', mz: 100.1, intensity: 10, formula: 'C6H6' })
+      Object.assign(fam.parent, { level: null, batch_level: BATCH_PEAK_LEVEL })
+      seed(fam)
+      const wrapper = await renderedTable()
+
+      expect(wrapper.vm.hasLevels).toBe(true)
+      expect(chipOf(wrapper).attributes('data-evidence')).toBe(BATCH_PEAK_LEVEL.evidence)
+      expect(chipOf(wrapper).attributes('data-lift')).toBe(BATCH_PEAK_LEVEL.lift)
+    })
+
+    it("sorts and filters on the batch peak's level the cell shows", async () => {
+      const fam = family({ id: 'a', mz: 100.1, intensity: 10, formula: 'C6H6' })
+      Object.assign(fam.parent, { level: null, batch_level: BATCH_PEAK_LEVEL })
+      seed(fam, leveled({ id: 'z', mz: 500.1, intensity: 50, formula: 'C10H14' }, '5a'))
+      const wrapper = await mountPane()
+      const byRow = Object.fromEntries(wrapper.vm.rows.map((row) => [row.peak_assignment_id, row]))
+      expect(byRow.a.levelRank).toBe(LEVELS.indexOf('4a'))
+
+      wrapper.vm.filters.level.constraints[0].value = '4a'
+      await wrapper.vm.$nextTick()
+      expect(ids(wrapper)).toEqual(['a'])
+    })
+
+    it("gives an isotope line its M0's batch peak level", async () => {
+      const fam = family({
+        id: 'a',
+        mz: 100.1,
+        intensity: 10,
+        formula: 'C6H6',
+        children: [{ sample_peak_mz: 101.1, sample_peak_intensity: 1 }]
+      })
+      Object.assign(fam.parent, { level: null, batch_level: BATCH_PEAK_LEVEL })
+      seed(fam)
+      const wrapper = await mountPane()
+
+      expect(wrapper.vm.isotopologuesOf(fam.parent)[0].shownLevel).toMatchObject({
+        level: '4a',
+        source: 'batch',
+        fromBatch: true
+      })
+    })
+  })
+
   describe("a live claim's level", () => {
     const CLAIM = {
       sample_peak_id: 'p-b',

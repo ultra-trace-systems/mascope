@@ -73,6 +73,29 @@ describe('BaseLevelTag', () => {
     )
   })
 
+  // A level from the batch - a batch-level verdict's, or the batch peak's own
+  // on a row the batch ledger serves - wears the batch's mark, the `#` an
+  // inherited verdict wears, and its hover says whose it is.
+  it("marks a level from the batch with the batch's mark, and says so on hover", () => {
+    const batch = mountTag({ level: '4a', source: 'batch', fromBatch: true })
+    expect(batch.find('[data-testid="level-batch-mark"]').classes()).toContain('pi-hashtag')
+    expect(batch.find('.level-tag').classes()).toContain('from-batch')
+    expect(batch.find('.level-tag').attributes('data-tooltip')).toContain(
+      "Source: the batch - its batch peak's own level"
+    )
+    const claim = mountTag({ level: '1', source: 'claim', fromBatch: true })
+    expect(claim.find('[data-testid="level-batch-mark"]').exists()).toBe(true)
+    expect(claim.find('.level-tag').attributes('data-tooltip')).toContain(
+      'Source: the batch - the batch-level verdict states this level'
+    )
+    // A run's level, or the sample's own verdict's, is unmarked.
+    for (const props of [{ source: 'engine' }, { source: 'claim' }, {}]) {
+      const own = mountTag({ level: '4a', ...props })
+      expect(own.find('[data-testid="level-batch-mark"]').exists()).toBe(false)
+      expect(own.find('.level-tag').classes()).not.toContain('from-batch')
+    }
+  })
+
   // A claim recorded under version 1 of the mapping has a number and no letter.
   it("draws a version-1 claim's bare number in its number's colour", () => {
     const tag = mountTag({ level: '3' }).find('.level')

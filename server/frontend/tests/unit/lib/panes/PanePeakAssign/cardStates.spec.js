@@ -198,7 +198,10 @@ vi.mock('@/lib/base', () => ({
     props: ['tier', 'role'],
     template: '<span class="tier-tag" />'
   },
-  BaseLevelTag: { props: ['level'], template: '<span />' },
+  BaseLevelTag: {
+    props: ['level', 'fromBatch'],
+    template: '<span class="level-stub" :data-from-batch="fromBatch ? \'yes\' : \'no\'" />'
+  },
   BaseVerdictBadge: { props: ['record'], template: '<span class="verdict-badge" />' },
   BaseEvidenceBadge: { template: '<span />' }
 }))
@@ -612,12 +615,15 @@ describe('card states: a sample with no run of its own', () => {
     expect(byTestId(wrapper, 'iso-ledger-note').text()).toContain(
       'Lines expected and not found come from an assignment run of the sample.'
     )
+    // The true reason: this sample has no run of its own. Never that the
+    // batch states none, which it may well.
     expect(byTestId(wrapper, 'level-ledger-note').text()).toBe(
-      'The identification level comes from an assignment run of the sample.'
+      'Its batch peak states no level for this reading.'
     )
     expect(byTestId(wrapper, 'section-level').text()).toContain(
-      'none: the batch ledger states no level'
+      'none: this sample has no run of its own'
     )
+    expect(byTestId(wrapper, 'section-level').text()).not.toContain('the batch ledger states')
     // A verdict can still be recorded on it, as on the sample's own result.
     expect(buttonsLabelled(wrapper, 'Confirm')[0].attributes('disabled')).toBeUndefined()
   })
@@ -670,8 +676,31 @@ describe('card states: a sample with no run of its own', () => {
     for (const id of NOTES) expect(byTestId(wrapper, id).exists()).toBe(true)
     // In words that hold beside the notice: the sample does have a run.
     const level = byTestId(wrapper, 'section-level').text()
-    expect(level).toContain('none: the batch ledger states no level')
-    expect(level).not.toContain('no run of this sample')
+    expect(level).toContain("none: this row is the batch ledger's, not the sample's run's")
+    expect(level).not.toContain('no run of its own')
+  })
+
+  // The row is the batch's reading of this sample's peak, so the level its
+  // batch peak states is shown, marked as the batch's, with whose it is.
+  it("shows the batch peak's level, and says whose it is, with or without a run", async () => {
+    const BATCH_LEVEL = { level: '4a', evidence: 'the Br lock', lift: 'MS/MS' }
+    serveFromLedger()
+    state.focusedAssignment = { ...DERIVED, level: null, batch_level: BATCH_LEVEL }
+    let wrapper = await mountCard()
+    expect(byTestId(wrapper, 'section-level').text()).toContain('neutral formula')
+    expect(byTestId(wrapper, 'level-served-note').text()).toBe(
+      "The level is the batch's; this sample has no run of its own."
+    )
+    const chip = byTestId(wrapper, 'section-level').find('.level-stub')
+    expect(chip.attributes('data-from-batch')).toBe('yes')
+    expect(byTestId(wrapper, 'level-ledger-note').exists()).toBe(false)
+
+    serveFromLedger([RUN_NEW, LEDGER])
+    state.focusedAssignment = { ...DERIVED, level: null, batch_level: BATCH_LEVEL }
+    wrapper = await mountCard()
+    expect(byTestId(wrapper, 'level-served-note').text()).toBe(
+      "The level is the batch's: this row is the batch ledger's, not the sample's run's."
+    )
   })
 
   it('shows none of it on a sample read on its own run', async () => {

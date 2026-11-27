@@ -19,16 +19,21 @@ const {
   batchLevel,
   rivalTooltip,
   ledgerServed,
-  LEDGER_LEVEL_NOTE
+  servedLevelNote,
+  servedNoLevel
 } = useCard()
 
 // Whose level it is: the live verdict's claim, which states it in place of the
-// engine's, or the engine's where no live verdict states one.
+// engine's - the batch-level verdict's where it is the one reaching the row -,
+// the engine's where no live verdict states one, or on a row the batch ledger
+// serves, the batch peak's own.
 const sourceLine = computed(() => {
   const level = identificationLevel.value
   if (!level) return ''
+  if (level.source === 'batch') return "the batch: its batch peak's own level"
   if (level.source !== 'claim') return 'engine'
-  return level.engineLevel ? `claim, the engine read ${level.engineLevel}` : 'claim'
+  const claim = level.fromBatch ? "claim, the batch's verdict" : 'claim'
+  return level.engineLevel ? `${claim}, the engine read ${level.engineLevel}` : claim
 })
 
 const summary = computed(() => {
@@ -58,6 +63,7 @@ const summary = computed(() => {
           :level="identificationLevel.level"
           :role="chipRole"
           :tooltip="identificationLevel.tooltip"
+          :fromBatch="identificationLevel.fromBatch"
         />
         <span class="level-name">{{ identificationLevel.name }}</span>
       </div>
@@ -73,13 +79,18 @@ const summary = computed(() => {
         <span class="level-key">would lift it</span>
         <span class="level-value">{{ identificationLevel.lift }}</span>
       </div>
+      <!-- The batch peak's own level on a row the batch ledger serves: whose
+           it is, and why no level of the sample's own is there. -->
+      <div
+        v-if="identificationLevel.source === 'batch'"
+        class="level-line muted"
+        data-testid="level-served-note"
+      >
+        {{ servedLevelNote }}
+      </div>
       <div v-if="batchLevel" class="batch-level" data-testid="level-batch">
         <div class="level-head">
-          <BaseLevelTag
-            :level="batchLevel.level"
-            :role="chipRole"
-            :tooltip="batchLevel.tooltip"
-          />
+          <BaseLevelTag :level="batchLevel.level" :role="chipRole" :tooltip="batchLevel.tooltip" />
           <span class="level-name">{{ batchLevel.name }}</span>
           <span class="level-key">the batch's</span>
         </div>
@@ -144,16 +155,20 @@ const summary = computed(() => {
       </div>
     </div>
   </CardSection>
-  <!-- A row the batch ledger serves states no level, whether or not the
-       sample also has a run of its own (read on the ledger by choice). The
-       section says so in its place, rather than going missing. -->
+  <!-- A row the batch ledger serves whose batch peak states no level, and
+       no verdict states one: the section says so in its place, with the true
+       reason, rather than going missing. The no-own-run statement under the
+       answer carries the action that fills it. -->
   <CardSection
     v-else-if="ledgerServed"
     title="Identification level"
-    summary="none: the batch ledger states no level"
+    :summary="servedNoLevel"
     testid="section-level"
   >
-    <CardLedgerNote :text="LEDGER_LEVEL_NOTE" data-testid="level-ledger-note" />
+    <CardLedgerNote
+      text="Its batch peak states no level for this reading."
+      data-testid="level-ledger-note"
+    />
   </CardSection>
 </template>
 
