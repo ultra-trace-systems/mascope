@@ -726,12 +726,20 @@ says which statement leads the row, not that one kind of evidence outranks anoth
   37Cl or 81Br line 4.2c stamped as the peak's isotopologue under a halogen-free reading; a
   batch fact, recorded after a sample's run has stated its level, so read by 5.8c).
   Implausible: plausibility under its floor (P1). Untestable: the peak is not separated from a
-  neighbour (`unresolved_peak`, 3.4f), so neither its mass nor its height was measured.
+  neighbour (`unresolved_peak`, 3.4f), so neither its mass nor its height was measured. A line
+  is absent only where the file could have shown it apart (MAS-1288, the owner's call of
+  2026-11-26): a line the peak list could not hold, predicted under the smallest peak the list
+  keeps within 5 m/z of it, is not asked; one inside half the file's peak width, at a height
+  the line can have, is found; and one beside a taller peak within one peak width cannot be
+  read (`unread_line`). On the bench's TOF nitrate sets 92 % of the "absent" 13C lines MAS-996
+  sampled were one of those three.
 - **5a, rivals remain** (5.8). The shortlist of formulas that fit the peak's mass through the
   run's channels (`other_candidates`, measured by 4.15) holds a rival no test excluded; the row
   lists each. A row whose shortlist was not measured reads 5a with "rivals not measured" as its
   evidence and "measure the shortlist" as its lift: the level does not assume an exclusion it
-  did not see.
+  did not see. Nor does it assume its isotopes passed where a line of them could not be read
+  (`unread_line`): such a row reads 5a, "not tested on its isotopes" and the line in its
+  evidence, "its isotope lines read apart" in its lift, whatever its rivals.
 - **4, every rival excluded** (5.8; the batch's tests, 5.8c and 5.8d). Each rival on the
   shortlist is out on a named test: mass (its measured evidence under the winner's by more than
   the tie margin, the mass term separating them at the run's fitted width; 2.2, 5.9), isotopes

@@ -42,7 +42,10 @@ Each committed monoisotopic row is read in order:
   Untestable: the instrument did not separate its peak from a neighbour
   (``tiering.REASON_UNRESOLVED_PEAK``, step 3.4f), so neither its mass nor its
   height was measured. A stamped line under a halogen-free reading is the
-  batch's fact, read by step 5.8c (``batch_level``).
+  batch's fact, read by step 5.8c (``batch_level``). A line that could not be
+  read - a taller peak within a peak width of it, an artifact's peak, the
+  list's end (``tiering.REASON_UNREAD_LINE``) - refutes nothing, and puts no
+  row at 5b.
 - **5a, rivals remain.** The row's measured shortlist holds a rival no test
   excluded; the row lists each. The shortlist is the row's rival set
   (``rival_set.RIVAL_SET``), the one the density and the arbitration read:
@@ -63,6 +66,9 @@ Each committed monoisotopic row is read in order:
   (``cut_contenders.FORMULA_ONLY_PAST_CAP``), or a losing contender no frame measured
   on the peak (``rival_set.CONTENDERS_NOT_HELD``). A contender the cap cut and
   the set holds is one of its rivals, named or counted past its ten.
+  A row whose asked isotope lines could not be read reads 5a too, "not tested
+  on its isotopes", whatever its rivals: its lines were neither seen nor
+  missed.
 - **4, every rival excluded.** Each rival is out on a named test:
 
   - ``mass``: its fit at the run's width, mass and isotope pattern together,
@@ -171,6 +177,7 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     LINE_ABSENT,
     PREDICTED_ENVELOPE,
     REASON_ABSENT_LINE,
+    REASON_UNREAD_LINE,
     REASON_UNRESOLVED_PEAK,
     SEPARATED_THROUGH,
     LineGate,
@@ -215,7 +222,10 @@ from mascope_tools.composition.profiles import (
 #: (:data:`SPLIT`), and a rival that reads the peak as another ion's isotope
 #: line says so, for the batch's level to read (``batch_level``); a batch peak
 #: states a level of its own from its members' and the batch's isotope checks.
-LEVEL_RULES_VERSION = 6
+#: 7 (MAS-1288): a row whose asked isotope lines could not be read
+#: (``tiering.REASON_UNREAD_LINE``) reads 5a at most, those lines named in its
+#: evidence and lift.
+LEVEL_RULES_VERSION = 7
 
 #: The provenance key a committed row's level is recorded under.
 IDENTIFICATION_LEVEL = "identification_level"
@@ -261,6 +271,13 @@ REFERENCE_IDENTITIES = "reference_identities"
 
 #: What would lift a row at 4a that no chemistry data lifts.
 LIFT_4A = "a context list for the run's chemistry; MS/MS"
+
+#: What would lift a row whose isotope lines could not be read
+#: (``tiering.REASON_UNREAD_LINE``).
+LIFT_UNREAD = (
+    "its isotope lines read apart: more resolving power, or a sample where no "
+    "taller peak sits beside them"
+)
 
 #: What would lift a row at 3b, whose channel named a class and no compound.
 LIFT_3B = (
@@ -613,12 +630,8 @@ def _absent_line_of(row: dict, rival: Rival, ctx: LevelContext) -> dict | None:
             "mz_error_ppm": rival.mz_error_ppm,
         },
         ctx.lines,
-        abundance_floor=ctx.gate.abundance_floor,
-        mz_tolerance_ppm=ctx.gate.mz_tolerance_ppm,
-        detect_snr=ctx.gate.detect_snr,
-        rel_detect_no_snr=ctx.gate.rel_detect_no_snr,
+        ctx.gate,
         resolution=ctx.resolution,
-        tof=ctx.gate.tof,
     )
     absent = [
         line
@@ -1213,6 +1226,15 @@ def _level(
         if unscored:
             record["rivals_unscored"] = unscored
         five_a = _five_a(row, tested, unlisted, unscored, ctx)
+    unread = _reason(row, REASON_UNREAD_LINE)
+    if unread is not None:
+        # Lines that could not be read test nothing: 5a at most, named.
+        facts.append(_fact(REASON_UNREAD_LINE, "tier_reasons", unread.get("detail")))
+        clauses, lifts = five_a or ([_tested_summary(tested)] if tested else [], [])
+        five_a = (
+            [f"not tested on its isotopes: {unread.get('detail')}", *clauses],
+            [*lifts, LIFT_UNREAD],
+        )
     if evidence:
         if five_a is not None:
             evidence.append(f"it earns 5a too: {'; '.join(five_a[0])}")
@@ -1229,7 +1251,7 @@ def _level(
             "level": LEVEL_5A,
             "evidence": "; ".join(five_a[0]),
             "lift": "; ".join(five_a[1]),
-            "facts": [_fact("shortlist", MEASURED_SHORTLIST, "not measured")],
+            "facts": [*facts, _fact("shortlist", MEASURED_SHORTLIST, "not measured")],
         }
     facts.append(
         _fact(

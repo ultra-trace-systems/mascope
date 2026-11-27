@@ -1123,7 +1123,9 @@ class TestTheJudgedLedger:
 
         from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
         from mascope_backend.api.new.peak_assignments.envelope_fit import RunEnvelopeFit
-        from mascope_backend.api.new.peak_assignments.tiering import detect_threshold
+        from mascope_backend.api.new.peak_assignments.line_reading import (
+            detect_threshold,
+        )
         from mascope_tools.composition.envelope_tolerance import (
             FORM_CURVE,
             EnvelopeLines,

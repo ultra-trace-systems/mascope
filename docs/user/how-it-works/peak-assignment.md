@@ -1066,9 +1066,21 @@ What caps a row at candidate:
   score would count it missing (above): where its expected signal-to-noise, the main
   line's times the line's share, reaches the threshold the run measured for that
   file, or 3 where it measured none; on a peak with no signal-to-noise, where the line
-  is at least 10% of the main line. It is looked for within the run's matching
-  window, both about where the formula puts it and about where the main line's own
-  mass error moves it. The fit only weighs a missing line by its share, so a bromide
+  is at least 10% of the main line. And only where the file's peak list could hold
+  it: where the line's predicted height, its share times the main line's height, is
+  at least the smallest peak the list keeps within 5 m/z of it. A TOF's peak list
+  keeps nothing under a floor set by the tallest peaks near it, so a line predicted
+  under that floor is one the list could not have shown. It is looked for within the
+  run's matching window, or within half the peak width the file's resolving power
+  gives at the line where that is wider, as a TOF's 110 to 500 ppm wide peaks are;
+  both about where the formula puts it and about where the main line's own mass
+  error moves it. In the wider part a peak is the line only at a height the line can
+  have, at most 1.4 times its predicted height, the nearest such peak taken. A
+  line beside a peak taller than that, within one peak width, **cannot be read**: the
+  line could not stand apart from it, so the peak picker shows one peak where two
+  lines may be. A line that cannot be read is not evidence against the formula. It
+  does not cap the row; the row's reasons name it (*isotope line not read*), and its
+  identification level is 5a at most. The fit only weighs a missing line by its share, so a bromide
   reading whose 81Br line, almost as tall as its main line, is missing could still
   reach the top band; isotope patterns are a constraint on a formula, not a
   decoration of it ([Kind & Fiehn 2007][kf07]; [Böcker et al. 2009][bo09]). Every
@@ -1420,7 +1432,10 @@ flowchart TD
 ```
 
 - **Refuted or untestable.** A line of the formula's own isotope pattern that the spectrum
-  should show is absent (the *expected line absent* reason above); the formula fails the
+  should show is absent (the *expected line absent* reason above). A line that cannot be
+  read, beside a taller peak within one peak width, is not absent and refutes nothing:
+  the row reads 5a at most, with *not tested on its isotopes* and the line in its
+  evidence, and *its isotope lines read apart* in its lift. Or the formula fails the
   structural rule no molecule breaks, its plausibility under the floor of the
   [Seven Golden Rules][kf07] layer; or the instrument did not separate the peak from a
   neighbour, so neither its mass nor its height was measured.
@@ -2389,8 +2404,8 @@ far away it lies, and whether it paired with a peak elsewhere.
 
 Under the lines the run found, the table lists the lines it expected and did not
 (*expected line absent*, above): each at its predicted m/z and abundance, reading
-**not found**, or **not tested** where only an artifact's peak sat there or the line
-fell beyond the spectrum. The spectrum draws the same lines as empty circles at their
+**not found**, or **not tested** where a taller peak within one peak width held its
+place, only an artifact's peak sat there, or the line fell beyond the spectrum. The spectrum draws the same lines as empty circles at their
 predicted heights, beside the theoretical sticks of the lines that were found. A run
 made before Mascope looked for missing lines lists none.
 

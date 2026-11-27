@@ -12,6 +12,11 @@ from mascope_backend.api.new.peak_assignments.envelope_claims import (
     ClaimedLine,
     EnvelopeClaim,
 )
+from mascope_backend.api.new.peak_assignments.line_reading import (
+    LIST_FLOOR_SPAN_MZ,
+    UNTESTABLE_NEIGHBOUR,
+    list_floor,
+)
 from mascope_backend.api.new.peak_assignments.mass_gate import (
     REASON_ISOTOPOLOGUE_IN_DOUBT,
     REASON_ISOTOPOLOGUE_UNTRACKED,
@@ -61,6 +66,7 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     REASON_SAME_ION_SETTLED,
     REASON_SECOND_LINE,
     REASON_SERIES_ANCHOR,
+    REASON_UNREAD_LINE,
     REASON_UNRESOLVED_PEAK,
     SEPARATED_THROUGH,
     SERIES,
@@ -69,6 +75,7 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     UNTESTABLE_ARTIFACT,
     UNTESTABLE_RANGE,
     LineGate,
+    absent_line_reason,
     apply_tiering,
     ask_absent_line,
     critical_separation,
@@ -1678,11 +1685,11 @@ class TestTheRunsRecord:
     def test_the_rule_version_is_recorded(self):
         assert run([row("pa-1")])["version"] == TIERING_RULES_VERSION
 
-    def test_the_rule_set_is_16(self):
+    def test_the_rule_set_is_17(self):
         # The number, not the imported constant: a tier is comparable across
         # runs only under the same rules, so the set moves on purpose and this
         # test moves with it.
-        assert run([row("pa-1")])["version"] == 16
+        assert run([row("pa-1")])["version"] == 17
 
     def test_the_thresholds_are_recorded_with_it(self):
         summary = run([row("pa-1")])
@@ -2858,7 +2865,7 @@ class TestAnExpectedLineThatIsAbsent:
     def test_without_a_signal_to_noise_a_share_exactly_at_the_gate_is_asked(
         self, monkeypatch
     ):
-        from mascope_backend.api.new.peak_assignments import tiering as module
+        from mascope_backend.api.new.peak_assignments import line_reading as module
 
         mzs, shares, labels = predicted_envelope("C6H12O6Br-", 0.01, None)
         at_gate = float(shares[list(labels).index("13C")])
@@ -2880,6 +2887,8 @@ class TestAnExpectedLineThatIsAbsent:
         lines = spectrum(
             ("p-m0", self.M0, 1000.0, 100.0),
             ("p-81br", self.BR81, 970.0, 97.0),
+            # A small peak near, so the list could have held the 13C lines.
+            ("p-small", self.M0 - 2.0, 10.0, 1.0),
             HIGHER,
         )
         summary = run(
@@ -3056,7 +3065,8 @@ class TestAnExpectedLineThatIsAbsent:
         lines = spectrum(
             ("p-low", 120.0, 50.0, 5.0),
             ("p-m0", self.M0, 1000.0, 100.0),
-            ("p-13c", self.C13, 65.0, 6.5),
+            # Under the 13C+81Br line's 64, so the list could have held it.
+            ("p-13c", self.C13, 60.0, 6.0),
         )
         run(rows, lines=lines)
         record = envelope_of(rows, "pa-br")
@@ -3110,10 +3120,275 @@ class TestAnExpectedLineThatIsAbsent:
             "detect_from": DETECT_DEFAULT,
             "rel_detect_no_snr": 0.10,
             "tof_m2": False,
+            "width_window": True,
+            "floor_span_mz": LIST_FLOOR_SPAN_MZ,
             "asked": 1,
             "with_absent_line": 1,
             "untestable_lines": 0,
         }
+
+
+class TestALineTheFileCannotShowApart:
+    """MAS-1288: on a file whose peaks are wider than the match window, as a
+    TOF's are, a line is found, absent, or cannot be read; only an absent one
+    refutes the reading.
+
+    The bromide row of :class:`TestAnExpectedLineThatIsAbsent` on a file of
+    resolving power 3000: a peak there is 333 ppm wide, so its 13C line's
+    window is 167 ppm either side and a neighbour holds the place from up to
+    333 ppm. The line is predicted at 65, 6.5 % of its own line's 1000; the
+    line model reads a peak up to 1.4 times that, 91, as the line.
+    """
+
+    BR = TestAnExpectedLineThatIsAbsent
+    C13 = BR.C13
+
+    @staticmethod
+    def tof(mz: float) -> float:
+        return 3000.0
+
+    def peaks(self, *extra: tuple, widths: bool = True) -> SpectrumLines:
+        found = [
+            ("p-m0", self.BR.M0, 1000.0, 100.0),
+            ("p-81br", self.BR.BR81, 970.0, 97.0),
+            ("p-13c81br", self.BR.C13_BR81, 63.0, 6.3),
+            # The smallest the list keeps near the lines, under all of them.
+            ("p-small", self.BR.M0 - 3.0, 20.0, 2.0),
+            HIGHER,
+            *extra,
+        ]
+        return SpectrumLines(
+            [peak[0] for peak in found],
+            [peak[1] for peak in found],
+            [peak[2] for peak in found],
+            [peak[3] for peak in found],
+            self.tof if widths else None,
+        )
+
+    def c13_of(self, lines: SpectrumLines) -> tuple[list[dict], dict]:
+        rows = [self.BR().bromide()]
+        run(rows, lines=lines)
+        return rows, line_named(envelope_of(rows, "pa-br"), "13C")
+
+    def at(self, ppm: float) -> float:
+        return self.C13 * (1 + ppm * 1e-6)
+
+    def test_a_peak_of_the_line_s_height_inside_the_peak_width_is_the_line(self):
+        # 100 ppm off: outside the 5 ppm match window, inside half a width.
+        near = ("p-near", self.at(100.0), 70.0, 7.0)
+        rows, c13 = self.c13_of(self.peaks(near))
+        assert c13["state"] == LINE_FOUND
+        assert c13["peak_id"] == "p-near"
+        assert tier_of(rows, "pa-br") == "assigned"
+        assert REASON_UNREAD_LINE not in rules_on(rows, "pa-br")
+        # Where the run cannot read the file's widths the window is the match
+        # window, and the same peak is no line.
+        rows, c13 = self.c13_of(self.peaks(near, widths=False))
+        assert c13["state"] == LINE_ABSENT
+        assert tier_of(rows, "pa-br") == "candidate"
+
+    def test_the_nearest_peak_of_the_line_s_height_is_the_line(self):
+        rows, c13 = self.c13_of(
+            self.peaks(
+                ("p-far", self.at(-150.0), 60.0, 6.0),
+                ("p-near", self.at(80.0), 50.0, 5.0),
+            )
+        )
+        assert c13["peak_id"] == "p-near"
+
+    def test_past_half_a_width_a_peak_of_the_line_s_height_is_not_it(self):
+        rows, c13 = self.c13_of(self.peaks(("p-off", self.at(250.0), 70.0, 7.0)))
+        assert c13["state"] == LINE_ABSENT
+        assert tier_of(rows, "pa-br") == "candidate"
+
+    def test_beside_a_taller_neighbour_the_line_cannot_be_read(self):
+        # Ten times the line, 120 ppm off: inside half a width, but taller
+        # than the line can be, so it holds the place.
+        rows, c13 = self.c13_of(self.peaks(("p-big", self.at(-120.0), 650.0, 65.0)))
+        assert c13["state"] == LINE_UNTESTABLE
+        assert c13["untestable"] == UNTESTABLE_NEIGHBOUR
+        assert c13["peak_id"] == "p-big"
+        assert c13["widths"] == pytest.approx(0.36, abs=0.005)
+        # The 13C line's share is 6.54 %, so its predicted height 65.4.
+        assert c13["height_ratio"] == pytest.approx(9.93)
+        assert tier_of(rows, "pa-br") == "assigned"
+        assert REASON_ABSENT_LINE not in rules_on(rows, "pa-br")
+        (reason,) = [
+            r for r in reasons_of(rows, "pa-br") if r["rule"] == REASON_UNREAD_LINE
+        ]
+        assert reason["caps"] is False
+        assert reason["lines"] == ["13C"]
+        assert reason["detail"] == (
+            "its 13C line, predicted at m/z 259.9856 at 6.5% of its own line, could "
+            "not be read: a peak 9.93 times its predicted height sits 0.36 peak "
+            "widths from it, so it cannot stand apart"
+        )
+
+    def test_a_taller_neighbour_holds_the_place_out_to_one_width(self):
+        _, c13 = self.c13_of(self.peaks(("p-big", self.at(300.0), 650.0, 65.0)))
+        assert c13["untestable"] == UNTESTABLE_NEIGHBOUR
+        rows, c13 = self.c13_of(self.peaks(("p-big", self.at(360.0), 650.0, 65.0)))
+        assert c13["state"] == LINE_ABSENT
+        assert tier_of(rows, "pa-br") == "candidate"
+
+    def test_the_row_s_own_peak_and_an_artifact_hold_no_place(self):
+        rows = [self.BR().bromide()]
+        lines = self.peaks(("p-art", self.at(-120.0), 650.0, 65.0))
+        run(rows, lines=lines, artifact_peak_ids=["p-art"])
+        c13 = line_named(envelope_of(rows, "pa-br"), "13C")
+        assert c13["untestable"] == UNTESTABLE_ARTIFACT
+        # The own peak is the 13C line's lighter neighbour by a whole mass,
+        # past a width; on a wider file it would be in reach and is skipped.
+        assert tier_of(rows, "pa-br") == "assigned"
+
+    def test_a_line_under_the_list_s_floor_is_not_asked(self):
+        # The smallest peak the list keeps within 5 m/z is 80, over the 13C
+        # lines' 65 and 64: the list could not have held them.
+        lines = SpectrumLines(
+            ["p-m0", "p-81br", "p-80", "p-higher"],
+            [self.BR.M0, self.BR.BR81, self.BR.M0 - 3.0, 400.0],
+            [1000.0, 970.0, 80.0, 30.0],
+            [100.0, 97.0, 8.0, 3.0],
+            self.tof,
+        )
+        rows = [self.BR().bromide()]
+        run(rows, lines=lines)
+        record = envelope_of(rows, "pa-br")
+        assert [line["line"] for line in record["lines"]] == ["81Br"]
+        assert record["under_list_floor"] == 2
+        assert tier_of(rows, "pa-br") == "assigned"
+
+    def test_a_list_with_no_other_peak_near_sets_no_floor(self):
+        lines = SpectrumLines(
+            ["p-m0", "p-81br", "p-higher"],
+            [self.BR.M0, self.BR.BR81, 400.0],
+            [1000.0, 970.0, 30.0],
+            [100.0, 97.0, 3.0],
+            self.tof,
+        )
+        floor_only_own = list_floor(lines, self.BR.BR81 + 10.0, 5.0, "p-m0")
+        assert floor_only_own is None
+        assert list_floor(lines, self.C13, 5.0, "p-m0") == 970.0
+
+    def test_the_floor_skips_the_row_s_own_peak_and_empty_peaks(self):
+        lines = SpectrumLines(
+            ["p-m0", "p-81br", "p-zero"],
+            [self.BR.M0, self.BR.BR81, self.BR.M0 + 1.0],
+            [1000.0, 970.0, 0.0],
+        )
+        assert list_floor(lines, self.BR.M0, 5.0, "p-81br") == 1000.0
+        assert list_floor(lines, self.BR.M0, 5.0, "p-m0") == 970.0
+
+    def test_a_line_exactly_at_the_floor_is_asked(self):
+        rows = [self.BR().bromide()]
+        mzs, shares, labels = predicted_envelope("C6H12O6Br-", 0.01, None)
+        at_floor = float(shares[list(labels).index("13C+81Br")]) * 1000.0
+        lines = SpectrumLines(
+            ["p-m0", "p-81br", "p-floor", "p-higher"],
+            [self.BR.M0, self.BR.BR81, self.BR.M0 + 0.5, 400.0],
+            [1000.0, 970.0, at_floor, 30.0],
+            [100.0, 97.0, 6.0, 3.0],
+            self.tof,
+        )
+        run(rows, lines=lines)
+        record = envelope_of(rows, "pa-br")
+        assert "13C+81Br" in [line["line"] for line in record["lines"]]
+        assert record["under_list_floor"] == 0
+
+    def test_a_row_with_no_height_sets_no_floor(self):
+        lines = SpectrumLines(
+            ["p-m0", "p-81br", "p-80", "p-higher"],
+            [self.BR.M0, self.BR.BR81, self.BR.M0 - 3.0, 400.0],
+            [1000.0, 970.0, 80.0, 30.0],
+            [100.0, 97.0, 8.0, 3.0],
+            self.tof,
+        )
+        rows = [self.BR().bromide(intensity=0.0)]
+        run(rows, lines=lines)
+        record = envelope_of(rows, "pa-br")
+        assert record["under_list_floor"] == 0
+        assert "13C" in [line["line"] for line in record["lines"]]
+
+    def test_absent_where_nothing_holds_the_place_above_the_floor(self):
+        rows, c13 = self.c13_of(self.peaks())
+        assert c13["state"] == LINE_ABSENT
+        assert tier_of(rows, "pa-br") == "candidate"
+        (reason,) = [
+            r for r in reasons_of(rows, "pa-br") if r["rule"] == REASON_ABSENT_LINE
+        ]
+        assert reason["line"] == "13C"
+
+    def test_the_run_s_count_holds_only_rows_an_absent_line_caps(self):
+        rows = [self.BR().bromide()]
+        summary = run(rows, lines=self.peaks(("p-big", self.at(-120.0), 650.0, 65.0)))
+        assert summary["absent_line"]["with_absent_line"] == 0
+        assert summary["absent_line"]["untestable_lines"] == 1
+        assert summary["capped_by_rule"] == {}
+
+
+class TestTheUnreadLineReason:
+    """`absent_line_reason` on a record with no absent line and some that
+    could not be read: one reason naming them, tallest first, capping
+    nothing."""
+
+    @staticmethod
+    def line(label: str, share: float, why: str, **fields) -> dict:
+        return {
+            "line": label,
+            "predicted_mz": 200.0 + share,
+            "predicted_share": share,
+            "state": LINE_UNTESTABLE,
+            "untestable": why,
+            **fields,
+        }
+
+    def test_each_reason_is_named_and_past_three_counted(self):
+        record = {
+            "asks_share": 0.03,
+            "lines": [
+                self.line("18O", 0.02, UNTESTABLE_RANGE),
+                self.line("13C", 0.11, UNTESTABLE_ARTIFACT),
+                {
+                    "line": "34S",
+                    "predicted_mz": 201.0,
+                    "predicted_share": 0.05,
+                    "state": LINE_FOUND,
+                },
+                self.line("13C2", 0.01, UNTESTABLE_NEIGHBOUR, widths=0.5),
+                self.line(
+                    "15N", 0.04, UNTESTABLE_NEIGHBOUR, widths=0.25, height_ratio=12.0
+                ),
+            ],
+        }
+        reason = absent_line_reason(row("pa-1"), record)
+        assert reason["rule"] == REASON_UNREAD_LINE
+        assert reason["caps"] is False
+        assert reason["lines"] == ["13C", "15N", "18O", "13C2"]
+        assert reason["detail"] == (
+            "its 13C line, predicted at m/z 200.1100 at 11.0% of its own line, "
+            "could not be read: only an artifact's peak sits where it should be; "
+            "its 15N line, predicted at m/z 200.0400 at 4.0% of its own line, could "
+            "not be read: a peak 12 times its predicted height sits 0.25 peak "
+            "widths from it, so it cannot stand apart; its 18O line, predicted at "
+            "m/z 200.0200 at 2.0% of its own line, could not be read: it lies "
+            "beyond the peak list's m/z span; and 1 more"
+        )
+
+    def test_a_neighbour_of_no_known_height_is_a_taller_peak(self):
+        record = {"lines": [self.line("13C", 0.1, UNTESTABLE_NEIGHBOUR, widths=0.4)]}
+        assert (
+            "a taller peak sits 0.40 peak widths"
+            in (absent_line_reason(row("pa-1"), record)["detail"])
+        )
+
+    def test_every_line_found_says_nothing(self):
+        found = {
+            "line": "13C",
+            "predicted_mz": 201.0,
+            "predicted_share": 0.1,
+            "state": LINE_FOUND,
+        }
+        assert absent_line_reason(row("pa-1"), {"lines": [found]}) is None
 
 
 class TestOnATofAHalogenShowsItsM2Line:
@@ -3188,6 +3463,13 @@ class TestOnATofAHalogenShowsItsM2Line:
         rows = self.judged("tof", ("p-m2", self.CL37, 640.0, 2.6))
         assert tier_of(rows, "pa-cl") == "assigned"
 
+    def test_it_is_asked_under_the_peak_list_s_floor_too(self):
+        # The smallest peak listed near is 700, over the 37Cl line's 644.
+        rows = self.judged("tof", ("p-big", self.M0 + 1.0, 700.0, 2.8))
+        (m2,) = envelope_of(rows, "pa-cl")["lines"]
+        assert (m2["line"], m2["state"]) == ("37Cl", LINE_ABSENT)
+        assert tier_of(rows, "pa-cl") == "candidate"
+
     @pytest.mark.parametrize(
         ("ion", "mz", "named"),
         [
@@ -3260,7 +3542,16 @@ class TestTheGateARunAskedAt:
             detect_from=DETECT_DEFAULT,
             rel_detect_no_snr=0.10,
             tof=False,
+            width_window=True,
+            floor_span_mz=LIST_FLOOR_SPAN_MZ,
         )
+
+    def test_a_run_of_rule_set_16_reads_back_as_its_match_window_alone(self):
+        summary = run([row("pa-1")], lines=spectrum(("p-1", 181.07, 10.0, 1.0)))
+        for key in ("width_window", "floor_span_mz"):
+            summary["absent_line"].pop(key)
+        gate = LineGate.from_record(summary)
+        assert (gate.width_window, gate.floor_span_mz) == (False, None)
 
     def test_a_curve_and_a_tof_read_back_too(self):
         summary = run(
@@ -3278,12 +3569,14 @@ class TestTheGateARunAskedAt:
             detect_from=DETECT_FROM_CURVE,
             rel_detect_no_snr=0.10,
             tof=True,
+            width_window=True,
+            floor_span_mz=LIST_FLOOR_SPAN_MZ,
         )
 
     def test_the_share_asked_with_no_signal_to_noise_is_the_run_s(self, monkeypatch):
         # The run recorded the fit's constant as it stood; a hand row on the
         # run is asked at that share, not at what the constant reads today.
-        from mascope_backend.api.new.peak_assignments import tiering as module
+        from mascope_backend.api.new.peak_assignments import line_reading as module
 
         monkeypatch.setattr(module, "REL_DETECT_NO_SNR", 0.05)
         summary = run([row("pa-1")], lines=spectrum(("p-1", 181.07, 10.0, 1.0)))

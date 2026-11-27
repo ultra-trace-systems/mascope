@@ -286,10 +286,17 @@ def stubbed(monkeypatch, peak_snr):
         return ion_by_seed, fit_by_ion, errors, pd.DataFrame({"x": [1]})
 
     def peaks_of(sample_item_id):
+        # Beside each peak a small one, as a real list holds: the smallest
+        # height the list keeps near a reading's lines, so the absent-line
+        # rule asks them (``line_reading.list_floor``).
         return frame(
             (
-                (peak_id, _mz(formula), 5000.0)
+                peak
                 for peak_id, (formula, _) in _peaks().items()
+                for peak in (
+                    (peak_id, _mz(formula), 5000.0),
+                    (f"{peak_id}-small", _mz(formula) - 2.5, 50.0),
+                )
             ),
             snr=peak_snr.get(sample_item_id),
         )
