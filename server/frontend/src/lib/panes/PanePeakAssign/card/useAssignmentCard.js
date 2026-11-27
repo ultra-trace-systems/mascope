@@ -2,6 +2,7 @@ import { computed, nextTick, reactive, ref, useId, watch } from 'vue'
 
 import { useApp } from '@/stores'
 import { num } from '@/lib/formatters'
+import { usePopoverFit } from '@/lib/popoverFit.js'
 import { formatIsotopeFormula, formatIsotopeLabel, neutralKey } from '@/lib/chem'
 import { isIsotopeLine } from '@/lib/isotopeLines'
 import { notFoundLines } from '@/lib/predictedEnvelope'
@@ -365,6 +366,9 @@ export function useAssignmentCard({ showSearch }) {
   // its fields for every peak: any verdict takes a note, and a confirmation also
   // names the evidence level behind it.
   const verdictDialog = ref(null)
+  // Opened from the card's foot, so it opens above the bar, and a form taller
+  // than the room above scrolls with its actions in view (lib/popoverFit.js).
+  const { on: verdictDialogFit, fit: fitVerdictDialog } = usePopoverFit(verdictDialog)
   const dialogVerdict = ref(null) // the verdict the open dialog records
   const dialogId = useId()
   // The dialog's wording and submit button, matching the button that opened it.
@@ -409,6 +413,7 @@ export function useAssignmentCard({ showSearch }) {
     if (wasOpen) {
       nextTick(() => {
         dialog.alignOverlay?.()
+        fitVerdictDialog()
         dialog.focus?.()
       })
     }
@@ -2092,6 +2097,7 @@ export function useAssignmentCard({ showSearch }) {
     showVerifyForm,
     startEdit,
     verdictDialog,
+    verdictDialogFit,
     dialogVerdict,
     dialogId,
     VERDICT_DIALOGS,

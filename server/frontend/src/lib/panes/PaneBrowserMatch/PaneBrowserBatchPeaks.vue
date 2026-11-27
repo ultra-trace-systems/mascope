@@ -826,22 +826,26 @@ const hideOthers = (keep) =>
 const {
   menu: verdictMenu,
   target: verdictTarget,
-  open: openVerdict
+  open: openVerdict,
+  fit: verdictFit
 } = useRowPopover(findDecorated, idOf, { beforeOpen: () => hideOthers(verdictMenu) })
 const {
   menu: continuityMenu,
   target: continuityTarget,
-  open: openContinuity
+  open: openContinuity,
+  fit: continuityFit
 } = useRowPopover(findDecorated, idOf, { beforeOpen: () => hideOthers(continuityMenu) })
 const {
   menu: levelMenu,
   target: levelTarget,
-  open: openLevelPopover
+  open: openLevelPopover,
+  fit: levelFit
 } = useRowPopover(findDecorated, idOf, { beforeOpen: () => hideOthers(levelMenu) })
 const {
   menu: acrossMenu,
   target: acrossTarget,
-  open: openAcrossPopover
+  open: openAcrossPopover,
+  fit: acrossFit
 } = useRowPopover(findDecorated, idOf, { beforeOpen: () => hideOthers(acrossMenu) })
 
 // --- Across the batch's "+n" ---------------------------------------------------
@@ -1798,7 +1802,7 @@ watch(
     </template>
 
     <template #popovers>
-      <Popover ref="continuityMenu" aria-label="Ratio stability">
+      <Popover ref="continuityMenu" aria-label="Ratio stability" v-on="continuityFit">
         <BatchPeakContinuityPopover
           v-if="continuityTarget"
           :row="continuityTarget"
@@ -1806,7 +1810,12 @@ watch(
         />
       </Popover>
 
-      <Popover ref="acrossMenu" aria-label="Across the batch" @hide="returnAcrossFocus">
+      <Popover
+        ref="acrossMenu"
+        aria-label="Across the batch"
+        v-on="acrossFit"
+        @hide="returnAcrossFocus"
+      >
         <BatchAcrossPopover
           v-if="acrossTarget"
           :readings="acrossReadings(acrossTarget)"
@@ -1814,7 +1823,7 @@ watch(
         />
       </Popover>
 
-      <Popover ref="levelMenu" aria-label="Where the level comes from">
+      <Popover ref="levelMenu" aria-label="Where the level comes from" v-on="levelFit">
         <LedgerLevelSources
           v-if="levelTarget"
           :claim="claimOf(levelTarget)"
@@ -1832,7 +1841,7 @@ watch(
         />
       </Popover>
 
-      <Popover ref="verdictMenu" aria-label="Batch-level verdict">
+      <Popover ref="verdictMenu" aria-label="Batch-level verdict" v-on="verdictFit">
         <LedgerVerdictPopover
           v-if="verdictTarget"
           scope="batch"

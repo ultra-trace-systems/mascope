@@ -421,9 +421,20 @@ async function retract() {
   font-size: 0.78rem;
   opacity: 0.7;
 }
+/* Held at the top of the form when it is too tall for the window and its
+   content scrolls (lib/popoverFit.js): the buttons that record the verdict
+   stay in view while the evidence under them is filled in. Stuck, it covers
+   the popover's own padding over it, so nothing scrolls past in that strip;
+   the margins give the room back, so the layout is as before. */
 .buttons {
   display: flex;
   gap: 0.4rem;
+  position: sticky;
+  top: calc(-1 * var(--p-popover-content-padding, 0.75rem));
+  z-index: 1;
+  padding-block: 0.5rem;
+  margin-block: -0.5rem;
+  background: var(--p-popover-background);
 }
 .buttons > :deep(.p-button) {
   flex: 1;

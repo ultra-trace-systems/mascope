@@ -1,11 +1,17 @@
 import { computed, nextTick, ref } from 'vue'
 
+import { usePopoverFit } from '@/lib/popoverFit.js'
+
 /**
  * One popover for a whole table, pointed at the row whose cell opened it.
  *
  * The target is read live by id, so a reload under an open popover (a verdict
  * just recorded, a consensus that moved) shows the row as it now is. Clicking
  * the open row's cell again closes it; another row's cell moves it there.
+ *
+ * Bind `fit` to the Popover (`v-on="fit"`) so it stays inside the window: a
+ * row near the window's foot opens it above the row, and one too tall for
+ * either side scrolls (lib/popoverFit.js).
  *
  * @param {Function} findRow finds a row by id among the rows the popover may
  *   point at
@@ -17,6 +23,7 @@ import { computed, nextTick, ref } from 'vue'
 export function useRowPopover(findRow, idOf, { beforeOpen = null } = {}) {
   const menu = ref()
   const rowId = ref(null)
+  const { on: fit } = usePopoverFit(menu)
   const target = computed(() => (rowId.value != null ? (findRow(rowId.value) ?? null) : null))
 
   function open(event, row) {
@@ -33,5 +40,5 @@ export function useRowPopover(findRow, idOf, { beforeOpen = null } = {}) {
     nextTick(() => popover.show(event))
   }
 
-  return { menu, rowId, target, open, hide: () => menu.value?.hide() }
+  return { menu, rowId, target, open, fit, hide: () => menu.value?.hide() }
 }

@@ -4802,3 +4802,26 @@ describe('PaneBrowserBatchPeaks back from a sample', () => {
     expect(scrollVirtualRowIntoView).not.toHaveBeenCalled()
   })
 })
+
+// Each cell popover is kept inside the window (lib/popoverFit.js): placed
+// again when it opens, its watch dropped when it closes.
+describe('PaneBrowserBatchPeaks cell popovers fit the window', () => {
+  it('binds the fit to the verdict, level, "+n" and ratio popovers', async () => {
+    wrapper = await mountPane()
+    const bound = Object.fromEntries(
+      wrapper
+        .findAllComponents({ name: 'Popover' })
+        .filter((popover) => popover.attributes('aria-label'))
+        .map((popover) => {
+          const props = popover.vm.$.vnode.props ?? {}
+          return [popover.attributes('aria-label'), Boolean(props.onShow && props.onHide)]
+        })
+    )
+    expect(bound).toMatchObject({
+      'Batch-level verdict': true,
+      'Where the level comes from': true,
+      'Across the batch': true,
+      'Ratio stability': true
+    })
+  })
+})

@@ -237,9 +237,17 @@ vi.mock('@/lib/base', async () => ({
 const alignOverlay = vi.fn()
 const focusDialog = vi.fn()
 const PopoverStub = {
-  data: () => ({ visible: false }),
+  // `container` and `target` as PrimeVue's own carries them, which the card's
+  // fit to the window reads (lib/popoverFit.js).
+  data: () => ({ visible: false, target: null }),
+  computed: {
+    container() {
+      return this.visible ? this.$el : null
+    }
+  },
   methods: {
-    show() {
+    show(event) {
+      this.target = event?.currentTarget ?? null
       this.visible = true
     },
     hide() {
@@ -1103,6 +1111,36 @@ describe('PanePeakAssign verdict dialog', () => {
     expect(dialog(wrapper).find('input[type="radio"]').exists()).toBe(false)
     expect(alignOverlay).toHaveBeenCalledTimes(1)
     expect(focusDialog).toHaveBeenCalledTimes(1)
+  })
+
+  it('fits the dialog to the window again when it moves to another button', async () => {
+    // The verdict bar sits at the card's foot: 600 px down a 700 px window.
+    vi.stubGlobal('innerHeight', 700)
+    const rect = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockReturnValue({ top: 600, bottom: 630, left: 0, right: 0, width: 0, height: 30 })
+    try {
+      const wrapper = await mountPane()
+      await verdictButton(wrapper, 'Confirm').trigger('click')
+      Object.defineProperty(wrapper.find('.popover').element, 'offsetHeight', { value: 300 })
+
+      await verdictButton(wrapper, 'Reject').trigger('click')
+      await flushPromises()
+
+      // Above the button, its foot on it, as PrimeVue's flipped margin expects.
+      const popover = wrapper.find('.popover').element
+      expect(popover.style.top).toBe('300px')
+      expect(popover.classList.contains('p-popover-flipped')).toBe(true)
+      // And on every open, through the Popover's own show and hide.
+      const { onShow, onHide } = wrapper
+        .findAllComponents(PopoverStub)
+        .find((stub) => stub.find('[data-testid="verdict-dialog"]').exists()).vm.$.vnode.props
+      expect(typeof onShow).toBe('function')
+      expect(typeof onHide).toBe('function')
+    } finally {
+      rect.mockRestore()
+      vi.unstubAllGlobals()
+    }
   })
 
   it('keeps the dialog and what was entered when the verdict fails', async () => {

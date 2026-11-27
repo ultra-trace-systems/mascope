@@ -39,6 +39,7 @@ const {
   pendingVerdict,
   openVerdict,
   verdictDialog,
+  verdictDialogFit,
   dialogVerdict,
   dialogMeta,
   dialogId,
@@ -163,7 +164,11 @@ const {
       <!-- No help card in here: the card above covers it, and one inside a
            popover re-registers on every open. Radio buttons rather than a
            Select, which would swallow the Escape that closes the dialog. -->
-      <Popover ref="verdictDialog" :aria-label="`${dialogMeta.verb} the assignment`">
+      <Popover
+        ref="verdictDialog"
+        :aria-label="`${dialogMeta.verb} the assignment`"
+        v-on="verdictDialogFit"
+      >
         <div class="verdict-dialog" data-testid="verdict-dialog">
           <div class="dialog-claim">
             {{ dialogMeta.verb }}
@@ -355,10 +360,23 @@ const {
 .dialog-refute label {
   cursor: pointer;
 }
+/* Held at the foot of the dialog when it is too tall for the window and its
+   content scrolls (lib/popoverFit.js): Cancel and the submit stay in view.
+   It covers the popover's own padding under it, so nothing scrolls past in
+   that strip; the margins give the room back, so the layout is as before. */
 .dialog-actions {
+  --pad: var(--p-popover-content-padding, 0.75rem);
   display: flex;
   justify-content: flex-end;
   gap: 0.4rem;
+  position: sticky;
+  bottom: calc(-1 * var(--pad));
+  z-index: 1;
+  padding-top: 0.6rem;
+  padding-bottom: var(--pad);
+  margin-top: -0.6rem;
+  margin-bottom: calc(-1 * var(--pad));
+  background: var(--p-popover-background);
 }
 .verify-denied {
   display: inline-flex;
