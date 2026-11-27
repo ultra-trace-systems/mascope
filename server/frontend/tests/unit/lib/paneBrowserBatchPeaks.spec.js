@@ -3711,13 +3711,12 @@ describe('PaneBrowserBatchPeaks identification level', () => {
     })
 
     // Batch peak ids stay the same across a re-fold, so the first read would
-    // still show the split from before an Assign batch run from the popover.
+    // still show the split from before a pass that ran while it was closed.
     it("reads again when the same row's chip reopens a closed popover", async () => {
       const cells = await cellsOf('member_level', peaks())
-      vi.spyOn(useBatchAssign(), 'assign').mockResolvedValue()
       await chipOf(cells, 'bp-1').trigger('click')
       await flushPromises()
-      popover().vm.$emit('assign')
+      wrapper.vm.levelMenu.hide()
       const after = { ...body, member_levels: { '4a': 5 } }
       get.mockImplementation((url) =>
         Promise.resolve(url.includes('/levels/') ? { data: after } : null)
@@ -3804,16 +3803,23 @@ describe('PaneBrowserBatchPeaks identification level', () => {
       expect(popoverCalls).toContainEqual(['Where the level comes from', 'hide'])
     })
 
-    it('runs Assign batch from the popover', async () => {
+    // A pass of the batch stages gives no member a run of its own, so the
+    // popover offers none under "N samples have no run of their own"
+    // (MAS-1342): the pane hands it nothing to run one with. The stub keeps
+    // the two props it once took, so handing them over again shows here.
+    it('hands the popover no Assign batch, for an editor too', async () => {
       const cells = await cellsOf('member_level', peaks())
       const assign = useBatchAssign()
       const run = vi.spyOn(assign, 'assign').mockResolvedValue()
+      expect(assign.canAssign).toBe(true)
       await chipOf(cells, 'bp-1').trigger('click')
       await flushPromises()
 
+      expect(popover().exists()).toBe(true)
+      expect(popover().props('canAssign')).toBeUndefined()
+      expect(popover().props('assignBlocked')).toBeUndefined()
       popover().vm.$emit('assign')
-
-      expect(run).toHaveBeenCalled()
+      expect(run).not.toHaveBeenCalled()
     })
   })
 

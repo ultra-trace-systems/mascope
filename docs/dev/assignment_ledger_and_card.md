@@ -153,7 +153,8 @@ a set of samples, and the set can hide better ones, so the chip opens a popover
 batch's own level with its evidence and lift next, then the members' own split in the
 scale's order, the members' level's evidence and lift (the most common line of each,
 with how many members wrote it), the best level any member states where it is better,
-and the members that state none, by why, with **Assign batch** for an editor. **Open a sample** opens the
+and the members that state none, by why, with no control: a pass of the batch stages gives no
+member a run of its own, so **Assign batch** there was taken out (MAS-1342). **Open a sample** opens the
 brightest member at a level in the sample scope, the card stepping through that level's
 members; a list picks another. The members come from one read per batch peak, on the
 click (`GET /batch-peaks/batch/{id}/levels/{batch_peak_id}`), never from the ledger's

@@ -1575,7 +1575,8 @@ Space on it, to see where it comes from:
 - the best level any sample states, where it is better than the one shown: those
   samples are the nearest answer to what would raise the row;
 - how many samples state no level, and why: no run of their own, or a run that reads
-  another formula on the peak. An editor can run **Assign batch** from there.
+  another formula on the peak. **Assign batch** would not change this count: a pass of
+  the batch gives no sample a run of its own. **Assign sample** on the sample does.
 
 **Open a sample** beside a level opens the brightest sample at that level with the peak in
 focus, where the inspector's **Identification level** section shows the full evidence,

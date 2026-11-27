@@ -917,8 +917,8 @@ async function loadLevelSources(row) {
 function openLevelSources(event, row) {
   // A second click on the open row's chip closes it and asks nothing. Any
   // other click opens it and reads again, the same row's included: the
-  // popover may have closed on an Assign batch that moved the members' levels,
-  // and batch peak ids stay the same across a re-fold.
+  // members' levels may have moved since (a pass of the batch, a sample's
+  // run), and batch peak ids stay the same across a re-fold.
   const closing =
     Boolean(levelMenu.value?.visible) && levelTarget.value?.batch_peak_id === row.batch_peak_id
   openLevelPopover(event, row)
@@ -933,10 +933,6 @@ function openLevelMember(member, members, level) {
   if (!row) return
   levelMenu.value?.hide()
   jump.openMember(row, member, members, level)
-}
-function assignFromLevel() {
-  levelMenu.value?.hide()
-  assign.assign()
 }
 
 // --- Selection --------------------------------------------------------------
@@ -1825,10 +1821,7 @@ watch(
           :loading="levelSources.loading"
           :error="levelSources.id === levelTarget.batch_peak_id ? levelSources.error : null"
           :snapshot="viewingSnapshot"
-          :canAssign="assign.canAssign"
-          :assignBlocked="assign.blockedReason || null"
           @open-member="openLevelMember"
-          @assign="assignFromLevel"
         />
       </Popover>
 
