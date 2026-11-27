@@ -51,13 +51,10 @@ const props = defineProps({
   /** Why the read failed, or null. */
   error: { type: String, default: null },
   /** An earlier run's ledger, whose snapshot keeps no member levels. */
-  snapshot: { type: Boolean, default: false },
-  /** Whether the reader may run Assign batch, and why it is held back if so. */
-  canAssign: { type: Boolean, default: false },
-  assignBlocked: { type: String, default: null }
+  snapshot: { type: Boolean, default: false }
 })
 
-const emit = defineEmits(['open-member', 'assign'])
+const emit = defineEmits(['open-member'])
 
 const members = computed(() => props.sources?.data ?? [])
 const shownMembers = computed(() => props.sources?.member_level ?? props.memberLevel)
@@ -264,19 +261,11 @@ const intensity = (value) => (value == null ? '-' : num.peakIntensity.format(val
         />
       </div>
 
-      <!-- The members that state none, and what would give them one. -->
+      <!-- The members that state none, by why. No control here: a pass of the
+           batch stages gives no member a run of its own (MAS-1342), and the
+           read names no member without a level to open. -->
       <div v-if="unstated.length" class="unstated" data-testid="level-unstated">
         <p v-for="line in unstated" :key="line" class="line">{{ line }}.</p>
-        <span v-if="canAssign" v-tooltip.top="assignBlocked">
-          <Button
-            label="Assign batch"
-            size="small"
-            outlined
-            :disabled="Boolean(assignBlocked)"
-            data-testid="level-assign"
-            @click="emit('assign')"
-          />
-        </span>
       </div>
 
       <p v-if="sources && total && !batchLevel" class="note" data-testid="level-no-batch">

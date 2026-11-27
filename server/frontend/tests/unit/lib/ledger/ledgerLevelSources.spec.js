@@ -133,8 +133,11 @@ describe('LedgerLevelSources', () => {
     expect(level).toBe('4a')
   })
 
-  it('counts the members that state no level, by why, and offers Assign batch to an editor', async () => {
-    const wrapper = mountIt({ canAssign: true })
+  // A pass of the batch stages gives no member a run of its own, so nothing
+  // under the sentence offers one (MAS-1342), not even to an editor: the two
+  // props the popover once took to offer Assign batch are handed in anyway.
+  it('counts the members that state no level, by why, with no Assign batch under it', () => {
+    const wrapper = mountIt({ canAssign: true, assignBlocked: null })
     const unstated = testid(wrapper, 'level-unstated')
 
     expect(unstated.findAll('p').map((p) => p.text())).toEqual([
@@ -142,15 +145,9 @@ describe('LedgerLevelSources', () => {
       "3 samples' runs commit another formula.",
       "1 sample's run states no level for it."
     ])
-    await testid(wrapper, 'level-assign').trigger('click')
-    expect(wrapper.emitted('assign')).toHaveLength(1)
-  })
-
-  it('offers no Assign batch to a reader who may not run it, and holds it while blocked', () => {
-    expect(testid(mountIt(), 'level-assign').exists()).toBe(false)
-
-    const blocked = mountIt({ canAssign: true, assignBlocked: 'A pass is running' })
-    expect(testid(blocked, 'level-assign').attributes('disabled')).toBeDefined()
+    expect(unstated.find('button').exists()).toBe(false)
+    expect(wrapper.findAll('button').map((b) => b.text())).not.toContain('Assign batch')
+    expect(testid(wrapper, 'level-assign').exists()).toBe(false)
   })
 
   it("says a live claim first, with its evidence and lift, the members' split under it", () => {
