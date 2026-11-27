@@ -901,9 +901,13 @@ describe('PaneBrowserBatchPeaks tier ordering', () => {
     })
     await wrapper.vm.$nextTick()
 
+    // The Intensity header also holds its short label, for a narrow ledger:
+    // its full label is the one it is named by.
+    const labelOf = (span) =>
+      (span.find('.intensity-label').exists() ? span.find('.intensity-label') : span).text()
     const tips = wrapper
       .findAll('.column-stub [data-tooltip]')
-      .map((span) => [span.text(), span.attributes('data-tooltip')])
+      .map((span) => [labelOf(span), span.attributes('data-tooltip')])
     expect(tips.map(([label]) => label)).toEqual([
       'm/z',
       'Compound',

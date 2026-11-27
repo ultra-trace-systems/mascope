@@ -332,3 +332,30 @@ describe('BaseTierTag cap and outline', () => {
     expect(mountTag({ tier: 'candidate' }).classes()).not.toContain('outlined')
   })
 })
+
+// The narrow ledger shows a tier chip's dot alone, hiding its word from sight
+// by the `tier-word` class (lib/ledger/narrow.css). The word stays in the chip,
+// its accessible name, and the hover names the tier first. A role chip has no
+// dot, so its word is no `tier-word` and stays at every width.
+describe('BaseTierTag word', () => {
+  it.each(['assigned', 'candidate', 'below_assignability', 'unassigned'])(
+    'marks the word of a %s chip, which stays its text',
+    (tier) => {
+      const wrapper = mountTag({ tier, cap: { label: 'one peak only', tooltip: 'Held' } })
+      const word = wrapper.find('.tier-word')
+      expect(word.exists()).toBe(true)
+      expect(word.attributes('aria-hidden')).toBeUndefined()
+      expect(wrapper.find('.tag').text()).toBe(word.text())
+      const name = word.text()
+      expect(wrapper.find('.tier-tag').attributes('data-tooltip').toLowerCase()).toMatch(
+        new RegExp(`^${name}`)
+      )
+    }
+  )
+
+  it('leaves a role chip its word', () => {
+    const wrapper = mountTag({ tier: 'unassigned', role: 'reagent' })
+    expect(wrapper.find('.tier-word').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="role-chip"]').text()).toBe('reagent')
+  })
+})

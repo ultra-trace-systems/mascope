@@ -68,7 +68,9 @@ import './narrow.css'
  *   count, the batch's badges and the intensity's bar, in that order. The
  *   level itself stays: where its column drops, its chips move into the Tier
  *   cell. Show carries the level's filter and sort, so they stay within
- *   reach with the column gone;
+ *   reach with the column gone. With the badges, the tier chip's word goes
+ *   from sight, leaving its dot; with the bar, the Intensity column narrows
+ *   to its number;
  * - the lens (section 3.5): with `lens` set, a bar above the table names the
  *   group the rows are narrowed to, offers to plot it where the scope can,
  *   and closes with its x or Escape; a Step or Channel column labels each
@@ -121,6 +123,12 @@ const props = defineProps({
   /** Header tooltips by column key. */
   headers: { type: Object, default: () => ({}) },
   intensityLabel: { type: String, default: 'Intensity' },
+  /**
+   * The Intensity header where the ledger is narrow enough to drop the bar
+   * (./narrow.css): short, so the header is no wider than the number. The
+   * full label stays its accessible name and its hover.
+   */
+  intensityShortLabel: { type: String, default: 'Int.' },
   /**
    * The intensities the bars are drawn over: every row the scope holds, not
    * only the ones its filters leave, so a bar keeps its length as the reader
@@ -643,9 +651,24 @@ const engineChipTooltip = (row) =>
           </template>
         </Column>
 
-        <Column :field="fields.intensity" sortable style="min-width: 7rem">
+        <!-- Its minimum width is ./narrow.css's (col-intensity), which lowers
+             it where the bar drops, as the Tier column's (col-tier). -->
+        <Column
+          :field="fields.intensity"
+          sortable
+          headerClass="col-intensity"
+          bodyClass="col-intensity"
+        >
           <template #header>
-            <span v-tooltip.top="headers.intensity">{{ intensityLabel }}</span>
+            <!-- The full label, and the short one ./narrow.css shows in its
+                 place at a narrow width, where the full one goes from sight but
+                 stays the header's name. The hover names the label first. -->
+            <span v-tooltip.top="headers.intensity || intensityLabel"
+              ><span class="intensity-label">{{ intensityLabel }}</span
+              ><span class="intensity-label-short" aria-hidden="true">{{
+                intensityShortLabel
+              }}</span></span
+            >
           </template>
           <template #body="{ data }">
             <span
@@ -664,7 +687,7 @@ const engineChipTooltip = (row) =>
 
         <slot name="middle-columns" />
 
-        <Column field="tierRank" sortable style="min-width: 7rem">
+        <Column field="tierRank" sortable headerClass="col-tier" bodyClass="col-tier">
           <template #header>
             <span
               v-tooltip.top="headers.tier"
