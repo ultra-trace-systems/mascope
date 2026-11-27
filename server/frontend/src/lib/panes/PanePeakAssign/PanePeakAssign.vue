@@ -9,6 +9,7 @@ import CardMeasurements from './card/CardMeasurements.vue'
 import CardNoOwnRun from './card/CardNoOwnRun.vue'
 import CardNotes from './card/CardNotes.vue'
 import CardRunNotice from './card/CardRunNotice.vue'
+import CardSource from './card/CardSource.vue'
 import CardSkeleton from './card/CardSkeleton.vue'
 import CardVerdictBar from './card/CardVerdictBar.vue'
 import CardWhy from './card/CardWhy.vue'
@@ -24,7 +25,9 @@ import { provideCard } from './card/useCard.js'
 // 4.2's: a notice under the answer on a run that is not the sample's result,
 // a note there on a sample the batch ledger serves with no run of its own,
 // skeletons while the detail loads, and a card of its own for a focused peak
-// with no ledger row.
+// with no ledger row. A reagent or an artifact row, which commits no formula,
+// shows its own statement and measurements in place of the Why box and the
+// four tiles (card/CardSource.vue).
 
 // Toggles the Sample view's pane under the spectrum between the time series
 // (default) and the composition search. Owned by the parent (PaneTabSample);
@@ -36,7 +39,16 @@ provideCard(card)
 // The model's state, read and set by a parent or a test as the card's own
 // (its refs unwrap on the component's public instance).
 defineExpose(card)
-const { app, focusedAssignment, peakSummary, showWhy, showMeasurements, loading, noRowLine } = card
+const {
+  app,
+  focusedAssignment,
+  peakSummary,
+  showWhy,
+  showMeasurements,
+  source,
+  loading,
+  noRowLine
+} = card
 </script>
 
 <template>
@@ -66,11 +78,15 @@ const { app, focusedAssignment, peakSummary, showWhy, showMeasurements, loading,
       <CardNoOwnRun />
       <CardSkeleton v-if="loading" />
       <template v-else>
+        <!-- A row the source or the detector made commits no formula, so it
+             has no Why box and no four tiles: its own statement,
+             measurements and notes stand in for them. -->
+        <CardSource v-if="source" />
         <CardWhy v-if="showWhy" />
         <CardMeasurements v-if="showMeasurements" />
         <CardNotes />
         <div class="sections">
-          <CardIsotopePattern />
+          <CardIsotopePattern v-if="source !== 'artifact'" />
           <CardAlternatives />
           <CardAcrossBatch />
           <CardLevel />
