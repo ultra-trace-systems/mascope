@@ -19,9 +19,9 @@ undone as a side effect, the rule the undo already follows for a row curated
 by hand after a demotion (``curation._restore_demoted``).
 
 A hand line is told by the action on its own row's manual block
-(:data:`HAND_ACTIONS`), not by its ``source``: the lines a hand M0 will claim
-(MAS-1318) are ``manual`` too, and they belong to the M0's click, so they are
-demoted with it.
+(:data:`HAND_ACTIONS`), not by its ``source``: the lines a hand M0 claims
+(``hand_claims``) are ``manual`` too, and they belong to the M0's click, so
+they are demoted with it.
 """
 
 from typing import NamedTuple
@@ -92,7 +92,7 @@ async def _run_m0_rows(session, row: PeakAssignment) -> list[PeakAssignment]:
     )
 
 
-def _show_owner_level(line: PeakAssignment, owner: PeakAssignment) -> None:
+def show_owner_level(line: PeakAssignment, owner: PeakAssignment) -> None:
     """Give a linked line its owner's level, as a run's line shows it."""
     record = inherited_level(
         (owner.provenance or {}).get(IDENTIFICATION_LEVEL), owner.peak_assignment_id
@@ -137,7 +137,7 @@ async def link_hand_lines(session, row: PeakAssignment) -> HandLink:
             return HandLink(found=len(m0_rows), note=note)
         (owner,) = m0_rows
         row.owner_peak_assignment_id = owner.peak_assignment_id
-        _show_owner_level(row, owner)
+        show_owner_level(row, owner)
         return HandLink(
             owner=owner,
             found=1,
@@ -170,7 +170,7 @@ async def link_hand_lines(session, row: PeakAssignment) -> HandLink:
     linked = [line for line in candidates if is_hand_line(line)]
     for line in linked:
         line.owner_peak_assignment_id = row.peak_assignment_id
-        _show_owner_level(line, row)
+        show_owner_level(line, row)
     note = (
         f" {len(linked)} isotope line{'s' if len(linked) != 1 else ''} assigned "
         f"by hand linked under it, at m/z "

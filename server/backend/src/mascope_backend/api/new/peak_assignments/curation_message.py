@@ -3,7 +3,8 @@ The message a hand edit of a ledger row answers with (``curation``).
 
 It says what the edit did beyond the row: the isotopologues it demoted,
 restored, left alone or could not reach, the isotope lines it linked or
-detached (``hand_lines``), and what asking the row's lines came to. Each of
+detached (``hand_lines``), the lines a hand M0 claimed and the ones it
+left (``hand_claims``), and what asking the row's lines came to. Each of
 those is also on the rows themselves; the message is how the person who
 clicked learns of it.
 """
@@ -29,6 +30,8 @@ class EditOutcome(NamedTuple):
     #: ``hand_lines``' notes: the row's link and the lines it detached.
     link_note: str = ""
     detach_note: str = ""
+    #: ``hand_claims``' note: the lines a hand M0 claimed, and those it left.
+    claim_note: str = ""
 
 
 def _plural(count: int) -> str:
@@ -55,6 +58,7 @@ def edit_message(outcome: EditOutcome) -> str:
             " Its isotope lines were not checked: the sample's peaks could not be read."
         )
     notes.append(o.link_note)
+    notes.append(o.claim_note)
     if o.demoted:
         notes.append(
             f" {o.demoted} isotopologue{_plural(o.demoted)} of "

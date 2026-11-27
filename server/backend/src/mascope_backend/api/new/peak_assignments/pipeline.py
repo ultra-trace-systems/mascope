@@ -1715,7 +1715,9 @@ def _elect_persons_choice(ctx: RunContext) -> None:
     chooses the formula, but what tier the choice earns is still measured. A
     pin's reading is the elected one on each member's peak; a hand
     assignment's is the row given. Nothing else of a run's election is asked
-    of it: no list holds it, no family is written and no fragment claimed."""
+    of it: no list holds it and no fragment is claimed. Its family is the
+    edit's to write, from the lines the spectrum's rules find
+    (``hand_claims``)."""
     config = ctx.config
     for row in ctx.chosen:
         row["tier"] = tier_for_evidence(

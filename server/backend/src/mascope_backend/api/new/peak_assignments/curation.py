@@ -83,6 +83,10 @@ from mascope_backend.api.new.peak_assignments.fold_view import (
     DerivedAssignmentReadOnlyException,
     is_fold_id,
 )
+from mascope_backend.api.new.peak_assignments.hand_claims import (
+    claim_found_lines,
+    restored_source,
+)
 from mascope_backend.api.new.peak_assignments.hand_lines import (
     detach_hand_lines,
     link_hand_lines,
@@ -105,9 +109,7 @@ from mascope_backend.api.new.peak_assignments.row_terms import (
     ROLE_ISO_CHILD,
     ROLE_M0,
     ROLE_UNASSIGNED,
-    SOURCE_DATABASE,
     SOURCE_MANUAL,
-    SOURCE_UNTARGETED,
     TIERING_KEY,
 )
 from mascope_backend.api.new.peak_assignments.sample_inputs import load_sample_peaks
@@ -729,16 +731,6 @@ def _demote(
     return entry
 
 
-#: The sources a restored isotopologue may claim. A demoted row was engine
-#: output when its owner was overridden: the one 'manual' row an M0 can own is
-#: an isotope line a person assigned by hand and linked under it
-#: (``hand_lines``), and an override detaches that line rather than demoting
-#: it, so it never reaches the archive. The archive is JSON an imported run
-#: could have written anything into, so anything else comes back sourceless
-#: rather than mislabelled.
-_ENGINE_SOURCES = (SOURCE_DATABASE, SOURCE_UNTARGETED)
-
-
 async def _restore(
     session,
     child: PeakAssignment,
@@ -824,7 +816,10 @@ async def _restore(
     child.tier = tier
     # The engine's tier and level, restored with the winner they judged.
     child.engine_tier, child.engine_level = _engine_verdict(previous)
-    child.source = source if source in _ENGINE_SOURCES else None
+    # An engine's source, or 'manual' on a line a hand M0 claimed, which was
+    # demoted with it (``hand_claims``); a hand line linked under an M0 is
+    # detached instead (``hand_lines``), so it never reaches the archive.
+    child.source = restored_source(source, restored_provenance)
     child.assigned_formula = state.get("assigned_formula")
     child.ion_formula = state.get("ion_formula")
     child.ionization_mechanism_id = mechanism_id
@@ -1028,8 +1023,8 @@ async def _persons_choice(
     rows at (:meth:`tiering.LineGate.from_record`), over the sample's peaks read
     as the run read them: at the setup's labelled purity, and on a decoy run's
     shifted axis, with the peaks the pre-passes claim read as neither a line
-    nor an absence. Then its identification level. The batch's *Use this* is
-    the same path on a batch peak's members (``batch_curation``).
+    nor an absence. Then its identification level. The edit claims the lines
+    it finds (``hand_claims``), the batch's *Use this* (``batch_curation``) none.
 
     A run that asked no line asks none of its hand assignments either: an
     imported run, whose configuration is its engine's own, and a run tiered
@@ -1146,6 +1141,11 @@ async def curate_assignment(
     the undo cannot reach at all - its row deleted since, or its archived state
     unusable - is reported as such rather than passed over in silence.
 
+    A hand M0 writes a family too: it claims the free rows the lines its
+    formula predicts are found on, as a run writes its lines, and names the
+    found lines another row holds (``hand_claims``). Those lines are part of
+    its click, so an override demotes them with it and the undo restores them.
+
     A person's choice is never undone as a side effect, and an isotope line
     assigned by hand is one (``hand_lines``). It is linked under the run's one
     M0 of its formula and adduct, and shows that M0's level; an M0 committed
@@ -1159,7 +1159,8 @@ async def curate_assignment(
     :param user_id: The curating user, recorded in provenance.
     :return: Status envelope; ``data[0]`` is the curated row, followed by the
         isotopologue rows the edit demoted, the hand lines it detached, the
-        rows it restored and the hand lines it linked under the row.
+        rows it restored, the hand lines it linked under the row and the
+        lines it claimed.
     :raises NotFoundException: The assignment is not this sample's.
     :raises ApiException: 409 when the run is not completed (something else is
         still writing it) or the promoted candidate moved; 422 when the request
@@ -1436,6 +1437,17 @@ async def curate_assignment(
         # A hand line folds under its compound's one M0 on the run, and an M0
         # takes the run's ownerless hand lines of its compound (`hand_lines`).
         link = await link_hand_lines(session, assignment)
+        # A hand M0 claims the free rows its found lines sit on (`hand_claims`).
+        claims = await claim_found_lines(
+            session,
+            assignment,
+            run,
+            user_id=user_id,
+            at=at,
+            push_previous=lambda row: _push_alternative(
+                row.alternatives, _previous_winner(row)
+            ),
+        )
 
         # Read out before the commit expires these instances. A refresh per row
         # would be the alternative, and an expired attribute read on an async
@@ -1447,7 +1459,8 @@ async def curate_assignment(
         # on the run. Without this the same row reads differently here and from
         # the detail endpoint a request later.
         records = []
-        for row in [assignment, *displaced, *detached, *restored, *link.linked]:
+        moved = [*displaced, *detached, *restored, *link.linked, *claims.claimed]
+        for row in [assignment, *moved]:
             record = row.to_dict()
             record["provenance"] = provenance_with_calibration(
                 record.get("provenance"), run.confidence_calibration
@@ -1469,6 +1482,7 @@ async def curate_assignment(
             line_reason=lines.reason,
             lines_unread=lines.unread,
             link_note=link.note,
+            claim_note=claims.note,
             detach_note=detach_note,
         )
     )

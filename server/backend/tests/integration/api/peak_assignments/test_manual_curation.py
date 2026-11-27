@@ -2812,9 +2812,13 @@ async def _add_row(async_session_factory, data: dict, peak: str, **fields) -> st
                 peak_assignment_run_id=data["run_id"],
                 sample_item_id=data["sample_item_id"],
                 sample_peak_id=peak,
-                sample_peak_mz=300.25,
                 sample_peak_intensity=80.0,
-                **{"role": "unassigned", "tier": "unassigned", **fields},
+                **{
+                    "sample_peak_mz": 300.25,
+                    "role": "unassigned",
+                    "tier": "unassigned",
+                    **fields,
+                },
             )
         )
         await session.commit()
@@ -3201,3 +3205,419 @@ async def test_a_manual_line_no_person_assigned_on_its_own_row_is_demoted(
     child = await _row(async_session_factory, curated_run["child_id"])
     assert child.role == "unassigned"
     assert (await _row(async_session_factory, stray)).owner_peak_assignment_id is None
+
+
+# ---------------------------------------------------------------------------
+# A hand M0 claims the isotope lines it finds on free rows (MAS-1318)
+# ---------------------------------------------------------------------------
+
+
+async def _at_spectrum_height(async_session_factory, row_id: str) -> None:
+    """Give the row the M0 is written on its peak's height in `_bromo_peaks`,
+    which the line check reads its lines' shares against."""
+    async with async_session_factory() as session:
+        row = await session.get(PeakAssignment, row_id)
+        row.sample_peak_intensity = 1000.0
+        await session.commit()
+
+
+async def _line_row(async_session_factory, data: dict, peak: str, label: str, **fields):
+    """A row of the run on the peak a bromine line of the spectrum sits on."""
+    return await _add_row(
+        async_session_factory,
+        data,
+        peak,
+        sample_peak_mz=_bromo_line(label),
+        **fields,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_hand_m0_claims_its_found_lines_on_free_rows(
+    editor_client, curated_run, asks_lines, async_session_factory
+):
+    """MAS-1312's option C: the 13C lines sit on rows the run left unassigned,
+    so the hand M0 takes them as a run writes its lines. The 81Br line sits on
+    another formula's line, which it names and leaves."""
+    asks_lines.peaks = _bromo_peaks()
+    await _at_spectrum_height(async_session_factory, curated_run["blank_id"])
+    c13 = await _line_row(
+        async_session_factory,
+        curated_run,
+        "cur-4",
+        "13C",
+        source="untargeted",
+        engine_tier="below_assignability",
+        alternatives=[{"assigned_formula": "C9H10", "fit_score": 0.1}],
+    )
+    c13_81br = await _line_row(async_session_factory, curated_run, "cur-5", "13C+81Br")
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["blank_id"]),
+        json=_assign_bromo(curated_run),
+    )
+    assert response.status_code == 200, response.text
+
+    m0 = await _row(async_session_factory, curated_run["blank_id"])
+    assert m0.tier == "assigned"
+    line = await _row(async_session_factory, c13)
+    assert (line.role, line.owner_peak_assignment_id, line.source) == (
+        "iso_child",
+        curated_run["blank_id"],
+        "manual",
+    )
+    assert line.isotope_label == "13C"
+    assert line.assigned_formula == BROMO["assigned_formula"]
+    assert line.ion_formula == line.isotope_formula == "[13C]C5H12BrO5+"
+    assert line.ionization_mechanism_id == curated_run["mechanism_id"]
+    assert line.fit_score == m0.fit_score
+    assert line.tier == m0.tier
+    assert (line.engine_tier, line.engine_level) == (None, None)
+    assert line.level == m0.level
+    assert (
+        line.provenance["identification_level"]["inherited_from"]
+        == curated_run["blank_id"]
+    )
+    assert line.provenance["evidence"] == m0.provenance["evidence"]
+    manual = line.provenance["manual"]
+    assert manual["action"] == "claim_isotope_line"
+    assert manual["claimed_by"] == curated_run["blank_id"]
+    assert manual["at"] == m0.provenance["manual"]["at"]
+    # An unassigned row has no winner to archive; its runner-ups stay.
+    assert line.alternatives == [{"assigned_formula": "C9H10", "fit_score": 0.1}]
+    # The line check's own reading, carried on its record and on the row.
+    record = {
+        entry["line"]: entry for entry in m0.provenance["predicted_envelope"]["lines"]
+    }
+    assert line.mz_error_ppm == record["13C"]["mz_error_ppm"]
+    assert line.mz_error_ppm == pytest.approx(0.0, abs=1e-3)
+    assert line.abundance_error == record["13C"]["abundance_error"]
+    assert line.abundance_error == pytest.approx(
+        record["13C"]["observed_share"] / record["13C"]["predicted_share"] - 1,
+        abs=1e-4,
+    )
+    second = await _row(async_session_factory, c13_81br)
+    assert (second.role, second.owner_peak_assignment_id) == (
+        "iso_child",
+        curated_run["blank_id"],
+    )
+    assert second.isotope_label == "13C+81Br"
+
+    held = await _row(async_session_factory, curated_run["child_id"])
+    assert (held.assigned_formula, held.owner_peak_assignment_id) == (
+        "C6H12O6",
+        curated_run["m0_id"],
+    )
+    message = response.json()["message"]
+    assert (
+        f"Claimed 2 isotope lines of it: 13C at m/z {_bromo_line('13C'):.4f}, "
+        f"13C+81Br at m/z {_bromo_line('13C+81Br'):.4f}." in message
+    )
+    assert (
+        "81Br line found at m/z 182.0741, not claimed: it reads the M+1 line of "
+        "C6H12O6." in message
+    )
+    returned = [record["peak_assignment_id"] for record in response.json()["data"]]
+    assert {c13, c13_81br} <= set(returned)
+
+
+@pytest.mark.asyncio
+async def test_a_line_on_a_row_someone_decided_is_named_not_claimed(
+    editor_client, curated_run, asks_lines, async_session_factory
+):
+    """A row left unassigned by hand is decided, and so is another formula's
+    M0: both are named with what they read, and both stay as they were."""
+    asks_lines.peaks = _bromo_peaks()
+    await _at_spectrum_height(async_session_factory, curated_run["blank_id"])
+    by_hand = await _line_row(
+        async_session_factory, curated_run, "cur-4", "13C", source="manual"
+    )
+    other = await _line_row(
+        async_session_factory,
+        curated_run,
+        "cur-5",
+        "13C+81Br",
+        role="M0",
+        tier="candidate",
+        assigned_formula="C9H9N",
+        source="untargeted",
+    )
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["blank_id"]),
+        json=_assign_bromo(curated_run),
+    )
+    assert response.status_code == 200, response.text
+
+    left = await _row(async_session_factory, by_hand)
+    assert (left.role, left.owner_peak_assignment_id) == ("unassigned", None)
+    kept = await _row(async_session_factory, other)
+    assert (kept.role, kept.assigned_formula, kept.owner_peak_assignment_id) == (
+        "M0",
+        "C9H9N",
+        None,
+    )
+    message = response.json()["message"]
+    assert "Claimed" not in message
+    assert (
+        f"13C line found at m/z {_bromo_line('13C'):.4f}, not claimed: unassigned, "
+        "left so by hand or by an override." in message
+    )
+    assert (
+        f"13C+81Br line found at m/z {_bromo_line('13C+81Br'):.4f}, not claimed: it "
+        "reads C9H9N." in message
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_found_line_the_runs_match_would_not_take_is_left(
+    editor_client, curated_run, asks_lines, async_session_factory
+):
+    """The line check reads a line in a window the M0's own mass error widens,
+    at any height. A run takes a line only within its match window of the
+    line, and at a height the line model admits: the 13C peak 6 ppm off the
+    line, and the 13C+81Br peak at five times its share, are both named."""
+    off = _bromo_line("13C") * (1 + 6e-6)
+    asks_lines.peaks = [
+        ("cur-3", _bromo_line("M0"), 1000.0, 100.0),
+        ("cur-2", _bromo_line("81Br"), 970.0, 97.0),
+        ("cur-4", off, 65.0, 6.5),
+        ("cur-5", _bromo_line("13C+81Br"), 320.0, 32.0),
+        ("cur-high", 400.0, 30.0, 3.0),
+    ]
+    await _at_spectrum_height(async_session_factory, curated_run["blank_id"])
+    c13 = await _line_row(async_session_factory, curated_run, "cur-4", "13C")
+    tall = await _line_row(async_session_factory, curated_run, "cur-5", "13C+81Br")
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["blank_id"]),
+        json=_assign_bromo(curated_run, mz_error_ppm=3.0),
+    )
+    assert response.status_code == 200, response.text
+
+    m0 = await _row(async_session_factory, curated_run["blank_id"])
+    states = {
+        entry["line"]: entry["state"]
+        for entry in m0.provenance["predicted_envelope"]["lines"]
+    }
+    assert states["13C"] == states["13C+81Br"] == "found"
+    for row_id in (c13, tall):
+        row = await _row(async_session_factory, row_id)
+        assert (row.role, row.owner_peak_assignment_id) == ("unassigned", None)
+    message = response.json()["message"]
+    assert "Claimed" not in message
+    assert (
+        "13C line found at m/z "
+        f"{_bromo_line('13C'):.4f}, not claimed: its peak is +6.0 ppm off the "
+        "line, outside the run's 5 ppm window." in message
+    )
+    assert (
+        "13C+81Br line found at m/z "
+        f"{_bromo_line('13C+81Br'):.4f}, not claimed: its peak is 32.0% of the "
+        "M0's" in message
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_absent_line_writes_no_row_and_the_claims_stay_under_the_m0s_tier(
+    editor_client, curated_run, asks_lines, async_session_factory
+):
+    """The missing 81Br line holds the M0 at candidate, as before; the lines
+    it found are claimed at no higher a tier."""
+    asks_lines.peaks = _bromo_peaks(br81=False)
+    await _at_spectrum_height(async_session_factory, curated_run["blank_id"])
+    c13 = await _line_row(async_session_factory, curated_run, "cur-4", "13C")
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["blank_id"]),
+        json=_assign_bromo(curated_run),
+    )
+    assert response.status_code == 200, response.text
+
+    m0 = await _row(async_session_factory, curated_run["blank_id"])
+    assert m0.tier == "candidate"
+    line = await _row(async_session_factory, c13)
+    assert (line.role, line.tier) == ("iso_child", "candidate")
+    async with async_session_factory() as session:
+        owned = (
+            (
+                await session.execute(
+                    select(PeakAssignment.sample_peak_id).where(
+                        PeakAssignment.owner_peak_assignment_id
+                        == curated_run["blank_id"]
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert owned == ["cur-4"]
+    assert "Its 81Br line is not in the spectrum" in response.json()["message"]
+
+
+@pytest.mark.asyncio
+async def test_overriding_a_hand_m0_demotes_its_claimed_lines_and_the_undo_restores_them(
+    editor_client, curated_run, asks_lines, async_session_factory
+):
+    """A claimed line is part of the M0's click: replaced, the M0 takes it
+    down with it, archived; promoted back, it comes back as it was, a
+    person's doing still."""
+    asks_lines.peaks = _bromo_peaks()
+    await _at_spectrum_height(async_session_factory, curated_run["blank_id"])
+    c13 = await _line_row(async_session_factory, curated_run, "cur-4", "13C")
+    await editor_client.patch(
+        _url(curated_run, curated_run["blank_id"]),
+        json=_assign_bromo(curated_run),
+    )
+
+    override = await editor_client.patch(
+        _url(curated_run, curated_run["blank_id"]),
+        json={
+            "action": "set_assignment",
+            "assigned_formula": "C7H16O5",
+            "ion_formula": "C7H17O5+",
+            "ionization_mechanism_id": curated_run["mechanism_id"],
+            "isotope_label": "M0",
+            "fit_score": 0.95,
+        },
+    )
+    assert override.status_code == 200, override.text
+    assert (
+        "1 isotopologue of 'C6H11BrO5' demoted to unassigned."
+        in (override.json()["message"])
+    )
+    demoted = await _row(async_session_factory, c13)
+    assert (demoted.role, demoted.owner_peak_assignment_id) == ("unassigned", None)
+    assert demoted.provenance["manual"]["action"] == "demote_isotopologue"
+    m0 = await _row(async_session_factory, curated_run["blank_id"])
+    assert [
+        entry["peak_assignment_id"] for entry in m0.provenance["manual"]["demoted"]
+    ] == [c13]
+
+    undo = await editor_client.patch(
+        _url(curated_run, curated_run["blank_id"]),
+        json={
+            "action": "promote_alternative",
+            "alternative_index": 0,
+            "expected_formula": BROMO["assigned_formula"],
+        },
+    )
+    assert undo.status_code == 200, undo.text
+    assert "1 isotopologue of 'C6H11BrO5' restored." in undo.json()["message"]
+    restored = await _row(async_session_factory, c13)
+    assert (restored.role, restored.owner_peak_assignment_id, restored.source) == (
+        "iso_child",
+        curated_run["blank_id"],
+        "manual",
+    )
+    assert restored.provenance["manual"]["action"] == "claim_isotope_line"
+    assert "Claimed" not in undo.json()["message"]
+
+
+@pytest.mark.asyncio
+async def test_promoting_a_runner_up_claims_its_lines_too(
+    editor_client, curated_run, asks_lines, async_session_factory
+):
+    """The other hand action: the M0's stored bromine runner-up, promoted,
+    claims the free row its 13C line is found on, under the target the
+    runner-up was scored against."""
+    compound_id = gen_id()
+    ion_id = gen_id()
+    async with async_session_factory() as session:
+        session.add(
+            TargetCompound(
+                target_compound_id=compound_id,
+                target_compound_name="Curation claim compound",
+                target_compound_formula=BROMO["assigned_formula"],
+            )
+        )
+        session.add(
+            TargetIon(
+                target_ion_id=ion_id,
+                target_compound_id=compound_id,
+                ionization_mechanism_id=curated_run["mechanism_id"],
+                target_ion_formula=BROMO["ion_formula"],
+            )
+        )
+        m0 = await session.get(PeakAssignment, curated_run["m0_id"])
+        m0.alternatives = [
+            _alternative(
+                curated_run["mechanism_id"],
+                **BROMO,
+                fit_score=0.99,
+                mz_error_ppm=0.3,
+                target_compound_id=compound_id,
+                target_ion_id=ion_id,
+            )
+        ]
+        await session.commit()
+    try:
+        claimed = await _promote_and_check_the_claim(
+            editor_client, curated_run, asks_lines, async_session_factory
+        )
+        line = await _row(async_session_factory, claimed)
+        assert (line.target_compound_id, line.target_ion_id) == (compound_id, ion_id)
+    finally:
+        async with async_session_factory() as session:
+            await session.execute(
+                delete(TargetCompound).where(
+                    TargetCompound.target_compound_id == compound_id
+                )
+            )
+            await session.commit()
+
+
+async def _promote_and_check_the_claim(
+    editor_client, curated_run, asks_lines, async_session_factory
+) -> str:
+    """Promote the M0's bromine runner-up over a free 13C row; the row's id."""
+    asks_lines.peaks = [
+        ("cur-1", _bromo_line("M0"), 1000.0, 100.0),
+        ("cur-4", _bromo_line("13C"), 65.0, 6.5),
+        ("cur-high", 400.0, 30.0, 3.0),
+    ]
+    await _at_spectrum_height(async_session_factory, curated_run["m0_id"])
+    c13 = await _line_row(async_session_factory, curated_run, "cur-4", "13C")
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={"action": "promote_alternative", "alternative_index": 0},
+    )
+    assert response.status_code == 200, response.text
+
+    line = await _row(async_session_factory, c13)
+    assert (line.role, line.owner_peak_assignment_id, line.source) == (
+        "iso_child",
+        curated_run["m0_id"],
+        "manual",
+    )
+    assert line.provenance["manual"]["action"] == "claim_isotope_line"
+    m0 = await _row(async_session_factory, curated_run["m0_id"])
+    assert line.tier == m0.tier == "candidate"
+    return c13
+
+
+@pytest.mark.asyncio
+async def test_re_committing_the_compound_claims_only_the_lines_it_does_not_hold(
+    editor_client, curated_run, asks_lines, async_session_factory
+):
+    """The family a first commit claimed stands; a second commit of the same
+    compound takes a free row since, and says nothing of the lines it holds."""
+    asks_lines.peaks = _bromo_peaks()
+    await _at_spectrum_height(async_session_factory, curated_run["blank_id"])
+    first = await _line_row(async_session_factory, curated_run, "cur-4", "13C")
+    await editor_client.patch(
+        _url(curated_run, curated_run["blank_id"]),
+        json=_assign_bromo(curated_run),
+    )
+    later = await _line_row(async_session_factory, curated_run, "cur-5", "13C+81Br")
+
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["blank_id"]),
+        json=_assign_bromo(curated_run),
+    )
+    assert response.status_code == 200, response.text
+    for row_id in (first, later):
+        row = await _row(async_session_factory, row_id)
+        assert row.owner_peak_assignment_id == curated_run["blank_id"]
+    message = response.json()["message"]
+    assert (
+        f"Claimed 1 isotope line of it: 13C+81Br at m/z "
+        f"{_bromo_line('13C+81Br'):.4f}." in message
+    )
+    assert "13C line found" not in message

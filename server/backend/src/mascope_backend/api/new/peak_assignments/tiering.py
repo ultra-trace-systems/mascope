@@ -1504,6 +1504,9 @@ def _read_line(
     if held:
         peak_id, intensity = max(held, key=lambda peak: peak[1])
         found: dict = {"state": LINE_FOUND, "peak_id": peak_id}
+        # The probe's own mass error, from the line, not the shifted window.
+        mz = spectrum.peak(peak_id)[0]
+        found["mz_error_ppm"] = round((mz - line_mz) / line_mz * 1e6, 4)
         if own_intensity > 0:
             found["observed_share"] = round(intensity / own_intensity, 6)
         return found
@@ -1552,7 +1555,8 @@ def expected_lines(
     :return: The record (:data:`PREDICTED_ENVELOPE`): the gate it asked at and
         each line asked, with its predicted m/z and share, its expected
         signal-to-noise, and its ``state`` (:data:`LINE_FOUND` with the probe's
-        peak and observed share, :data:`LINE_ABSENT` or
+        peak, its mass error from the line, its observed share and that
+        share's error from the predicted one, :data:`LINE_ABSENT` or
         :data:`LINE_UNTESTABLE`); None where the ion predicts no line or the
         spectrum does not hold the row's own peak, which reads nothing.
     """
@@ -1605,6 +1609,8 @@ def expected_lines(
                 artifact_peak_ids=artifact_peak_ids,
             )
         )
+        if share > 0 and "observed_share" in entry:
+            entry["abundance_error"] = round(entry["observed_share"] / share - 1, 6)
         asked.append(entry)
     return {
         "snr": None if snr is None else round(snr, 2),
