@@ -8,7 +8,7 @@ from threading import Event, Lock
 from typing import Callable, Iterable
 
 import watchdog
-from watchdog.events import PatternMatchingEventHandler
+from watchdog.events import IgnorePolicy, PatternMatchingEventHandler
 from watchdog.observers import Observer
 from watchdog.utils.patterns import match_any_paths
 
@@ -23,6 +23,17 @@ POLL_INTERVAL = 1
 #: only ever hands a path over, so it ends at once; the bound is there so that
 #: a stop with no deadline is never a wait an interrupt cannot reach.
 OBSERVER_STOP_TIME = 5
+
+
+def _in_any_folder(pattern: str) -> str:
+    """The watchdog pattern that takes ``pattern``'s file names in any folder.
+
+    A mask names files (``*.raw``), and watchdog matches a pattern against
+    the event's whole path (``PurePath.full_match``), where ``*.raw`` takes
+    nothing: ``**/*.raw`` takes the same files the mask names, wherever under
+    the watched folder they are.
+    """
+    return pattern if pattern.startswith("**/") else f"**/{pattern}"
 
 
 class FileSystemWatcher:
@@ -60,7 +71,13 @@ class FileSystemWatcher:
             self.client = client
             # An acquisition record beside a data file goes with that file's
             # upload and is never a file to upload, whatever the mask takes.
-            super().__init__(patterns=patterns, ignore_patterns=[f"*{SIDECAR_SUFFIX}"])
+            # A move is let through unless both of its names are records:
+            # on_moved judges it by its new name alone.
+            super().__init__(
+                patterns=[_in_any_folder(p) for p in patterns],
+                ignore_patterns=[_in_any_folder(f"*{SIDECAR_SUFFIX}")],
+                ignore_policy=IgnorePolicy.ALL,
+            )
 
         def on_created(self, event: watchdog.events.FileSystemEvent) -> None:
             """New file created
@@ -215,7 +232,15 @@ class FileSystemWatcher:
         """Start watching.
 
         Start `FileSystemEventHandler`
+
+        :raises FileNotFoundError: If the watched folder is not there
         """
+        # Looked for here, not left to the observer: on Windows it opens the
+        # folder on a thread of its own, and a folder that is not there ends
+        # that thread and leaves start() to give up waiting for it, with an
+        # error that does not say why.
+        if not os.path.isdir(self.path):
+            raise FileNotFoundError(f"The watched folder is not there: {self.path}")
         # Under the lock stop() takes, so that a stop from another thread
         # finds the watcher either not started or started, never in between.
         with self._lock:

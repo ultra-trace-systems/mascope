@@ -7,7 +7,7 @@ at a file is patched out; no observer threads are started.
 from queue import Empty
 
 import pytest
-from watchdog.events import FileMovedEvent
+from watchdog.events import FileCreatedEvent, FileMovedEvent
 
 from mascope_file_agent import Agent, watcher
 
@@ -93,6 +93,32 @@ def test_a_file_renamed_away_from_the_mask_is_left_alone(make_agent, tmp_path):
 
     with pytest.raises(Empty):
         agent.watcher._seen.get(timeout=0.2)
+
+
+def test_a_move_is_judged_by_its_new_name_alone(make_agent, tmp_path):
+    """A file that was once named as a record is taken under a data file's name.
+
+    Watchdog drops a move when either name is ignored, unless told otherwise.
+    """
+    agent = make_agent()
+
+    agent.watcher.handler.dispatch(
+        _moved(tmp_path / "x.raw.mascope.json", tmp_path / "x.raw")
+    )
+
+    assert agent.watcher._seen.get(timeout=5) == str(tmp_path / "x.raw")
+
+
+def test_a_file_in_a_subfolder_is_taken_when_subfolders_are_watched(
+    make_agent, tmp_path
+):
+    """The mask names files, and a file deeper down has a longer path."""
+    agent = make_agent(recursive=True)
+    deeper = tmp_path / "run1" / "x.raw"
+
+    agent.watcher.handler.dispatch(FileCreatedEvent(str(deeper)))
+
+    assert agent.watcher._seen.get(timeout=5) == str(deeper)
 
 
 def test_a_file_gone_before_it_is_complete_is_a_line_not_a_traceback(
