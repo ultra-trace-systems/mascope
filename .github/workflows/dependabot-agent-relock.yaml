@@ -1,0 +1,169 @@
+name: Dependabot File Agent relock
+run-name: Re-locking the File Agent for pull request ${{ github.event.pull_request.number }}
+
+# The File Agent is its own uv project, not a workspace member, and reaches
+# mascope_runtime and mascope_sdk through path sources (agents/file/pyproject.toml).
+# Its lockfile records what those two libraries require. A Dependabot bump in
+# the root project that widens one of their pins - loguru <0.8 to <0.9 in
+# libraries/runtime, say - updates the root uv.lock only, and "Lint and format"
+# then fails `uv lock --check --directory agents/file`. Dependabot cannot do it
+# itself: its /agents/file entry fetches the libraries' pyprojects as read-only
+# support files, and its / entry never reads agents/file at all.
+#
+# So on a Dependabot uv pull request this re-locks agents/file and, when the
+# lockfile moved, pushes that one file back to the pull request's branch.
+#
+# Security model:
+#
+#   * `pull_request`, not `pull_request_target`. The workflow runs from the
+#     pull request's merge commit, so it takes effect from develop with no
+#     copy on master. A run Dependabot triggers gets a read-only token and
+#     Dependabot secrets only; the job raises its token to `contents: write`,
+#     which GitHub allows for such runs.
+#   * Nothing from the pull request is executed. `uv lock --no-build` reads
+#     pyproject.toml files and package metadata and refuses any step that
+#     would run a build backend or a setup.py. The checkout keeps no
+#     credentials, and the token reaches only the final `git push`.
+#   * The job runs only for a pull request Dependabot opened from a branch
+#     of this repository - the author and the head repository, which a fork
+#     cannot fake, rather than `github.actor`, which can be. A run for the
+#     commit pushed below finds the lockfile in sync and pushes nothing.
+#
+# The commit message carries `[dependabot skip]`, which lets Dependabot keep
+# rebasing the pull request and force-push over this commit; the rebase is a
+# new `synchronize` from Dependabot, and this job re-locks on top of it.
+#
+# A push made with GITHUB_TOKEN starts the pull request's `pull_request`
+# workflows in an approval-required state, and no `pull_request_target`
+# workflow at all. So CI on the new commit waits until someone with write
+# access selects "Approve workflows to run" on the pull request, and the
+# required "CLA Assistant" check, which cla.yaml reports from
+# `pull_request_target`, would never report on it. The `cla` job below
+# reports it instead, for that commit only. A GitHub App installation token
+# would start both kinds of workflow without approval, at the cost of an App
+# and its key held as Dependabot secrets.
+
+on:
+  pull_request:
+    # Every Dependabot entry targets develop. Security updates, which are
+    # disabled today, would target master.
+    branches: [develop, master]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+# A newer Dependabot push supersedes a run still re-locking the older one.
+concurrency:
+  group: dependabot-agent-relock-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  relock:
+    name: Re-lock the File Agent
+    if: >-
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'dependabot/uv/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # the push of agents/file/uv.lock to Dependabot's branch
+    steps:
+      - name: Checkout the pull request's head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The branch as Dependabot left it, not the merge commit: the
+          # re-lock is pushed onto this commit.
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          # The version "Lint and format" checks the lockfile with.
+          version: "0.13.1"
+          # A job holding a write token restores nothing another run wrote.
+          enable-cache: false
+
+      - name: Re-lock agents/file
+        # Without --upgrade: only what the new pins force moves, so the
+        # agent ships the same versions unless a pin now excludes one.
+        run: uv lock --no-build --directory agents/file
+
+      - name: Push the lockfile if it moved
+        env:
+          TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet -- agents/file/uv.lock; then
+            echo "agents/file/uv.lock is in sync; nothing to push."
+            exit 0
+          fi
+          git diff --stat -- agents/file/uv.lock
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --quiet \
+            -m "chore(deps): re-lock the File Agent for the libraries' pins [dependabot skip]" \
+            -m "The bump changed a requirement of mascope_runtime or mascope_sdk, which agents/file/uv.lock records. Written by .github/workflows/dependabot-agent-relock.yaml." \
+            -- agents/file/uv.lock
+
+          # The token goes to git through the environment, never argv. A
+          # push that is not a fast-forward is refused: if Dependabot pushed
+          # again meanwhile, the run for its new head re-locks that one.
+          auth="$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" \
+            git push origin "HEAD:refs/heads/$HEAD_REF"
+
+          {
+            echo "Pushed $(git rev-parse --short HEAD): agents/file/uv.lock re-locked."
+            echo
+            echo "CI on that commit waits for approval: select **Approve workflows to run** on the pull request."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  cla:
+    # The develop ruleset requires "CLA Assistant", and cla.yaml reports it
+    # from `pull_request_target`, which the push above does not raise - so
+    # without this job the re-locked pull request could never merge. It runs
+    # only for that push: its event is the one whose actor is
+    # github-actions[bot]. Every other push to the branch is Dependabot's or
+    # a person's, and cla.yaml checks it as usual. The actor only picks which
+    # run reports the check; what makes it pass is the step, which applies
+    # the same allowlist cla.yaml does to this pull request's two bots.
+    name: CLA Assistant
+    if: >-
+      github.actor == 'github-actions[bot]' &&
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'dependabot/uv/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read # list the pull request's commits
+      pull-requests: read
+    steps:
+      - name: Every commit is Dependabot's or the re-lock's
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # A commit whose author email maps to no account has no login and
+          # fails here, as it fails cla.yaml.
+          others="$(gh api --paginate "repos/$REPO/pulls/$PR/commits" \
+            --jq '.[] | select(.author.login != "dependabot[bot]" and .author.login != "github-actions[bot]")
+                      | "\(.sha[0:9]) \(.author.login // "no account")"')"
+          if [ -n "$others" ]; then
+            echo "::error::Commits by someone other than Dependabot or the re-lock; push to the branch so cla.yaml checks them:"
+            echo "$others"
+            exit 1
+          fi
+          echo "Every commit on #$PR is by dependabot[bot] or github-actions[bot], both on cla.yaml's allowlist."
