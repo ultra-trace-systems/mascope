@@ -66,6 +66,9 @@ describe('what a line not found says', () => {
     expect(notFoundTooltip(line('absent', { tof_m2: true }))).toContain(
       'On a TOF a bromine or chlorine reading must show its own M+2 line'
     )
+    expect(notFoundTooltip(line('absent', { bromine_m2: true, expected_snr: 4.9 }))).toContain(
+      'A bromine reading must show its own 81Br line, nearly as tall as its own.'
+    )
   })
 
   it('says a line on a peak with no signal-to-noise was asked by its share alone', () => {

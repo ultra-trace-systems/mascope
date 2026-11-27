@@ -112,7 +112,9 @@ class LineGate:
     reads a line's window and neighbours at the file's peak width
     (``width_window``), and the span its peak list's floor is read over
     (``floor_span_mz``, None for no floor). A run of rule set 16 or earlier
-    recorded neither, and asked at its match window alone.
+    recorded neither, and asked at its match window alone. Whether a bromine
+    ion's own 81Br line is asked whatever its expected signal-to-noise
+    (``bromine_m2``): rule set 18 on, on every instrument.
     The run records it with the rule set (:meth:`record`), and a hand
     assignment on the run is asked at what the run read back
     (:meth:`from_record`), so the row a person commits and the rows the run
@@ -127,6 +129,7 @@ class LineGate:
     tof: bool
     width_window: bool = False
     floor_span_mz: float | None = None
+    bromine_m2: bool = False
 
     def record(self) -> dict:
         """The gate as the run's tiering record carries it."""
@@ -139,6 +142,7 @@ class LineGate:
             "tof_m2": self.tof,
             "width_window": self.width_window,
             "floor_span_mz": self.floor_span_mz,
+            "bromine_m2": self.bromine_m2,
         }
 
     @classmethod
@@ -169,6 +173,7 @@ class LineGate:
             tof=instrument_type == "tof",
             width_window=True,
             floor_span_mz=LIST_FLOOR_SPAN_MZ,
+            bromine_m2=True,
         )
 
     @classmethod
@@ -208,6 +213,7 @@ class LineGate:
             tof=block.get("tof_m2") is True,
             width_window=block.get("width_window") is True,
             floor_span_mz=float(span) if _positive(span) else None,
+            bromine_m2=block.get("bromine_m2") is True,
         )
 
 

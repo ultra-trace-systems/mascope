@@ -75,11 +75,14 @@ export function notFoundWord(line) {
 }
 
 /**
- * Why the run asked a line: a TOF's M+2 rule, the line's expected
+ * Why the run asked a line: a TOF's M+2 rule, a bromine ion's 81Br line, the line's expected
  * signal-to-noise, or on a peak the file records none for, its share alone.
  */
 function askedBecause(line, asksShare) {
   if (line?.tof_m2) return 'On a TOF a bromine or chlorine reading must show its own M+2 line.'
+  if (line?.bromine_m2) {
+    return 'A bromine reading must show its own 81Br line, nearly as tall as its own.'
+  }
   if (line?.expected_snr != null) {
     return "The run's detectability gate says the spectrum should show it at this peak's signal-to-noise."
   }

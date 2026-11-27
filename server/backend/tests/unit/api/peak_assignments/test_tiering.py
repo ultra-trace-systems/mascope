@@ -3123,6 +3123,7 @@ class TestAnExpectedLineThatIsAbsent:
             "tof_m2": False,
             "width_window": True,
             "floor_span_mz": LIST_FLOOR_SPAN_MZ,
+            "bromine_m2": True,
             "asked": 1,
             "with_absent_line": 1,
             "untestable_lines": 0,
@@ -3664,6 +3665,89 @@ class TestOnATofAHalogenShowsItsM2Line:
         assert summary["absent_line"]["tof_m2"] is True
 
 
+class TestABromineReadingShowsIts81BrLine:
+    """MAS-1288: on every instrument a bromine ion's own 81Br line is asked
+    whatever its expected signal-to-noise, where the peak list could hold it.
+
+    The bromide of :class:`TestAnExpectedLineThatIsAbsent` at a
+    signal-to-noise of 5 on a file whose curve asks lines from 10: its 81Br
+    line, 97 % of its own, expects 4.9, and its 13C lines 0.3.
+    """
+
+    BR = TestAnExpectedLineThatIsAbsent
+
+    def judged(self, *peaks: tuple, **kwargs) -> list[dict]:
+        rows = [self.BR().bromide(channels=["[M+Br]-"], source="database")]
+        run(
+            rows,
+            lines=spectrum(("p-m0", self.BR.M0, 1000.0, 5.0), HIGHER, *peaks),
+            envelope_tolerance=EnvelopeTolerance(detect_snr=10.0),
+            instrument_type="orbi",
+            **kwargs,
+        )
+        return rows
+
+    def test_its_81br_line_is_asked_under_the_gate_and_read(self):
+        rows = self.judged(("p-81br", self.BR.BR81, 970.0, 4.9))
+        (br81,) = envelope_of(rows, "pa-br")["lines"]
+        assert (br81["line"], br81["state"], br81["bromine_m2"]) == (
+            "81Br",
+            LINE_FOUND,
+            True,
+        )
+        assert "tof_m2" not in br81
+        # A line read: the list hit stands on it.
+        assert tier_of(rows, "pa-br") == "assigned"
+        assert REASON_NO_LINE_READ not in rules_on(rows, "pa-br")
+
+    def test_without_it_the_reading_is_refuted(self):
+        rows = self.judged()
+        (br81,) = envelope_of(rows, "pa-br")["lines"]
+        assert br81["state"] == LINE_ABSENT
+        assert tier_of(rows, "pa-br") == "candidate"
+        detail = next(
+            r["detail"]
+            for r in reasons_of(rows, "pa-br")
+            if r["rule"] == REASON_ABSENT_LINE
+        )
+        assert detail == (
+            "its 81Br line, predicted at m/z 260.9802 at 97.3% of its own line, is "
+            "not in the spectrum, and a bromine reading must show its own 81Br "
+            "line, predicted nearly as tall as its own, wherever the peak list "
+            "could hold it"
+        )
+
+    def test_not_where_the_peak_list_could_not_hold_it(self):
+        # The smallest peak listed near is 990, over the 81Br line's 973.
+        rows = self.judged(("p-big", self.BR.M0 + 1.5, 990.0, 5.0))
+        record = envelope_of(rows, "pa-br")
+        assert record["lines"] == []
+        assert record["under_list_floor"] == 1
+
+    def test_a_line_the_gate_asks_anyway_says_the_gate(self):
+        rows = [self.BR().bromide()]
+        run(rows, lines=self.BR().peaks(), instrument_type="orbi")
+        assert "bromine_m2" not in line_named(envelope_of(rows, "pa-br"), "81Br")
+
+    def test_a_run_whose_gate_predates_it_asks_only_what_the_gate_asks(self):
+        gate = LineGate(
+            mz_tolerance_ppm=5.0,
+            abundance_floor=0.01,
+            detect_snr=10.0,
+            detect_from=DETECT_FROM_CURVE,
+            rel_detect_no_snr=0.10,
+            tof=False,
+            width_window=True,
+            floor_span_mz=LIST_FLOOR_SPAN_MZ,
+        )
+        expected, _ = ask_absent_line(
+            self.BR().bromide(),
+            spectrum(("p-m0", self.BR.M0, 1000.0, 5.0), HIGHER),
+            gate,
+        )
+        assert expected["lines"] == []
+
+
 class TestTheGateARunAskedAt:
     """`LineGate`: what the run records it asked lines at, which a hand
     assignment on the run is asked at."""
@@ -3681,7 +3765,13 @@ class TestTheGateARunAskedAt:
             tof=False,
             width_window=True,
             floor_span_mz=LIST_FLOOR_SPAN_MZ,
+            bromine_m2=True,
         )
+
+    def test_a_run_before_rule_set_18_reads_back_with_no_bromine_rule(self):
+        summary = run([row("pa-1")], lines=spectrum(("p-1", 181.07, 10.0, 1.0)))
+        summary["absent_line"].pop("bromine_m2")
+        assert LineGate.from_record(summary).bromine_m2 is False
 
     def test_a_run_of_rule_set_16_reads_back_as_its_match_window_alone(self):
         summary = run([row("pa-1")], lines=spectrum(("p-1", 181.07, 10.0, 1.0)))
@@ -3708,6 +3798,7 @@ class TestTheGateARunAskedAt:
             tof=True,
             width_window=True,
             floor_span_mz=LIST_FLOOR_SPAN_MZ,
+            bromine_m2=True,
         )
 
     def test_the_share_asked_with_no_signal_to_noise_is_the_run_s(self, monkeypatch):

@@ -356,7 +356,9 @@ from mascope_tools.composition.utils import formula_identity
 #: neighbours at the file's peak width, asks a line only where the peak list
 #: could hold it, and names a line it cannot read without capping on it. 18
 #: (MAS-1288): a list hit no line of whose isotope pattern was read, and that
-#: nothing else corroborates, stays at candidate (:data:`REASON_NO_LINE_READ`).
+#: nothing else corroborates, stays at candidate (:data:`REASON_NO_LINE_READ`);
+#: and a bromine ion's own 81Br line is asked on every instrument wherever the
+#: peak list could hold it, whatever its expected signal-to-noise.
 TIERING_RULES_VERSION = 18
 
 #: The row's evidence is under the band its tier would need. Not a rule of
@@ -1442,6 +1444,29 @@ def _m2_line(mzs: np.ndarray, shares: np.ndarray) -> int | None:
     return best
 
 
+def _halogen_m2(
+    ion: str, mzs: np.ndarray, shares: np.ndarray, gate: LineGate
+) -> tuple[int | None, bool]:
+    """The ion's own M+2 line its halogen asks whatever the gate says.
+
+    On a TOF a bromine or chlorine ion's (``tof_m2``), past the S/N gate and
+    the list's floor. Elsewhere a bromine ion's, its 81Br line at 97 % of its
+    own, past the S/N gate but where the list could hold it (``bromine_m2``
+    on a line the S/N gate alone would have left, where the gate asks so):
+    it can be read wherever the row's own line is,
+    and a gate set for faint lines would leave a bromide at that gate's S/N
+    or under it with no line of its pattern asked.
+
+    :return: The line's index, or None; and whether it is a TOF's.
+    """
+    halogens = _halogens_of(ion)
+    if gate.tof and halogens:
+        return _m2_line(mzs, shares), True
+    if gate.bromine_m2 and "Br" in halogens:
+        return _m2_line(mzs, shares), False
+    return None, False
+
+
 def expected_lines(
     row: dict,
     spectrum: SpectrumLines,
@@ -1459,9 +1484,9 @@ def expected_lines(
     or, on a peak the file records no signal-to-noise for, a share of at least
     its ``rel_detect_no_snr``; and where the peak list could hold it, its
     predicted height at or above the list's floor near it
-    (``line_reading.list_floor``), where the gate reads one. On a TOF a bromine
-    or chlorine ion's own M+2 line is asked whatever the gate says
-    (``tof_m2``). Each asked line is read by ``line_reading.read_line``.
+    (``line_reading.list_floor``), where the gate reads one. A halogen ion's
+    own M+2 line is asked as :func:`_halogen_m2` says. Each asked line is read
+    by ``line_reading.read_line``.
 
     :param row: A committed monoisotopic row.
     :param spectrum: The sample's peaks.
@@ -1487,7 +1512,7 @@ def expected_lines(
     snr = spectrum.of(own_peak).snr
     if snr is not None and snr <= 0:
         snr = None
-    m2 = _m2_line(mzs, shares) if gate.tof and _halogens_of(ion) else None
+    m2, tof_m2 = _halogen_m2(ion, mzs, shares, gate)
     own_intensity = float(row.get("sample_peak_intensity") or 0.0)
     error = row.get("mz_error_ppm")
     finite = isinstance(error, (int, float)) and math.isfinite(float(error))
@@ -1497,19 +1522,19 @@ def expected_lines(
     for index in range(1, len(mzs)):
         share, line_mz = float(shares[index]), float(mzs[index])
         expected = None if snr is None else share * snr
-        if index != m2:
-            if not line_detectable(
-                share,
-                snr,
-                detect_snr=gate.detect_snr,
-                rel_detect_no_snr=gate.rel_detect_no_snr,
-            ):
-                continue
-            if under_list_floor(
-                spectrum, gate, line_mz, share * own_intensity, own_peak
-            ):
-                under_floor += 1
-                continue
+        detectable = line_detectable(
+            share,
+            snr,
+            detect_snr=gate.detect_snr,
+            rel_detect_no_snr=gate.rel_detect_no_snr,
+        )
+        if index != m2 and not detectable:
+            continue
+        if not (index == m2 and tof_m2) and under_list_floor(
+            spectrum, gate, line_mz, share * own_intensity, own_peak
+        ):
+            under_floor += 1
+            continue
         entry: dict = {
             "line": str(labels[index]),
             "predicted_mz": round(line_mz, 6),
@@ -1517,8 +1542,8 @@ def expected_lines(
         }
         if expected is not None:
             entry["expected_snr"] = round(expected, 2)
-        if index == m2:
-            entry["tof_m2"] = True
+        if index == m2 and (tof_m2 or not detectable):
+            entry["tof_m2" if tof_m2 else "bromine_m2"] = True
         entry.update(
             read_line(
                 spectrum,
@@ -1603,6 +1628,11 @@ def absent_line_reason(
             for element in _halogens_of(str(row.get("ion_formula") or ""))
         )
         detail += f", and on a TOF a {halogens} reading must show its own M+2 line"
+    elif lead.get("bromine_m2"):
+        detail += (
+            ", and a bromine reading must show its own 81Br line, predicted nearly "
+            "as tall as its own, wherever the peak list could hold it"
+        )
     elif record.get("snr") is None:
         detail += (
             ", where the file records no signal-to-noise for this peak and the gate "

@@ -1131,7 +1131,9 @@ What caps a row at candidate:
   line. Neither is a line beyond the first or last peak of the spectrum, which the run
   takes as the ends of what it measured. On a TOF a bromine or chlorine reading must
   show its own M+2 line however faint the pattern, since its mass alone cannot tell
-  the halogen. The isotopologue table lists the lines that were not found under the
+  the halogen. On every instrument a bromine reading's 81Br line, nearly as tall as
+  its main line, is asked wherever the peak list could hold it, whatever the threshold
+  says: it can be read wherever the main line can. The isotopologue table lists the lines that were not found under the
   ones that were, and the spectrum draws them as empty circles at their predicted
   heights.
 - **peak not separated** — another peak sits so close to this one that the instrument did
