@@ -934,7 +934,7 @@ async def test_a_searched_member_reads_the_tier_a_run_of_its_sample_gives():
 # --- a batch decision measured on a member (pipeline.PROPAGATION) ----------------
 
 
-def _scorer(pairings, peaks, scored_with):
+def _scorer(pairings, peaks, scored_with, fit=0.95):
     """The seeded scorer for canned pairings: ``(formula, mechanism id)`` ->
     ``(ion id, ion, peaks)``, each ion a line on each of its peaks at one fit;
     each call's keyword arguments appended to ``scored_with``."""
@@ -942,7 +942,7 @@ def _scorer(pairings, peaks, scored_with):
     async def score(scored, seeds, params, **kwargs):
         scored_with.append(kwargs)
         ion_by_seed = {seed: pairings[seed][0] for seed in seeds if seed in pairings}
-        fit_by_ion = {ion: 0.95 for ion in ion_by_seed.values()}
+        fit_by_ion = {ion: fit for ion in ion_by_seed.values()}
         errors = {
             (pairings[seed][0], peak): {"mz_error_ppm": 0.1}
             for seed in ion_by_seed
@@ -1020,6 +1020,7 @@ async def _measure(
     fit_tied=(),
     kept=None,
     width=None,
+    fit=0.95,
 ):
     """Measure batch decisions on one sample as the propagation does
     (``batch_untargeted.measure_on_sample``), and keep nothing.
@@ -1037,6 +1038,7 @@ async def _measure(
         the measurement reads and fills, as the batch's judging passes one.
     :param width: The width the sample's latest run recorded; none unless a
         test says.
+    :param fit: The fit every reading and rival is measured at.
     :return: The judged rows by peak, and the stand-ins, the seeded scorer's
         keyword arguments per call among them (``scored``) and the grid's
         calls (``grid``).
@@ -1052,7 +1054,7 @@ async def _measure(
     ):
         pairings[(formula, mechanism_id)] = (f"ion-rival-{index}", ion, paired)
     scored_with = []
-    score = _scorer(pairings, peaks, scored_with)
+    score = _scorer(pairings, peaks, scored_with, fit)
 
     stack, mocks = _searching(
         sample,
@@ -2784,6 +2786,180 @@ async def test_a_measured_reading_on_a_crowded_peak_takes_its_searchs_density():
     assert kwargs == {"closed_shell_only": False}
     # The rivals are measured in a pass of their own, once.
     assert len(mocks["scored"]) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("fit", "tier", "asked"), [(0.95, TIER_CANDIDATE, 1), (0.6, TIER_CANDIDATE, 0)]
+)
+async def test_the_grid_is_asked_only_where_the_rivals_can_move_a_tier(
+    fit, tier, asked
+):
+    # MAS-1346: the density rule only takes an assigned row's tier, and the
+    # caps only lower one. A search row the bands already read at candidate
+    # is not asked of the grid at the cap stage, and ends at the tier the
+    # ask would have left it at; one that reads assigned is asked, and the
+    # density rule holds it at candidate.
+    from mascope_backend.api.new.peak_assignments import given_rivals
+
+    async def measure(**patched):
+        with patch.multiple(given_rivals, **patched) if patched else nullcontext():
+            return await _measure(
+                _sample(),
+                _peaks([("p1", 160.8413, 1.0e6)]),
+                [_mechanism("[M-H]-", "im-h")],
+                [("bp-1", "Br2", "Br2H-", "im-h", ["p1"])],
+                grid=_CROWD,
+                fit=fit,
+            )
+
+    held, mocks = await measure()
+    # Every peak asked, as before the cut.
+    every, every_mocks = await measure(
+        peaks_rivals_can_move=lambda rows: {str(r["sample_peak_id"]) for r in rows}
+    )
+
+    assert len(mocks["grid"]) == asked
+    assert len(every_mocks["grid"]) == 1
+    assert held["p1"]["tier"] == every["p1"]["tier"] == tier
+    if asked:
+        assert (
+            held["p1"]["provenance"]["rival_set"]
+            == (every["p1"]["provenance"]["rival_set"])
+        )
+        assert held["p1"]["provenance"]["candidate_density"] == 3
+    else:
+        # Measured without the grid's rivals: nothing of it is written but
+        # the tier (``batch_untargeted._write_measured_members``).
+        assert held["p1"]["provenance"]["candidate_density"] == 1
+        assert every["p1"]["provenance"]["candidate_density"] == 3
+
+
+def test_the_rivals_can_move_the_tier_of_an_assigned_row_and_its_lines_owner():
+    # An isotope line follows its monoisotopic row down whichever rule the
+    # tiering pass named on it, the density rule included, whatever that
+    # row's own tier: so the owner of an assigned line is asked too. A row
+    # the rule spares, one a second channel corroborates or a batch series
+    # anchors, is not asked, nor for its lines.
+    from mascope_backend.api.new.peak_assignments import given_rivals, tiering
+
+    def row(peak, role, tier, owner=None, formula="Br2", provenance=None):
+        return {
+            "peak_assignment_id": f"pa-{peak}",
+            "sample_peak_id": peak,
+            "role": role,
+            "tier": tier,
+            "assigned_formula": formula,
+            "owner_peak_assignment_id": owner,
+            "provenance": provenance or {},
+        }
+
+    corroborated = {"cross_channel": {"channels": ["[M-H]-", "[M+Cl]-"]}}
+    anchored = {"series": {"has_anchor": True}}
+    assert tiering.density_escaped({"provenance": corroborated})
+    assert tiering.density_escaped({"provenance": anchored})
+    spared = [
+        row("q1", "M0", TIER_ASSIGNED, provenance=corroborated),
+        row("q2", "M0", TIER_ASSIGNED, provenance=anchored),
+        row("q3", "M0", TIER_CANDIDATE, provenance=corroborated),
+        row("q4", "iso_child", TIER_ASSIGNED, owner="pa-q3"),
+    ]
+
+    rows = [
+        row("p1", "M0", TIER_ASSIGNED),
+        row("p2", "M0", TIER_CANDIDATE),
+        row("p3", "iso_child", TIER_ASSIGNED, owner="pa-p2"),
+        row("p4", "M0", TIER_CANDIDATE),
+        row("p5", "iso_child", TIER_CANDIDATE, owner="pa-p4"),
+        row("p6", "iso_child", TIER_ASSIGNED, owner="pa-gone"),
+        row("p7", "M0", TIER_ASSIGNED, formula=None),
+        row("p8", "M0", "below_assignability"),
+    ]
+
+    assert given_rivals.peaks_rivals_can_move(rows + spared) == {"p1", "p2"}
+
+
+@pytest.mark.asyncio
+async def test_each_round_asks_the_grid_only_of_the_peaks_no_round_asked():
+    # A round whose caps would read a peak's rivals asks the grid of it; a
+    # later round asks again only of a peak that has come to need them, and
+    # each measured frame joins the judging's.
+    from mascope_backend.api.new.peak_assignments import given_rivals
+
+    rows = [
+        {
+            "peak_assignment_id": f"pa-{peak}",
+            "sample_peak_id": peak,
+            "role": "M0",
+            "assigned_formula": "Br2",
+            "tier": tier,
+        }
+        for peak, tier in (("p1", TIER_ASSIGNED), ("p2", TIER_CANDIDATE))
+    ]
+    frames = MagicMock()
+    ctx = SimpleNamespace(
+        held_rivals=given_rivals.HeldRivals(
+            [(rows, ["mechanism"], ["[M-H]-"], {"[M-H]-": "im-h"})],
+            frozenset({("Br2", "im-h")}),
+        ),
+        judging=SimpleNamespace(rival_frames=frames, judged=rows),
+        sample=SimpleNamespace(sample_item_name="s"),
+    )
+    asked = []
+
+    async def named(ctx, families, listed):
+        asked.append(
+            [row["sample_peak_id"] for family, *_ in families for row in family]
+        )
+        assert listed is False
+        return {("C5H8O4", "im-h"): {"p1"}}, {}, 1
+
+    measured = AsyncMock(return_value=("frame", 1))
+    with patch.multiple(given_rivals, _named_seeds=named, _measured=measured):
+        await given_rivals.measure_held_rivals(ctx, "scorer")
+        await given_rivals.measure_held_rivals(ctx, "scorer")
+        rows[1]["tier"] = TIER_ASSIGNED
+        await given_rivals.measure_held_rivals(ctx, "scorer")
+
+    assert asked == [["p1"], ["p2"]]
+    assert [call.args[2:] for call in measured.await_args_list] == [
+        ({("C5H8O4", "im-h"): {"p1"}}, {}, frozenset({("Br2", "im-h")}))
+    ] * 2
+    assert frames.add.call_args_list == [(("frame",),)] * 2
+
+
+def test_rivals_measured_later_join_the_frames_already_read():
+    # A round's held rivals join the judging's frames once measured
+    # (``rival_set.RivalFrames.add``); what the frames read at a model before
+    # is read again with them, not kept.
+    from mascope_backend.api.new.peak_assignments import rival_set
+
+    peaks = _peaks([("p1", 160.8413, 1.0e6), ("p2", 300.0, 1.0e6)])
+
+    def frame(seed, ion, ion_formula, peak):
+        return rival_set.SeededFrame(
+            seeded_frame(
+                {seed: ion},
+                {ion: 0.95},
+                {(ion, peak): {"mz_error_ppm": 0.1}},
+                peaks,
+                lambda formula, mechanism_id: ion_formula,
+            ),
+            {seed: ion},
+            {seed: frozenset({peak})},
+        )
+
+    model = MagicMock()
+    frames = rival_set.RivalFrames(
+        None, [frame(("C5H8O4", "im-h"), "ion-a", "C5H7O4-", "p1")], base=model
+    )
+    assert set(frames.readings_at(model)) == {"p1"}
+    frames.add(frame(("C6H10O5", "im-h"), "ion-b", "C6H9O5-", "p2"))
+    readings = frames.readings_at(model)
+    assert {peak: [r.formula for r in on] for peak, on in readings.items()} == {
+        "p1": ["C5H8O4"],
+        "p2": ["C6H10O5"],
+    }
 
 
 @pytest.mark.asyncio

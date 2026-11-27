@@ -570,6 +570,7 @@ class RunContext:
     fit_by_seed: dict = field(default_factory=dict)
     seeded_frame: judging_loop.SeededFrame | None = None
     rival_frame: judging_loop.SeededFrame | None = None
+    held_rivals: Any = None  # the search's rows' asks (``given_rivals``)
     #: The 4.15 shortlists measured after the elect stage: the frame, the
     #: winners' peaks each with its formulas, and what the pass did.
     shortlist: tuple | None = None
@@ -1836,6 +1837,7 @@ async def cap(ctx: RunContext) -> None:
     # The tiering pass asks every committed row for the lines its formula
     # predicts: seconds on a large ledger, the longest stall a run held the
     # event loop for (MAS-947).
+    await given_rivals.measure_held_rivals(ctx, score_seeds)
     await asyncio.to_thread(judging.cap)
     if judging.another_round():
         return

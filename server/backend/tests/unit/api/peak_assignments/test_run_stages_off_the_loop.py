@@ -69,6 +69,7 @@ def _ctx(threads: dict, rules: Rules = Rules.RUN, **fields):
             "config": SimpleNamespace(stage_b_confidence=False),
             "search": None,
             "shortlist": None,
+            "held_rivals": None,
             **fields,
         },
     )

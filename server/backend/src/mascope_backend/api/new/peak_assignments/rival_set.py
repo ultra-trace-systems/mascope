@@ -382,6 +382,17 @@ class RivalFrames:
         self._at: list[tuple[MeasurementModel, dict[str, list[Reading]]]] = []
         self.shortlists = dict(shortlists or {})
 
+    def add(self, seeded: SeededFrame) -> None:
+        """Read another seeded frame beside these: rivals measured once the
+        caps were about to read them (``given_rivals.measure_held_rivals``).
+
+        :param seeded: The frame.
+        """
+        lines = _seeded_lines(seeded)
+        if lines is not None:
+            self._lines.append(lines)
+            self._at.clear()
+
     def readings_at(self, model: MeasurementModel) -> dict[str, list[Reading]]:
         """Every contender of every peak, its fit at ``model``.
 
