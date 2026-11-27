@@ -45,7 +45,12 @@ const { app, sourceWhy, sourceMeasures, sourceNotes, batchMeasure } = useCard()
       >
         <span class="tile-title">{{ tile.title }}</span>
         <span class="tile-value" v-tooltip.top="tile.tooltip || null">{{ tile.value }}</span>
-        <span class="tile-caption">{{ tile.caption }}</span>
+        <span
+          class="tile-caption"
+          :data-testid="`source-caption-${tile.key}`"
+          v-tooltip.top="tile.captionTooltip || null"
+          >{{ tile.caption }}</span
+        >
       </div>
       <div class="tile" data-testid="source-tile-batch">
         <span class="tile-title">{{ SOURCE_TILE_TITLES.batch }}</span>

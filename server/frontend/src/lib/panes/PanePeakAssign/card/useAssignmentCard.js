@@ -1983,13 +1983,17 @@ export function useAssignmentCard({ showSearch }) {
           row: focusedAssignment.value,
           provenance: provenance.value,
           isotopes: isotopeMeasure.value,
+          abundanceTooltip: EVIDENCE_TOOLTIPS.abundanceError,
           model: app.data.peakAssignment.peak.run?.config?.measurement_model ?? null
         })
       : []
   )
   const sourceNotes = computed(() =>
     source.value
-      ? sourceAbsences(focusedAssignment.value, { alternatives: alternatives.value })
+      ? sourceAbsences(focusedAssignment.value, {
+          alternatives: alternatives.value,
+          provenance: provenance.value
+        })
       : []
   )
 
