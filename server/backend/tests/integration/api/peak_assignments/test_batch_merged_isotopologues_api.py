@@ -18,6 +18,7 @@ run. See ``batch_merged_isotopologues.py``.
 
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest.mock import ANY
 
 import pytest
 import pytest_asyncio
@@ -433,6 +434,10 @@ async def test_a_row_at_its_parents_line_is_stripped_and_the_ledgers_agree(
     assert (line_row.tier, line_row.fit_score) == ("assigned", pytest.approx(0.9))
     assert (line_row.isotope_label, line_row.ion_formula) == ("13C", "[13C]C9H15O4-")
     assert line_row.provenance["batch_isotopologue"]["batch_peak_id"] == ids["x"]
+    # Its tier is its parent's, and it says so; no rule capped the parent.
+    assert line_row.provenance["tier_reasons"] == [
+        {"rule": "inherited_from_owner", "detail": ANY, "caps": False}
+    ]
     assert line_row.alternatives[0]["assigned_formula"] == "C9H12N2O2"
     assert line_row.alternatives[0]["displaced_by_claim"] is True
     assert {
@@ -456,6 +461,39 @@ async def test_a_row_at_its_parents_line_is_stripped_and_the_ledgers_agree(
         ids["o"],
     }
     assert [pair["batch_peak_id"] for pair in summary["held_pairs"]] == [ids["w"]]
+
+
+async def test_a_line_of_a_capped_parent_says_its_tier_is_capped(
+    async_session_factory, pa_test_data
+):
+    """A parent the absent-line rule capped caps its line's reason too: the
+    line reads the parent's tier, and its reason says the parent was capped
+    (MAS-1325)."""
+    capped = {"rule": "absent_line", "detail": "no 13C line", "caps": True}
+    batch = await _seed(
+        async_session_factory,
+        pa_test_data,
+        overrides={
+            RUN_SAMPLE: {
+                "p": {
+                    "provenance": {
+                        "evidence": 0.8,
+                        "plausibility": 0.9,
+                        "tier_reasons": [capped],
+                    }
+                }
+            }
+        },
+    )
+    await run_batch_merged_isotopologues(batch["batch_id"], batch_peak_run_id="run")
+    rows = await _run_rows(async_session_factory, batch["runs"][RUN_SAMPLE])
+    for peak in ("x", "o"):
+        assert rows[peak].role == "iso_child"
+        assert rows[peak].provenance["tier_reasons"] == [
+            {"rule": "inherited_from_owner", "detail": ANY, "caps": True}
+        ]
+    # The parent's own reasons are left as they were.
+    assert rows["p"].provenance["tier_reasons"] == [capped]
 
 
 async def test_the_samples_view_shows_the_line_as_the_parents_isotopologue(
@@ -1103,6 +1141,9 @@ async def test_a_samples_next_run_reads_the_stripped_row_as_the_parents_line(
         assert record["version"] == version
         assert record["displaced"]["assigned_formula"] == _peaks()[peak][1]
         assert line.alternatives[0]["assigned_formula"] == _peaks()[peak][1]
+        # The run's judging gives the line its parent's tier, and says so.
+        reasons = line.provenance["tier_reasons"]
+        assert [r["rule"] for r in reasons][-1] == "inherited_from_owner"
     assert {e["sample_peak_id"] for e in parent.provenance["batch_isotopologues"]} == {
         "x",
         "o",

@@ -18,6 +18,7 @@ import pytest
 from mascope_backend.api.new.peak_assignments import (
     batch_lines,
     batch_merged_isotopologues,
+    tiering,
 )
 from mascope_backend.api.new.peak_assignments.batch_merged_isotopologues import (
     ALREADY,
@@ -1042,6 +1043,30 @@ class TestTheSamplesRow:
         assert record["displaced"]["assigned_formula"] == "C9H12N2O2"
         assert record["displaced"]["tier"] == "assigned"
         assert record["displaced"]["evidence"] == 0.9
+
+    @pytest.mark.parametrize(
+        "owner_reasons, caps",
+        [
+            ([{"rule": "absent_line", "detail": "d", "caps": True}], True),
+            ([{"rule": "no_close_rival", "detail": "d", "caps": False}], False),
+            (None, False),
+        ],
+        ids=["capped by absent_line", "no rule caps", "no reasons"],
+    )
+    def test_the_row_carries_its_owners_tier_as_its_reason(self, owner_reasons, caps):
+        # A row the batch read as its owner's line says its tier is the
+        # owner's, as every isotopologue the tiering pass judges does (MAS-1325).
+        row, owner = self._rows()
+        row["provenance"]["tier_reasons"] = [{"rule": "lone_peak", "caps": True}]
+        if owner_reasons is not None:
+            owner["provenance"]["tier_reasons"] = owner_reasons
+        values = batch_lines.read_as_batch_isotopologue(row, owner, self.LINE)
+        assert values["provenance"]["tier_reasons"] == [
+            tiering.inherited_reason(caps=caps)
+        ]
+        assert values["provenance"]["tier_reasons"][0]["rule"] == (
+            "inherited_from_owner"
+        )
 
     def test_and_on_its_owner(self):
         row, owner = self._rows()

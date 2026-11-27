@@ -585,6 +585,16 @@ def _reason(rule: str, detail: str, *, caps: bool) -> dict:
     return {"rule": rule, "detail": detail, "caps": caps}
 
 
+def inherited_reason(*, caps: bool) -> dict:
+    """An isotopologue's reason: its tier is its owner's, ``caps`` where the
+    owner was capped. This pass's and the batch's isotope lines' (MAS-1325)."""
+    return _reason(
+        REASON_INHERITED,
+        "an isotopologue of a reading judged on its own monoisotopic row",
+        caps=caps,
+    )
+
+
 def earlier_reasons(row: dict) -> list[dict]:
     """What the passes that ran before this one already decided about a row.
 
@@ -2709,13 +2719,7 @@ def apply_tiering(
                 carried += 1
             else:
                 claimed += 1
-        reasons.append(
-            _reason(
-                REASON_INHERITED,
-                "an isotopologue of a reading judged on its own monoisotopic row",
-                caps=owner_capped,
-            )
-        )
+        reasons.append(inherited_reason(caps=owner_capped))
         _provenance(row)["tier_reasons"] = reasons
         if owner_capped and _cap(row):
             if owner_id in capped_here:

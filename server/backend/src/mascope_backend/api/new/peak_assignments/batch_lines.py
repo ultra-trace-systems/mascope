@@ -26,6 +26,7 @@ from mascope_backend.api.new.peak_assignments.identification_level import (
     is_level,
 )
 from mascope_backend.api.new.peak_assignments.row_terms import ROLE_ISO_CHILD, ROLE_M0
+from mascope_backend.api.new.peak_assignments.tiering import inherited_reason
 from mascope_backend.db import BatchPeak, BatchPeakOccurrence, async_session
 
 
@@ -171,8 +172,8 @@ def read_as_batch_isotopologue(row: dict, owner: dict, line: BatchLine) -> dict:
     spectra, which is no doubt a single file could raise. So is its
     identification level, as an isotopologue row shows its owner's
     (``identification_level.inherited_level``); an owner that states none, a
-    row from before the level, leaves the line with none. The row is left as
-    it is; the caller writes the values, onto a dict or a stored row.
+    row from before the level, leaves the line with none; its tier reasons
+    too (:func:`inherited_reasons`). The caller writes the values.
 
     :param row: The sample's row on the line's peak.
     :param owner: The sample's row on the parent's peak.
@@ -254,9 +255,25 @@ def read_as_batch_isotopologue(row: dict, owner: dict, line: BatchLine) -> dict:
             for key in ("plausibility", "evidence", "score_version")
             if key in owner_provenance
         }
-        | {BATCH_ISOTOPOLOGUE: record}
+        | {BATCH_ISOTOPOLOGUE: record, "tier_reasons": inherited_reasons(owner)}
         | ({} if level is None else {IDENTIFICATION_LEVEL: level}),
     }
+
+
+def inherited_reasons(owner: dict) -> list[dict]:
+    """The tier reasons of a row the batch read as its owner's line: the one
+    the tiering pass gives every isotopologue it judges
+    (``tiering.inherited_reason``), capping where one of the owner's own
+    reasons caps. A run reads the line before its judging
+    (``batch_decisions.read_strips``), whose tiering pass writes the same
+    reason again from the judged owner.
+
+    :param owner: The sample's row on the parent's peak.
+    :return: The line's ``tier_reasons``.
+    """
+    reasons = (owner.get("provenance") or {}).get("tier_reasons") or ()
+    caps = any(isinstance(r, dict) and r.get("caps") for r in reasons)
+    return [inherited_reason(caps=caps)]
 
 
 def with_batch_isotopologue_line(owner: dict, row: dict, line: BatchLine) -> dict:

@@ -3134,8 +3134,9 @@ A stripped row leaves the ledger as a compound of its own. In each sample that h
 both, the row's member becomes the compound's isotope line, and so does the sample's
 row on that peak in its latest in-app run: an isotopologue of the sample's row on the
 compound's peak, at that row's tier and fit, with the reading it displaced kept first
-among its alternatives (**earlier reading**, which *Use* puts back). Both rows of
-the sample record the rewrite. A sample is left as it was where the compound's peak
+among its alternatives (**earlier reading**, which *Use* puts back). Its reasons
+say the tier is the compound's, and that it is capped where the compound's row is, as
+every isotopologue row's do. Both rows of the sample record the rewrite. A sample is left as it was where the compound's peak
 reads another formula there, where the reagent or artifact pass claimed the row's peak,
 or where the row carries isotope lines of its own in that sample. A run imported from
 another engine is that engine's record and is never rewritten. The batch peak then

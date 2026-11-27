@@ -13,7 +13,7 @@ from collections import Counter
 from copy import deepcopy
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 import pandas as pd
 import pytest
@@ -761,6 +761,26 @@ class TestTheStripReadOnTheRows:
         assert analyte["alternatives"][0]["assigned_formula"] == "C9H12N2O2"
         [entry] = parent["provenance"]["batch_isotopologues"]
         assert (entry["sample_peak_id"], entry["version"]) == ("x", 7)
+
+    @pytest.mark.parametrize(
+        "rule, caps",
+        [("absent_line", True), ("no_close_rival", False)],
+        ids=["capped by absent_line", "no rule caps"],
+    )
+    def test_the_line_carries_its_parent_s_tier_as_its_reason(self, rule, caps):
+        # As the batch's own strip writes it (MAS-1325); the run's judging
+        # writes it again from the judged parent.
+        parent = _row("p", "C10H16O4", sample_peak_mz=199.0976)
+        parent["provenance"]["tier_reasons"] = [
+            {"rule": rule, "detail": "d", "caps": caps}
+        ]
+        analyte = _row("x", "C9H12N2O2", sample_peak_mz=200.101)
+
+        _strip([parent, analyte])
+
+        assert analyte["provenance"]["tier_reasons"] == [
+            {"rule": "inherited_from_owner", "detail": ANY, "caps": caps}
+        ]
 
     def test_an_unread_peak_is_read_as_the_line_too(self):
         parent = _row("p", "C10H16O4", sample_peak_mz=199.0976)
