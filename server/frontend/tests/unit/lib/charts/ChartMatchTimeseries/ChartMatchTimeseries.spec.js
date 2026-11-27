@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { enableAutoUnmount, mount } from '@vue/test-utils'
-import { nextTick } from 'vue'
+import { nextTick, reactive } from 'vue'
 
 // The time series fills its panel, and its Plotly layout names no height: with
 // `responsive` on, Plotly deletes a layout height whenever the plot div changes
@@ -43,9 +43,12 @@ const { default: BaseChartPlotly } = await import('@/lib/charts/BaseChartPlotly.
 const { default: ChartMatchTimeseries } =
   await import('@/lib/charts/ChartMatchTimeseries/ChartMatchTimeseries.vue')
 
+// The scale is reactive, as the app's is: the chart turns its log axis on by
+// setting `log` on the scale it was handed when it mounts, and test-utils no
+// longer makes a plain object prop deeply reactive.
 function mountChart(height) {
   return mount(ChartMatchTimeseries, {
-    props: { height, modelValue: { mode: 'average', max: null, log: false } }
+    props: { height, modelValue: reactive({ mode: 'average', max: null, log: false }) }
   })
 }
 
