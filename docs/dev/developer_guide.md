@@ -839,6 +839,8 @@ The check covers the names the CLI imports when it starts. A newer runtime behav
 
 Agents are small Python programs installed with Pyinstaller on Windows instrument machines. They perform minimal transformations and move files to the server. As opposed to other packages, each agent is its own uv project (not a workspace member), to avoid the need to compile the whole uv workspace into the distributable.
 
+Being its own project, an agent has its own lockfile, and that lockfile records what the libraries it reaches through path sources require. A change to a pin in `libraries/runtime/pyproject.toml` or `libraries/sdk/pyproject.toml` therefore leaves `agents/file/uv.lock` stale until you also run `uv lock --directory agents/file`, and "Lint and format" fails a pull request that leaves it out. Dependabot's bumps are covered by `.github/workflows/dependabot-agent-relock.yaml`: on a Dependabot uv pull request it re-locks the agent and pushes the lockfile to the branch. The workflows for that commit then wait until someone selects **Approve workflows to run** on the pull request, because GitHub starts runs for a push made with `GITHUB_TOKEN` only once they are approved.
+
 ```sh
 agents/           # Agent applications
   file/               # File Agent (for automatic file uploads)
