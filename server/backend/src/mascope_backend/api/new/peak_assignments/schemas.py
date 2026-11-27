@@ -298,6 +298,9 @@ class PeakAssignmentRecord(BaseModel):
     #: (provenance.identification_level.lift).
     level_lift: str | None = None
     manual_action: str | None = None  #: provenance.manual.action (ledger_reads)
+    #: The batch's level: on a run's row, the detail's ``row_batch_level``; on a
+    #: derived row, its batch peak's own (``fold_view.member_batch_level``).
+    batch_level: dict | None = None
 
 
 class PeakAssignmentDetailRecord(PeakAssignmentRecord):
@@ -327,12 +330,9 @@ class PeakAssignmentDetailRecord(PeakAssignmentRecord):
     #: What the batch's isotope checks (``batch_checks``) state of the batch
     #: peak this row's peak sits in, for the row's own reading (an M0 row's
     #: formula, ion and mechanism, or a reagent row's ion): ``halogen_lock``,
-    #: ``label_twin`` and ``neutral_pair``; and the level they read this row at
-    #: where they move its own (``batch_level``, ``batch_level.row_batch_level``,
-    #: marked ``borrowed``). None elsewhere, on an isotope line too.
-    #: Display-only: no tier reads them.
+    #: ``label_twin`` and ``neutral_pair``, and ``batch_level`` beside them.
+    #: None elsewhere, on an isotope line too. Display-only: no tier reads them.
     batch_checks: dict | None = None
-    batch_level: dict | None = None
     #: The batch search's admission of the batch peak this row's peak sits in
     #: on the peak's persistence (``batch_untargeted``), read when the row is
     #: read: the ``share`` of its partition's spectra the peak was in, with

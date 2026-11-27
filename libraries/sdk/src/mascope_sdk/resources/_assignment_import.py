@@ -101,6 +101,7 @@ READ_ONLY_COLUMNS = frozenset(
         "peak_unseparated",
         "level_evidence",
         "level_lift",
+        "batch_level",
     }
 )
 

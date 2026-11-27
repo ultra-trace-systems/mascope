@@ -767,8 +767,9 @@ async def _with_batch_readings(
     (``batch_peaks.continuity_reading``). ``batch_known_species``,
     ``batch_water_ladder`` and ``batch_blend``: the ledger's records.
     ``batch_level``: the batch's level beside the row's own, where the
-    batch's isotope checks move it (``batch_level.row_batch_level``); None
-    elsewhere, a row derived from the ledger included.
+    batch's isotope checks move it (``batch_level.row_batch_level``); on a
+    row derived from the ledger, the batch peak's own level it already
+    carries (``fold_view.member_batch_level``); None elsewhere.
     ``batch_groups``: the batch's groups the batch peak is in
     (``batch_series.batch_groups``), each member with the sample's own peak
     at it (``sample_peak_id``). All are about the batch peak, whatever the row
@@ -811,7 +812,9 @@ async def _with_batch_readings(
     row["batch_water_ladder"] = water_ladder_summary(anchor)
     row["batch_blend"] = blend_record_of(anchor)
     row["batch_groups"] = groups
-    row["batch_level"] = row_batch_level(row, anchor)
+    # A derived row carries the batch peak's own level from its member row;
+    # no run's record is there to read the batch's facts on.
+    row["batch_level"] = row.get("batch_level") or row_batch_level(row, anchor)
 
 
 @api_controller()

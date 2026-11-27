@@ -1213,6 +1213,8 @@ class TestAnExportedLedger:
         rows["level_evidence"] = ["the neutral formula", None, None, None, None]
         rows["level_lift"] = [None, None, "a test of the rival", None, None]
         rows["engine_level"] = None
+        # A row the batch ledger serves carries its batch peak's own level.
+        rows["batch_level"] = [None, None, None, {"level": "4a"}, None]
         for column, values in changes.items():
             rows[column] = values
         return rows

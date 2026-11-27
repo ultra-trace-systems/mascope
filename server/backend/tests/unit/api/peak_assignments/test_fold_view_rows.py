@@ -230,6 +230,74 @@ def test_the_detail_carries_the_rows_engine_level():
     assert member_detail(_member(), _anchor(engine_level="3"))["engine_level"] == "3"
 
 
+# --- the batch's level (step 5.8c) ------------------------------------------------
+
+#: The batch peak's own level record, read for its consensus reading.
+_BATCH_LEVEL = {
+    "formula": "C6H12O6",
+    "ion_formula": "C6H13O6+",
+    "ionization_mechanism_id": "m-h",
+    "level": "4a",
+    "evidence": "rivals out by the Br lock; 3 of 4 members read 4a",
+    "lift": "a library spectrum",
+    "rivals": [{"formula": "C5H12N2O4", "test": "isotopes"}],
+}
+
+
+def _levelled(record=None, **overrides):
+    provenance = {"identification_level": dict(record or _BATCH_LEVEL)}
+    return _anchor(provenance=provenance, **overrides)
+
+
+def test_a_member_reading_the_consensus_carries_its_batch_peaks_own_level():
+    row = member_row(_member(), _levelled())
+    assert row["batch_level"] == {
+        "level": "4a",
+        "evidence": "rivals out by the Br lock; 3 of 4 members read 4a",
+        "lift": "a library spectrum",
+        "batch_peak_id": "bp-1",
+        "batch_level": "4a",
+    }
+    # The row states no level of its own: the batch's is beside it.
+    assert row.get("level") is None
+    # The detail carries the same, from the same row.
+    assert member_detail(_member(), _levelled())["batch_level"]["level"] == "4a"
+
+
+def test_no_batch_level_where_the_batch_peak_states_none():
+    assert member_row(_member(), _anchor())["batch_level"] is None
+
+
+def test_no_batch_level_from_a_record_read_for_another_reading():
+    """A record the consensus has moved off is no level of its reading
+    (``standing_batch_level_record``)."""
+    other = {**_BATCH_LEVEL, "formula": "C5H12N2O4", "ion_formula": "C5H13N2O4+"}
+    assert member_row(_member(), _levelled(other))["batch_level"] is None
+
+
+def test_no_batch_level_from_a_record_kept_stale():
+    stale = {**_BATCH_LEVEL, "stale": True}
+    assert member_row(_member(), _levelled(stale))["batch_level"] is None
+
+
+@pytest.mark.parametrize(
+    "member",
+    [
+        pytest.param(dict(role=2, owner_batch_peak_id="bp-0"), id="iso_child"),
+        pytest.param(dict(role=3), id="reagent"),
+        pytest.param(dict(candidate=1), id="dissenting formula"),
+        pytest.param(dict(candidate=None, role=0, tier=0), id="unassigned"),
+    ],
+)
+def test_no_batch_level_on_a_member_that_is_not_the_consensus_reading(member):
+    assert member_row(_member(**member), _levelled())["batch_level"] is None
+
+
+def test_no_batch_level_where_the_member_reads_the_formula_by_another_mechanism():
+    registry = [{**_REGISTRY[0], "ionization_mechanism_id": "m-na"}, _REGISTRY[1]]
+    assert member_row(_member(), _levelled(candidates=registry))["batch_level"] is None
+
+
 def test_an_isotopologue_member_names_its_owner_by_the_owners_derived_id():
     row = member_row(
         _member(sample_peak_id="p2", role=2, owner_batch_peak_id="bp-0"),

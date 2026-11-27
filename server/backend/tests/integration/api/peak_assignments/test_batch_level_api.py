@@ -33,6 +33,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import is_stale
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     recompute_batch_consensus,
 )
+from mascope_backend.api.new.peak_assignments.fold_view import fold_assignment_id
 from mascope_backend.db import BatchPeak, PeakAssignment
 
 
@@ -337,3 +338,41 @@ async def test_the_ledger_the_members_and_a_sample_s_detail_serve_it(
     assert borrowed["batch_peak_id"] == ids["p"]
     # Where the batch moves nothing, the row shows its own level alone.
     assert (await detail(rows["h"]))["batch_level"] is None
+
+
+async def test_a_sample_with_no_run_of_its_own_carries_its_batch_peaks_level(
+    guest_client, async_session_factory, checks_batch
+):
+    """A row the batch ledger serves carries the batch peak's own level as
+    ``batch_level``, in the list and in the detail, beside a ``level`` of its
+    own that stays None (``fold_view.member_batch_level``)."""
+    samples = checks_batch["samples"]
+    _, anchors = await _levels(async_session_factory, checks_batch)
+    ids = {key: anchor.batch_peak_id for key, anchor in anchors.items() if anchor}
+    record = _level(anchors["p"])
+
+    response = await guest_client.get(
+        f"/api/peak-assignments/sample/{samples['S03']}", params={"limit": 1000}
+    )
+    assert response.status_code == 200, response.text
+    rows = {row["batch_peak_id"]: row for row in response.json()["data"]}
+    bromide = rows[ids["p"]]
+    assert bromide["level"] is None
+    assert bromide["batch_level"] == {
+        "level": "4a",
+        "evidence": record["evidence"],
+        "lift": record["lift"],
+        "batch_peak_id": ids["p"],
+        "batch_level": "4a",
+    }
+    # A batch peak that states no level of its own gives its row none.
+    assert rows[ids["u"]]["batch_level"] is None
+
+    response = await guest_client.get(
+        f"/api/peak-assignments/sample/{samples['S03']}/assignment/"
+        f"{fold_assignment_id(ids['p'])}"
+    )
+    assert response.status_code == 200, response.text
+    [detail] = response.json()["data"]
+    # The detail keeps it: no run's record is there for the batch's facts.
+    assert detail["batch_level"] == bromide["batch_level"]
