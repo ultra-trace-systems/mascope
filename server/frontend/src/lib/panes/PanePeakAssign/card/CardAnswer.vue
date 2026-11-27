@@ -220,10 +220,14 @@ const provisional = TIERING_PROVISIONAL
             ? 'Neutral formula'
             : headlineIsIon
               ? 'Ion formula: the peak names an ion, and no compound of the sample'
-              : null
+              : focusedAssignment.role === 'artifact'
+                ? 'A peak the detector made, not an ion'
+                : null
         "
         >{{
-          focusedAssignment.assigned_formula || focusedAssignment.ion_formula || 'Unassigned'
+          focusedAssignment.assigned_formula ||
+          focusedAssignment.ion_formula ||
+          (focusedAssignment.role === 'artifact' ? 'Artifact' : 'Unassigned')
         }}</span
       >
     </div>

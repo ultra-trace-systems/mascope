@@ -46,6 +46,7 @@ import {
   shareDigits,
   whyTitle
 } from './cardReadings.js'
+import { sourceAbsences, sourceRole, sourceStatement, sourceTiles } from './sourceReadings.js'
 import {
   currentReading,
   measuredLines,
@@ -1952,8 +1953,12 @@ export function useAssignmentCard({ showSearch }) {
   // the persistence admission counts them where it took the peak.
   const batchMeasure = computed(() => {
     const anchor = provenance.value?.batch_peak
-    const present = anchor?.n_present ?? batchPersistence.value?.n_present ?? null
-    const total = batchPersistence.value?.n_samples ?? null
+    // A source ion claimed on the batch's word counts the samples the batch
+    // decided it present in, of those it read (reagent_pass.claim_batch_species).
+    const decided = provenance.value?.reagent?.batch_known_species
+    const present =
+      anchor?.n_present ?? batchPersistence.value?.n_present ?? decided?.present ?? null
+    const total = batchPersistence.value?.n_samples ?? decided?.files ?? null
     return batchTile({
       present: Number.isInteger(present) ? present : null,
       total: Number.isInteger(total) ? total : null,
@@ -1962,6 +1967,31 @@ export function useAssignmentCard({ showSearch }) {
     })
   })
   const showMeasurements = computed(() => Boolean(focusedAssignment.value?.assigned_formula))
+
+  // --- A row the source or the detector made ----------------------------------
+  // A reagent row and an artifact row commit no formula, so the Why box and the
+  // four measurements have nothing to read on them. In their place the card says
+  // what the row is and which claim took the peak, what was measured of it, and
+  // one line for each reading of an analyte it has none of (sourceReadings.js).
+  const source = computed(() => sourceRole(focusedAssignment.value))
+  const sourceWhy = computed(() =>
+    source.value ? sourceStatement(focusedAssignment.value, provenance.value) : null
+  )
+  const sourceMeasures = computed(() =>
+    source.value
+      ? sourceTiles({
+          row: focusedAssignment.value,
+          provenance: provenance.value,
+          isotopes: isotopeMeasure.value,
+          model: app.data.peakAssignment.peak.run?.config?.measurement_model ?? null
+        })
+      : []
+  )
+  const sourceNotes = computed(() =>
+    source.value
+      ? sourceAbsences(focusedAssignment.value, { alternatives: alternatives.value })
+      : []
+  )
 
   // --- Notes: one line and its action ---------------------------------------------
   // The undo of an override is "use this" on the winner it displaced, the head
@@ -2261,6 +2291,10 @@ export function useAssignmentCard({ showSearch }) {
     isotopeMeasure,
     batchMeasure,
     showMeasurements,
+    source,
+    sourceWhy,
+    sourceMeasures,
+    sourceNotes,
     undoEntry,
     undoOverride,
     manualSentence,

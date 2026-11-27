@@ -1977,6 +1977,35 @@ flowchart TD
 
 In a narrow column the four measurements stand one above another, and the chips wrap.
 
+**A reagent or artifact row.** A *reagent* row is an ion of the run's chemistry, and an
+*artifact* row a peak the detector made. Neither commits a formula, so neither has a tier
+contest, evidence, rivals or an identification level. The card says so instead of
+leaving those parts blank:
+
+- **Why reagent** or **Why artifact** heads the box under the answer. It names the ion,
+  where it comes from (the reagent's own ladder, the air's ions, the calibrant beam, the
+  solvent clusters, a fragment), and which claim took the peak: the reagent pass on its
+  library or on a ladder, the fragment claim, or the batch's word, *Decide known species*
+  or the batch's water ladder. An artifact is named by its kind, a side lobe of a very
+  intense peak in a Fourier-transform spectrum, which is no ion.
+- **Measurements**, in boxes titled as an analyte's are:
+  - **Mass error**: against the ion's exact m/z;
+  - **Intensity**: the peak's height, with its share of the spectrum's signal where the
+    claim recorded one (a ladder's rung), or an isotope line's predicted share of its
+    ion's monoisotopic peak;
+  - **Isotope lines found**: the ion's lines, a bromide or chloride reagent's twin
+    first among them;
+  - **Calibration anchor**: how many of the source's own lines the run fitted its mass
+    calibration on, and the centre it found. The run records the count, not which lines;
+  - **Batch**: as for any batch peak. A claim on the batch's word counts the samples the
+    batch decided the ion present in.
+- **One line for each reading it has none of**: *No tier contest*, *No rivals*, *No
+  identification level*, and on an artifact *No isotope pattern*. A claim that displaced
+  a reading lists that reading under **Alternatives**.
+
+An artifact has no ion, so the card is headed *Artifact*, its mass, isotope and anchor
+boxes read *—* with the reason under them, and it has no isotope pattern section.
+
 ### What the inspector shows in other states
 
 - **Another run than the sample's result.** The run selector over the ledger can show any

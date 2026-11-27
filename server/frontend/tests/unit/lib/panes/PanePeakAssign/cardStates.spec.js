@@ -87,7 +87,8 @@ function reset() {
       { sample_item_id: 'si-3', sample_item_name: 'Sample three' }
     ],
     sampleId: 'si-1',
-    measuring: false
+    measuring: false,
+    family: null
   })
 }
 
@@ -135,7 +136,8 @@ function makeApp() {
           forPeak: () => state.focusedAssignment,
           detailOf: (id) =>
             id != null && id === state.focusedAssignment?.peak_assignment_id ? state.detail : null,
-          familyOf: () => (state.focusedAssignment ? [state.focusedAssignment] : []),
+          familyOf: () =>
+            state.family ?? (state.focusedAssignment ? [state.focusedAssignment] : []),
           m0Of: (row) => row,
           loadDetail,
           altScoresOf: () => null,
@@ -1009,5 +1011,155 @@ describe('runNotice', () => {
     expect(notice.text).toBe('Read only: an earlier run, run #1 of 3')
     // A run the list does not hold cannot be placed: it reads as earlier.
     expect(runNotice(failed, RUN_NEW, [RUN_NEW]).kind).toBe('earlier')
+  })
+})
+
+describe('card states: a row the source or the detector made', () => {
+  const REAGENT_ROW = {
+    ...ROW,
+    assigned_formula: null,
+    ion_formula: 'Br-',
+    role: 'reagent',
+    source: 'reagent',
+    tier: 'unassigned',
+    fit_score: null,
+    mz_error_ppm: 0.42,
+    sample_peak_intensity: 5.0e6
+  }
+  const LINE_ROW = {
+    ...REAGENT_ROW,
+    peak_assignment_id: 'pa-2',
+    sample_peak_id: 'p-2',
+    isotope_label: '81Br',
+    owner_peak_assignment_id: 'pa-1'
+  }
+  const MODEL = { mu_ppm: 0.3, anchors: { commits: 40, source_lines: 3, source_capped: 0 } }
+
+  function reagent(provenance = {}) {
+    state.focusedAssignment = REAGENT_ROW
+    state.family = [REAGENT_ROW, LINE_ROW]
+    state.detail = {
+      ...REAGENT_ROW,
+      alternatives: null,
+      provenance: { reagent: { ion: 'Br-', family: 'reagent', mz: 78.91889, ...provenance } }
+    }
+    state.run = { ...RUN_NEW, config: { measurement_model: MODEL } }
+  }
+
+  it("states a reagent row's ion and claim in place of the Why box and the four tiles", async () => {
+    reagent()
+    const wrapper = await mountCard()
+
+    expect(byTestId(wrapper, 'source-card').exists()).toBe(true)
+    expect(byTestId(wrapper, 'why').exists()).toBe(false)
+    expect(byTestId(wrapper, 'measurements').exists()).toBe(false)
+    expect(byTestId(wrapper, 'source-title').text()).toBe('Why reagent')
+    expect(byTestId(wrapper, 'source-lead').text()).toBe(
+      "Br- is an ion of the run's chemistry, from the reagent's own ladder: the source made it, not the sample."
+    )
+    expect(byTestId(wrapper, 'source-claim').text()).toBe(
+      "Claimed by the reagent pass, from the library of the run's chemistry."
+    )
+  })
+
+  it('shows what was measured of it, each tile under its title', async () => {
+    reagent()
+    const wrapper = await mountCard()
+
+    const tile = (key) => byTestId(wrapper, `source-tile-${key}`)
+    expect(tile('mass').find('.tile-title').text()).toBe('Mass error')
+    expect(tile('mass').find('.tile-value').text()).toBe('0.42 ppm')
+    expect(tile('mass').find('.tile-caption').text()).toBe(
+      `against Br- at m/z ${num.mz.format(78.91889)}`
+    )
+    expect(tile('intensity').find('.tile-title').text()).toBe('Intensity')
+    expect(tile('intensity').find('.tile-value').text()).toBe(num.peakIntensity.format(5.0e6))
+    // The ion's 81Br twin, its family's one line.
+    expect(tile('isotopes').find('.tile-title').text()).toBe('Isotope lines found')
+    expect(tile('isotopes').find('.tile-value').text()).toBe('1 of 1')
+    expect(tile('anchor').find('.tile-title').text()).toBe('Calibration anchor')
+    expect(tile('anchor').find('.tile-value').text()).toBe('3 source lines')
+    expect(tile('anchor').find('.tile-caption').text()).toContain('+0.30 ppm')
+    expect(tile('batch').find('.tile-title').text()).toBe('Batch')
+    // Its isotope pattern still folds under the card, as an analyte's does.
+    expect(byTestId(wrapper, 'section-isotopes').exists()).toBe(true)
+  })
+
+  it('says in one line each what a reagent row has no reading of', async () => {
+    reagent()
+    const wrapper = await mountCard()
+
+    expect(byTestId(wrapper, 'source-absent-tier').text()).toBe(
+      'No tier contest. A reagent row commits no formula, so no evidence is weighed and no tier is read off it.'
+    )
+    expect(byTestId(wrapper, 'source-absent-rivals').text()).toContain('No rivals.')
+    expect(byTestId(wrapper, 'source-absent-level').text()).toBe(
+      'No identification level. A level is stated of a formula, and this row commits none.'
+    )
+    expect(byTestId(wrapper, 'source-absent-pattern').exists()).toBe(false)
+  })
+
+  it('points to the reading the claim displaced, under Alternatives', async () => {
+    reagent()
+    state.detail = {
+      ...state.detail,
+      alternatives: [{ assigned_formula: 'CHBr3', ion_formula: 'CHBr3-', source: 'database' }]
+    }
+    const wrapper = await mountCard()
+
+    expect(byTestId(wrapper, 'source-absent-rivals').text()).toBe(
+      'No rivals. No formula contests the claim. The reading it displaced is under Alternatives.'
+    )
+  })
+
+  it("counts the samples a claim on the batch's word was decided present in", async () => {
+    reagent({
+      reason: 'batch_known_species',
+      batch_known_species: { verdict: 'present', present: 5, files: 6 }
+    })
+    const wrapper = await mountCard()
+
+    expect(byTestId(wrapper, 'source-claim').text()).toBe(
+      "Claimed on the batch's word: Decide known species found it present in 5 of 6 samples."
+    )
+    expect(
+      byTestId(wrapper, 'source-tile-batch').find('[data-testid="batch-samples"]').text()
+    ).toContain('5 of 6')
+  })
+
+  it('states an artifact row, dashes what it has no reading of and drops its isotope pattern', async () => {
+    const row = {
+      ...ROW,
+      assigned_formula: null,
+      ion_formula: null,
+      role: 'artifact',
+      source: 'artifact',
+      tier: 'unassigned',
+      fit_score: null,
+      mz_error_ppm: null
+    }
+    state.focusedAssignment = row
+    state.detail = { ...row, alternatives: null, provenance: { artifact: { kind: 'ft_sidelobe' } } }
+    const wrapper = await mountCard()
+
+    // Headed by what it is, not by the word an unexplained peak gets.
+    expect(wrapper.find('.insp-formula').text()).toBe('Artifact')
+    expect(byTestId(wrapper, 'source-title').text()).toBe('Why artifact')
+    expect(byTestId(wrapper, 'source-lead').text()).toMatch(/^A side lobe: /)
+    expect(byTestId(wrapper, 'source-tile-mass').find('.tile-value').text()).toBe('—')
+    expect(byTestId(wrapper, 'source-tile-isotopes').find('.tile-value').text()).toBe('—')
+    expect(byTestId(wrapper, 'source-absent-pattern').text()).toBe(
+      'No isotope pattern. An artifact is no ion, so it has no isotope lines.'
+    )
+    expect(byTestId(wrapper, 'section-isotopes').exists()).toBe(false)
+  })
+
+  it("leaves an analyte's card as it was", async () => {
+    state.focusedAssignment = ROW
+    const wrapper = await mountCard()
+
+    expect(byTestId(wrapper, 'source-card').exists()).toBe(false)
+    expect(byTestId(wrapper, 'measurements').exists()).toBe(true)
+    expect(byTestId(wrapper, 'section-isotopes').exists()).toBe(true)
   })
 })
