@@ -546,6 +546,37 @@ as the option's effect.
   card of develop is no stand-in for a baseline older than a PR's merge
   base.
 
+### The scored rivals' count (`count_scored_rivals`)
+
+One run option is a measurement and nothing else: `count_scored_rivals`
+(MAS-1184). A committed row's rival set holds the candidates the formula
+search could not separate from it at the model it ranked at, measured at the
+model the caps read. With the option on, every run also measures the other
+candidates the search scored and records in its search scope how many of
+them would tie their reading at the caps' model (`search_scope.scored_rivals`,
+`docs/dev/assignment_confidence.md`). It changes no row, so such a card's
+readings are the defaults' and its diff against develop's baseline moves
+nothing.
+
+The card reads the count off each control run's recorded config, as it
+reads the measurement model's version, and shows it in a section of its
+own, **The candidates outside the rival sets**: one table for the runs that
+took their refitted model and one for the runs that kept their first, a row
+per count and a column per set, the pooled column adding them. The counts
+are those of the run's record summed: the readings counted and the
+candidates scored for them, split into list compounds and formulas the
+search found; those the set holds today, those placed outside it and those
+not placed; the ones that tie, by how far the search had them in tie gaps;
+the rows whose density would rise, those it would take to the density limit
+by their tier today and of those the ones the density rule would cap; and
+the seconds of the extra pass beside those of the seeded pass as it is. They
+are no reading: no gate and no diff reads them, and a card with no run that
+counted them has no such section.
+
+```sh
+uv run python tooling/assignment_bench/bench.py run <branch> --post <pr> --config '{"count_scored_rivals": true}'
+```
+
 ## A card without a run
 
 Most heads a card is asked for measure nothing new: a rebase onto a develop
