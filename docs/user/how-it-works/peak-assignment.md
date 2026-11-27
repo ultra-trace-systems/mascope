@@ -1562,7 +1562,8 @@ and level** is on. The column shows only once a row of the ledger carries a leve
 the ledger is narrow, as it is beside the spectrum or the batch chart at the usual
 split, the **Level** column gives way, but the level stays: each row shows it as a
 compact chip beside its tier chip, with the same hover, and the engine's level beside
-the engine's tier. The level's filter and sort are then under **Show › Level**, which
+the engine's tier. Narrower still, the tier chip shows its dot alone, with the tier's
+name on hover (*Narrow ledgers*, below). The level's filter and sort are then under **Show › Level**, which
 also offers them at any width. An
 isotope line carries none of its own: its main peak's row shows it. A reagent or artifact peak, an unassigned peak, a run imported from
 another engine and a run made before the level show none. A peak you assign by hand
@@ -1780,6 +1781,10 @@ person's act.
 As the ledger's column narrows, it drops cells in a fixed order, the least read first:
 the **Level**, then **Samples**, then **Across the batch**, then the intensity's bar. The
 m/z, the compound, the ion, the intensity's number and the tier stay at every width.
+Where **Across the batch** goes, each tier chip shows its dot alone, and its hover names
+the tier; a reagent or artifact chip keeps its word. Where the bar goes, the
+**Intensity** column narrows to its number and its header reads **Int.**, the full name
+on hover.
 
 ### The filter bar
 

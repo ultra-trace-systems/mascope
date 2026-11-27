@@ -180,6 +180,19 @@ list read. The content is a component of its own, for the batch row's card to re
   the least needed first: the Level column (900 px or less), then Samples (780 px),
   then Across the batch (680 px), then Intensity's bar (560 px). The m/z, the compound,
   the ion, the number, the tier and the level stay in every width.
+- Two cells narrow rather than drop (the plan owner, 2026-11-27, MAS-1310):
+  - at 680 px, with Across the batch, a tier chip shows its dot alone. The word leaves
+    sight only: it stays the chip's accessible name, and the chip's hover names the tier
+    first. The Tier column's 7 rem minimum width goes with it. A role chip has no dot
+    and keeps its word; the cap mark, the hand and isotopologue marks and the level's
+    chips stay;
+  - at 560 px, with the bar, the Intensity column's 7 rem minimum width goes, and its
+    header shows *Int.*, the full label kept as its accessible name and its hover, so
+    the column is as narrow as its number. Measured on the demo: the minimum width held
+    the sample scope's column, the header *Max intensity* the batch scope's, and once
+    the minimum went the header held both.
+  Both minimum widths are in `lib/ledger/narrow.css` beside the rules that lower them:
+  an inline style cannot be lowered by a container query.
 - The level leaves with the tier, never first. It is what a reader may state of a row,
   and the tier alone is not a result (the plan owner, 2026-11-24). So where the Level
   column drops, its chips show compact beside the tier chip in the Tier cell, the

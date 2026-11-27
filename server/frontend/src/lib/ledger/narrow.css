@@ -18,14 +18,33 @@
  * A column drops as a whole, its header with its cells, since both carry its
  * class (the Column's headerClass and bodyClass).
  *
+ * The two columns' minimum widths are set here, not on the Columns: an inline
+ * style cannot be lowered by a container query, and a scoped rule in the
+ * ledger would weigh more than these (its data attribute) and win.
+ *
  * Plain CSS in a file of its own, so the unit spec reads these rules
  * themselves (tests/unit/lib/ledger/narrow.spec.js): jsdom evaluates no
  * container query, and a copy of the widths in a script would drift from
  * the ones that apply.
  */
 
+.ledger .col-tier,
+.ledger .col-intensity {
+  min-width: 7rem;
+}
+
 @container ledger (min-width: 901px) {
   .ledger .tier-level {
+    display: none;
+  }
+}
+
+/* The Intensity header's short label, shown only where its full one goes
+   from sight (below). Above 560 px, not from 561: a ledger's width is
+   fractional, and at 560.5 px neither 560's rule nor a 561 one would hold,
+   so the header would show both labels. */
+@container ledger (width > 560px) {
+  .ledger .intensity-label-short {
     display: none;
   }
 }
@@ -46,10 +65,37 @@
   .ledger .col-across {
     display: none;
   }
+  /* The tier's word leaves the eye, not the page: it stays the chip's
+     accessible name, and the chip's hover names the tier first. A role chip
+     has no dot and keeps its word (BaseTierTag marks only a tier's). */
+  .ledger .tier-cell .tier-word {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .ledger .col-tier {
+    min-width: 0;
+  }
 }
 
 @container ledger (max-width: 560px) {
   .ledger .intensity-bar {
     display: none;
+  }
+  .ledger .col-intensity {
+    min-width: 0;
+  }
+  /* Its header, then, is no wider than its number: the short label in sight,
+     the full one its name and, with the hover, its words. */
+  .ledger .intensity-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 }

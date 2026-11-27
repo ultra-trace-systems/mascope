@@ -100,7 +100,10 @@ const STUBS = {
 }
 
 const { default: AssignmentLedger } = await import('@/lib/ledger/AssignmentLedger.vue')
-const { shownAt } = await import('./narrowRules.js')
+const { seenAt, shownAt } = await import('./narrowRules.js')
+// The real chip, by its own path (the mock above stands in for the barrel's),
+// where a test needs what it draws: its dot, its word, its marks.
+const { default: TierChip } = await import('@/lib/base/BaseTierTag.vue')
 
 const SCOPES = {
   sample: {
@@ -180,7 +183,7 @@ const SCOPES = {
   }
 }
 
-function mountLedger(scope, { props = {}, slots = {} } = {}) {
+function mountLedger(scope, { props = {}, slots = {}, stubs = {}, directives = {} } = {}) {
   const config = SCOPES[scope]
   const rows = props.rows ?? config.rows
   return mount(AssignmentLedger, {
@@ -209,8 +212,8 @@ function mountLedger(scope, { props = {}, slots = {} } = {}) {
       ...slots
     },
     global: {
-      stubs: STUBS,
-      directives: { tooltip: {}, help: {} },
+      stubs: { ...STUBS, ...stubs },
+      directives: { tooltip: {}, help: {}, ...directives },
       provide: { ledgerRows: { list: rows } }
     }
   })
@@ -241,7 +244,13 @@ describe.each(Object.keys(SCOPES))('AssignmentLedger, %s scope', (scope) => {
 
   it('heads the shared columns in sentence case', () => {
     const wrapper = mountLedger(scope)
-    const heads = wrapper.findAll('.column .head').map((head) => head.text())
+    // The Intensity header holds its short label too, out of sight but at
+    // the narrowest widths: its full label is the one read here.
+    const heads = wrapper
+      .findAll('.column .head')
+      .map((head) =>
+        (head.find('.intensity-label').exists() ? head.find('.intensity-label') : head).text()
+      )
     expect(heads).toEqual(expect.arrayContaining(['m/z', 'Compound', 'Ion', 'Intensity', 'Tier']))
     expect(heads).not.toContain('Formula')
     expect(heads).not.toContain('Listed')
@@ -262,6 +271,98 @@ describe.each(Object.keys(SCOPES))('AssignmentLedger, %s scope', (scope) => {
     expect(level.props('sortField')).toBe(SCOPES[scope].fields.levelSort)
     expect(level.props('headerClass')).toBe('col-level')
     expect(level.props('bodyClass')).toBe('col-level')
+  })
+
+  // The two columns that narrow at a width carry their minimum width as a
+  // class the narrow rules reach, never as an inline style.
+  it.each([
+    ['tierRank', 'col-tier'],
+    [SCOPES[scope].fields.intensity, 'col-intensity']
+  ])('gives the %s column its class, header and cells', (field, cls) => {
+    const wrapper = mountLedger(scope)
+    const col = wrapper.findAllComponents(Column).find((c) => c.props('field') === field)
+    expect(col.props('headerClass')).toBe(cls)
+    expect(col.props('bodyClass')).toBe(cls)
+    expect(col.attributes('style')).toBeUndefined()
+  })
+
+  // At 560 px and below the Intensity header shows its short label, the full
+  // one kept for its name and its hover; above, the full label alone.
+  it.each([
+    [300, 'Int.'],
+    [560, 'Int.'],
+    [561, 'Intensity'],
+    [1200, 'Intensity']
+  ])('at %i px heads the Intensity column %j', (width, seen) => {
+    const wrapper = mountLedger(scope, { props: { intensityLabel: 'Intensity' } })
+    const head = column(wrapper, SCOPES[scope].fields.intensity).find('.head')
+    const full = head.find('.intensity-label')
+    const short = head.find('.intensity-label-short')
+    expect(full.text()).toBe('Intensity')
+    expect(full.attributes('aria-hidden')).toBeUndefined()
+    expect(short.attributes('aria-hidden')).toBe('true')
+    const inSight = [full, short].filter((label) => seenAt(label.element, width))
+    expect(inSight.map((label) => label.text())).toEqual([seen])
+  })
+
+  // The hover names the full label first: the scope's own tooltip where it
+  // gives one (the batch's opens "Max intensity: ..."), else the label itself,
+  // so the short label always has the full one a hover away.
+  it.each([
+    [{}, 'Intensity'],
+    [{ intensity: 'Max intensity: the brightest sample' }, 'Max intensity: the brightest sample']
+  ])('names the Intensity header in full on hover, given %j', (headers, tip) => {
+    const wrapper = mountLedger(scope, {
+      props: { intensityLabel: 'Intensity', headers },
+      directives: {
+        tooltip: { mounted: (el, binding) => el.setAttribute('data-tooltip', binding.value ?? '') }
+      }
+    })
+    const head = column(wrapper, SCOPES[scope].fields.intensity).find('.head')
+    expect(head.find('[data-tooltip]').attributes('data-tooltip')).toBe(tip)
+  })
+
+  // At 680 px and below the tier chip shows its dot alone: its word goes from
+  // sight but stays on the page, the chip's accessible name. Its cap mark
+  // stays, and a role chip, which has no dot, keeps its word.
+  describe('the tier chip at a width', () => {
+    const mountChips = () =>
+      mountLedger(scope, {
+        props: { rows: [{ id: 'a', ...row(scope, { formula: 'C2H6', intensity: 500 }) }] },
+        slots: {
+          tier: () => [
+            h(TierChip, { tier: 'assigned', cap: { label: 'one peak only', tooltip: 'Held' } }),
+            h(TierChip, { tier: 'unassigned', role: 'reagent' })
+          ]
+        },
+        stubs: {
+          // As PrimeVue's Tag: a default slot stands in for its label.
+          Tag: {
+            props: ['value'],
+            template: '<span class="tag"><slot name="icon" /><slot>{{ value }}</slot></span>'
+          }
+        }
+      })
+    const within = (wrapper, selector) => cell(wrapper, 'tierRank', 'a').find(selector)
+
+    it.each([300, 560, 600, 680])('at %i px shows the dot alone, the word kept', (width) => {
+      const wrapper = mountChips()
+      const word = within(wrapper, '.tier .tier-word')
+      expect(word.text()).toBe('assigned')
+      expect(word.attributes('aria-hidden')).toBeUndefined()
+      expect(shownAt(word.element, width)).toBe(true)
+      expect(seenAt(word.element, width)).toBe(false)
+      expect(seenAt(within(wrapper, '[data-testid="tier-dot"]').element, width)).toBe(true)
+      expect(seenAt(within(wrapper, '[data-testid="tier-reason-mark"]').element, width)).toBe(true)
+      const role = within(wrapper, '[data-testid="role-chip"]')
+      expect(role.text()).toBe('reagent')
+      expect(seenAt(role.element, width)).toBe(true)
+    })
+
+    it.each([681, 900, 1200])('at %i px shows the word', (width) => {
+      const word = within(mountChips(), '.tier .tier-word')
+      expect(seenAt(word.element, width)).toBe(true)
+    })
   })
 
   // The level stays at every width (the owner, 2026-11-24): where the Level

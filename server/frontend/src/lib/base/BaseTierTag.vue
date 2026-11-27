@@ -202,8 +202,11 @@ const autoTooltip = computed(() => {
       </template>
       <!-- Inside the chip, after its word: the cap belongs to the tier it
            holds, not to the row beside it. The default slot stands in for
-           Tag's own label, so the word is drawn here as Tag draws it. -->
-      <span class="p-tag-label">{{ label }}</span>
+           Tag's own label, so the word is drawn here as Tag draws it.
+           `tier-word` is the hook the narrow ledger hides it from sight by
+           (lib/ledger/narrow.css), leaving the dot: a role chip, which has
+           no dot, has no such word and keeps its own. -->
+      <span class="p-tag-label tier-word">{{ label }}</span>
       <span
         v-if="cap"
         class="pi ph ph-arrow-down cap-mark"
