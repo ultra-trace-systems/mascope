@@ -79,7 +79,12 @@ import './narrow.css'
  *   step with no batch peak (`gap`), a member the scope holds no row for
  *   (`absent`), and a row listed under another group line (`reference`).
  *   Each shows its label in the Compound cell and nothing a row of a peak
- *   would: no box, tier, verdict or action.
+ *   would: no box, tier, verdict or action. A group line is the header of
+ *   the rows under it: set on a surface of its own at the header's weight,
+ *   its Tier, Level and verdict cells empty, since a group has no tier of
+ *   its own; every row under it, up to the next group line, carries a guide
+ *   on its left edge (`ledger-in-group`), which takes no width, so it holds
+ *   at every width.
  *
  * Sorting and filtering are the scope's (useLedgerSort, useLedgerFilters):
  * the table is `lazy`, so `rows` arrive filtered, sorted and folded as shown.
@@ -218,14 +223,29 @@ const isPseudo = (row) => Boolean(row?.ledgerKind)
 // A row that shows only what a line or a pseudo-row shows.
 const isQuiet = (row) => isLineRow(row) || isPseudo(row)
 
+// The rows under a group line of Group by, up to the next one: its members,
+// their isotopologue lines and its references. Only Group by draws group
+// lines, so the lens, which lists its group without them, marks none.
+const inGroup = computed(() => {
+  const under = new WeakSet()
+  let open = false
+  for (const row of props.rows) {
+    if (row?.ledgerKind === 'group') open = true
+    else if (open && row && typeof row === 'object') under.add(row)
+  }
+  return under
+})
+
 // A line is a sub-row: the class the narrow rules and the quiet style key on,
-// beside whatever the scope gives its rows.
+// beside whatever the scope gives its rows; a row under a group line carries
+// the group's guide.
 const rowClass = (row) => {
   const own = typeof attrs.rowClass === 'function' ? attrs.rowClass(row) : attrs.rowClass
   return [
     own,
     isLineRow(row) ? 'ledger-line' : null,
-    isPseudo(row) ? `ledger-pseudo ledger-${row.ledgerKind}` : null
+    isPseudo(row) ? `ledger-pseudo ledger-${row.ledgerKind}` : null,
+    inGroup.value.has(row) ? 'ledger-in-group' : null
   ].filter(Boolean)
 }
 
@@ -566,10 +586,10 @@ const engineChipTooltip = (row) =>
             <span v-tooltip.top="headers.formula">Compound</span>
           </template>
           <template #body="{ data }">
-            <!-- A group line of Group by: its name, its member count and its
-                 best member's tier. A button, so Tab reaches it and Enter or
-                 Space fold it; the keys stop here, where the table would read
-                 them as a selection. -->
+            <!-- A group line of Group by: its caret, its name and its member
+                 count, the header of the rows under it. A button, so Tab
+                 reaches it and Enter or Space fold it; the keys stop here,
+                 where the table would read them as a selection. -->
             <button
               v-if="data.ledgerKind === 'group'"
               type="button"
@@ -688,15 +708,9 @@ const engineChipTooltip = (row) =>
                sorts, filters and rolls up on, and a row where the two differ is
                the one worth opening. -->
           <template #body="{ data }">
-            <!-- A group line: its best member's tier. -->
-            <span v-if="data.ledgerKind === 'group'" class="tier-cell">
-              <BaseTierTag
-                v-if="data.groupTier || data.groupRole"
-                :tier="data.groupTier"
-                :role="data.groupRole"
-              />
-            </span>
-            <span v-else-if="!isQuiet(data)" class="tier-cell">
+            <!-- A group line draws none: a group has no tier of its own, and
+                 a chip there would read as one. -->
+            <span v-if="!isQuiet(data)" class="tier-cell">
               <slot name="tier" :data="data" :cap="tierCap(data)" />
               <BaseTierTag
                 v-if="engineReadings && data.engine_tier"
@@ -966,34 +980,51 @@ const engineChipTooltip = (row) =>
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
-/* A group line of Group by: its caret, its name and its count. */
+/* A group line of Group by, the header of the rows under it: a faint band of
+   the text colour over the content ground, fainter than a hovered row's, so
+   it never reads as one, a hairline over it that opens the section, and its
+   caret, name and count in the text colour - nothing grey or muted, which
+   would read as a disabled row. */
 .ledger :deep(tr.ledger-group > td) {
-  background: var(--p-content-hover-background);
+  background: color-mix(in srgb, var(--p-text-color) 5%, var(--p-content-background));
+  border-top: 1px solid var(--p-content-border-color);
+  color: var(--p-text-color);
 }
 .group-line {
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: 0.45rem;
   padding: 0.1rem 0.3rem;
   border: 0;
   border-radius: 3px;
   background: transparent;
   color: inherit;
   font: inherit;
-  font-weight: 500;
+  font-weight: 700;
   cursor: pointer;
 }
 .group-line .pi {
-  font-size: 0.65rem;
-  color: var(--p-text-muted-color);
+  font-size: 0.7rem;
 }
 .group-line:focus-visible {
   outline: 2px solid var(--p-primary-color);
 }
+/* The member count: a count badge, as a destination's in the sidebar. */
 .group-count {
+  padding: 0 0.45rem;
+  border: 1px solid var(--p-content-border-color);
+  border-radius: 100px;
   font-size: 0.72rem;
-  font-weight: 400;
-  color: var(--p-text-muted-color);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+/* A row under a group line: a guide on its left edge, drawn as an inset
+   shadow, so it takes no width from the first cell at any width. */
+.ledger :deep(tr.ledger-in-group > td:first-child) {
+  box-shadow: inset 3px 0 0 var(--p-surface-300);
+}
+:root.darkmode .ledger :deep(tr.ledger-in-group > td:first-child) {
+  box-shadow: inset 3px 0 0 var(--p-surface-600);
 }
 
 /* The m/z: the link to the peak, in Plex Mono and tabular, plain until

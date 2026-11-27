@@ -1871,9 +1871,7 @@ describe('PaneBrowserAssignment Group by compound', () => {
   }
   const lines = (wrapper) =>
     wrapper.vm.rows.map((row) =>
-      row.ledgerKind === 'group'
-        ? `${row.groupName} | ${row.groupCount} | ${row.groupTier}`
-        : row.peak_assignment_id
+      row.ledgerKind === 'group' ? `${row.groupName} | ${row.groupCount}` : row.peak_assignment_id
     )
 
   it('lists a row per ion until it is switched on', async () => {
@@ -1887,21 +1885,14 @@ describe('PaneBrowserAssignment Group by compound', () => {
   it("draws a group line over the neutral's channels, the rest Ungrouped", async () => {
     const wrapper = await grouped(ammoniated(), sodiated(), protonated(), other())
     // Equal intensities: confidence orders them, tier first and then fit.
-    expect(lines(wrapper)).toEqual([
-      'C10H16O | 3 rows | assigned',
-      'h',
-      'nh4',
-      'na',
-      'Ungrouped | 1 row | null',
-      'o'
-    ])
+    expect(lines(wrapper)).toEqual(['C10H16O | 3 rows', 'h', 'nh4', 'na', 'Ungrouped | 1 row', 'o'])
   })
 
   it('folds a group line and unfolds it again', async () => {
     const wrapper = await grouped(ammoniated(), protonated(), other())
     wrapper.vm.toggleGroupLine(wrapper.vm.rows[0])
     await wrapper.vm.$nextTick()
-    expect(lines(wrapper)).toEqual(['C10H16O | 2 rows | assigned', 'Ungrouped | 1 row | null', 'o'])
+    expect(lines(wrapper)).toEqual(['C10H16O | 2 rows', 'Ungrouped | 1 row', 'o'])
     expect(wrapper.vm.rows[0].collapsed).toBe(true)
     wrapper.vm.toggleGroupLine(wrapper.vm.rows[0])
     await wrapper.vm.$nextTick()
@@ -1912,16 +1903,16 @@ describe('PaneBrowserAssignment Group by compound', () => {
     const wrapper = await grouped(protonated(), ammoniated())
     wrapper.vm.showIsotopologues = true
     await wrapper.vm.$nextTick()
-    expect(lines(wrapper)).toEqual(['C10H16O | 2 rows | assigned', 'h', 'h-c0', 'nh4', 'nh4-c0'])
+    expect(lines(wrapper)).toEqual(['C10H16O | 2 rows', 'h', 'h-c0', 'nh4', 'nh4-c0'])
   })
 
-  // The group line counts the neutral's rows and names its best tier whatever
-  // the filters leave of it, as the pill counts them.
+  // The group line counts the neutral's rows whatever the filters leave of
+  // it, as the pill counts them.
   it('groups what the filters leave, counted on all its rows', async () => {
     const wrapper = await grouped(protonated(), ammoniated(), sodiated())
     wrapper.vm.toggleTier('candidate')
     await wrapper.vm.$nextTick()
-    expect(lines(wrapper)).toEqual(['C10H16O | 3 rows | assigned', 'nh4', 'na'])
+    expect(lines(wrapper)).toEqual(['C10H16O | 3 rows', 'nh4', 'na'])
   })
 
   it('lists the rows the search keeps, though no group holds one of them', async () => {
@@ -1930,7 +1921,7 @@ describe('PaneBrowserAssignment Group by compound', () => {
     // C9H14 is read through one channel: it is in no group.
     wrapper.vm.searchQuery = 'C9H14'
     await wrapper.vm.$nextTick()
-    expect(lines(wrapper)).toEqual(['Ungrouped | 1 row | null', 'lone'])
+    expect(lines(wrapper)).toEqual(['Ungrouped | 1 row', 'lone'])
   })
 
   it('never groups a row that names no neutral of the sample', async () => {

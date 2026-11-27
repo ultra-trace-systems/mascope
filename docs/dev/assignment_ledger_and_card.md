@@ -270,8 +270,10 @@ Under the lens:
   apart from a gap.
 
 **Group by** shows every group at once, as collapsible group lines over their members. A
-group line names the compound or series and the member count, and shows the tier of its
-best member.
+group line names the compound or series and the member count. It is the header of its
+members: bold on a surface of its own, its Tier, Level and verdict cells empty (a group
+has no tier of its own, and a chip there read as one, the owner on 2026-11-27, MAS-1339),
+and a guide on the left edge of every row under it.
 
 **From the card.** The card's reasons and its *Across the batch* section list the same
 members, with m/z links that focus each row and *Show in the ledger*, which applies the

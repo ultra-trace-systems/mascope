@@ -4573,7 +4573,7 @@ describe('PaneBrowserBatchPeaks groups', () => {
   const lines = () =>
     wrapper.vm.rows.map((row) =>
       row.ledgerKind === 'group'
-        ? `${row.groupName} | ${row.groupCount} | ${row.groupTier}`
+        ? `${row.groupName} | ${row.groupCount}`
         : row.ledgerKind
           ? `${row.ledgerKind}:${row.pseudoFormula}`
           : row.batch_peak_id
@@ -4584,12 +4584,12 @@ describe('PaneBrowserBatchPeaks groups', () => {
     wrapper.vm.view.groupBy = 'series'
     await wrapper.vm.$nextTick()
     expect(lines()).toEqual([
-      'CH2 series from C5H8O4, through [M+NO3]- | 4 batch peaks | assigned',
+      'CH2 series from C5H8O4, through [M+NO3]- | 4 batch peaks',
       'bp-three',
       'bp-up',
       'bp-root',
       'bp-down',
-      'Ungrouped | 3 batch peaks | null',
+      'Ungrouped | 3 batch peaks',
       'bp-two_other',
       'bp-twin',
       'bp-up_other'
@@ -4602,23 +4602,19 @@ describe('PaneBrowserBatchPeaks groups', () => {
     // The 14N twin is in no series.
     wrapper.vm.searchQuery = 'C5H9NO4'
     await wrapper.vm.$nextTick()
-    expect(lines()).toEqual(['Ungrouped | 1 batch peak | null', 'bp-twin'])
+    expect(lines()).toEqual(['Ungrouped | 1 batch peak', 'bp-twin'])
   })
 
   it('groups by compound, and a group line folds its members', async () => {
     await mountGroups()
     wrapper.vm.view.groupBy = 'compound'
     await wrapper.vm.$nextTick()
-    expect(lines().slice(0, 3)).toEqual([
-      'C6H10O4 | 2 batch peaks | assigned',
-      'bp-up',
-      'bp-up_other'
-    ])
-    expect(lines()[3]).toBe('Ungrouped | 5 batch peaks | null')
+    expect(lines().slice(0, 3)).toEqual(['C6H10O4 | 2 batch peaks', 'bp-up', 'bp-up_other'])
+    expect(lines()[3]).toBe('Ungrouped | 5 batch peaks')
 
     ledgerOf().vm.$emit('toggle-group', wrapper.vm.rows[0])
     await wrapper.vm.$nextTick()
-    expect(lines()[1]).toBe('Ungrouped | 5 batch peaks | null')
+    expect(lines()[1]).toBe('Ungrouped | 5 batch peaks')
     expect(wrapper.vm.rows[0].collapsed).toBe(true)
   })
 

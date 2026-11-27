@@ -871,14 +871,13 @@ describe('AssignmentLedger, groups', () => {
     expect(cell(wrapper, 'member_level', 'absent').find('.level-cell').exists()).toBe(false)
   })
 
-  it('draws a group line: its name, its count and its best tier, folded by a button', async () => {
+  it('draws a group line: its name and its count, folded by a button', async () => {
     const line = {
       id: 'g',
       ledgerKind: 'group',
       groupKey: 'k',
       groupName: 'C6H10O4',
       groupCount: '2 batch peaks',
-      groupTier: 'assigned',
       collapsed: false
     }
     const wrapper = mountLedger('batch', { props: { rows: [line] } })
@@ -888,9 +887,6 @@ describe('AssignmentLedger, groups', () => {
     expect(button.find('.group-count').text()).toBe('2 batch peaks')
     expect(button.attributes('aria-label')).toBe('Fold C6H10O4, 2 batch peaks')
     expect(button.attributes('aria-expanded')).toBe('true')
-    expect(cell(wrapper, 'tierRank', 'g').find('.tier-tag').attributes('data-tier')).toBe(
-      'assigned'
-    )
     await button.trigger('click')
     expect(wrapper.emitted('toggle-group')).toEqual([[line]])
     // Enter and Space stop at the button: the table would read them as a
@@ -900,6 +896,74 @@ describe('AssignmentLedger, groups', () => {
     await button.trigger('keydown', { key: 'Enter' })
     await button.trigger('keydown', { key: ' ' })
     expect(outer).not.toHaveBeenCalled()
+  })
+
+  // A group has no tier of its own: its header's Tier, Level and verdict
+  // cells stay empty, in either scope, whatever its members carry.
+  it.each(['sample', 'batch'])('draws no tier, level or verdict on a group line (%s)', (scope) => {
+    const f = SCOPES[scope].fields
+    const line = {
+      id: 'g',
+      ledgerKind: 'group',
+      groupName: 'C6H10O4',
+      groupCount: '2 rows',
+      // What an older pane put on the line: drawn nowhere now.
+      groupTier: 'assigned',
+      groupRole: 'reagent',
+      engine_tier: 'assigned',
+      verdict: { verdict: 'confirmed' },
+      collapsed: false
+    }
+    const member = { id: 'a', [f.mz]: 100.05, [f.formula]: 'C6H10O4' }
+    const wrapper = mountLedger(scope, {
+      props: { rows: [line, member], engineReadings: true, hasLevels: true },
+      slots: {
+        tier: () => h('span', { class: 'tier-slot' }),
+        level: () => h('span', { class: 'level-slot' })
+      }
+    })
+    const tier = cell(wrapper, 'tierRank', 'g')
+    expect(tier.find('.tier-tag').exists()).toBe(false)
+    expect(tier.find('.tier-slot').exists()).toBe(false)
+    expect(tier.find('.level-slot').exists()).toBe(false)
+    expect(cell(wrapper, f.level, 'g').find('.level-slot').exists()).toBe(false)
+    expect(cell(wrapper, 'verdictRank', 'g').find('button').exists()).toBe(false)
+    // Its member draws all three.
+    expect(cell(wrapper, 'tierRank', 'a').find('.tier-slot').exists()).toBe(true)
+    expect(cell(wrapper, f.level, 'a').find('.level-slot').exists()).toBe(true)
+    expect(cell(wrapper, 'verdictRank', 'a').find('button').exists()).toBe(true)
+  })
+
+  // The rows under a group line carry its guide, up to the next group line;
+  // the header itself, a row before any group line and a lens's rows do not.
+  it('marks every row under a group line, its lines and references included', () => {
+    const rows = [
+      { id: 'g1', ledgerKind: 'group', groupName: 'C6H10O4', groupCount: '2 batch peaks' },
+      { id: 'a', mz: 100 },
+      { id: 'a-line', mz: 101, parentId: 'a' },
+      { id: 'ref', ledgerKind: 'reference', pseudoNote: 'listed under C5H8O4' },
+      { id: 'g2', ledgerKind: 'group', groupName: 'Ungrouped', groupCount: '1 batch peak' },
+      { id: 'b', mz: 200 }
+    ]
+    const wrapper = mountLedger('batch', { props: { rows } })
+    const rowClass = wrapper.findComponent(DataTable).props('rowClass')
+    const marked = rows.filter((r) => rowClass(r).includes('ledger-in-group')).map((r) => r.id)
+    expect(marked).toEqual(['a', 'a-line', 'ref', 'b'])
+    // A line under a group keeps its own quiet class beside the guide.
+    expect(rowClass(rows[2])).toEqual(['ledger-line', 'ledger-in-group'])
+    expect(rowClass(rows[0])).toEqual(['ledger-pseudo ledger-group'])
+  })
+
+  it('marks no row where no group line is drawn, as under the lens', () => {
+    const rows = [
+      { id: 'a', mz: 100, lensLabel: 'root' },
+      { id: 'gap', ledgerKind: 'gap', lensLabel: '+1 CH2', pseudoNote: 'no batch peak' }
+    ]
+    const wrapper = mountLedger('batch', {
+      props: { rows, lens: { title: 'A series', column: 'Step' } }
+    })
+    const rowClass = wrapper.findComponent(DataTable).props('rowClass')
+    expect(rows.some((r) => rowClass(r).includes('ledger-in-group'))).toBe(false)
   })
 })
 
