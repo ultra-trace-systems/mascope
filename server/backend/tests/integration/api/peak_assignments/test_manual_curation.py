@@ -2998,6 +2998,64 @@ async def test_overriding_the_m0_detaches_a_hand_line_and_the_undo_links_it_agai
 
 
 @pytest.mark.asyncio
+async def test_a_hand_line_promoted_back_from_its_alternatives_is_detached_too(
+    editor_client, curated_run, async_session_factory
+):
+    """A line a person promoted back from its own row's alternatives is that
+    person's choice as much as one they typed: its M0's override detaches it,
+    and the undo links it again."""
+    blank = _url(curated_run, curated_run["blank_id"])
+    await editor_client.patch(blank, json=_hand_line(curated_run))
+    # Re-read as another compound's line, the first reading goes to the
+    # alternatives; promoting it back commits the line by promote_alternative.
+    await editor_client.patch(blank, json=_hand_line(curated_run, formula="C12H22O11"))
+    response = await editor_client.patch(
+        blank,
+        json={
+            "action": "promote_alternative",
+            "alternative_index": 0,
+            "expected_formula": "C6H12O6",
+        },
+    )
+    assert response.status_code == 200, response.text
+    line = await _row(async_session_factory, curated_run["blank_id"])
+    assert line.provenance["manual"]["action"] == "promote_alternative"
+    assert (line.role, line.owner_peak_assignment_id) == (
+        "iso_child",
+        curated_run["m0_id"],
+    )
+
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={"action": "promote_alternative", "alternative_index": 0},
+    )
+    assert response.status_code == 200, response.text
+    assert "assigned by hand, at m/z 250.5000, detached" in response.json()["message"]
+    line = await _row(async_session_factory, curated_run["blank_id"])
+    assert line.role == "iso_child"
+    assert line.assigned_formula == "C6H12O6"
+    assert line.owner_peak_assignment_id is None
+    assert line.provenance["manual"]["detached_from"] == curated_run["m0_id"]
+    m0 = await _row(async_session_factory, curated_run["m0_id"])
+    archived = [
+        entry["peak_assignment_id"] for entry in m0.provenance["manual"]["demoted"]
+    ]
+    assert curated_run["blank_id"] not in archived
+
+    undo = await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={
+            "action": "promote_alternative",
+            "alternative_index": 0,
+            "expected_formula": "C6H12O6",
+        },
+    )
+    assert undo.status_code == 200, undo.text
+    line = await _row(async_session_factory, curated_run["blank_id"])
+    assert line.owner_peak_assignment_id == curated_run["m0_id"]
+
+
+@pytest.mark.asyncio
 async def test_a_hand_m0_takes_the_runs_ownerless_hand_lines_of_its_compound(
     editor_client, curated_run, async_session_factory
 ):
