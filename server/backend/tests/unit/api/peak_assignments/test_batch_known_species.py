@@ -1592,7 +1592,7 @@ class TestTheRowRewrite:
         block = values["provenance"][IDENTIFICATION_LEVEL]
         assert block["level"] == "5a"
         assert block["evidence"] == "rivals not measured"
-        assert block["lift"] == "measure the shortlist"
+        assert block["lift"] == "its rivals measured: this run did not measure them"
 
 
 class TestTheListedLift:

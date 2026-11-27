@@ -25,6 +25,8 @@ import {
   bestStatedLevel,
   membersAtLevel,
   commonLine,
+  LIFT_RIVALS_UNMEASURED,
+  readableLift,
   unstatedLines,
   readerLevel,
   rivalTestLabel,
@@ -129,13 +131,31 @@ describe('levelRank', () => {
 describe('levelTooltip', () => {
   it('says what the level means, what earned it and what would lift it', () => {
     expect(
-      levelTooltip({ level: '5a', evidence: 'rivals not measured', lift: 'measure the shortlist' })
+      levelTooltip({
+        level: '5a',
+        evidence: 'rivals not measured',
+        lift: 'its rivals measured: this run did not measure them'
+      })
     ).toBe(
       [
         LEVEL_META['5a'].description,
         'Why: rivals not measured',
-        'Would lift it: measure the shortlist'
+        'Would lift it: its rivals measured: this run did not measure them'
       ].join('\n')
+    )
+  })
+
+  // A row keeps the lift its run stored. Before MAS-1336 one whose rivals no
+  // pass measured asked to "measure the shortlist", which no setting of the app
+  // does: it reads as the engine words it now.
+  it("rewords an older run's lift that named no step a reader can take", () => {
+    expect(
+      levelTooltip({
+        level: '5a',
+        lift: 'measure the shortlist; exclude C7H16O5: an isotope line'
+      }).split('\n')
+    ).toContain(
+      'Would lift it: its rivals measured: this run did not measure them; exclude C7H16O5: an isotope line'
     )
   })
 
@@ -463,5 +483,45 @@ describe("the batch's level on a sample's row", () => {
     expect(borrowedLevelOf(null)).toBeNull()
     expect(borrowedLevelOf({ ...record, borrowed: false })).toBeNull()
     expect(borrowedLevelOf({ ...record, level: 'x' })).toBeNull()
+  })
+})
+
+// An older run stored "measure the shortlist" where no pass measured a row's
+// rivals; no setting of the app does that, so each place a lift is shown
+// reads it in the engine's words now (MAS-1336).
+describe('readableLift', () => {
+  const OLD = 'measure the shortlist'
+
+  it('rewords the part an older run stored, and keeps every other part', () => {
+    expect(readableLift(OLD)).toBe(LIFT_RIVALS_UNMEASURED)
+    expect(readableLift(`${OLD}; exclude C7H16O5: an isotope line`)).toBe(
+      `${LIFT_RIVALS_UNMEASURED}; exclude C7H16O5: an isotope line`
+    )
+    expect(readableLift('measure the shortlist again')).toBe('measure the shortlist again')
+    expect(readableLift(null)).toBeNull()
+    expect(readableLift('')).toBe('')
+  })
+
+  it("reads the engine's level, a batch peak's and a borrowed one in the new words", () => {
+    expect(readerLevel({ level: '5a', lift: OLD }).lift).toBe(LIFT_RIVALS_UNMEASURED)
+    expect(batchLevelOf({ level: '5a', level_lift: OLD }).lift).toBe(LIFT_RIVALS_UNMEASURED)
+    expect(batchLevelTooltip({ level: '5a', level_lift: OLD })).toContain(
+      `Would lift it: ${LIFT_RIVALS_UNMEASURED}`
+    )
+    const borrowed = borrowedLevelOf({ level: '5a', borrowed: true, lift: OLD })
+    expect(borrowed.lift).toBe(LIFT_RIVALS_UNMEASURED)
+    expect(borrowed.tooltip).toContain(`Would lift it: ${LIFT_RIVALS_UNMEASURED}`)
+    expect(borrowed.tooltip).not.toContain(OLD)
+  })
+
+  it("gives the members' common lift in the new words, counted as stored", () => {
+    const members = [{ level_lift: OLD }, { level_lift: OLD }, { level_lift: 'more signal' }]
+    expect(commonLine(members, 'level_lift')).toEqual({
+      text: LIFT_RIVALS_UNMEASURED,
+      count: 2,
+      of: 3
+    })
+    // A why line is never a lift, however it reads.
+    expect(commonLine([{ level_evidence: OLD }], 'level_evidence').text).toBe(OLD)
   })
 })

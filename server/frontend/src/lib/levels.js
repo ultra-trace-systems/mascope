@@ -210,6 +210,34 @@ export const levelMeta = (level) =>
   isLevel(level) ? LEVEL_META[level] : isVersionOneLevel(level) ? VERSION_ONE_META[level] : null
 
 /**
+ * What a 5a row's lift says where no pass measured its rivals, as the engine
+ * writes it now (`identification_level.LIFT_RIVALS_UNMEASURED`).
+ */
+export const LIFT_RIVALS_UNMEASURED = 'its rivals measured: this run did not measure them'
+
+// Lift parts runs stored in words that named no step a reader can take, and
+// what they read as now. Before MAS-1336 a row whose rivals were not measured
+// asked to "measure the shortlist": the run option that does it is offered by
+// no setting of the app, so the line now says the rivals were not measured.
+// A row keeps what its run stored, so the old words are read here.
+const LIFT_REWORDED = Object.freeze({ 'measure the shortlist': LIFT_RIVALS_UNMEASURED })
+
+/**
+ * A level's lift as a reader is shown it: the parts an older run stored in
+ * words no reader could act on, reworded (LIFT_REWORDED), the rest as stored.
+ *
+ * @param {?string} lift the stored lift, its parts joined by "; "
+ * @returns {?string}
+ */
+export function readableLift(lift) {
+  if (typeof lift !== 'string' || !lift) return lift ?? null
+  return lift
+    .split('; ')
+    .map((part) => LIFT_REWORDED[part] ?? part)
+    .join('; ')
+}
+
+/**
  * The hover lines of a level chip: what the level means, then what earned it
  * and what would raise it, where the row records them.
  *
@@ -237,7 +265,7 @@ export function levelTooltip({
     meta.description,
     source ? sourceLine(source, engineLevel) : null,
     evidence ? `Why: ${evidence}` : null,
-    lift ? `Would lift it: ${lift}` : null,
+    lift ? `Would lift it: ${readableLift(lift)}` : null,
     role === 'iso_child' ? 'An isotopologue: it holds the level of its M0' : null
   ]
     .filter(Boolean)
@@ -294,7 +322,7 @@ export function readerLevel({ verdict = null, level = null, evidence = null, lif
     }
   }
   if (!engineLevel) return null
-  return { level: engineLevel, source: 'engine', evidence, lift, engineLevel }
+  return { level: engineLevel, source: 'engine', evidence, lift: readableLift(lift), engineLevel }
 }
 
 /**
@@ -495,7 +523,10 @@ export function commonLine(members, key) {
   }
   let best = null
   for (const [text, count] of counts) if (!best || count > best.count) best = { text, count }
-  return best ? { ...best, of: (members ?? []).length } : null
+  if (!best) return null
+  // A lift as a reader is shown it: an older run's words reworded.
+  const text = key === 'level_lift' ? readableLift(best.text) : best.text
+  return { ...best, text, of: (members ?? []).length }
 }
 
 /**
@@ -531,7 +562,11 @@ export function unstatedLines(unstated) {
  */
 export function batchLevelOf(row) {
   if (!isLevel(row?.level)) return null
-  return { level: row.level, evidence: row.level_evidence ?? null, lift: row.level_lift ?? null }
+  return {
+    level: row.level,
+    evidence: row.level_evidence ?? null,
+    lift: readableLift(row.level_lift ?? null)
+  }
 }
 
 /**
@@ -574,14 +609,14 @@ export function borrowedLevelOf(record) {
     level: record.level,
     name: meta.name,
     evidence: record.evidence ?? null,
-    lift: record.lift ?? null,
+    lift: readableLift(record.lift ?? null),
     stated,
     tooltip: [
       meta.description,
       "Source: the batch - its isotope checks read this row's own rivals" +
         (stated ? `; the row's run stated ${stated}` : ''),
       record.evidence ? `Why: ${record.evidence}` : null,
-      record.lift ? `Would lift it: ${record.lift}` : null
+      record.lift ? `Would lift it: ${readableLift(record.lift)}` : null
     ]
       .filter(Boolean)
       .join('\n')

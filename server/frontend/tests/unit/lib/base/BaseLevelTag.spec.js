@@ -84,14 +84,14 @@ describe('BaseLevelTag', () => {
     const wrapper = mountTag({
       level: '5a',
       evidence: 'rivals not measured',
-      lift: 'measure the shortlist'
+      lift: 'its rivals measured: this run did not measure them'
     })
 
     expect(wrapper.find('.level-tag').attributes('data-tooltip')).toBe(
       [
         LEVEL_META['5a'].description,
         'Why: rivals not measured',
-        'Would lift it: measure the shortlist'
+        'Would lift it: its rivals measured: this run did not measure them'
       ].join('\n')
     )
   })

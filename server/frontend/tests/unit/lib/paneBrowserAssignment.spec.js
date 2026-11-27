@@ -2972,7 +2972,8 @@ describe('PaneBrowserAssignment identification level column', () => {
     const chip = cell(wrapper, 'a').find('.level-tag-stub')
     expect(chip.attributes('data-level')).toBe('5a')
     expect(chip.attributes('data-evidence')).toBe('rivals not measured')
-    expect(chip.attributes('data-lift')).toBe('measure the shortlist')
+    // An older run's words, reworded: no reader can "measure the shortlist".
+    expect(chip.attributes('data-lift')).toBe('its rivals measured: this run did not measure them')
     expect(cell(wrapper, 'b').find('.level-tag-stub').attributes('data-level')).toBe('4a')
     expect(cell(wrapper, 'c').find('.level-tag-stub').exists()).toBe(false)
     expect(cell(wrapper, 'c').text()).toBe('')

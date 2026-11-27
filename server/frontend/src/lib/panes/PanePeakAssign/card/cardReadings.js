@@ -343,6 +343,50 @@ export const EMPTY_REASONS = Object.freeze({
 })
 
 /**
+ * What the confidence tile says where the row's run kept no confidence for
+ * it, read off the run's own record of the option that measures one.
+ *
+ * A database-stage row always carries its confidence. An untargeted winner
+ * carries one only where its run measured the formula search's shortlist for
+ * it (`stage_b_confidence`, step 4.15), which is off by default and offered
+ * by no run setting of the app: a dash there is a choice of the run, not a
+ * fault, and the tile says so. A run that recorded no such option (one from
+ * before it) and any other row read "not recorded", as before.
+ *
+ * @param {object} options
+ * @param {?string} options.source the row's source (`untargeted`, `database`, ...)
+ * @param {?object} options.runConfig the run's stored configuration
+ * @returns {{caption: string, tooltip: string}}
+ */
+export function unrecordedConfidence({ source, runConfig }) {
+  const option = runConfig?.stage_b_confidence
+  if (source !== 'untargeted' || typeof option !== 'boolean') {
+    return { caption: 'not recorded by the run', tooltip: EMPTY_REASONS.confidence }
+  }
+  if (!option) {
+    return {
+      caption: 'not measured: winner confidence was off for this run',
+      tooltip: CONFIDENCE_OFF_TOOLTIP
+    }
+  }
+  const budget = runConfig.stage_b_confidence_peaks
+  const reach = Number.isInteger(budget) ? `its ${budget} most intense` : 'its most intense'
+  return {
+    caption: `not measured: the run measured ${reach} winners only`,
+    tooltip:
+      'Winner confidence was on for this run, but it measures the shortlists of ' +
+      `${reach} untargeted winners only, and this row was not among them.`
+  }
+}
+
+/** Why an untargeted winner of a run with winner confidence off shows none. */
+export const CONFIDENCE_OFF_TOOLTIP =
+  'Not measured: the formula search keeps only the formulas it shortlisted for a peak, ' +
+  'with no fit, so there is no share of the evidence to take until the run measures them. ' +
+  'This run had winner confidence off, its default. It is a run setting of the API and ' +
+  "the Python SDK (stage_b_confidence); the app's run settings do not offer it."
+
+/**
  * The isotope tile: the lines found of those predicted, from the family the
  * card lists and the lines the run asked for and did not find. Its tooltip
  * says what the count counts.

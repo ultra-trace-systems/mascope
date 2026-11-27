@@ -488,7 +488,10 @@ async def test_a_curated_row_states_the_level_a_hand_assignment_can(
     m0 = await _row(async_session_factory, curated_run["m0_id"])
     assert m0.level == "5a"
     assert m0.provenance["identification_level"]["evidence"] == "rivals not measured"
-    assert m0.provenance["identification_level"]["lift"] == "measure the shortlist"
+    assert (
+        m0.provenance["identification_level"]["lift"]
+        == "its rivals measured: this run did not measure them"
+    )
     child = await _row(async_session_factory, curated_run["child_id"])
     assert child.level is None
 

@@ -357,7 +357,7 @@ class TestFiveA:
 
         assert record["level"] == "5a"
         assert record["evidence"] == "rivals not measured"
-        assert record["lift"] == "measure the shortlist"
+        assert record["lift"] == "its rivals measured: this run did not measure them"
         assert record["rivals"] == []
 
     def test_a_list_hit_the_formula_search_never_measured(self):
@@ -369,7 +369,7 @@ class TestFiveA:
 
         assert record["level"] == "5a"
         assert record["evidence"] == "rivals not measured"
-        assert record["lift"] == "measure the shortlist"
+        assert record["lift"] == "its rivals measured: this run did not measure them"
 
     def test_a_rival_in_the_tie_stays_open_and_is_listed(self):
         row = m0(alternatives=[rival("C7H16O5", 0.85, "C7H17O5+")])
@@ -571,7 +571,7 @@ class TestFiveA:
 
         assert record["level"] == "5a"
         assert record["rivals"][0]["detail"] == "its fit on this peak was not measured"
-        assert record["lift"] == "measure the shortlist"
+        assert record["lift"] == "its rivals measured: this run did not measure them"
 
     def test_the_grid_rivals_a_list_hit_carries_are_rivals(self):
         row = m0(

@@ -93,6 +93,8 @@ from mascope_backend.api.new.peak_assignments.identification_level import (
     LEVEL_5B,
     LEVELS,
     LIFT_4A,
+    LIFT_RIVALS_UNMEASURED,
+    LIFT_RIVALS_UNMEASURED_BEFORE,
     OPEN,
     SPLIT,
     TEST_ISOTOPES,
@@ -424,8 +426,9 @@ def _excluded(rivals: Sequence[dict]) -> str:
     return f"{_plural(len(out), 'rival')} out: {', '.join(parts)}"
 
 
-#: A 5a lift's part asking for the shortlist an open rival was not measured on.
-_MEASURE_SHORTLIST = "measure the shortlist"
+#: A 5a lift's part naming the open rivals no pass measured, in the words of
+#: the run that stored it: the current run's and an older run's.
+_UNMEASURED_LIFTS = (LIFT_RIVALS_UNMEASURED, LIFT_RIVALS_UNMEASURED_BEFORE)
 
 #: What a 5a row whose run recorded no split would need to read at 4.
 _LIFT_NO_SPLIT = "assign the sample again, so its run records the split"
@@ -437,8 +440,8 @@ def _narrowed_lift(record: dict, still: Sequence[dict]) -> Optional[str]:
     rivals left open.
 
     The part naming the measured open rivals names those still open, and goes
-    where none is; "measure the shortlist" goes where every unmeasured rival is
-    out. The parts on the rivals the row does not list stay: the batch tests
+    where none is; the part naming the unmeasured rivals goes where every
+    unmeasured rival is out. The parts on the rivals the row does not list stay: the batch tests
     none of those.
 
     :param record: The row's record at 5a, its rivals as its run judged them.
@@ -458,7 +461,7 @@ def _narrowed_lift(record: dict, still: Sequence[dict]) -> Optional[str]:
     for part in str(record.get("lift") or "").split("; "):
         if not part:
             continue
-        if part == _MEASURE_SHORTLIST:
+        if part in _UNMEASURED_LIFTS:
             if any("fit" not in rival for rival in still):
                 parts.append(part)
         elif named and (

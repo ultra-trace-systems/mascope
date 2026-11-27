@@ -4,7 +4,7 @@ import { computed } from 'vue'
 import Skeleton from 'primevue/skeleton'
 
 import { num } from '@/lib/formatters'
-import { EMPTY_REASONS, TILE_TITLES } from './cardReadings.js'
+import { EMPTY_REASONS, TILE_TITLES, unrecordedConfidence } from './cardReadings.js'
 import { useCard } from './useCard.js'
 
 // The measurements: four tiles, each a value and a caption in words, where the
@@ -14,6 +14,8 @@ import { useCard } from './useCard.js'
 // Each tile has a title naming what it measures, and a dash says why on hover.
 const {
   app,
+  focusedAssignment,
+  focusedDetail,
   evidenceRow,
   massZ,
   massZFar,
@@ -59,12 +61,13 @@ const confidence = computed(() => {
       tooltip: LEDGER_CONFIDENCE_TOOLTIP
     }
   }
-  return {
-    value: '—',
-    caption: 'not recorded by the run',
-    tie: false,
-    tooltip: EMPTY_REASONS.confidence
-  }
+  // Why the run kept none, off its own record of the option that measures an
+  // untargeted winner's confidence, never guessed from the missing value.
+  const why = unrecordedConfidence({
+    source: focusedAssignment.value?.source ?? focusedDetail.value?.source ?? null,
+    runConfig: app.data.peakAssignment.peak.run?.config ?? null
+  })
+  return { value: '—', tie: false, ...why }
 })
 </script>
 

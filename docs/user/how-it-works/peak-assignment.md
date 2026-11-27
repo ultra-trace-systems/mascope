@@ -1439,7 +1439,10 @@ flowchart TD
   measured*. A peak the formula search elected carries its shortlist measured only where
   the run measured its winners' shortlists, which is a run option that is off by
   default; until then such a peak reads 5a with *rivals not measured* too, since the
-  level does not assume an exclusion it did not see.
+  level does not assume an exclusion it did not see. What would lift it reads *its
+  rivals measured: this run did not measure them*: no setting of the app turns that
+  option on, so the line names no step to take there. A row from a run made before
+  this wording asked to *measure the shortlist*; the app shows it in the new words.
   Nor does it assume one of a rival the run stored no entry for: a run keeps at most
   *Max alternatives* per peak, and the rivals past it count as untested where nothing
   measured them. On a peak the formula search elected, the rivals past it are of two
@@ -1887,7 +1890,12 @@ flowchart TD
     the abundance error and the lines not found or not tested. On the M0 the abundance
     error reads *-*: the other lines are measured against it, so it has no error of its own;
   - **Confidence**: the formula's share of the evidence among the peak's candidates,
-    with a tie written out;
+    with a tie written out. A row the formula search elected has one only where its run
+    measured the search's shortlist (*The untargeted stage's winners*, above). Where
+    that run had the option off, the caption reads *not measured: winner confidence was
+    off for this run*, and its tooltip says the option is set through the API or the
+    Python SDK. Where it was on and the row was past the run's number of winners, the
+    caption says how many winners it measured;
   - **Batch**: two lines, *Samples it is in* (the samples its batch peak is in) and
     *Batch readings* (how many of the batch's readings the card lists for it, under
     *Across the batch*).
