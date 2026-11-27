@@ -5,8 +5,10 @@
 // spectrum should show, its predicted m/z and its share of the row's own line,
 // and what the spectrum held there - a peak (`found`), nothing (`absent`, which
 // holds the row at candidate at most), or nothing it could be read on
-// (`untestable`: only an artifact's peak in its window, or beyond the first or
-// last peak, which the run takes as the ends of what the spectrum measured).
+// (`untestable`: a taller peak within one peak width, so the line could not
+// stand apart from it; only an artifact's peak in its window; or beyond the
+// first or last peak, which the run takes as the ends of what the spectrum
+// measured). An untestable line refutes nothing.
 //
 // The inspector lists the lines that were not found under the found ones, and
 // the spectrum chart draws them as empty circles. Kept apart from both so the
@@ -15,6 +17,11 @@
 export const LINE_FOUND = 'found'
 export const LINE_ABSENT = 'absent'
 export const LINE_UNTESTABLE = 'untestable'
+// Why a line is untestable where a taller peak holds its place.
+export const UNTESTABLE_NEIGHBOUR = 'neighbour'
+
+// A height as a factor of the line's predicted one: 9.9, 12.
+const heightFormat = new Intl.NumberFormat('en-US', { maximumSignificantDigits: 2 })
 
 // A share of the row's own line: 10%, 2.5%.
 const shareFormat = new Intl.NumberFormat('en-US', {
@@ -68,11 +75,14 @@ export function notFoundWord(line) {
 }
 
 /**
- * Why the run asked a line: a TOF's M+2 rule, the line's expected
+ * Why the run asked a line: a TOF's M+2 rule, a bromine ion's 81Br line, the line's expected
  * signal-to-noise, or on a peak the file records none for, its share alone.
  */
 function askedBecause(line, asksShare) {
   if (line?.tof_m2) return 'On a TOF a bromine or chlorine reading must show its own M+2 line.'
+  if (line?.bromine_m2) {
+    return 'A bromine reading must show its own 81Br line, nearly as tall as its own.'
+  }
   if (line?.expected_snr != null) {
     return "The run's detectability gate says the spectrum should show it at this peak's signal-to-noise."
   }
@@ -92,10 +102,16 @@ function askedBecause(line, asksShare) {
  */
 export function notFoundTooltip(line, provenance = null) {
   if (line?.state === LINE_UNTESTABLE) {
+    if (line.untestable === UNTESTABLE_NEIGHBOUR) {
+      const taller = Number.isFinite(line.height_ratio)
+        ? `${heightFormat.format(line.height_ratio)} times its predicted height`
+        : 'taller than the line can be'
+      return `Not tested: a peak ${taller} sits within one peak width, so the line cannot stand apart from it. It refutes nothing.`
+    }
     return line.untestable === 'out_of_range'
       ? 'Not tested: the line falls beyond the first or last peak of the spectrum, which the run takes as the ends of what it measured.'
       : "Not tested: only an artifact's peak sits where the line should be, which neither confirms nor refutes it."
   }
   const why = askedBecause(line, provenance?.predicted_envelope?.asks_share)
-  return `Not found: no peak sits within the run's match window of this predicted line. ${why} It holds the row at candidate at most.`
+  return `Not found: no peak sits within the run's window of this predicted line, its match window or half the peak width where that is wider. ${why} It holds the row at candidate at most.`
 }

@@ -250,6 +250,15 @@ def _patched(
     return stack, mocks
 
 
+def _capping(row) -> list[str]:
+    """The rules that cap a folded row, in its reasons' order."""
+    return [
+        reason["rule"]
+        for reason in (row.provenance or {}).get("tier_reasons", [])
+        if reason.get("caps")
+    ]
+
+
 @pytest.mark.asyncio
 async def test_folds_stage_a_and_the_placeholders_without_persisting():
     from mascope_backend.api.new.peak_assignments.batch_fold import (
@@ -629,9 +638,11 @@ async def test_the_fold_anchors_its_gate_on_the_source_s_lines_as_a_run_does(
         assert folded["peak-off"].tier == "below_assignability"
     else:
         # A thousand ppm off its masses, the ladder is not claimed, and five
-        # lines alone measure nothing to cap a row on.
+        # lines alone measure nothing to cap a row on: no calibration holds it,
+        # only that no line of its isotope pattern was read (MAS-1288).
         assert {folded[peak].role for peak in ("r1", "r2", "r3")} == {"unassigned"}
-        assert folded["peak-off"].tier == "assigned"
+        assert folded["peak-off"].tier == "candidate"
+        assert _capping(folded["peak-off"]) == ["no_line_read"]
 
 
 @pytest.mark.asyncio
@@ -725,18 +736,19 @@ async def test_the_fold_reads_an_isotopologue_s_line_as_a_run_does(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "ammonium_shows, tier", [(True, "candidate"), (False, "assigned")]
+    "ammonium_shows, capping",
+    [(True, "ambiguous_nitrogen"), (False, "no_line_read")],
 )
 async def test_the_fold_asks_a_mirror_rows_nitrogen_count_as_a_run_does(
-    ammonium_shows, tier
+    ammonium_shows, capping
 ):
     """A reference-list row whose ion reads as well another way is capped here too.
 
     Dimethylformamide through [M+H]+ is acrolein through the ammonium adduct, the
     uronium profile's secondary channel. Where the spectrum shows that channel's
     carrier a run reads the row through it and caps it at candidate, so the
-    fold does as well. Where it does not, no run reads that channel and the row
-    keeps its tier.
+    fold does as well. Where it does not, no run reads that channel, and only
+    the line no isotope of its pattern was read on holds it (MAS-1288).
     """
     from mascope_backend.api.new.peak_assignments.batch_fold import (
         fold_sample_peaks_without_run,
@@ -784,7 +796,9 @@ async def test_the_fold_asks_a_mirror_rows_nitrogen_count_as_a_run_does(
 
     folded = {row.sample_peak_id: row for row in mocks["fold"].call_args.kwargs["rows"]}
     assert folded["p1"].assigned_formula == "C3H7N1O1"
-    assert folded["p1"].tier == tier
+    assert folded["p1"].tier == "candidate"
+    assert capping in _capping(folded["p1"])
+    assert ("ambiguous_nitrogen" in _capping(folded["p1"])) is ammonium_shows
 
 
 @pytest.mark.asyncio

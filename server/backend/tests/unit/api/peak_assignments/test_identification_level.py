@@ -36,6 +36,7 @@ from mascope_backend.api.new.peak_assignments.identification_level import (
     LEVEL_COLUMN,
     LEVEL_RULES_VERSION,
     LEVELS,
+    LIFT_UNREAD,
     OPEN,
     SPLIT,
     TEST_ISOTOPES,
@@ -66,6 +67,7 @@ from mascope_backend.api.new.peak_assignments.rival_set import (
 from mascope_backend.api.new.peak_assignments.tiering import (
     REASON_ABSENT_LINE,
     REASON_NO_CLOSE_RIVAL,
+    REASON_UNREAD_LINE,
     REASON_UNRESOLVED_PEAK,
     SEPARATED_THROUGH,
     LineGate,
@@ -205,8 +207,8 @@ class TestTheScale:
     def test_the_rules_version_is_pinned(self):
         # A fact, a rule or the order of the rules that changes bumps this, and
         # a test that pins it is where the bump is noticed. The run records it.
-        assert LEVEL_RULES_VERSION == 6
-        assert apply_levels(measured(*[m0()]))["level_rules_version"] == 6
+        assert LEVEL_RULES_VERSION == 7
+        assert apply_levels(measured(*[m0()]))["level_rules_version"] == 7
         assert "level_mapping_version" not in level(m0())
 
     def test_the_vocabulary_is_the_shared_scale(self):
@@ -346,6 +348,94 @@ class TestFiveB:
 
         assert level(row)["evidence"] == (
             "untestable: x; it earns 5a too: rivals not measured"
+        )
+
+
+class TestLinesThatCouldNotBeRead:
+    """MAS-1288: a line the gate asked for that the file could not show apart
+    (``tiering.REASON_UNREAD_LINE``) refutes nothing, and tests nothing
+    either: the row reads 5a at most, those lines named."""
+
+    UNREAD = {
+        "rule": REASON_UNREAD_LINE,
+        "detail": "its 13C line could not be read",
+        "caps": False,
+    }
+
+    def test_a_row_every_rival_of_which_is_out_reads_5a(self):
+        row = m0(provenance={"tier_reasons": [self.UNREAD]})
+
+        record = level(row)
+
+        assert record["level"] == "5a"
+        assert record["evidence"] == (
+            "not tested on its isotopes: its 13C line could not be read"
+        )
+        assert record["lift"] == LIFT_UNREAD
+        assert {fact["fact"] for fact in record["facts"]} >= {REASON_UNREAD_LINE}
+
+    def test_the_rivals_it_excluded_are_still_named(self):
+        row = m0(
+            alternatives=[rival("C7H16O5", 0.5)],
+            provenance={"tier_reasons": [self.UNREAD]},
+        )
+
+        record = level(row)
+
+        assert record["level"] == "5a"
+        assert tests_of(record) == {"C7H16O5": TEST_MASS}
+        assert record["evidence"] == (
+            "not tested on its isotopes: its 13C line could not be read; one rival "
+            "out: one by mass"
+        )
+
+    def test_beside_an_open_rival_both_are_named(self):
+        row = m0(
+            alternatives=[rival("C7H16O5", 0.89)],
+            provenance={"tier_reasons": [self.UNREAD]},
+        )
+
+        record = level(row)
+
+        assert record["level"] == "5a"
+        assert record["evidence"] == (
+            "not tested on its isotopes: its 13C line could not be read; one rival "
+            "left open: C7H16O5"
+        )
+        assert record["lift"].endswith(f"; {LIFT_UNREAD}")
+
+    def test_where_the_rivals_were_not_measured_too(self):
+        row = m0(source="untargeted", provenance={"tier_reasons": [self.UNREAD]})
+
+        record = level(row)
+
+        assert record["level"] == "5a"
+        assert record["evidence"] == (
+            "not tested on its isotopes: its 13C line could not be read; rivals "
+            "not measured"
+        )
+        assert record["lift"] == f"measure the shortlist; {LIFT_UNREAD}"
+        assert [fact["fact"] for fact in record["facts"]] == [
+            REASON_UNREAD_LINE,
+            "shortlist",
+        ]
+
+    def test_an_absent_line_beside_it_still_refutes(self):
+        row = m0(
+            provenance={
+                "tier_reasons": [
+                    {"rule": REASON_ABSENT_LINE, "detail": "its 81Br line is absent"},
+                    self.UNREAD,
+                ]
+            }
+        )
+
+        record = level(row)
+
+        assert record["level"] == "5b"
+        assert record["evidence"] == (
+            "refuted by its isotopes: its 81Br line is absent; it earns 5a too: not "
+            "tested on its isotopes: its 13C line could not be read"
         )
 
 

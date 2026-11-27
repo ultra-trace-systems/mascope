@@ -2448,6 +2448,9 @@ async def test_a_window_only_the_runs_artifact_row_holds_is_not_tested(
         if line["line"] == "81Br"
     )
     assert (br81["state"], br81["untestable"]) == ("untestable", "artifact")
+    # Named, and capping nothing: the row keeps its tier on it (MAS-1288).
+    (reason,) = row.provenance["tier_reasons"]
+    assert (reason["rule"], reason["caps"]) == ("unread_line", False)
 
 
 @pytest.mark.asyncio

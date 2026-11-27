@@ -1041,13 +1041,29 @@ What caps a row at candidate:
   before calling it unequivocal. An isotope line whose mass error does not follow the
   row's (*off its M0*, below) does not count, since it is more likely another peak
   inside the matching window; a line *in doubt* does. A formula matched from your
-  target library or a reference list is not asked: the list is its second
-  observation. A series counts only on a peak with a signal-to-noise of 4 or more.
+  target library or a reference list is not asked here; *no isotope line read*,
+  below, asks it the same question. A series counts only on a peak with a
+  signal-to-noise of 4 or more.
   Under 4 the formulas a series lifted agreed with the reference engine clearly less
   often than the run's own *assigned* formulas, on both the demo's bromide and uronium
   batches. Such a row stays a *candidate*, and the reason names the series, the floor
   and the peak's signal-to-noise. The row still shows its series. A row whose peak has
   no signal-to-noise recorded is lifted as before.
+- **no isotope line read** — the formula was matched from your target library or a
+  reference list, and no line of its isotope pattern could be read. Every line was
+  predicted too faint for the file to show, could not be read beside a taller peak,
+  or is absent (*expected line absent*, below), and no line of its pattern is
+  committed beside it. Then the mass and the list are all that stand behind the
+  reading. A list says the compound is expected in the sample, not that this peak
+  is it, so it is no second observation. The row stays a *candidate* unless a second
+  ionization channel of the run committed the same neutral, or a series of the batch
+  names it on a peak with a signal-to-noise of 4 or more, as for *one peak only*.
+  This holds on every instrument. In a test that offers the run each compound of a
+  subset of the demo's bromide batch through the wrong adduct as well, the rows this
+  rule holds took the wrong one about ten times as often as the rest. A formula on exact mass alone is a tentative reading: the isotope
+  or adduct evidence is what [Schymanski et al. 2014][sch14] ask before calling a
+  formula unequivocal. The rule refutes nothing, so it leaves the identification
+  level alone (*Identification level*, below).
 - **needs corroboration here** — the formula meets a prior of the run's chemistry
   context (*Priors of an atmosphere*, above): it carries sulfur, or two or more
   nitrogens with fewer than two oxygens per nitrogen. Such a formula stays at
@@ -1066,9 +1082,21 @@ What caps a row at candidate:
   score would count it missing (above): where its expected signal-to-noise, the main
   line's times the line's share, reaches the threshold the run measured for that
   file, or 3 where it measured none; on a peak with no signal-to-noise, where the line
-  is at least 10% of the main line. It is looked for within the run's matching
-  window, both about where the formula puts it and about where the main line's own
-  mass error moves it. The fit only weighs a missing line by its share, so a bromide
+  is at least 10% of the main line. And only where the file's peak list could hold
+  it: where the line's predicted height, its share times the main line's height, is
+  at least the smallest peak the list keeps within 5 m/z of it. A TOF's peak list
+  keeps nothing under a floor set by the tallest peaks near it, so a line predicted
+  under that floor is one the list could not have shown. It is looked for within the
+  run's matching window, or within half the peak width the file's resolving power
+  gives at the line where that is wider, as a TOF's 110 to 500 ppm wide peaks are;
+  both about where the formula puts it and about where the main line's own mass
+  error moves it. In the wider part a peak is the line only at a height the line can
+  have, at most 1.4 times its predicted height, the nearest such peak taken. A
+  line beside a peak taller than that, within one peak width, **cannot be read**: the
+  line could not stand apart from it, so the peak picker shows one peak where two
+  lines may be. A line that cannot be read is not evidence against the formula. It
+  does not cap the row; the row's reasons name it (*isotope line not read*), and its
+  identification level is 5a at most. The fit only weighs a missing line by its share, so a bromide
   reading whose 81Br line, almost as tall as its main line, is missing could still
   reach the top band; isotope patterns are a constraint on a formula, not a
   decoration of it ([Kind & Fiehn 2007][kf07]; [Böcker et al. 2009][bo09]). Every
@@ -1103,7 +1131,9 @@ What caps a row at candidate:
   line. Neither is a line beyond the first or last peak of the spectrum, which the run
   takes as the ends of what it measured. On a TOF a bromine or chlorine reading must
   show its own M+2 line however faint the pattern, since its mass alone cannot tell
-  the halogen. The isotopologue table lists the lines that were not found under the
+  the halogen. On every instrument a bromine reading's 81Br line, nearly as tall as
+  its main line, is asked wherever the peak list could hold it, whatever the threshold
+  says: it can be read wherever the main line can. The isotopologue table lists the lines that were not found under the
   ones that were, and the spectrum draws them as empty circles at their predicted
   heights.
 - **peak not separated** — another peak sits so close to this one that the instrument did
@@ -1420,7 +1450,12 @@ flowchart TD
 ```
 
 - **Refuted or untestable.** A line of the formula's own isotope pattern that the spectrum
-  should show is absent (the *expected line absent* reason above); the formula fails the
+  should show is absent (the *expected line absent* reason above). A line that cannot be
+  read, beside a taller peak within one peak width, is not absent and refutes nothing:
+  the row reads 5a at most, with *not tested on its isotopes* and the line in its
+  evidence, and *its isotope lines read apart* in its lift. Such a row may also be
+  held at *candidate* (*no isotope line read*), but its level does not move for it.
+  Or the formula fails the
   structural rule no molecule breaks, its plausibility under the floor of the
   [Seven Golden Rules][kf07] layer; or the instrument did not separate the peak from a
   neighbour, so neither its mass nor its height was measured.
@@ -2389,8 +2424,8 @@ far away it lies, and whether it paired with a peak elsewhere.
 
 Under the lines the run found, the table lists the lines it expected and did not
 (*expected line absent*, above): each at its predicted m/z and abundance, reading
-**not found**, or **not tested** where only an artifact's peak sat there or the line
-fell beyond the spectrum. The spectrum draws the same lines as empty circles at their
+**not found**, or **not tested** where a taller peak within one peak width held its
+place, only an artifact's peak sat there, or the line fell beyond the spectrum. The spectrum draws the same lines as empty circles at their
 predicted heights, beside the theoretical sticks of the lines that were found. A run
 made before Mascope looked for missing lines lists none.
 
@@ -3056,7 +3091,8 @@ such a reading by searching, so it is judged as the search's reading in each sam
 unless one of that sample's lists holds the ion through that adduct: a run then
 matches it from the list, and it is judged as the list's match. So a reading that
 stands on one peak, with no line of its isotope pattern beside it, is held at
-*candidate* (*one peak only*), in the batch ledger as in a run.
+*candidate* (*one peak only*, or *no isotope line read* for a list's match), in the
+batch ledger as in a run.
 
 **A faint peak that recurs is searched too.** The intensity threshold and the peak
 ceiling decide which batch peaks the search takes by height, as a run's untargeted

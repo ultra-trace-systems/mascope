@@ -270,7 +270,7 @@ def judge_commits(
     :param model: The measurement model the rows were scored at: the run's v1,
         a decoy's control's, or the sample's recorded one. Its line-share
         tolerance is the one whose detectability threshold the tiering pass
-        asks a row's lines from (``tiering.detect_threshold``).
+        asks a row's lines from (``line_reading.detect_threshold``).
     :param fallback_sigma_ppm: The instrument class's width and precision.
     :param notation_by_id: The searched mechanisms (``read_cross_channel``).
     :param mz_tolerance_ppm: The run's match window.

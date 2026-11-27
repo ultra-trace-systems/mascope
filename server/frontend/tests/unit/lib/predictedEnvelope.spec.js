@@ -66,6 +66,9 @@ describe('what a line not found says', () => {
     expect(notFoundTooltip(line('absent', { tof_m2: true }))).toContain(
       'On a TOF a bromine or chlorine reading must show its own M+2 line'
     )
+    expect(notFoundTooltip(line('absent', { bromine_m2: true, expected_snr: 4.9 }))).toContain(
+      'A bromine reading must show its own 81Br line, nearly as tall as its own.'
+    )
   })
 
   it('says a line on a peak with no signal-to-noise was asked by its share alone', () => {
@@ -95,5 +98,20 @@ describe('what a line not found says', () => {
     expect(range).toContain('beyond the first or last peak of the spectrum')
     expect(range).toContain('the ends of what it measured')
     expect(range).not.toContain('never')
+    const neighbour = notFoundTooltip(
+      line('untestable', { untestable: 'neighbour', height_ratio: 9.93 })
+    )
+    expect(neighbour).toBe(
+      'Not tested: a peak 9.9 times its predicted height sits within one peak width, so the line cannot stand apart from it. It refutes nothing.'
+    )
+    expect(
+      notFoundTooltip(line('untestable', { untestable: 'neighbour', height_ratio: null }))
+    ).toContain('a peak taller than the line can be sits within one peak width')
+  })
+
+  it("says an absent line's window is the match window or half the peak width", () => {
+    expect(notFoundTooltip(line('absent'))).toContain(
+      "within the run's window of this predicted line, its match window or half the peak width where that is wider"
+    )
   })
 })

@@ -730,7 +730,9 @@ class PeakAssignmentsResource(BaseResource):
         each line asked, with its ``line`` (the isotopologue's label, such as
         ``81Br``), ``predicted_mz``, ``predicted_share``, ``expected_snr``,
         ``tof_m2`` where a TOF asked it as a bromine or chlorine ion's own M+2
-        line whatever its share, and ``state`` (``found``, with the
+        line whatever its share, ``bromine_m2`` where another instrument asked
+        it as a bromine ion's own 81Br line whatever its expected
+        signal-to-noise, and ``state`` (``found``, with the
         ``peak_id`` and ``observed_share`` of the peak read as it; ``absent``;
         or ``untestable``, with ``untestable`` saying why: ``artifact`` where
         only artifact rows' peaks sit in its window, ``out_of_range`` where it

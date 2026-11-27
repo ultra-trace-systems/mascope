@@ -25,6 +25,7 @@ export const TIER_REASON_LABELS = Object.freeze({
   polyhalide_cluster: 'polyhalide: air or source',
   candidate_density: 'rivals left standing',
   lone_peak: 'one peak only',
+  no_line_read: 'no isotope line read',
   context_prior: 'needs corroboration here',
   nox_skeleton: 'organonitrate skeleton',
   persistence_only: 'persistence only',
@@ -46,8 +47,10 @@ export const TIER_REASON_LABELS = Object.freeze({
   same_ion_settled: 'same ion, settled',
   no_close_rival: 'no close rival',
   not_measured: 'not measured',
-  // A grouping the run records, which neither caps nor keeps the tier.
+  // What the run records and neither caps nor keeps the tier on: a grouping,
+  // and isotope lines the file could not show apart.
   in_source_fragment: 'possible in-source fragment',
+  unread_line: 'isotope line not read',
   // An isotopologue is judged through its M0, and on its own line.
   inherited_from_owner: 'follows its M0',
   envelope_claim: "read as a neighbour's line",
@@ -68,6 +71,7 @@ export const CAPPING_RULES = Object.freeze([
   'polyhalide_cluster',
   'candidate_density',
   'lone_peak',
+  'no_line_read',
   'context_prior',
   'nox_skeleton',
   'persistence_only',
@@ -182,10 +186,16 @@ export function holdsTierDown(reason) {
 const GROUPINGS = new Set(['in_source_fragment'])
 
 /**
+ * Reasons that name what the run could not read: they cap nothing, and are
+ * not what the row kept its tier on either.
+ */
+const UNREAD = new Set(['unread_line'])
+
+/**
  * The icon a reason is marked with: a down arrow for one that caps, a dash for
  * one that claims nothing, an elbow for an isotopologue that follows its M0
- * without being taken down, an info mark for a grouping the run records, a
- * check for what a row kept its tier on.
+ * without being taken down, an info mark for a grouping the run records or a
+ * line it could not read, a check for what a row kept its tier on.
  *
  * Capping decides first, including for an isotopologue its M0 took down, so
  * every line that holds a tier down wears the same mark.
@@ -197,7 +207,7 @@ export function reasonIcon(reason) {
   if (holdsTierDown(reason)) return 'ph-arrow-down'
   if (reason?.rule === 'not_measured') return 'ph-minus'
   if (reason?.rule === 'inherited_from_owner') return 'ph-arrow-elbow-down-right'
-  if (GROUPINGS.has(reason?.rule)) return 'ph-info'
+  if (GROUPINGS.has(reason?.rule) || UNREAD.has(reason?.rule)) return 'ph-info'
   return 'ph-check'
 }
 
@@ -222,6 +232,8 @@ export function reasonTooltip(reason, tier, { viaM0 = false } = {}) {
     text = `Sets ${subject}'s tier: the reasons below can only lower it further`
   } else if (!reason?.caps && GROUPINGS.has(reason?.rule)) {
     text = `Caps nothing and keeps nothing: a grouping the run records about ${subject}`
+  } else if (!reason?.caps && UNREAD.has(reason?.rule)) {
+    text = `Caps nothing: a line the file could not show apart is no evidence against ${subject}`
   } else if (!reason?.caps) {
     text = `Caps nothing: ${subject} holds the tier its evidence earned`
   } else if (tier === 'candidate') {

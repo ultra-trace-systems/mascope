@@ -160,9 +160,14 @@ read it (:func:`predicted_envelope`), and a line is asked where the fit's own
 detectability gate would charge its absence: its expected signal-to-noise, the
 row's peak's times the line's share, at or above the threshold the file's own
 response curve sets (step 3.5b), else ``line_model.DETECT_SNR_K``; on a peak with no
-signal-to-noise, a share of at least ``REL_DETECT_NO_SNR``. A line no peak of
-the spectrum sits on, within the run's match window, caps the row at candidate
-(:func:`absent_line_reason`). Every source is asked and nothing lifts it: a
+signal-to-noise, a share of at least ``REL_DETECT_NO_SNR``; and only where the
+peak list could hold it, its predicted height at or above the smallest the list
+keeps near it (``line_reading.list_floor``). Each asked line is found, absent,
+or cannot be read (``line_reading.read_line``): the window is the run's match
+window, or half the file's peak width where that is wider, and a line a taller
+peak sits within a peak width of cannot be read. Only an absent line caps the
+row at candidate (:func:`absent_line_reason`); one that cannot be read is named
+(``unread_line``) and caps nothing. Every source is asked and nothing lifts it: a
 second channel says the neutral is in the sample, and cannot put a bromine line
 into a spectrum that lacks one. The fit charges the same absence weighted by
 the line's share, which is how a bromide row whose 81Br line was half its
@@ -239,7 +244,6 @@ import math
 import re
 from collections import Counter, defaultdict
 from collections.abc import Callable
-from dataclasses import dataclass
 from typing import Any, Iterable, Sequence
 
 import numpy as np
@@ -267,6 +271,31 @@ from mascope_backend.api.new.peak_assignments.envelope_claims import (
     ClaimedLine,
     EnvelopeClaim,
     claimed_tier,
+)
+
+# The absent-line rule's line reading lives in its own module; its names are
+# re-exported here, where the rule's readers have always imported them.
+from mascope_backend.api.new.peak_assignments.line_reading import (
+    DETECT_DEFAULT,
+    DETECT_FROM_CURVE,
+    LINE_ABSENT,
+    LINE_UNTESTABLE,
+    LineGate,
+    read_line,
+    under_list_floor,
+    unread_line_detail,
+)
+from mascope_backend.api.new.peak_assignments.line_reading import (
+    LINE_FOUND as LINE_FOUND,
+)
+from mascope_backend.api.new.peak_assignments.line_reading import (
+    UNTESTABLE_ARTIFACT as UNTESTABLE_ARTIFACT,
+)
+from mascope_backend.api.new.peak_assignments.line_reading import (
+    UNTESTABLE_NEIGHBOUR as UNTESTABLE_NEIGHBOUR,
+)
+from mascope_backend.api.new.peak_assignments.line_reading import (
+    UNTESTABLE_RANGE as UNTESTABLE_RANGE,
 )
 from mascope_backend.api.new.peak_assignments.mass_gate import (
     REASON_ISOTOPOLOGUE_IN_DOUBT,
@@ -306,14 +335,10 @@ from mascope_tools.composition.implausibility import (
     skeleton_spared_signatures,
 )
 from mascope_tools.composition.line_model import (
-    REL_DETECT_NO_SNR,
     anchor_on_monoisotopic,
     height_within,
     line_detectable,
     predict_resolved_isotopes,
-)
-from mascope_tools.composition.line_model import (
-    detect_threshold as line_detect_threshold,
 )
 from mascope_tools.composition.profiles import (
     PRIOR_ELEMENT,
@@ -327,8 +352,14 @@ from mascope_tools.composition.utils import formula_identity
 #: Bumped whenever a rule is added, removed or re-thresholded. Recorded on the
 #: run, because a tier is only comparable across runs together with the rules
 #: that produced it - the same statement the tier BANDS carry, for the same
-#: reason.
-TIERING_RULES_VERSION = 16
+#: reason. 17 (MAS-1288): the absent-line rule reads a line's window and its
+#: neighbours at the file's peak width, asks a line only where the peak list
+#: could hold it, and names a line it cannot read without capping on it. 18
+#: (MAS-1288): a list hit no line of whose isotope pattern was read, and that
+#: nothing else corroborates, stays at candidate (:data:`REASON_NO_LINE_READ`);
+#: and a bromine ion's own 81Br line is asked on every instrument wherever the
+#: peak list could hold it, whatever its expected signal-to-noise.
+TIERING_RULES_VERSION = 18
 
 #: The row's evidence is under the band its tier would need. Not a rule of
 #: this pass: the band is the floor every rule here lowers from, and naming it
@@ -382,6 +413,11 @@ REASON_CANDIDATE_DENSITY = "candidate_density"
 #: list.
 REASON_LONE_PEAK = "lone_peak"
 
+#: A list hit no line of whose isotope pattern was read, and that nothing else
+#: corroborates: no second channel, no series of its batch. The list it was
+#: matched from is no second observation of the peak (decision MAS-1347).
+REASON_NO_LINE_READ = "no_line_read"
+
 #: The batch's untargeted search took the peak because it is present in more
 #: of its partition's spectra than the batch's split of their occurrence
 #: distribution, not because of its height (step 4.2b), and nothing besides
@@ -396,6 +432,12 @@ REASON_PERSISTENCE_ONLY = "persistence_only"
 #: spectrum should have shown, and that the spectrum does not hold.
 REASON_ABSENT_LINE = "absent_line"
 
+#: Lines of the row's predicted envelope the gate asked for that the spectrum
+#: could not show apart (``line_reading.read_line``): named, and capping
+#: nothing, since a line that could not be read is no evidence against the
+#: reading.
+REASON_UNREAD_LINE = "unread_line"
+
 #: Step 3.6: a formula the run's context holds only on corroboration
 #: (:func:`context_prior_reason`).
 REASON_CONTEXT_PRIOR = "context_prior"
@@ -409,17 +451,6 @@ REASON_NOX_SKELETON = "nox_skeleton"
 #: each, so the inspector can list the lines that were not found and the chart
 #: draw them.
 PREDICTED_ENVELOPE = "predicted_envelope"
-
-#: What the spectrum held at a predicted line: a peak that is not an
-#: artifact's, nothing at all, or nothing it can be read on.
-LINE_FOUND = "found"
-LINE_ABSENT = "absent"
-LINE_UNTESTABLE = "untestable"
-
-#: Why a line is untestable: only artifact rows' peaks sit in its window, or it
-#: lies beyond the peak list's m/z span.
-UNTESTABLE_ARTIFACT = "artifact"
-UNTESTABLE_RANGE = "out_of_range"
 
 #: The halogens whose reading on a TOF must show the ion's own M+2 line, in
 #: the order a reason names them, each with the word it is named by.
@@ -456,11 +487,6 @@ SEPARATED_THROUGH = "separated_through"
 
 #: A Gaussian line's full width at half maximum, in its standard deviations.
 FWHM_IN_SIGMA = 2.0 * math.sqrt(2.0 * math.log(2.0))
-
-#: Where the detectability threshold came from: the file's own response curve
-#: (step 3.5b), or the fit's default.
-DETECT_FROM_CURVE = "file_curve"
-DETECT_DEFAULT = "default"
 
 #: Reasons a row KEEPS its tier, so that every committed row carries one.
 #: ``no_close_rival`` and not "unique": a density of 1 says the evidence
@@ -1143,6 +1169,72 @@ def lone_peak_reason(row: dict, lines: Sequence[dict]) -> dict | None:
     )
 
 
+def no_line_read_reason(
+    row: dict, lines: Sequence[dict], expected: dict | None, *, read: bool = True
+) -> dict | None:
+    """A list hit with no isotope evidence stays at candidate (MAS-1288).
+
+    The row was matched from a list, and no line of its isotope pattern was
+    read: the absent-line rule found none of the lines it asked, each being
+    unreadable or absent, and the rest were too faint to ask; and no line of
+    its pattern is committed with it (:func:`follows_its_owner`). Then the mass
+    and the list are all that stand behind it. The list says the compound is
+    expected, not that this peak is it, so it is no second observation: only
+    a second channel of the run (:func:`is_corroborated`) or a series of its
+    batch at the lone-peak rule's floor (:data:`SERIES_LIFT_MIN_SNR`) is. The
+    formula search's rows meet the same question in :func:`lone_peak_reason`.
+
+    Asked on every instrument, and only on a run that read the sample's peaks
+    (``read``): without them the rule cannot tell a row no line was read for
+    from one nobody looked at. A row the absent-line rule recorded nothing for
+    there, an ion with no isotope line such as iodide's, has no line to read
+    either, and is held. It sets no level: holding a row
+    for want of evidence refutes nothing, and an absent line among those asked
+    is the absent-line rule's to read.
+
+    :param row: A committed monoisotopic row.
+    :param lines: Its committed isotopologue rows (:func:`isotope_lines`).
+    :param expected: What :func:`expected_lines` read for it, or None.
+    :param read: Whether the run read the sample's peaks.
+    :return: The reason, or None where a line was read, something else
+        corroborates the row, it is not a list hit, or no peaks were read.
+    """
+    if row.get("source") != SOURCE_DATABASE or not read:
+        return None
+    if any(follows_its_owner(line) for line in lines):
+        return None
+    asked = (expected or {}).get("lines") or []
+    if any(line.get("state") == LINE_FOUND for line in asked):
+        return None
+    if is_corroborated(row) or (
+        series_anchor(row) is not None and series_under_floor(row) is None
+    ):
+        return None
+    said = []
+    for state, word in (
+        (LINE_UNTESTABLE, "could not be read"),
+        (LINE_ABSENT, "absent"),
+    ):
+        count = sum(line.get("state") == state for line in asked)
+        if count:
+            said.append(f"{_count_word(count)} {word}")
+    if said:
+        why = f"of the lines it was asked for, {' and '.join(said)}"
+    elif expected is None:
+        why = "its ion predicts no isotope line the file could show"
+    else:
+        why = "every line is predicted too faint for the file to show"
+    return _reason(
+        REASON_NO_LINE_READ,
+        f"no isotope line of {row.get('assigned_formula')} could be read ({why}), "
+        "and nothing else corroborates the reading: no second channel of this run "
+        "committed the same neutral and no series of its batch anchors it. The "
+        "list it was matched from says the compound is expected, not that this "
+        "peak is it",
+        caps=True,
+    )
+
+
 #: One part of an isotopologue's label (``"34S"``, ``"13C2"``): its mass number
 #: and its element. A label is its parts joined by ``+`` (``"13C+34S"``), and a
 #: line merged at the file's resolving power is ``"M+2"``, which names none.
@@ -1334,125 +1426,6 @@ def nox_skeleton_reason(
     )
 
 
-def detect_threshold(tolerance: EnvelopeTolerance | None) -> tuple[float, str]:
-    """The expected signal-to-noise from which an absent line counts.
-
-    The fit's own: the threshold the file's response curve set where step 3.5b
-    fitted one that sets it, else ``line_model.DETECT_SNR_K``, as
-    ``score_pattern_v2`` reads it (``line_model.detect_threshold``).
-
-    :param tolerance: The envelope tolerance the run scored at, or None.
-    :return: The threshold, and :data:`DETECT_FROM_CURVE` or
-        :data:`DETECT_DEFAULT` for where it came from.
-    """
-    threshold = line_detect_threshold(tolerance)
-    if tolerance is not None and tolerance.detect_snr is not None:
-        return threshold, DETECT_FROM_CURVE
-    return threshold, DETECT_DEFAULT
-
-
-@dataclass(frozen=True)
-class LineGate:
-    """What the absent-line rule asks a row's lines at.
-
-    A run's: its match window and envelope floor, the detectability threshold
-    its tolerance sets (:func:`detect_threshold`), the share it asks lines from
-    on a peak with no signal-to-noise, and its instrument class.
-    The run records it with the rule set (:meth:`record`), and a hand
-    assignment on the run is asked at what the run read back
-    (:meth:`from_record`), so the row a person commits and the rows the run
-    committed are held to one gate.
-    """
-
-    mz_tolerance_ppm: float
-    abundance_floor: float
-    detect_snr: float
-    detect_from: str
-    rel_detect_no_snr: float
-    tof: bool
-
-    def record(self) -> dict:
-        """The gate as the run's tiering record carries it."""
-        return {
-            "mz_tolerance_ppm": self.mz_tolerance_ppm,
-            "abundance_floor": self.abundance_floor,
-            "detect_snr": self.detect_snr,
-            "detect_from": self.detect_from,
-            "rel_detect_no_snr": self.rel_detect_no_snr,
-            "tof_m2": self.tof,
-        }
-
-    @classmethod
-    def at(
-        cls,
-        *,
-        mz_tolerance_ppm: float,
-        abundance_floor: float,
-        envelope_tolerance: EnvelopeTolerance | None,
-        instrument_type: str | None,
-    ) -> LineGate:
-        """The gate a run asks its rows' lines at, from what it measures with.
-
-        :param mz_tolerance_ppm: The match window it scores at.
-        :param abundance_floor: The envelope floor it scores at.
-        :param envelope_tolerance: The line-share tolerance it scores at, whose
-            detectability threshold the rule asks lines from; None for the
-            fit's default.
-        :param instrument_type: Its instrument class.
-        """
-        detect_snr, detect_from = detect_threshold(envelope_tolerance)
-        return cls(
-            mz_tolerance_ppm=float(mz_tolerance_ppm),
-            abundance_floor=float(abundance_floor),
-            detect_snr=detect_snr,
-            detect_from=detect_from,
-            rel_detect_no_snr=REL_DETECT_NO_SNR,
-            tof=instrument_type == "tof",
-        )
-
-    @classmethod
-    def from_record(cls, tiering: Any) -> LineGate | None:
-        """The gate a run asked its rows' lines at, read off its tiering record.
-
-        :param tiering: The run's ``config.tiering``.
-        :return: The gate; None where the run asked no line: one tiered before
-            rule set 11, one that read no spectrum, or a record that does not
-            say what it asked at.
-        """
-        block = tiering.get("absent_line") if isinstance(tiering, dict) else None
-        if not isinstance(block, dict) or block.get("spectrum") is not True:
-            return None
-        numbers = [
-            block.get(key)
-            for key in (
-                "mz_tolerance_ppm",
-                "abundance_floor",
-                "detect_snr",
-                "rel_detect_no_snr",
-            )
-        ]
-        if not all(
-            isinstance(value, (int, float))
-            and not isinstance(value, bool)
-            and math.isfinite(value)
-            and value > 0
-            for value in numbers
-        ):
-            return None
-        return cls(
-            mz_tolerance_ppm=float(numbers[0]),
-            abundance_floor=float(numbers[1]),
-            detect_snr=float(numbers[2]),
-            detect_from=(
-                DETECT_FROM_CURVE
-                if block.get("detect_from") == DETECT_FROM_CURVE
-                else DETECT_DEFAULT
-            ),
-            rel_detect_no_snr=float(numbers[3]),
-            tof=block.get("tof_m2") is True,
-        )
-
-
 def _halogens_of(ion: str) -> list[str]:
     """The halogens of :data:`M2_HALOGENS` an ion carries, in its order."""
     counts = element_counts(ion.rstrip("+-")) or {}
@@ -1471,120 +1444,97 @@ def _m2_line(mzs: np.ndarray, shares: np.ndarray) -> int | None:
     return best
 
 
-def _read_line(
-    spectrum: SpectrumLines,
-    line_mz: float,
-    *,
-    shift_ppm: float,
-    tolerance_ppm: float,
-    own_peak: str,
-    own_intensity: float,
-    artifact_peak_ids: frozenset[str],
-) -> dict:
-    """What the spectrum holds where a predicted line should be.
+def _halogen_m2(
+    ion: str, mzs: np.ndarray, shares: np.ndarray, gate: LineGate
+) -> tuple[int | None, bool]:
+    """The ion's own M+2 line its halogen asks whatever the gate says.
 
-    The window is the run's match window about the line, and about the line
-    moved by the row's own mass error, since two lines of one ion are one
-    measurement of one axis: a peak in either is read. The probe is the
-    tallest peak there that no artifact row holds. An artifact confirms no line
-    and refutes none, so a window only artifact rows hold is untestable, as is
-    an empty one beyond the peak list's m/z span: its first and last peaks are
-    what the run takes as the ends of what the spectrum measured.
+    On a TOF a bromine or chlorine ion's (``tof_m2``), past the S/N gate and
+    the list's floor. Elsewhere a bromine ion's, its 81Br line at 97 % of its
+    own, past the S/N gate but where the list could hold it (``bromine_m2``
+    on a line the S/N gate alone would have left, where the gate asks so):
+    it can be read wherever the row's own line is,
+    and a gate set for faint lines would leave a bromide at that gate's S/N
+    or under it with no line of its pattern asked.
+
+    :return: The line's index, or None; and whether it is a TOF's.
     """
-    shifted = line_mz * (1.0 + shift_ppm * 1e-6)
-    window = line_mz * tolerance_ppm * 1e-6
-    peaks = [
-        (peak_id, intensity)
-        for peak_id, intensity in spectrum.between(
-            min(line_mz, shifted) - window, max(line_mz, shifted) + window
-        )
-        if peak_id != own_peak
-    ]
-    held = [(peak_id, h) for peak_id, h in peaks if peak_id not in artifact_peak_ids]
-    if held:
-        peak_id, intensity = max(held, key=lambda peak: peak[1])
-        found: dict = {"state": LINE_FOUND, "peak_id": peak_id}
-        if own_intensity > 0:
-            found["observed_share"] = round(intensity / own_intensity, 6)
-        return found
-    if peaks:
-        return {"state": LINE_UNTESTABLE, "untestable": UNTESTABLE_ARTIFACT}
-    span = spectrum.span()
-    if span is None or not span[0] <= line_mz <= span[1]:
-        return {"state": LINE_UNTESTABLE, "untestable": UNTESTABLE_RANGE}
-    return {"state": LINE_ABSENT}
+    halogens = _halogens_of(ion)
+    if gate.tof and halogens:
+        return _m2_line(mzs, shares), True
+    if gate.bromine_m2 and "Br" in halogens:
+        return _m2_line(mzs, shares), False
+    return None, False
 
 
 def expected_lines(
     row: dict,
     spectrum: SpectrumLines,
+    gate: LineGate,
     *,
-    abundance_floor: float,
-    mz_tolerance_ppm: float,
-    detect_snr: float,
-    rel_detect_no_snr: float,
     resolution: Callable[[float], float] | None = None,
     artifact_peak_ids: frozenset[str] = frozenset(),
-    tof: bool = False,
 ) -> dict | None:
     """The lines of a row's envelope the spectrum should show, and what it holds.
 
     The envelope is the one the claims read (:func:`predicted_envelope`), a
     line per peak the file resolves. A line is asked where the fit's
     detectability gate would charge its absence: its expected signal-to-noise,
-    the row's peak's times its share, at or above ``detect_snr``, or, on a peak
-    the file records no signal-to-noise for, a share of at least
-    ``rel_detect_no_snr``. On a TOF a bromine or chlorine ion's own M+2 line
-    is asked whatever the gate says (``tof_m2``).
+    the row's peak's times its share, at or above the gate's ``detect_snr``,
+    or, on a peak the file records no signal-to-noise for, a share of at least
+    its ``rel_detect_no_snr``; and where the peak list could hold it, its
+    predicted height at or above the list's floor near it
+    (``line_reading.list_floor``), where the gate reads one. A halogen ion's
+    own M+2 line is asked as :func:`_halogen_m2` says. Each asked line is read
+    by ``line_reading.read_line``.
 
     :param row: A committed monoisotopic row.
     :param spectrum: The sample's peaks.
-    :param abundance_floor: The run's envelope floor.
-    :param mz_tolerance_ppm: The run's match window.
-    :param detect_snr: The expected signal-to-noise from which a line is asked
-        (:func:`detect_threshold`).
-    :param rel_detect_no_snr: The share of the row's own line from which a line
-        is asked on a peak with no signal-to-noise (the fit's
-        :data:`REL_DETECT_NO_SNR`, or what the run recorded).
+    :param gate: What the run asks lines at (:class:`LineGate`).
     :param resolution: The file's resolving power as a function of m/z, or None.
     :param artifact_peak_ids: The peaks the artifact pre-pass claimed.
-    :param tof: Whether the run's instrument class is a TOF.
-    :return: The record (:data:`PREDICTED_ENVELOPE`): the gate it asked at and
-        each line asked, with its predicted m/z and share, its expected
+    :return: The record (:data:`PREDICTED_ENVELOPE`): the gate it asked at,
+        how many lines the list's floor left unasked (``under_list_floor``),
+        and each line asked, with its predicted m/z and share, its expected
         signal-to-noise, and its ``state`` (:data:`LINE_FOUND` with the probe's
         peak and observed share, :data:`LINE_ABSENT` or
-        :data:`LINE_UNTESTABLE`); None where the ion predicts no line or the
-        spectrum does not hold the row's own peak, which reads nothing.
+        :data:`LINE_UNTESTABLE` with why); None where the ion predicts no line
+        or the spectrum does not hold the row's own peak, which reads nothing.
     """
     own_peak = str(row.get("sample_peak_id"))
     if not spectrum.holds(own_peak):
         return None
     ion = str(row.get("ion_formula") or "")
-    envelope = predicted_envelope(ion, abundance_floor, resolution)
+    envelope = predicted_envelope(ion, gate.abundance_floor, resolution)
     if envelope is None:
         return None
     mzs, shares, labels = envelope
     snr = spectrum.of(own_peak).snr
     if snr is not None and snr <= 0:
         snr = None
-    m2 = _m2_line(mzs, shares) if tof and _halogens_of(ion) else None
+    m2, tof_m2 = _halogen_m2(ion, mzs, shares, gate)
     own_intensity = float(row.get("sample_peak_intensity") or 0.0)
     error = row.get("mz_error_ppm")
-    shift_ppm = (
-        float(error)
-        if isinstance(error, (int, float)) and math.isfinite(float(error))
-        else 0.0
-    )
+    finite = isinstance(error, (int, float)) and math.isfinite(float(error))
+    shift_ppm = float(error) if finite else 0.0
     asked: list[dict] = []
+    under_floor = 0
     for index in range(1, len(mzs)):
-        share = float(shares[index])
+        share, line_mz = float(shares[index]), float(mzs[index])
         expected = None if snr is None else share * snr
         detectable = line_detectable(
-            share, snr, detect_snr=detect_snr, rel_detect_no_snr=rel_detect_no_snr
+            share,
+            snr,
+            detect_snr=gate.detect_snr,
+            rel_detect_no_snr=gate.rel_detect_no_snr,
         )
-        if not detectable and index != m2:
+        if index != m2 and not detectable:
             continue
-        line_mz = float(mzs[index])
+        if not (index == m2 and tof_m2) and under_list_floor(
+            spectrum, gate, line_mz, share * own_intensity, own_peak
+        ):
+            under_floor += 1
+            continue
         entry: dict = {
             "line": str(labels[index]),
             "predicted_mz": round(line_mz, 6),
@@ -1592,24 +1542,29 @@ def expected_lines(
         }
         if expected is not None:
             entry["expected_snr"] = round(expected, 2)
-        if index == m2:
-            entry["tof_m2"] = True
+        if index == m2 and (tof_m2 or not detectable):
+            entry["tof_m2" if tof_m2 else "bromine_m2"] = True
         entry.update(
-            _read_line(
+            read_line(
                 spectrum,
                 line_mz,
+                share=share,
                 shift_ppm=shift_ppm,
-                tolerance_ppm=mz_tolerance_ppm,
+                tolerance_ppm=gate.mz_tolerance_ppm,
                 own_peak=own_peak,
                 own_intensity=own_intensity,
                 artifact_peak_ids=artifact_peak_ids,
+                width_window=gate.width_window,
             )
         )
         asked.append(entry)
     return {
         "snr": None if snr is None else round(snr, 2),
-        "detect_snr": None if snr is None else detect_snr,
-        "asks_share": round(rel_detect_no_snr if snr is None else detect_snr / snr, 6),
+        "detect_snr": None if snr is None else gate.detect_snr,
+        "asks_share": round(
+            gate.rel_detect_no_snr if snr is None else gate.detect_snr / snr, 6
+        ),
+        "under_list_floor": under_floor,
         "lines": asked,
     }
 
@@ -1637,16 +1592,28 @@ def absent_line_reason(
     :param row: A committed monoisotopic row.
     :param record: What :func:`expected_lines` read for it, or None.
     :param detect_from: Where the gate's threshold came from
-        (:func:`detect_threshold`).
-    :return: The reason, or None where every asked line is found or untestable.
+        (``line_reading.detect_threshold``).
+    Where no asked line is absent and some could not be read, the reason is
+    :data:`REASON_UNREAD_LINE`, which names them and caps nothing.
+
+    :return: The reason, or None where every asked line is found.
     """
-    absent = [
-        line
-        for line in (record or {}).get("lines") or []
-        if line.get("state") == LINE_ABSENT
-    ]
+    asked = (record or {}).get("lines") or []
+    absent = [line for line in asked if line.get("state") == LINE_ABSENT]
     if not absent:
-        return None
+        unread = [line for line in asked if line.get("state") == LINE_UNTESTABLE]
+        if not unread:
+            return None
+        unread.sort(key=lambda line: -float(line["predicted_share"]))
+        more = f"; and {len(unread) - 3} more" if len(unread) > 3 else ""
+        return {
+            **_reason(
+                REASON_UNREAD_LINE,
+                "; ".join(unread_line_detail(line) for line in unread[:3]) + more,
+                caps=False,
+            ),
+            "lines": [line["line"] for line in unread],
+        }
     absent.sort(key=lambda line: -float(line["predicted_share"]))
     lead = absent[0]
     share = float(lead["predicted_share"])
@@ -1661,6 +1628,11 @@ def absent_line_reason(
             for element in _halogens_of(str(row.get("ion_formula") or ""))
         )
         detail += f", and on a TOF a {halogens} reading must show its own M+2 line"
+    elif lead.get("bromine_m2"):
+        detail += (
+            ", and a bromine reading must show its own 81Br line, predicted nearly "
+            "as tall as its own, wherever the peak list could hold it"
+        )
     elif record.get("snr") is None:
         detail += (
             ", where the file records no signal-to-noise for this peak and the gate "
@@ -1718,15 +1690,7 @@ def ask_absent_line(
         (:func:`absent_line_reason`); each None where there is none.
     """
     expected = expected_lines(
-        row,
-        spectrum,
-        abundance_floor=gate.abundance_floor,
-        mz_tolerance_ppm=gate.mz_tolerance_ppm,
-        detect_snr=gate.detect_snr,
-        rel_detect_no_snr=gate.rel_detect_no_snr,
-        resolution=resolution,
-        artifact_peak_ids=artifact_peak_ids,
-        tof=gate.tof,
+        row, spectrum, gate, resolution=resolution, artifact_peak_ids=artifact_peak_ids
     )
     if expected is not None:
         _provenance(row)[PREDICTED_ENVELOPE] = expected
@@ -2524,7 +2488,7 @@ def apply_tiering(
         row is asked which of its lines the spectrum holds.
     :param envelope_tolerance: The tolerance the run scored at, whose
         detectability threshold the absent-line rule asks lines from
-        (:func:`detect_threshold`); None for the fit's default.
+        (``line_reading.detect_threshold``); None for the fit's default.
     :param artifact_peak_ids: The peaks the artifact pre-pass claimed, which
         the absent-line rule reads as no line and no absence.
     :param instrument_type: The run's instrument class; on a ``"tof"`` a
@@ -2598,7 +2562,7 @@ def apply_tiering(
                 line["state"] == LINE_UNTESTABLE for line in expected["lines"]
             )
         reasons = earlier_reasons(row)
-        with_absent += absent is not None
+        with_absent += absent is not None and absent["caps"]
         row_id = str(row.get("peak_assignment_id"))
         separation = separations.get(row_id)
         separated_through, unseparated_through = partners.get(row_id, ((), ()))
@@ -2615,6 +2579,7 @@ def apply_tiering(
             polyhalide_cluster_reason(row, notation_by_id),
             density_reason(row),
             lone_peak_reason(row, own_lines),
+            no_line_read_reason(row, own_lines, expected, read=lines is not None),
             context_prior_reason(row, own_lines, context),
             nox_skeleton_reason(row, context, nox_skeleton),
             absent,
@@ -2637,8 +2602,7 @@ def apply_tiering(
         held_down = any(reason["caps"] for reason in reasons)
         if not held_down:
             reasons.extend(standing_reasons(row, own_lines))
-        # A grouping, named whatever else the row says: neither a cap nor
-        # what it stands on.
+        # A grouping, named whatever else it says: no cap, nor what it stands on.
         fragment = in_source_fragment_reason(row)
         if fragment:
             reasons.append(fragment)

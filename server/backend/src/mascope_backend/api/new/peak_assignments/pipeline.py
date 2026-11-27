@@ -1895,7 +1895,7 @@ def _cap_by_the_spectrum(ctx: RunContext) -> None:
         if reason is None:
             continue
         row.setdefault("provenance", {})["tier_reasons"] = [reason]
-        if row.get("tier") == TIER_ASSIGNED:
+        if reason["caps"] and row.get("tier") == TIER_ASSIGNED:
             row["tier"] = TIER_CANDIDATE
             capped.add(str(row.get("peak_assignment_id")))
     for row in rows:
