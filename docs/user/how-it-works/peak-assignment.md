@@ -829,8 +829,12 @@ then measures them at the model the caps read. So the record carries two version
 `named_at_version`, the model its members were named at, and `model_version`, the one
 they were measured at. Where the run took its second model the two differ, and the
 membership is older than the measurement. A formula the search separated at the first
-model is in no set, even if it would tie the reading at the second. How often that
-happens has not been measured yet ([#3497](https://github.com/ultra-trace-systems/mascope/issues/3497)).
+model is in no set, even if it would tie the reading at the second. This was counted
+on the assignment bench's sample sets. Such formulas exist, and not only after a second
+model: on runs that kept the first one, the search's ranking and the set's measurement
+still disagree on some formulas at that one model. Whether the set should take in more
+of the search's formulas is an open question
+([#3497](https://github.com/ultra-trace-systems/mascope/issues/3497)).
 
 **The untargeted stage's winners.** A database-stage row always reports its confidence
 and whether it is a tie. An untargeted row reports them only from a run started with the
