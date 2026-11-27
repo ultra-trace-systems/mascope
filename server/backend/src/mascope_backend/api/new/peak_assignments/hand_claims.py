@@ -21,8 +21,11 @@ about the line moved by the M0's own mass error, the tallest peak there, at
 any height. A run takes a line as its ion's when the line's own match is
 within the match window of the predicted m/z and its height passes the line
 model's height test at the run's line-share tolerance
-(``engine.line_heights_within``, ``line_model.within_intensity_window``). A
-found line that misses either is named, not claimed.
+(``engine.line_heights_within``, ``line_model.within_intensity_window``). On an
+Orbitrap run that test reads a line by its scan presence and holds it to the
+fixed window; the claim, which has only the peak list's share, holds every
+Orbitrap line to that window, and opens it to the curve's lower end on a TOF
+run only. A found line that misses either is named, not claimed.
 
 A claimed line is part of the M0's click. When the M0's compound is replaced,
 the line is demoted and archived with the rest of its family, unlike an
@@ -132,6 +135,11 @@ def _run_would_take(line: dict, gate: LineGate, tolerance: EnvelopeTolerance) ->
             np.array([height]),
             np.array([np.nan if expected is None else expected]),
             tolerance,
+            # An Orbitrap run reads a line's share by its scan presence, the
+            # dilution the curve allows for taken out, and holds it to the
+            # fixed window. A peak list's share cannot be read so, so the claim
+            # holds it to the fixed window too: no lower than the run would.
+            None if gate.tof else np.array([True]),
         )[0]
     ):
         observed = _number(line.get("observed_share"))

@@ -7,4 +7,4 @@
   or an earlier change left unassigned, is left as it is. The message lists
   the lines claimed and the ones left, with what each peak reads now.
   Replacing the main line unassigns its claimed lines with it, and the undo
-  puts them back. *Use* and **Assign** both do this.
+  puts them back. **Use** and **Assign** both do this.
