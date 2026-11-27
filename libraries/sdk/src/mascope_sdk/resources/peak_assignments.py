@@ -753,7 +753,11 @@ class PeakAssignmentsResource(BaseResource):
         each with its fit, mass error, whether its own line sits there, the
         frame it was measured in (``known_set`` or ``search``) and whether the
         evidence could not separate it from the row, and the row's own fit, at
-        the model the run's caps read (``model_version``). The row's
+        the model the run's caps read (``model_version``). Its members are
+        the ones the formula search named at the model it ranked at
+        (``named_at_version``): where the run took its refitted model the two
+        differ, and a candidate the search separated at the first model is in
+        no set, though it may tie at the second. The row's
         ``confidence``, ``is_tie`` and ``candidate_density`` are read off it.
         On a list hit the set may also hold ``fit_tied``: the search's
         formulas whose fit ties the hit's and that only their plausibility put

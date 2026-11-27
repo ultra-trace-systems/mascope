@@ -65,6 +65,7 @@ from mascope_backend.api.new.peak_assignments import (
     kept_measurement,
     model_readers,
     prepasses,
+    rival_count,
     rival_set,
     run_config,
     sample_inputs,
@@ -1028,7 +1029,7 @@ async def _propose_by_search(ctx: RunContext) -> None:
         runtime.logger.info(f"Skipping untargeted stage: {skip_reason}")
         return
     resolved_profile = ctx.resolved_profile
-    search_config = resolved_profile.search_config(notations)
+    search_config = rival_count.search_config(ctx, notations)
     secondary = sorted(resolved_profile.minor_channels)
     runtime.logger.info(
         f"Untargeted stage for sample '{sample.sample_item_name}' searches profile "
@@ -1852,6 +1853,7 @@ async def cap(ctx: RunContext) -> None:
         ctx.batch_applied["series"] = anchored
     ctx.tiering = {**ctx.judged.tiering, "series_anchored": anchored}
     _report_judging(ctx)
+    await rival_count.count(ctx)  # changes no row; off by default
 
 
 def _cap_by_the_spectrum(ctx: RunContext) -> None:

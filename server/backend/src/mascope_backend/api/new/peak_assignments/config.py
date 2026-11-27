@@ -528,6 +528,27 @@ class PeakAssignmentConfig(BaseModel):
         ),
     )
 
+    # A measurement, not a setting (MAS-1184, #3497): a committed row's rival
+    # set holds the candidates the formula search could not separate from it
+    # at the model it ranked at, the first one, and measures them at the model
+    # the caps read, the refitted one where the run took it. With this on, the
+    # search also hands over every other candidate it scored for a committed
+    # reading, and once the run is judged a pass of its own measures them at
+    # the caps' model and counts those that tie there (`rival_count`). The pass
+    # feeds nothing: every row, set, density, confidence, tier and level is
+    # what it is with the option off. Only the run's search scope records the
+    # count. Not for use outside a measurement.
+    count_scored_rivals: bool = Field(
+        False,
+        description=(
+            "Measure every candidate the untargeted stage scored for a "
+            "committed reading at the run's final measurement model, and count "
+            "in the run's search scope those that would tie the reading there "
+            "though its rival set does not hold them. Changes no row. A "
+            "measurement for the assignment bench; off by default."
+        ),
+    )
+
     # Confidence-tier bands on the EVIDENCE scale -- fit x chemical plausibility, the
     # same product both stages arbitrate a contested peak in (see
     # `engine.tier_for_evidence`). They were on the bare fit scale at 0.8/0.5; the keys

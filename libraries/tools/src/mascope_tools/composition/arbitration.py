@@ -301,6 +301,47 @@ def unseparated(
     return [formula for formula, evidence in ranked if evidence >= anchor - gap]
 
 
+def tie_gaps(
+    candidates: Iterable[Any],
+    *,
+    around: str,
+    tie_tol: float = DEFAULT_TIE_TOL,
+) -> dict[str, float]:
+    """How far below one formula each candidate's evidence sits, in tie gaps.
+
+    The same rule as :func:`unseparated`, read as a distance: a formula's
+    best evidence below the anchor's, over the gap the peak's best evidence
+    makes (:func:`tie_gap`). A formula at 1 or less is one the count holds,
+    one past 1 is separated, and one above the anchor reads below 0. It is
+    what tells how near the evidence came to holding a candidate it did not
+    (MAS-1184).
+
+    :param candidates: The peak's candidates, in any form
+        :func:`arbitrate_candidates` accepts.
+    :param around: The formula to measure from.
+    :param tie_tol: The gap that counts as unresolved.
+    :return: Formula -> its distance; empty where ``around`` is not among
+        the candidates.
+    """
+    best_evidence: dict[str, float] = {}
+    for candidate in candidates:
+        formula, fit = _as_formula_fit(candidate)
+        evidence = fit * formula_plausibility(formula)
+        if formula not in best_evidence or evidence > best_evidence[formula]:
+            best_evidence[formula] = evidence
+    anchor = best_evidence.get(str(around))
+    if anchor is None:
+        return {}
+    if sum(best_evidence.values()) <= 0:
+        # Nothing has support: :func:`unseparated` holds every formula.
+        return {formula: 0.0 for formula in best_evidence}
+    gap = tie_gap(max(best_evidence.values()), tie_tol)
+    return {
+        formula: (anchor - evidence) / gap
+        for formula, evidence in best_evidence.items()
+    }
+
+
 def density_of(
     arbitrated: Sequence[ArbitratedCandidate], *, around: str | None = None
 ) -> int:

@@ -823,6 +823,15 @@ tie, how many formulas its evidence could not separate (*rivals left standing*, 
 and the rivals its identification level lists are all read off that one set
 (`provenance.rival_set`, with the version of the model it was measured at).
 
+Which formulas from the search are in the set is still the search's choice. The search
+ranks at the first model, and names the formulas it could not separate there. The set
+then measures them at the model the caps read. So the record carries two versions:
+`named_at_version`, the model its members were named at, and `model_version`, the one
+they were measured at. Where the run took its second model the two differ, and the
+membership is older than the measurement. A formula the search separated at the first
+model is in no set, even if it would tie the reading at the second. How often that
+happens has not been measured yet ([#3497](https://github.com/ultra-trace-systems/mascope/issues/3497)).
+
 **The untargeted stage's winners.** A database-stage row always reports its confidence
 and whether it is a tie. An untargeted row reports them only from a run started with the
 `stage_b_confidence` setting on, through the API or the Python SDK; it is off by default

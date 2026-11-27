@@ -49,6 +49,12 @@ from mascope_tools.composition.models import (
     PatternScoring,
     Result,
 )
+from mascope_tools.composition.rivals import (
+    CANDIDATE_RIVALS,
+    SCORED_RIVALS,
+    scored_rivals,
+    unseparated_rivals,
+)
 
 
 def _is_notebook():
@@ -133,6 +139,9 @@ class ReadingRivals:
         from the reading (``arbitration.unseparated``, ``by_fit``), named as
         :attr:`rivals` are and counted in no density.
     :param unscored: The window's ions the candidate limit left unscored.
+    :param scored: With ``CompositionSearchConfig.scored_rivals`` on, every
+        formula scored beside the reading but its own ion, as
+        :data:`SCORED_RIVALS` names them; empty with it off.
     """
 
     density: int
@@ -143,6 +152,7 @@ class ReadingRivals:
     held_against: dict | None = None
     fit_tied: tuple[dict, ...] = ()
     unscored: int = 0
+    scored: tuple[dict, ...] = ()
 
 
 #: A result row that says a list reading kept its peak. The peak belongs to
@@ -155,11 +165,6 @@ KNOWN_RIVALS = "known_rivals"
 
 #: On a rival's monoisotopic row, the list reading it took the peak from.
 KNOWN_DISPLACED = "known_displaced"
-
-#: On a committed reading's monoisotopic row, the formulas its peak's
-#: candidates could not separate from it, each with the ion and channel that
-#: read it: what the run measures again at its model.
-CANDIDATE_RIVALS = "candidate_rivals"
 
 #: Why a rival that cleared the list's prior did not take the peak: it left
 #: lines of the reading's own envelope unexplained.
@@ -364,7 +369,7 @@ def assign_compositions(
             # candidate the arbitration ranks first: this loop ranks on the fit
             # and commits the best reading whose envelope holds its required
             # lines, which need not top a ranking by fit x plausibility.
-            main_candidate.update(_unseparated_rivals(candidates, main_candidate))
+            main_candidate |= unseparated_rivals(candidates, main_candidate, config)
             # Elected again over every reading of its ion, the readings the
             # window's row cap left out of the election among them: one family
             # enumerator gives the search's rows and the list's matches theirs
@@ -823,6 +828,11 @@ def _score_reading(
         ),
         # One ion is one hypothesis, however many splits of it the window held.
         unscored=len(_ions(grid_candidates) - _ions(scored)),
+        scored=(
+            scored_rivals(scored, own["formula"], own["ion"])
+            if config.scored_rivals
+            else ()
+        ),
     )
     return _ScoredReading(
         own=own, scored=scored, isotopes=isotopes, found=found, rivals=rivals
@@ -1156,46 +1166,6 @@ def neutral_mass_windows(
     ]
 
 
-def _unseparated_rivals(candidates: list[dict], committed: dict) -> dict:
-    """What a committed reading's own candidates could not separate from it.
-
-    The count :func:`arbitration.candidate_density` makes, anchored on the
-    committed formula, and the formulas it counted, each named by the reading
-    that scored it best, so the run can measure them again at its model
-    beside the row (:data:`CANDIDATE_RIVALS`). Here the search ranks; the run
-    records the rival set it measures (``rival_set`` in the backend).
-
-    :param candidates: The peak's scored candidates.
-    :param committed: The reading the row commits.
-    :return: ``{CANDIDATE_DENSITY: n, CANDIDATE_RIVALS: [...]}``.
-    """
-    best: dict[str, dict] = {}
-    for candidate in candidates:
-        formula = str(candidate.get("formula"))
-        fit = float(candidate.get("isotopic_pattern_score") or 0.0)
-        if fit > float(best.get(formula, {}).get("isotopic_pattern_score") or -1.0):
-            best[formula] = candidate
-    counted = unseparated(
-        [
-            {"formula": formula, "fit_score": c.get("isotopic_pattern_score")}
-            for formula, c in best.items()
-        ],
-        around=committed["formula"],
-    )
-    return {
-        CANDIDATE_DENSITY: len(counted),
-        CANDIDATE_RIVALS: [
-            {
-                "formula": formula,
-                "ion": best[formula].get("ion"),
-                "ionization_mechanism": best[formula].get("ionization_mechanism"),
-            }
-            for formula in counted
-            if formula != committed["formula"] and formula in best
-        ],
-    }
-
-
 def _pattern_is_evidence(candidate: dict) -> bool:
     """Whether a scored candidate's isotope pattern supports committing it.
 
@@ -1273,7 +1243,7 @@ def _elect_on_known_peak(
     main_candidate["other_candidates"] = _other_candidate_formulas(
         measured.found, main_candidate["formula"]
     )
-    main_candidate.update(_unseparated_rivals(candidates, main_candidate))
+    main_candidate.update(unseparated_rivals(candidates, main_candidate, config))
     # Before the displaced reading's record weighs the rival's formula: it is
     # the reading the row names that the record weighs.
     main_candidate = complete_same_ion_family(
@@ -1423,6 +1393,7 @@ def process_isotopes(
             # count is not a measurement of this line.
             iso_result.pop(CANDIDATE_DENSITY, None)
             iso_result.pop(CANDIDATE_RIVALS, None)
+            iso_result.pop(SCORED_RIVALS, None)
             # A list reading's weighing is about the peak the ion took, as the
             # density is.
             iso_result.pop(KNOWN_DISPLACED, None)

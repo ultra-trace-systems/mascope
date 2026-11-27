@@ -434,6 +434,34 @@ no backend or DB, only `mascope_tools` + tests.
   pass took in `search_scope.winner_confidence`, which is where the gate-set measurement
   reads the cost.
 
+  **Who is in a rival set, and at which model (MAS-1184, #3497).** A row's rival set
+  measures its members at the model the caps read, but the members are the search's: the
+  candidates its ranking could not separate from the reading at the model it ranked at,
+  the first one (`finder.CANDIDATE_RIVALS`, `ReadingRivals.rivals`). The block says both,
+  `named_at_version` beside `model_version`. Where the run took its refit the two differ,
+  and a candidate the search separated at the first model is in no set, though it may tie
+  at the second: the set can lose a rival at the refitted model, never gain one. The run
+  option `count_scored_rivals`, off by default and for the bench alone, counts how often.
+  With it on, the search hands over every other formula it scored for a committed reading
+  (`finder.SCORED_RIVALS`, `ReadingRivals.scored`), each with how far it had the reading
+  in tie gaps (`arbitration.tie_gaps`: the evidence below the reading's over the gap the
+  one tie rule allows). Once the run is judged, `rival_count` scores the ones the run had
+  not seeded in one pass of its own, at the model the frames were first scored at, reads
+  them at the caps' model as the set reads its members, and records in
+  `search_scope.scored_rivals`, for the whole run: whether it took its refit and the two
+  versions; per kind of reading (`list` for a list compound, `search` for a formula the
+  search found) the readings counted, the candidates scored for them, those today's set
+  holds (`held`), those placed on the peak outside it (`outside`) and those not placed;
+  how many outside candidates tie the reading by the one tie rule, binned by how far the
+  search had them (`within_1`, `1_to_2`, `2_to_3`, `3_to_5`, `over_5` tie gaps); the rows
+  whose `candidate_density` would rise, those it would take to `tiering.DENSITY_LIMIT` by
+  their tier today, and of those the ones the density rule would cap (`would_cap`); and
+  the seconds the pass took beside the seconds of the seeded re-score as it is. The pass
+  feeds nothing: no candidate joins a set, and every row is what it is with the option
+  off. The card shows the counts per set (`tooling/assignment_bench/README.md`). The
+  measurement on the bench sets, and the question it leaves for the plan owner, follow
+  in the PR.
+
   **`p_correct` stays null on Stage B rows.** The scale objection is gone: both stages'
   fit is the seeded `ion_score_v2` re-score (milestone 2), so the curve would no longer be
   read across the v1/v2 gap. What still does not match is the population: the provisional

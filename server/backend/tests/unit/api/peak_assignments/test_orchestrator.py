@@ -22,6 +22,7 @@ these call it with ``user_id=None`` so notification delivery stays on its quiet
 path rather than reaching Socket.IO.
 """
 
+import json
 import math
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -4024,3 +4025,144 @@ class TestTheIngestFoldTiersAsARunDoes:
         # The rule bites on the bright ion, in both.
         assert run["p3"][1:] == ("candidate", ["absent_line"])
         assert run["p1"][1] == "assigned"
+
+
+class TestScoredRivalCount:
+    """With ``count_scored_rivals`` on the search hands over every candidate it
+    scored, the run counts those that would tie a reading outside its set, and
+    every row is what it is with the option off (MAS-1184)."""
+
+    WINNER = {
+        **TestStageBWinnerConfidence.WINNER,
+        "candidate_density": 1,
+        # What the finder hands over with the option on: a candidate it had
+        # 1.5 tie gaps off, and one 7 gaps off.
+        "scored_rivals": [
+            {
+                "formula": "C14H13N5O2",
+                "ion": "C14H14N5O2+",
+                "ionization_mechanism": "[M+H]+",
+                "fit_score": 0.5,
+                "tie_gaps": 1.5,
+            },
+            {
+                "formula": "C18H17N3",
+                "ion": "C18H18N3+",
+                "ionization_mechanism": "[M+H]+",
+                "fit_score": 0.2,
+                "tie_gaps": 7.0,
+            },
+        ],
+    }
+
+    def _start_with(self, recorder):
+        peaks = _peaks_df(
+            [
+                ("p1", 181.0707, 10000.0),
+                ("p2", 182.0741, 660.0),
+                ("p3", 300.1234, 500.0),
+            ]
+        )
+        patches = _patches(
+            recorder, peaks, _stage_a_rows(), pd.DataFrame([self.WINNER])
+        )
+
+        def line(ion, formula, peak, fit):
+            return {
+                "target_ion_id": ion,
+                "target_isotope_id": f"{ion}-0",
+                "target_ion_formula": f"{formula}H+",
+                "target_compound_formula": formula,
+                # The harness's channels are ids of their own notation.
+                "ionization_mechanism_id": "[M+H]+",
+                "relative_abundance": 1.0,
+                "sample_peak_intensity": 100.0,
+                "match_score": fit,
+                "mz": 300.12,
+                "sample_peak_id": peak,
+                "match_mz_error": 0.4,
+                "match_abundance_error": 0.05,
+            }
+
+        # The extra pass: the first candidate's line sits on the winner's
+        # peak and ties it there; the second's sits on another peak.
+        found = {
+            ("C14H13N5O2", "[M+H]+"): "ion-a",
+            ("C18H17N3", "[M+H]+"): "ion-b",
+        }
+        frame = pd.DataFrame(
+            [
+                line("ion-a", "C14H13N5O2", "p3", 0.93),
+                line("ion-b", "C18H17N3", "elsewhere", 0.99),
+            ]
+        )
+
+        async def score_seeds(_sample, seeds, _params, **_kwargs):
+            ion_by_seed = {seed: ion for seed, ion in found.items() if seed in seeds}
+            return (
+                ion_by_seed,
+                {},
+                {},
+                frame[frame["target_ion_id"].isin(set(ion_by_seed.values()))],
+            )
+
+        patches["extra"] = patch(
+            "mascope_backend.api.new.peak_assignments.rival_count.score_seeds",
+            new_callable=AsyncMock,
+            side_effect=score_seeds,
+        )
+        return _start(patches)
+
+    async def _ledger(self, **options):
+        from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+
+        recorder = _Recorder()
+        mocks = self._start_with(recorder)
+        await _run(PeakAssignmentConfig(**{"run_untargeted": True, **options}))
+        scope = recorder.recorded_configs()[-1].get("search_scope")
+        rows = list(recorder.rows)
+        patch.stopall()
+        return rows, scope, mocks
+
+    @pytest.mark.asyncio
+    async def test_off_the_search_is_asked_for_nothing_more(self):
+        _rows, scope, mocks = await self._ledger()
+
+        config = mocks["compositions"].call_args.args[1]
+        assert config.scored_rivals is False
+        mocks["extra"].assert_not_awaited()
+        assert "scored_rivals" not in scope
+
+    @pytest.mark.asyncio
+    async def test_on_it_writes_the_same_rows_and_records_the_count(self):
+        off, _scope, _mocks = await self._ledger()
+        on, scope, mocks = await self._ledger(count_scored_rivals=True)
+
+        assert mocks["compositions"].call_args.args[1].scored_rivals is True
+
+        # Column for column, every row the run writes is the one it writes
+        # with the option off, but for the ids each run draws afresh.
+        def keyed(rows):
+            ids = {row["peak_assignment_id"]: f"row-{i}" for i, row in enumerate(rows)}
+            text = json.dumps(rows, sort_keys=True, default=str)
+            for drawn, stable in ids.items():
+                text = text.replace(drawn, stable)
+            return json.loads(text)
+
+        assert keyed(on) == keyed(off)
+        record = scope["scored_rivals"]
+        assert record["search"]["readings"] == 1
+        assert record["search"]["scored"] == 2
+        assert record["search"]["outside"] == 1
+        assert record["search"]["not_placed"] == 1
+        assert record["search"]["ties"]["1_to_2"] == 1
+        assert record["density_rises"] == 1
+        assert sum(record["reach_limit"].values()) == 1
+        assert record["refit_taken"] is False
+        assert record["named_at_version"] == record["measured_at_version"] == 1
+        assert record["seeds_measured"] == 2
+        assert record["seconds"] >= 0
+        # The winner's set is what it is without the option.
+        winner = next(row for row in on if row["sample_peak_id"] == "p3")
+        assert winner["provenance"]["rival_set"]["named_at_version"] == 1
+        assert winner["provenance"]["candidate_density"] == 1

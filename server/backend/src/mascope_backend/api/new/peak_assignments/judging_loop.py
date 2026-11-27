@@ -7,6 +7,7 @@ re-score the loop and its callers measure a reading at.
 
 import asyncio
 import copy
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 
@@ -747,6 +748,7 @@ async def _seeded_rescore(
         named[seed] = named.get(seed, frozenset()) | peaks
     if not seeds and not named:
         return {}, None
+    started = time.perf_counter()
     ion_by_seed, fit_by_ion, _errors, scored_df = await score_seeds(
         sample, seeds | set(named), match_params, model=model, resolution=resolution
     )
@@ -764,7 +766,13 @@ async def _seeded_rescore(
     return fits, (
         None
         if scored_df.empty
-        else SeededFrame(scored_df, ion_by_seed, named, fit_only)
+        else SeededFrame(
+            scored_df,
+            ion_by_seed,
+            named,
+            fit_only,
+            seconds=round(time.perf_counter() - started, 3),
+        )
     )
 
 

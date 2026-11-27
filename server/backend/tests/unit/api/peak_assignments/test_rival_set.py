@@ -145,6 +145,9 @@ class TestOnePeakOneSet:
         provenance = row["provenance"]
         record = provenance[RIVAL_SET]
         assert record["model_version"] == 2
+        # Its members were named at the model the search ranked at, older
+        # than the one they were measured at (#3497).
+        assert record["named_at_version"] == 1
         assert record["fit_score"] == 0.8
         fits = {entry["formula"]: entry["fit_score"] for entry in record["rivals"]}
         assert fits == {"C4H6O3": 0.78, "C6H14O": 0.3}
@@ -188,11 +191,36 @@ class TestOnePeakOneSet:
         assert unlisted == 0
         assert summary == {
             "model_version": 2,
+            "named_at_version": 1,
             "measured": 1,
             "unmeasured": 0,
             "shortlist_placed": 1,
             "shortlist_ties": 1,
         }
+
+    def test_a_run_that_kept_its_first_model_names_and_measures_at_it(self):
+        frames, _ = _frames()
+        row = _winner()
+
+        summary = measure_rival_sets([row], frames, V1)
+
+        record = row["provenance"][RIVAL_SET]
+        assert record["model_version"] == record["named_at_version"] == 1
+        assert summary["model_version"] == summary["named_at_version"] == 1
+
+    def test_the_model_named_at_is_the_one_the_frames_name(self):
+        # Where the readings were named at another model than the frames were
+        # first scored at, the set says which; left out, it is the frames'.
+        _frames_, seeded = _frames()
+        frames = RivalFrames(
+            None, (seeded["search"],), base=V1, named_at=SimpleNamespace(version=0)
+        )
+        row = _winner()
+
+        measure_rival_sets([row], frames, V1)
+
+        assert row["provenance"][RIVAL_SET]["named_at_version"] == 0
+        assert RivalFrames(None, (), base=V1).named_at is V1
 
     def test_a_separated_rival_leaves_no_close_rival(self):
         frames, _ = _frames(rival_fit=0.3)

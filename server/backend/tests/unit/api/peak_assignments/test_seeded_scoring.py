@@ -337,6 +337,9 @@ async def test_a_runs_seeded_re_score_is_scored_at_the_runs_model(stubbed, recor
     assert fits[TARGET] == pytest.approx(await _fit({TARGET}, model=model))
     assert fits[TARGET] - await _fit({TARGET}, model=STAND_IN) > 0.1
     assert set(frame.ion_by_seed) == {TARGET}
+    # How long the pass took, which a run counting its scored rivals records
+    # beside its own (``rival_count``).
+    assert isinstance(frame.seconds, float) and frame.seconds >= 0
 
 
 async def test_the_re_score_s_frame_scores_again_as_a_fresh_pass_would(stubbed):
