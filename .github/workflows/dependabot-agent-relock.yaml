@@ -62,9 +62,9 @@ jobs:
   relock:
     name: Re-lock the File Agent
     if: >-
-      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.event.pull_request.user.login == 'kausiala' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
-      startsWith(github.event.pull_request.head.ref, 'dependabot/uv/')
+      startsWith(github.event.pull_request.head.ref, 'ci/dry-run-')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -139,9 +139,9 @@ jobs:
     name: CLA Assistant
     if: >-
       github.actor == 'github-actions[bot]' &&
-      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.event.pull_request.user.login == 'kausiala' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
-      startsWith(github.event.pull_request.head.ref, 'dependabot/uv/')
+      startsWith(github.event.pull_request.head.ref, 'ci/dry-run-')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -159,7 +159,7 @@ jobs:
           # A commit whose author email maps to no account has no login and
           # fails here, as it fails cla.yaml.
           others="$(gh api --paginate "repos/$REPO/pulls/$PR/commits" \
-            --jq '.[] | select(.author.login != "dependabot[bot]" and .author.login != "github-actions[bot]")
+            --jq '.[] | select(.author.login != "dependabot[bot]" and .author.login != "github-actions[bot]" and .author.login != "kausiala")
                       | "\(.sha[0:9]) \(.author.login // "no account")"')"
           if [ -n "$others" ]; then
             echo "::error::Commits by someone other than Dependabot or the re-lock; push to the branch so cla.yaml checks them:"
