@@ -3,7 +3,11 @@ import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { reactive } from 'vue'
 
 import { num } from '@/lib/formatters'
-import { runName, runNotice } from '@/lib/panes/PanePeakAssign/card/cardReadings.js'
+import {
+  M0_ABUNDANCE_TOOLTIP,
+  runName,
+  runNotice
+} from '@/lib/panes/PanePeakAssign/card/cardReadings.js'
 
 // The inspector card's states (docs/dev/assignment_ledger_and_card.md,
 // section 4.2): an earlier run, a decoy, the viewer role, loading, a focused
@@ -1085,6 +1089,22 @@ describe('card states: a row the source or the detector made', () => {
     expect(byTestId(wrapper, 'section-isotopes').exists()).toBe(true)
   })
 
+  it("hovers the isotope tile as an analyte's: what it counts, its abundance error, the M0's", async () => {
+    reagent()
+    state.focusedAssignment = { ...REAGENT_ROW, abundance_error: 0 }
+    state.family = [state.focusedAssignment, LINE_ROW]
+    state.detail = { ...state.detail, ...state.focusedAssignment }
+    const wrapper = await mountCard()
+
+    const iso = byTestId(wrapper, 'source-tile-isotopes')
+    expect(iso.find('.tile-value').attributes('data-tooltip')).toContain(
+      'How far the measured isotope abundances are from the predicted ones'
+    )
+    expect(byTestId(wrapper, 'source-caption-isotopes').attributes('data-tooltip')).toBe(
+      M0_ABUNDANCE_TOOLTIP
+    )
+  })
+
   it('says in one line each what a reagent row has no reading of', async () => {
     reagent()
     const wrapper = await mountCard()
@@ -1103,12 +1123,33 @@ describe('card states: a row the source or the detector made', () => {
     reagent()
     state.detail = {
       ...state.detail,
-      alternatives: [{ assigned_formula: 'CHBr3', ion_formula: 'CHBr3-', source: 'database' }]
+      alternatives: [
+        {
+          assigned_formula: 'CHBr3',
+          ion_formula: 'CHBr3-',
+          source: 'database',
+          displaced_by_claim: true
+        }
+      ]
     }
     const wrapper = await mountCard()
 
     expect(byTestId(wrapper, 'source-absent-rivals').text()).toBe(
       'No rivals. No formula contests the claim. The reading it displaced is under Alternatives.'
+    )
+  })
+
+  it('names what the stages had read a fragment as, from its provenance', async () => {
+    reagent({
+      ion: 'C6H7+',
+      family: 'fragment',
+      parent: { label: 'a monoterpene', ratio: 0.12, max_ratio: 0.5 },
+      read_as: { formula: 'C6H6', ionization: '[M+H]+', tier: 'candidate' }
+    })
+    const wrapper = await mountCard()
+
+    expect(byTestId(wrapper, 'source-absent-rivals').text()).toBe(
+      'No rivals. No formula contests the claim. The stages had read the peak as C6H6 [M+H]+ before the claim.'
     )
   })
 
@@ -1144,6 +1185,9 @@ describe('card states: a row the source or the detector made', () => {
 
     // Headed by what it is, not by the word an unexplained peak gets.
     expect(wrapper.find('.insp-formula').text()).toBe('Artifact')
+    expect(wrapper.find('.insp-formula').attributes('data-tooltip')).toBe(
+      'A peak the detector made, not an ion'
+    )
     expect(byTestId(wrapper, 'source-title').text()).toBe('Why artifact')
     expect(byTestId(wrapper, 'source-lead').text()).toMatch(/^A side lobe: /)
     expect(byTestId(wrapper, 'source-tile-mass').find('.tile-value').text()).toBe('—')

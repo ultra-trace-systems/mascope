@@ -109,6 +109,30 @@ describe('sourceStatement', () => {
     )
   })
 
+  it("reads a calibrant's own fragment ion as a library claim, not the fragment claim", () => {
+    const provenance = {
+      reagent: { ion: '[C16H10-H]+', kind: 'fragment', family: 'calibrant', mz: 201.07 }
+    }
+    const why = sourceStatement(REAGENT, provenance)
+    expect(why.lead).toContain('from the calibrant beam')
+    expect(why.claim).toBe("Claimed by the reagent pass, from the library of the run's chemistry.")
+  })
+
+  it("defers a line to its ion's claim, and says when no claim is recorded", () => {
+    // A ladder rung's isotope line records no ladder of its own.
+    const line = { reagent: { ion: 'H3O+(H2O)2', family: 'solvent', predicted_relative: 0.01 } }
+    expect(sourceStatement(LINE, line).claim).toBe(
+      'Claimed by the reagent pass as a line of the ion it claimed.'
+    )
+    // A derived row carries the batch's reading of the peak, and no reagent record.
+    expect(sourceStatement(REAGENT, { batch_peak: { n_present: 4 } }).claim).toBe(
+      "Read off the batch's peak, which does not record which claim took it."
+    )
+    expect(sourceStatement(REAGENT, null).claim).toBe(
+      'The row does not record which claim took the peak.'
+    )
+  })
+
   it('names the ladder and the rung below on a ladder claim, and what shows an unnamed ion', () => {
     const provenance = {
       reagent: {
@@ -188,15 +212,68 @@ describe('sourceTiles', () => {
     expect(tile(tiles, 'anchor').caption).toBe('an isotope line anchors no calibration')
   })
 
-  it('reads a v1 model by its reagent lines, and says when the run records none', () => {
-    const v1 = { anchors: { reagent_lines: 2 } }
-    expect(tile(sourceTiles({ row: REAGENT, model: v1 }), 'anchor').value).toBe('2 source lines')
-    expect(tile(sourceTiles({ row: REAGENT, model: v1 }), 'anchor').caption).toBe(
-      "the run's mass centre was fitted on them"
+  it("reads a v1 model's source lines as the source's offset, not the run's centre", () => {
+    const v1 = {
+      version: 1,
+      mu_ppm: -0.13,
+      mu_source: 'fitted',
+      reagent_mu_ppm: 0.25,
+      anchors: { library_lines: 12, library_ions: 9, reagent_lines: 2 }
+    }
+    const anchor = tile(sourceTiles({ row: REAGENT, model: v1 }), 'anchor')
+    expect(anchor.value).toBe('2 source lines')
+    expect(anchor.caption).toBe(
+      "the source's offset at +0.25 ppm was read on them, not the run's centre"
     )
+    expect(anchor.tooltip).toContain(
+      "The run read the source's own offset on 2 of the source's own lines."
+    )
+    expect(anchor.tooltip).toContain(
+      "The run's mass centre was fitted on 12 of the library's lines, not on these."
+    )
+    // Where no centre was fitted on the library, the offset stands in for it.
+    const stand = tile(
+      sourceTiles({ row: REAGENT, model: { ...v1, mu_ppm: 0.25, mu_source: 'reagent' } }),
+      'anchor'
+    )
+    expect(stand.caption).toBe(
+      "the source's offset at +0.25 ppm on them stands in as the run's mass centre"
+    )
+    expect(stand.tooltip).toContain("that offset is the run's mass centre.")
+    const unfitted = tile(
+      sourceTiles({ row: REAGENT, model: { ...v1, mu_ppm: null, mu_source: 'none' } }),
+      'anchor'
+    )
+    expect(unfitted.tooltip).toContain('The run measured no mass centre.')
     const none = tile(sourceTiles({ row: REAGENT, model: null }), 'anchor')
     expect(none.value).toBe('—')
     expect(none.caption).toBe('the run records no source lines among its anchors')
+  })
+
+  it('says when a v2 model measured no centre, and when no source line anchored it', () => {
+    const open = { ...MODEL, mu_ppm: null }
+    expect(tile(sourceTiles({ row: REAGENT, model: open }), 'anchor').caption).toBe(
+      'no mass centre was measured on them'
+    )
+    const zero = { mu_ppm: 0.3, anchors: { commits: 40, source_lines: 0, source_capped: 0 } }
+    const anchor = tile(sourceTiles({ row: REAGENT, model: zero }), 'anchor')
+    expect(anchor.value).toBe('0 source lines')
+    expect(anchor.caption).toBe('none anchored the run')
+    expect(anchor.tooltip).toContain("read none of the source's own lines")
+    const v1 = { mu_ppm: 0.3, mu_source: 'fitted', anchors: { reagent_lines: 0 } }
+    expect(tile(sourceTiles({ row: REAGENT, model: v1 }), 'anchor').caption).toBe(
+      'none anchored the run'
+    )
+  })
+
+  it("keeps the isotope tile's caption hover and adds the abundance error's", () => {
+    const isotopes = { ...ISOTOPES, captionTooltip: 'why the M0 reads -' }
+    const iso = tile(
+      sourceTiles({ row: REAGENT, isotopes, abundanceTooltip: 'abundance hover' }),
+      'isotopes'
+    )
+    expect(iso.captionTooltip).toBe('why the M0 reads -')
+    expect(iso.tooltip).toBe('t\nabundance hover')
   })
 
   it('dashes a reagent row with no m/z error', () => {
@@ -231,10 +308,45 @@ describe('sourceAbsences', () => {
     )
   })
 
-  it('points to the displaced reading where the claim recorded one', () => {
-    const [, rivals] = sourceAbsences(REAGENT, { alternatives: [{ assigned_formula: 'CHBr' }] })
+  it('points to the displaced reading where the claim marked one', () => {
+    const alternatives = [{ assigned_formula: 'CHBr', displaced_by_claim: true }]
+    const [, rivals] = sourceAbsences(REAGENT, { alternatives })
     expect(rivals.text).toBe(
       'No formula contests the claim. The reading it displaced is under Alternatives.'
+    )
+  })
+
+  it('names what the stages had read the peak as', () => {
+    const provenance = {
+      reagent: { ion: 'C6H7+', parent: {}, read_as: { formula: 'C6H6', ionization: '[M+H]+' } }
+    }
+    const [, rivals] = sourceAbsences(REAGENT, { alternatives: [], provenance })
+    expect(rivals.text).toBe(
+      'No formula contests the claim. The stages had read the peak as C6H6 [M+H]+ before the claim.'
+    )
+    const batch = {
+      reagent: { ion: 'Br-', read_as: { formula: 'CHBr', ion_formula: 'CHBr-' } }
+    }
+    const alternatives = [{ assigned_formula: 'CHBr', displaced_by_claim: true }]
+    expect(sourceAbsences(REAGENT, { alternatives, provenance: batch })[1].text).toBe(
+      'No formula contests the claim. The stages had read the peak as CHBr before the claim. ' +
+        'The reading it displaced is under Alternatives.'
+    )
+    // A reading with no formula (the peak was unassigned) names nothing.
+    const blank = {
+      reagent: { ion: 'Br-', read_as: { formula: null, ionization: '[M-H]-', tier: 'unassigned' } }
+    }
+    expect(sourceAbsences(REAGENT, { provenance: blank })[1].text).toBe(
+      "No formula contests the claim: the peak is the source's, not a candidate's."
+    )
+  })
+
+  it('does not call other readings of the m/z the displaced one', () => {
+    // A derived row's batch candidates, or the runner-ups a batch-claimed line kept.
+    const [, rivals] = sourceAbsences(REAGENT, { alternatives: [{ assigned_formula: 'CHBr' }] })
+    expect(rivals.text).toBe(
+      'The claim weighed no formula against it. ' +
+        'Alternatives lists other readings of this m/z, which it was not weighed against.'
     )
   })
 

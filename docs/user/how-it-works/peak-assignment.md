@@ -1935,7 +1935,8 @@ leaving those parts blank:
   where it comes from (the reagent's own ladder, the air's ions, the calibrant beam, the
   solvent clusters, a fragment), and which claim took the peak: the reagent pass on its
   library or on a ladder, the fragment claim, or the batch's word, *Decide known species*
-  or the batch's water ladder. An artifact is named by its kind, a side lobe of a very
+  or the batch's water ladder. An isotope line is claimed with its ion. A row that records
+  no claim, such as one read off the batch's peak, says so. An artifact is named by its kind, a side lobe of a very
   intense peak in a Fourier-transform spectrum, which is no ion.
 - **Measurements**, in boxes titled as an analyte's are:
   - **Mass error**: against the ion's exact m/z;
@@ -1944,13 +1945,19 @@ leaving those parts blank:
     ion's monoisotopic peak;
   - **Isotope lines found**: the ion's lines, a bromide or chloride reagent's twin
     first among them;
-  - **Calibration anchor**: how many of the source's own lines the run fitted its mass
-    calibration on, and the centre it found. The run records the count, not which lines;
+  - **Calibration anchor**: how many of the source's own lines the run's mass calibration
+    read, and what it read on them. A refitted calibration fitted the run's centre on these
+    lines and the committed rows together. A run whose refit was not adopted keeps its
+    first calibration: that fitted the centre on the library's lines and read the source's
+    own offset on these, which stands in as the centre only when no library line gave one.
+    The run records the count, not which lines;
   - **Batch**: as for any batch peak. A claim on the batch's word counts the samples the
     batch decided the ion present in.
 - **One line for each reading it has none of**: *No tier contest*, *No rivals*, *No
-  identification level*, and on an artifact *No isotope pattern*. A claim that displaced
-  a reading lists that reading under **Alternatives**.
+  identification level*, and on an artifact *No isotope pattern*. Where the claim took
+  the peak from a formula the stages had read on it, *No rivals* names that reading, and
+  a reading it displaced is listed under **Alternatives**. Any other formula there is
+  another reading of the m/z, which the claim was not weighed against.
 
 An artifact has no ion, so the card is headed *Artifact*, its mass, isotope and anchor
 boxes read *—* with the reason under them, and it has no isotope pattern section.

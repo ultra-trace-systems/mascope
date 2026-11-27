@@ -74,9 +74,11 @@ function ionName(row, record) {
 /**
  * Which claim took the peak, in one sentence: the batch's word (a known
  * species decided present, a rung of its water ladder), the fragment claim,
- * the reagent pass on a ladder, or the reagent pass on its library.
+ * the reagent pass on a ladder or on its library, or, on an isotope line the
+ * pass took with its ion, the ion's claim. A row that records no claim (a
+ * derived row, which carries the batch's reading of the peak) says so.
  */
-function claimSentence(record) {
+function claimSentence(row, record, provenance) {
   if (record.reason === 'batch_known_species') {
     const decision = isRecord(record.batch_known_species) ? record.batch_known_species : {}
     const counts =
@@ -88,8 +90,10 @@ function claimSentence(record) {
   if (record.reason === 'batch_water_ladder') {
     return "Claimed on the batch's word: a rung of the batch's water ladder that held in this sample's segment."
   }
-  if (record.kind === 'fragment' || isRecord(record.parent)) {
-    const parent = isRecord(record.parent) ? record.parent : {}
+  // Only the fragment claim records a parent: the library's own fragment ions
+  // (a calibrant's, say) carry the fragment kind and no parent.
+  if (isRecord(record.parent)) {
+    const parent = record.parent
     const of = parent.label || parent.formula || 'its parent'
     const ratio =
       isNumber(parent.ratio) && isNumber(parent.max_ratio)
@@ -104,6 +108,14 @@ function claimSentence(record) {
     const step = below?.ion && below?.step ? `: one ${below.step} above ${below.ion}` : ''
     return `Claimed by the reagent pass${name}${step}.`
   }
+  if (!record.ion) {
+    return isRecord(provenance?.batch_peak)
+      ? "Read off the batch's peak, which does not record which claim took it."
+      : 'The row does not record which claim took the peak.'
+  }
+  // A line records no claim of its own: the pass takes it with its ion, so
+  // the claim is the ion's, on the library or on a ladder.
+  if (isLine(row)) return 'Claimed by the reagent pass as a line of the ion it claimed.'
   return "Claimed by the reagent pass, from the library of the run's chemistry."
 }
 
@@ -143,7 +155,7 @@ export function sourceStatement(row, provenance) {
     const observed = String(record.observed)
     notes.push(`${observed.charAt(0).toUpperCase()}${observed.slice(1)}.`)
   }
-  return { title: 'Why reagent', lead, claim: claimSentence(record), notes }
+  return { title: 'Why reagent', lead, claim: claimSentence(row, record, provenance), notes }
 }
 
 /**
@@ -207,8 +219,14 @@ function intensityTile(row, record) {
 
 /**
  * The calibration tile: how many of the source's own lines the run's mass
- * calibration was fitted on, and the centre it found. The run records the
- * count, not which lines: a line brighter than the calibrant cap is left out.
+ * calibration read, and what it read on them. The run records the count, not
+ * which lines: a line brighter than the calibrant cap is left out.
+ *
+ * A refitted (v2) model fitted its centre on the source lines and the
+ * committed rows together. A first (v1) model, which a run keeps when its
+ * refit is not adopted, fitted its centre on the library's lines; it read the
+ * source lines on their own for the source's offset, which stands in as the
+ * centre only where its `mu_source` is `reagent`.
  */
 function anchorTile(row, role, model) {
   const dash = (caption, tooltip) => ({
@@ -231,31 +249,59 @@ function anchorTile(row, role, model) {
     )
   }
   const anchors = isRecord(model?.anchors) ? model.anchors : {}
-  const lines = isCount(anchors.source_lines) ? anchors.source_lines : anchors.reagent_lines
+  const refit = isCount(anchors.source_lines)
+  const lines = refit ? anchors.source_lines : anchors.reagent_lines
   if (!isCount(lines)) {
     return dash(
       'the run records no source lines among its anchors',
       "The run's mass calibration records no count of the source's lines it was fitted on"
     )
   }
-  const centre = isNumber(model.mu_ppm) ? ` at ${num.mzCorrection.format(model.mu_ppm)} ppm` : ''
+  const ppm = (value) => `${num.mzCorrection.format(value)} ppm`
   const capped =
     isCount(anchors.source_capped) && anchors.source_capped > 0 ? anchors.source_capped : 0
+  const notes = [
+    capped
+      ? `${plural(capped, 'line')} brighter than the calibrant cap ${capped === 1 ? 'was' : 'were'} left out.`
+      : null,
+    'Which lines anchored it is not recorded.'
+  ]
+  let caption
+  let lead
+  if (!lines) {
+    caption = 'none anchored the run'
+    lead = "The run's mass calibration read none of the source's own lines."
+  } else if (refit) {
+    caption = isNumber(model.mu_ppm)
+      ? `the run's mass centre at ${ppm(model.mu_ppm)} was fitted on them`
+      : 'no mass centre was measured on them'
+    lead =
+      `The run fitted its mass calibration on ${plural(lines, "of the source's own line")}` +
+      (isCount(anchors.commits) ? ` and ${plural(anchors.commits, 'committed row')}.` : '.')
+  } else {
+    const offset = isNumber(model.reagent_mu_ppm) ? ` at ${ppm(model.reagent_mu_ppm)}` : ''
+    caption =
+      model.mu_source === 'reagent'
+        ? `the source's offset${offset} on them stands in as the run's mass centre`
+        : `the source's offset${offset} was read on them, not the run's centre`
+    const library = isCount(anchors.library_lines)
+      ? ` on ${plural(anchors.library_lines, "of the library's line")}`
+      : " on the library's lines"
+    const centre = {
+      reagent:
+        "With no centre fitted on the library's lines, that offset is the run's mass centre.",
+      fitted: `The run's mass centre was fitted${library}, not on these.`
+    }
+    lead =
+      `The run read the source's own offset on ${plural(lines, "of the source's own line")}. ` +
+      (centre[model.mu_source] ?? 'The run measured no mass centre.')
+  }
   return {
     key: 'anchor',
     title: SOURCE_TILE_TITLES.anchor,
     value: plural(lines, 'source line'),
-    caption: lines ? `the run's mass centre${centre} was fitted on them` : 'none anchored the run',
-    tooltip: [
-      `The run fitted its mass calibration on ${plural(lines, "of the source's own line")}` +
-        (isCount(anchors.commits) ? ` and ${plural(anchors.commits, 'committed row')}.` : '.'),
-      capped
-        ? `${plural(capped, 'line')} brighter than the calibrant cap ${capped === 1 ? 'was' : 'were'} left out.`
-        : null,
-      'Which lines anchored it is not recorded.'
-    ]
-      .filter(Boolean)
-      .join('\n')
+    caption,
+    tooltip: [lead, ...notes].filter(Boolean).join('\n')
   }
 }
 
@@ -266,12 +312,14 @@ function anchorTile(row, role, model) {
  * @param {object} options
  * @param {object} options.row - the ledger row
  * @param {object|null} options.provenance - its provenance, once its detail is in
- * @param {{value: string, caption: string, tooltip: string}} options.isotopes - the
- *   card's isotope tile (`isotopeTile`) of the row's family
+ * @param {{value: string, caption: string, captionTooltip: string|null, tooltip: string}} options.isotopes -
+ *   the card's isotope tile (`isotopeTile`) of the row's family
+ * @param {string} [options.abundanceTooltip] - what the isotope tile's
+ *   abundance error measures, added to its hover as an analyte's tile does
  * @param {object|null} options.model - the run's measurement model
- * @returns {Array<{key: string, title: string, value: string, caption: string, tooltip: string}>}
+ * @returns {Array<{key: string, title: string, value: string, caption: string, captionTooltip?: string|null, tooltip: string}>}
  */
-export function sourceTiles({ row, provenance, isotopes, model }) {
+export function sourceTiles({ row, provenance, isotopes, abundanceTooltip, model }) {
   const role = sourceRole(row)
   if (!role) return []
   const record = reagentRecord(provenance)
@@ -289,7 +337,8 @@ export function sourceTiles({ row, provenance, isotopes, model }) {
           title: SOURCE_TILE_TITLES.isotopes,
           value: isotopes?.value ?? '—',
           caption: isotopes?.caption ?? '',
-          tooltip: isotopes?.tooltip ?? ''
+          captionTooltip: isotopes?.captionTooltip ?? null,
+          tooltip: [isotopes?.tooltip, abundanceTooltip].filter(Boolean).join('\n')
         }
   return [
     massTile(row, record, role),
@@ -300,16 +349,57 @@ export function sourceTiles({ row, provenance, isotopes, model }) {
 }
 
 /**
+ * What the stages had read the peak as before the claim took it, where the
+ * claim recorded a formula: the fragment claim and a claim on the batch's word
+ * keep it under `provenance.reagent.read_as`.
+ */
+function readAsName(provenance) {
+  const read = reagentRecord(provenance).read_as
+  if (!isRecord(read)) return null
+  const formula = read.formula || null
+  if (!formula) return null
+  return read.ionization ? `${formula} ${read.ionization}` : formula
+}
+
+/**
+ * The *No rivals* line. A claim weighs no formula against the source's ion;
+ * where it displaced a reading, that reading is listed under Alternatives
+ * (the `displaced_by_claim` entry) and named from `read_as`. Other
+ * alternatives (a derived row's batch candidates, a line's old runner-ups)
+ * are readings the claim was not weighed against.
+ */
+function rivalsText(role, alternatives, provenance) {
+  const displaced = alternatives.some((alt) => alt?.displaced_by_claim === true)
+  const readAs = role === 'reagent' ? readAsName(provenance) : null
+  const owner = role === 'artifact' ? "detector's" : "source's"
+  const before = readAs ? ` The stages had read the peak as ${readAs} before the claim.` : ''
+  if (displaced) {
+    return `No formula contests the claim.${before} The reading it displaced is under Alternatives.`
+  }
+  if (alternatives.length) {
+    // A derived row's batch candidates, or the runner-ups a line kept: other
+    // readings of the m/z, which the claim was never weighed against.
+    return (
+      `The claim weighed no formula against it.${before} ` +
+      'Alternatives lists other readings of this m/z, which it was not weighed against.'
+    )
+  }
+  if (readAs) return `No formula contests the claim.${before}`
+  return `No formula contests the claim: the peak is the ${owner}, not a candidate's.`
+}
+
+/**
  * One line for each part of an analyte's card a reagent or artifact row has
  * no reading for, in place of a blank: the tier contest, the rivals, the
  * identification level, and on an artifact the isotope pattern.
  *
  * @param {object} row - the ledger row
- * @param {{alternatives?: Array<object>}} [options] - the alternatives the card
- *   lists: a claim records the reading it displaced among them
+ * @param {{alternatives?: Array<object>, provenance?: object|null}} [options] -
+ *   the alternatives the card lists, among which a claim marks the reading it
+ *   displaced, and the row's provenance, which records what it was read as
  * @returns {Array<{key: string, title: string, text: string}>}
  */
-export function sourceAbsences(row, { alternatives = [] } = {}) {
+export function sourceAbsences(row, { alternatives = [], provenance = null } = {}) {
   const role = sourceRole(row)
   if (!role) return []
   const what = role === 'artifact' ? 'An artifact row' : 'A reagent row'
@@ -322,9 +412,7 @@ export function sourceAbsences(row, { alternatives = [] } = {}) {
     {
       key: 'rivals',
       title: 'No rivals',
-      text: alternatives.length
-        ? 'No formula contests the claim. The reading it displaced is under Alternatives.'
-        : `No formula contests the claim: the peak is the ${role === 'artifact' ? "detector's" : "source's"}, not a candidate's.`
+      text: rivalsText(role, alternatives ?? [], provenance)
     },
     {
       key: 'level',
