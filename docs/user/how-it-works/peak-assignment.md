@@ -1041,13 +1041,29 @@ What caps a row at candidate:
   before calling it unequivocal. An isotope line whose mass error does not follow the
   row's (*off its M0*, below) does not count, since it is more likely another peak
   inside the matching window; a line *in doubt* does. A formula matched from your
-  target library or a reference list is not asked: the list is its second
-  observation. A series counts only on a peak with a signal-to-noise of 4 or more.
+  target library or a reference list is not asked here; *no isotope line read*,
+  below, asks it the same question. A series counts only on a peak with a
+  signal-to-noise of 4 or more.
   Under 4 the formulas a series lifted agreed with the reference engine clearly less
   often than the run's own *assigned* formulas, on both the demo's bromide and uronium
   batches. Such a row stays a *candidate*, and the reason names the series, the floor
   and the peak's signal-to-noise. The row still shows its series. A row whose peak has
   no signal-to-noise recorded is lifted as before.
+- **no isotope line read** — the formula was matched from your target library or a
+  reference list, and no line of its isotope pattern could be read. Every line was
+  predicted too faint for the file to show, could not be read beside a taller peak,
+  or is absent (*expected line absent*, below), and no line of its pattern is
+  committed beside it. Then the mass and the list are all that stand behind the
+  reading. A list says the compound is expected in the sample, not that this peak
+  is it, so it is no second observation. The row stays a *candidate* unless a second
+  ionization channel of the run committed the same neutral, or a series of the batch
+  names it on a peak with a signal-to-noise of 4 or more, as for *one peak only*.
+  This holds on every instrument. In a test that offers the run each compound of a
+  subset of the demo's bromide batch through the wrong adduct as well, the rows this
+  rule holds took the wrong one about ten times as often as the rest. A formula on exact mass alone is a tentative reading: the isotope
+  or adduct evidence is what [Schymanski et al. 2014][sch14] ask before calling a
+  formula unequivocal. The rule refutes nothing, so it leaves the identification
+  level alone (*Identification level*, below).
 - **needs corroboration here** — the formula meets a prior of the run's chemistry
   context (*Priors of an atmosphere*, above): it carries sulfur, or two or more
   nitrogens with fewer than two oxygens per nitrogen. Such a formula stays at
@@ -1435,7 +1451,9 @@ flowchart TD
   should show is absent (the *expected line absent* reason above). A line that cannot be
   read, beside a taller peak within one peak width, is not absent and refutes nothing:
   the row reads 5a at most, with *not tested on its isotopes* and the line in its
-  evidence, and *its isotope lines read apart* in its lift. Or the formula fails the
+  evidence, and *its isotope lines read apart* in its lift. Such a row may also be
+  held at *candidate* (*no isotope line read*), but its level does not move for it.
+  Or the formula fails the
   structural rule no molecule breaks, its plausibility under the floor of the
   [Seven Golden Rules][kf07] layer; or the instrument did not separate the peak from a
   neighbour, so neither its mass nor its height was measured.
@@ -3071,7 +3089,8 @@ such a reading by searching, so it is judged as the search's reading in each sam
 unless one of that sample's lists holds the ion through that adduct: a run then
 matches it from the list, and it is judged as the list's match. So a reading that
 stands on one peak, with no line of its isotope pattern beside it, is held at
-*candidate* (*one peak only*), in the batch ledger as in a run.
+*candidate* (*one peak only*, or *no isotope line read* for a list's match), in the
+batch ledger as in a run.
 
 **A faint peak that recurs is searched too.** The intensity threshold and the peak
 ceiling decide which batch peaks the search takes by height, as a run's untargeted

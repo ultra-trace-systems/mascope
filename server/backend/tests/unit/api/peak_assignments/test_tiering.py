@@ -56,6 +56,7 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     REASON_LONE_PEAK,
     REASON_MINOR_CHANNEL,
     REASON_NO_CLOSE_RIVAL,
+    REASON_NO_LINE_READ,
     REASON_NOT_MEASURED,
     REASON_NOX_SKELETON,
     REASON_ODD_ELECTRON,
@@ -1685,11 +1686,11 @@ class TestTheRunsRecord:
     def test_the_rule_version_is_recorded(self):
         assert run([row("pa-1")])["version"] == TIERING_RULES_VERSION
 
-    def test_the_rule_set_is_17(self):
+    def test_the_rule_set_is_18(self):
         # The number, not the imported constant: a tier is comparable across
         # runs only under the same rules, so the set moves on purpose and this
         # test moves with it.
-        assert run([row("pa-1")])["version"] == 17
+        assert run([row("pa-1")])["version"] == 18
 
     def test_the_thresholds_are_recorded_with_it(self):
         summary = run([row("pa-1")])
@@ -3389,6 +3390,142 @@ class TestTheUnreadLineReason:
             "state": LINE_FOUND,
         }
         assert absent_line_reason(row("pa-1"), {"lines": [found]}) is None
+
+
+class TestAListHitNoLineWasReadFor:
+    """MAS-1288 (decision MAS-1347): a list hit none of whose isotope lines was
+    read, and that nothing else corroborates, stays at candidate.
+
+    C6H12O6 through a proton, matched from a list, on one channel. Its 13C
+    line, 6.7 % of its own, is asked at a signal-to-noise of 100 and not at
+    one of 10, where the default gate's 3 asks lines from 30 % up.
+    """
+
+    M0 = 181.0707
+    C13 = 182.0741
+
+    def listed(self, **kwargs) -> dict:
+        return row("pa-1", source="database", mz=self.M0, peak="p-m0", **kwargs)
+
+    def peaks(self, *, snr: float = 100.0, c13: bool = False, higher: bool = True):
+        found = [("p-m0", self.M0, 1000.0, snr), ("p-small", 179.0, 5.0, 0.5)]
+        if c13:
+            found.append(("p-13c", self.C13, 67.0, 6.7))
+        if higher:
+            found.append(HIGHER)
+        return spectrum(*found)
+
+    def reason(self, rows: list[dict]) -> dict | None:
+        return next(
+            (r for r in reasons_of(rows, "pa-1") if r["rule"] == REASON_NO_LINE_READ),
+            None,
+        )
+
+    def test_a_line_found_keeps_the_top_tier(self):
+        rows = [self.listed()]
+        run(rows, lines=self.peaks(c13=True))
+        assert line_named(envelope_of(rows, "pa-1"), "13C")["state"] == LINE_FOUND
+        assert tier_of(rows, "pa-1") == "assigned"
+        assert self.reason(rows) is None
+        assert REASON_ON_A_LIST in rules_on(rows, "pa-1")
+
+    def test_no_line_asked_holds_it_at_candidate(self):
+        rows = [self.listed()]
+        summary = run(rows, lines=self.peaks(snr=10.0))
+        assert envelope_of(rows, "pa-1")["lines"] == []
+        assert tier_of(rows, "pa-1") == "candidate"
+        reason = self.reason(rows)
+        assert reason["caps"] is True
+        assert reason["detail"] == (
+            "no isotope line of C6H12O6 could be read (every line is predicted too "
+            "faint for the file to show), and nothing else corroborates the "
+            "reading: no second channel of this run committed the same neutral and "
+            "no series of its batch anchors it. The list it was matched from says "
+            "the compound is expected, not that this peak is it"
+        )
+        assert summary["capped_by_rule"] == {REASON_NO_LINE_READ: 1}
+        # It holds the row for want of evidence: it does not say the row stands
+        # on its list.
+        assert REASON_ON_A_LIST not in rules_on(rows, "pa-1")
+
+    def test_a_line_that_could_not_be_read_is_no_line_read(self):
+        rows = [self.listed()]
+        run(rows, lines=self.peaks(higher=False))
+        assert line_named(envelope_of(rows, "pa-1"), "13C")["state"] == (
+            LINE_UNTESTABLE
+        )
+        assert tier_of(rows, "pa-1") == "candidate"
+        assert (
+            "(of the lines it was asked for, one could not be read)"
+            in (self.reason(rows)["detail"])
+        )
+        assert REASON_UNREAD_LINE in rules_on(rows, "pa-1")
+
+    def test_an_absent_line_is_named_beside_the_absent_line_rule(self):
+        rows = [self.listed()]
+        run(rows, lines=self.peaks())
+        assert line_named(envelope_of(rows, "pa-1"), "13C")["state"] == LINE_ABSENT
+        assert (
+            "(of the lines it was asked for, one absent)"
+            in (self.reason(rows)["detail"])
+        )
+        assert REASON_ABSENT_LINE in rules_on(rows, "pa-1")
+
+    def test_a_committed_line_that_follows_it_is_a_line_read(self):
+        rows = [self.listed(), line_of("pa-1", source="database")]
+        run(rows, lines=self.peaks(snr=10.0))
+        assert self.reason(rows) is None
+        assert tier_of(rows, "pa-1") == "assigned"
+
+    def test_a_committed_line_that_does_not_follow_it_is_none(self):
+        rows = [
+            self.listed(),
+            line_of("pa-1", source="database", tracking=TRACKING_UNTRACKED),
+        ]
+        run(rows, lines=self.peaks(snr=10.0))
+        assert self.reason(rows) is not None
+
+    def test_a_second_channel_corroborates_it(self):
+        rows = [self.listed(channels=SEEN_TWICE)]
+        run(rows, lines=self.peaks(snr=10.0))
+        assert self.reason(rows) is None
+        assert tier_of(rows, "pa-1") == "assigned"
+
+    def test_a_series_corroborates_it_from_the_lone_peak_rule_s_floor(self):
+        rows = [self.listed(provenance={SERIES: SERIES_BLOCK, "base_snr": 10.0})]
+        run(rows, lines=self.peaks(snr=10.0))
+        assert self.reason(rows) is None
+        faint = SERIES_LIFT_MIN_SNR - 1.0
+        rows = [self.listed(provenance={SERIES: SERIES_BLOCK, "base_snr": faint})]
+        run(rows, lines=self.peaks(snr=10.0))
+        assert self.reason(rows) is not None
+
+    def test_the_formula_search_s_rows_are_the_lone_peak_rule_s(self):
+        rows = [row("pa-1", mz=self.M0, peak="p-m0")]
+        run(rows, lines=self.peaks(snr=10.0))
+        assert self.reason(rows) is None
+        assert REASON_LONE_PEAK in rules_on(rows, "pa-1")
+
+    def test_an_ion_with_no_isotope_line_has_none_to_read(self):
+        # Iodide: iodine has one stable isotope, so its ion predicts no line.
+        rows = [
+            row("pa-1", "HI", source="database", mz=126.9045, peak="p-m0", ion="I-")
+        ]
+        run(rows, lines=spectrum(("p-m0", 126.9045, 1000.0, 100.0), HIGHER))
+        assert PREDICTED_ENVELOPE not in rows[0]["provenance"]
+        assert tier_of(rows, "pa-1") == "candidate"
+        assert (
+            "(its ion predicts no isotope line the file could show)"
+            in (self.reason(rows)["detail"])
+        )
+
+    def test_a_row_whose_lines_nobody_read_is_not_asked(self):
+        # No spectrum: the rule cannot tell a row no line was read for from
+        # one never looked at.
+        rows = [self.listed()]
+        run(rows)
+        assert self.reason(rows) is None
+        assert tier_of(rows, "pa-1") == "assigned"
 
 
 class TestOnATofAHalogenShowsItsM2Line:

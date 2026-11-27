@@ -354,8 +354,10 @@ from mascope_tools.composition.utils import formula_identity
 #: that produced it - the same statement the tier BANDS carry, for the same
 #: reason. 17 (MAS-1288): the absent-line rule reads a line's window and its
 #: neighbours at the file's peak width, asks a line only where the peak list
-#: could hold it, and names a line it cannot read without capping on it.
-TIERING_RULES_VERSION = 17
+#: could hold it, and names a line it cannot read without capping on it. 18
+#: (MAS-1288): a list hit no line of whose isotope pattern was read, and that
+#: nothing else corroborates, stays at candidate (:data:`REASON_NO_LINE_READ`).
+TIERING_RULES_VERSION = 18
 
 #: The row's evidence is under the band its tier would need. Not a rule of
 #: this pass: the band is the floor every rule here lowers from, and naming it
@@ -408,6 +410,11 @@ REASON_CANDIDATE_DENSITY = "candidate_density"
 #: saw its neutral: no line of its own isotope pattern, no second channel, no
 #: list.
 REASON_LONE_PEAK = "lone_peak"
+
+#: A list hit no line of whose isotope pattern was read, and that nothing else
+#: corroborates: no second channel, no series of its batch. The list it was
+#: matched from is no second observation of the peak (decision MAS-1347).
+REASON_NO_LINE_READ = "no_line_read"
 
 #: The batch's untargeted search took the peak because it is present in more
 #: of its partition's spectra than the batch's split of their occurrence
@@ -1156,6 +1163,72 @@ def lone_peak_reason(row: dict, lines: Sequence[dict]) -> dict | None:
         f"one peak is all that saw {row.get('assigned_formula')}: {seen}, no "
         f"second channel of this run committed the same neutral, {series}, and "
         "it was not matched from a list",
+        caps=True,
+    )
+
+
+def no_line_read_reason(
+    row: dict, lines: Sequence[dict], expected: dict | None, *, read: bool = True
+) -> dict | None:
+    """A list hit with no isotope evidence stays at candidate (MAS-1288).
+
+    The row was matched from a list, and no line of its isotope pattern was
+    read: the absent-line rule found none of the lines it asked, each being
+    unreadable or absent, and the rest were too faint to ask; and no line of
+    its pattern is committed with it (:func:`follows_its_owner`). Then the mass
+    and the list are all that stand behind it. The list says the compound is
+    expected, not that this peak is it, so it is no second observation: only
+    a second channel of the run (:func:`is_corroborated`) or a series of its
+    batch at the lone-peak rule's floor (:data:`SERIES_LIFT_MIN_SNR`) is. The
+    formula search's rows meet the same question in :func:`lone_peak_reason`.
+
+    Asked on every instrument, and only on a run that read the sample's peaks
+    (``read``): without them the rule cannot tell a row no line was read for
+    from one nobody looked at. A row the absent-line rule recorded nothing for
+    there, an ion with no isotope line such as iodide's, has no line to read
+    either, and is held. It sets no level: holding a row
+    for want of evidence refutes nothing, and an absent line among those asked
+    is the absent-line rule's to read.
+
+    :param row: A committed monoisotopic row.
+    :param lines: Its committed isotopologue rows (:func:`isotope_lines`).
+    :param expected: What :func:`expected_lines` read for it, or None.
+    :param read: Whether the run read the sample's peaks.
+    :return: The reason, or None where a line was read, something else
+        corroborates the row, it is not a list hit, or no peaks were read.
+    """
+    if row.get("source") != SOURCE_DATABASE or not read:
+        return None
+    if any(follows_its_owner(line) for line in lines):
+        return None
+    asked = (expected or {}).get("lines") or []
+    if any(line.get("state") == LINE_FOUND for line in asked):
+        return None
+    if is_corroborated(row) or (
+        series_anchor(row) is not None and series_under_floor(row) is None
+    ):
+        return None
+    said = []
+    for state, word in (
+        (LINE_UNTESTABLE, "could not be read"),
+        (LINE_ABSENT, "absent"),
+    ):
+        count = sum(line.get("state") == state for line in asked)
+        if count:
+            said.append(f"{_count_word(count)} {word}")
+    if said:
+        why = f"of the lines it was asked for, {' and '.join(said)}"
+    elif expected is None:
+        why = "its ion predicts no isotope line the file could show"
+    else:
+        why = "every line is predicted too faint for the file to show"
+    return _reason(
+        REASON_NO_LINE_READ,
+        f"no isotope line of {row.get('assigned_formula')} could be read ({why}), "
+        "and nothing else corroborates the reading: no second channel of this run "
+        "committed the same neutral and no series of its batch anchors it. The "
+        "list it was matched from says the compound is expected, not that this "
+        "peak is it",
         caps=True,
     )
 
@@ -2476,6 +2549,7 @@ def apply_tiering(
             polyhalide_cluster_reason(row, notation_by_id),
             density_reason(row),
             lone_peak_reason(row, own_lines),
+            no_line_read_reason(row, own_lines, expected, read=lines is not None),
             context_prior_reason(row, own_lines, context),
             nox_skeleton_reason(row, context, nox_skeleton),
             absent,
@@ -2498,8 +2572,7 @@ def apply_tiering(
         held_down = any(reason["caps"] for reason in reasons)
         if not held_down:
             reasons.extend(standing_reasons(row, own_lines))
-        # A grouping, named whatever else the row says: neither a cap nor
-        # what it stands on.
+        # A grouping, named whatever else it says: no cap, nor what it stands on.
         fragment = in_source_fragment_reason(row)
         if fragment:
             reasons.append(fragment)

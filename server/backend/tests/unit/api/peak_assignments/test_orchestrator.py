@@ -4023,6 +4023,7 @@ class TestTheIngestFoldTiersAsARunDoes:
         ]
         run = tiers(recorder.rows)
         assert run == tiers([vars(row) for row in folded])
-        # The rule bites on the bright ion, in both.
-        assert run["p3"][1:] == ("candidate", ["absent_line"])
+        # The rule bites on the bright ion, in both, beside the list hit's
+        # hold: no line of its pattern was read either (MAS-1288).
+        assert run["p3"][1:] == ("candidate", ["no_line_read", "absent_line"])
         assert run["p1"][1] == "assigned"

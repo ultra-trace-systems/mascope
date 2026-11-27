@@ -1171,24 +1171,19 @@ async def test_a_reading_measured_on_a_member_is_judged_as_its_search_judges_it(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "compound, identities, detail",
-    [
-        (
-            "tc-br2",
-            None,
-            "matched from the target library, which somebody named for this data",
-        ),
-        (None, [{"name": "bromine"}], "matched from a reference list, as bromine"),
-    ],
+    "compound, identities",
+    [("tc-br2", None), (None, [{"name": "bromine"}])],
     ids=["target library", "reference list"],
 )
 async def test_a_member_reading_an_ion_its_lists_hold_is_that_lists_row(
-    compound, identities, detail
+    compound, identities
 ):
     # A run of the sample commits an ion its lists hold through Stage A, as
-    # that list's row, which the rules for the search's rows do not ask: the
-    # lone reading the test above holds stands at the tier its evidence bands,
-    # on the list.
+    # that list's row, which the rules for the search's rows do not ask. The
+    # lone reading the test above holds is a list hit here, and no line of its
+    # isotope pattern can be read (both lie beyond the one-peak list's span),
+    # so it is held for that alone: the list is no second observation
+    # (MAS-1288), and the search's lone-peak rule is not what holds it.
     known = pd.DataFrame(
         [
             {
@@ -1210,14 +1205,8 @@ async def test_a_member_reading_an_ion_its_lists_hold_is_that_lists_row(
     row = measured["p1"]
     assert row["source"] == "database"
     assert row["target_compound_id"] == compound
-    assert row["tier"] == TIER_ASSIGNED
-    assert not [rule for rule, caps in _reasons(row) if caps]
-    (listed,) = [
-        reason
-        for reason in row["provenance"]["tier_reasons"]
-        if reason["rule"] == "on_a_list"
-    ]
-    assert listed["detail"] == detail
+    assert row["tier"] == TIER_CANDIDATE
+    assert [rule for rule, caps in _reasons(row) if caps] == ["no_line_read"]
 
 
 def _claiming(claim, peak_ids):

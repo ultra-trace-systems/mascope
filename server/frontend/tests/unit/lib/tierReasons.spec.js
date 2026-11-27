@@ -23,6 +23,7 @@ const SERVER_RULES = [
   'polyhalide_cluster',
   'candidate_density',
   'lone_peak',
+  'no_line_read',
   'context_prior',
   'nox_skeleton',
   // A batch peak's rule (batch_peaks.hold_persistence_only), in the same

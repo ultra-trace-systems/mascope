@@ -5157,7 +5157,27 @@ fix; and the per-range publish above.
     recorded is lifted, as the rule fails open on a row with no channel
     record. The series stays an escape from the density and context-prior
     caps at any S/N. Two batches of one instrument type: the floor is read
-    again when a third chemistry is measured.
+    again when a third chemistry is measured. Amended 2026-11-27 by the
+    plan owner (MAS-1347, option 2): a list is no second observation of a
+    row none of whose isotope lines was read. Such a list hit stays a
+    candidate unless a second channel or a series at the same S/N floor
+    corroborates it (`tiering.REASON_NO_LINE_READ`), on every instrument,
+    and its level does not move. Taken when MAS-1288 stopped refuting
+    lines a file cannot show apart, which left a list alone carrying
+    swapped adducts to assigned: on Na 16 of 31 swap-adduct decoys at
+    assigned had no line read and no other escape. On a 20-sample subset
+    of Db the rows the rule moves carry 37 swap-adduct decoys in 354, the
+    rest 24 in 2,174, so a list hit with no line read is weaker evidence
+    on an Orbitrap too. The rule was not keyed on the instrument: a rule
+    about evidence holds wherever the evidence is missing, and the
+    reference's confirmations, which would have spared the Orbitrap, are
+    not the yardstick. The owner's principles, for this work and after it:
+    a tier or a level is never overstated, and where a call is ambiguous
+    the route that may understate is taken; the reference is not ground
+    truth, its sodium adducts least of all, since gas-phase chemical
+    ionisation has no realistic sodium source; and where the engine and the
+    reference disagree, the row is judged by hand as a chemist would, on
+    the reagent and the sample.
 26. **One margin, read both ways, and the declared channel keeps its
     formula** (taken 2026-09-25 by the plan owner, on the pass-8 reading of
     step 3.1c). A reading through the mode's own channel is settled by its
