@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest'
 
 import {
+  askedLineOf,
+  askedNumbers,
+  envelopeGate,
+  noneAskedSummary,
+  notAskedNote,
   notFoundLines,
   notFoundTooltip,
   notFoundWord,
@@ -95,5 +100,72 @@ describe('what a line not found says', () => {
     expect(range).toContain('beyond the first or last peak of the spectrum')
     expect(range).toContain('the ends of what it measured')
     expect(range).not.toContain('never')
+  })
+})
+
+// What the record says of the gate, and of the lines under it, which it does
+// not list (MAS-1341).
+describe('the gate and the lines not asked', () => {
+  const record = (extra = {}) => ({
+    predicted_envelope: { snr: 8, detect_snr: 3, asks_share: 0.375, lines: [], ...extra }
+  })
+
+  it('reads the gate off the record, and nothing where the run asked nothing', () => {
+    expect(envelopeGate(record())).toEqual({ snr: 8, detectSnr: 3, asksShare: 0.375 })
+    expect(envelopeGate(record({ snr: null, detect_snr: null, asks_share: 0.1 }))).toEqual({
+      snr: null,
+      detectSnr: null,
+      asksShare: 0.1
+    })
+    expect(envelopeGate(null)).toBeNull()
+    expect(envelopeGate({ predicted_envelope: { lines: [] } })).toBeNull()
+    expect(envelopeGate({ predicted_envelope: { asks_share: 0.1 } })).toBeNull()
+  })
+
+  it('names the lines not asked by the share of M0 they were asked from', () => {
+    const note = notAskedNote(record())
+    expect(note).toContain('Not asked: any line predicted under 37.5% of M0')
+    expect(note).toContain("At this peak's signal-to-noise of 8")
+    expect(note).toContain('would show under 3')
+    expect(notAskedNote(record({ snr: null, asks_share: 0.1 }))).toContain(
+      'no signal-to-noise for this peak'
+    )
+    expect(notAskedNote(null)).toBeNull()
+  })
+
+  it('says why a pattern reads M0 only, where the run asked no line', () => {
+    expect(noneAskedSummary(record())).toBe(
+      'M0 only: every other line is predicted under what this peak can show (under 37.5% of M0)'
+    )
+    expect(noneAskedSummary(record({ lines: [line('absent')] }))).toBeNull()
+    expect(noneAskedSummary(null)).toBeNull()
+  })
+
+  it('gives the numbers a line was asked at', () => {
+    const provenance = record()
+    expect(askedNumbers(line('absent', { expected_snr: 7.78 }), provenance)).toBe(
+      'Asked: predicted at 97.3% of M0, expected signal-to-noise 7.8, asked from 3.'
+    )
+    expect(askedNumbers(line('absent'), record({ snr: null, asks_share: 0.1 }))).toBe(
+      'Asked: predicted at 97.3% of M0, asked from 10% of M0.'
+    )
+    expect(askedNumbers(line('absent', { tof_m2: true }), provenance)).toContain(
+      'on a TOF a bromine or chlorine reading must show its own M+2 line'
+    )
+  })
+
+  it("puts the numbers in a not-found line's hover text", () => {
+    const tip = notFoundTooltip(line('absent', { expected_snr: 7.78 }), record())
+    expect(tip).toContain('expected signal-to-noise 7.8, asked from 3')
+  })
+
+  it('finds the asked line an isotopologue row sits on, by its peak or its label', () => {
+    const found = line('found', { line: '13C', peak_id: 'p-2' })
+    const provenance = record({ lines: [found, line('absent')] })
+    expect(askedLineOf({ sample_peak_id: 'p-2' }, provenance)).toBe(found)
+    expect(askedLineOf({ sample_peak_id: 'p-9', isotope_label: '13C' }, provenance)).toBe(found)
+    // An absent line has no row on it
+    expect(askedLineOf({ sample_peak_id: 'p-9', isotope_label: '81Br' }, provenance)).toBeNull()
+    expect(askedLineOf({ sample_peak_id: 'p-9', isotope_label: '18O' }, provenance)).toBeNull()
   })
 })

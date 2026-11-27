@@ -1884,7 +1884,11 @@ flowchart TD
   - **Mass error**: the m/z error in ppm, and under it how many widths of the run's own
     mass calibration it sits from the run's centre;
   - **Isotope lines found**: the lines found of those predicted, such as *3 of 4*, with
-    the abundance error and the lines not found or not tested. On the M0 the abundance
+    the abundance error and the lines not found or not tested. On a run that recorded
+    which lines it asked for, the count is of those: the lines found of the lines
+    asked. A line found that the run did not ask for is counted apart (*1 found, not
+    asked*), and a row with no line asked reads *M0 only* with the share of M0 lines were
+    asked from (*none asked: all under 40% of M0*). On the M0 the abundance
     error reads *-*: the other lines are measured against it, so it has no error of its own;
   - **Confidence**: the formula's share of the evidence among the peak's candidates,
     with a tie written out;
@@ -1910,7 +1914,19 @@ flowchart TD
     Click a line, or reach it with Tab and press Enter, to focus its peak. A line not
     found or not tested has no peak: clicking it moves the spectrum to its predicted m/z
     and draws a stick where it was expected, and the focused peak stays as it was. Click
-    it again to take the stick away.
+    it again to take the stick away. Hover a line for its outcome and the numbers it was
+    asked at: its predicted share of M0, its expected signal-to-noise and the
+    signal-to-noise the run asks a line to show.
+
+    A line is **not asked** when its predicted height is under what this peak could
+    show: at the peak's signal-to-noise, the line's expected signal-to-noise falls under
+    the run's detection threshold, so the run does not look for it and its absence
+    counts for nothing. For a peak just above the noise even a line nearly as tall as
+    M0, such as a bromide's 81Br line, can be not asked. A note under the list gives
+    the share of M0 the run asked lines from at this peak; the run records the lines
+    it asked and not the ones under that share, so the card names them by the share.
+    Where no line was asked and none found, the section's summary says so: *M0 only:
+    every other line is predicted under what this peak can show*.
   - **Alternatives**: the close alternatives with their fit, mass error and kind, and
     *Use* on each one that can be committed ([assigning a peak
     yourself](#assigning-a-peak-yourself)).

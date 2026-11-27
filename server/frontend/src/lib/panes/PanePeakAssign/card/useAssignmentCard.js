@@ -4,7 +4,14 @@ import { useApp } from '@/stores'
 import { num } from '@/lib/formatters'
 import { formatIsotopeFormula, formatIsotopeLabel, neutralKey } from '@/lib/chem'
 import { isIsotopeLine } from '@/lib/isotopeLines'
-import { notFoundLines } from '@/lib/predictedEnvelope'
+import {
+  askedLineOf,
+  askedNumbers,
+  envelopeGate,
+  notAskedNote,
+  notFoundLines,
+  predictedLines
+} from '@/lib/predictedEnvelope'
 import { standardMechanism } from '@/lib/mechanism'
 import { listingOf, listingTooltip, targetOf } from '@/lib/referenceListings'
 import { tierReasonsOf } from '@/lib/tierReasons'
@@ -643,6 +650,12 @@ export function useAssignmentCard({ showSearch }) {
     return detail?.provenance ?? head.provenance
   })
   const missingLines = computed(() => notFoundLines(m0Provenance.value))
+  // The gate the run asked the M0's lines at, and what it says of the lines it
+  // did not ask: the record lists only the lines asked, so those under the gate
+  // are named by the share of M0 it asked from (MAS-1341).
+  const lineGate = computed(() => envelopeGate(m0Provenance.value))
+  const askedLines = computed(() => (lineGate.value ? predictedLines(m0Provenance.value) : null))
+  const notAskedText = computed(() => notAskedNote(m0Provenance.value))
 
   // Corroboration signal: present only when the same neutral was committed through
   // more than one ionization channel, which is independent evidence for the
@@ -1391,12 +1404,32 @@ export function useAssignmentCard({ showSearch }) {
     confidence: "This formula's share of the evidence among all candidates for the peak"
   })
 
+  // A found line's outcome, where the run recorded what it asked: found on a
+  // line it asked for, with the numbers it asked it at, or found on one under
+  // its gate. The M0 is the line the others are asked against.
+  const lineOutcome = (iso) => {
+    if (!lineGate.value || isFamilyHead(iso)) return null
+    const line = askedLineOf(iso, m0Provenance.value)
+    return line
+      ? `Found. ${askedNumbers(line, m0Provenance.value)}`
+      : 'Found, though the run did not ask for it: its predicted height is under what this peak was asked to show.'
+  }
+  // Isotopologue rows found on lines the run did not ask for.
+  const unaskedFound = computed(() =>
+    lineGate.value
+      ? familyRows.value.filter(
+          (iso) => !isFamilyHead(iso) && !askedLineOf(iso, m0Provenance.value)
+        ).length
+      : 0
+  )
+
   // An isotopologue row's hover text: its full isotope formula, how it matched,
   // and what a click does.
   const isoRowTooltip = (iso) =>
     [
       iso.isotope_formula || iso.isotope_label,
       isPoorMatch(iso) ? 'Poor match to the prediction (abundance or m/z off)' : null,
+      lineOutcome(iso),
       'Click to focus this peak'
     ]
       .filter(Boolean)
@@ -1937,6 +1970,9 @@ export function useAssignmentCard({ showSearch }) {
     isotopeTile({
       family: familyRows.value,
       missing: missingLines.value,
+      asked: askedLines.value,
+      asksShare: lineGate.value?.asksShare ?? null,
+      unasked: unaskedFound.value,
       abundanceError: evidenceRow.value?.abundance_error ?? null,
       // The M0 is the line the others are measured against: the zero it
       // carries is no error of its own
@@ -2115,6 +2151,7 @@ export function useAssignmentCard({ showSearch }) {
     isFamilyHead,
     m0Provenance,
     missingLines,
+    notAskedText,
     corroboration,
     corroborationLabel,
     corroborationTooltip,

@@ -347,6 +347,13 @@ export const EMPTY_REASONS = Object.freeze({
  * card lists and the lines the run asked for and did not find. Its tooltip
  * says what the count counts.
  *
+ * Where the run recorded what it asked (`asked`, the record's lines), the
+ * count is of those: the asked lines found, of the lines asked. A line under
+ * the run's gate was not asked, and the record does not list it, so the tile
+ * says the share of M0 it was asked from instead of a count; an isotopologue
+ * row the run found but did not ask for is counted apart. A row with no such
+ * record (a run from before the rule, a ledger-served row) counts its family.
+ *
  * @param {object} options
  * @param {Array<object>} options.family - the family's rows, the head included
  * @param {Array<object>} options.missing - `notFoundLines` of the head
@@ -354,13 +361,25 @@ export const EMPTY_REASONS = Object.freeze({
  * @param {boolean} [options.reference] - the row is the line the others are
  *   measured against (the M0), whose zero is no error of its own: its error
  *   reads `-`, and the caption's tooltip says why
+ * @param {Array<object>|null} [options.asked] - `predictedLines` of the head,
+ *   or null where the run asked nothing
+ * @param {number|null} [options.asksShare] - the share of M0 the run asked
+ *   lines from (`envelopeGate`)
+ * @param {number} [options.unasked] - isotopologue rows found on lines the run
+ *   did not ask for
  * @returns {{value: string, caption: string, captionTooltip: string|null, tooltip: string, found: number, predicted: number}}
  */
-export function isotopeTile({ family, missing, abundanceError, reference = false }) {
-  const found = Math.max(0, (family?.length ?? 0) - 1)
+export function isotopeTile({
+  family,
+  missing,
+  abundanceError,
+  reference = false,
+  asked = null,
+  asksShare = null,
+  unasked = 0
+}) {
   const absent = (missing ?? []).filter((line) => line?.state !== LINE_UNTESTABLE).length
   const untested = (missing ?? []).length - absent
-  const predicted = found + (missing ?? []).length
   const parts = []
   let captionTooltip = null
   if (abundanceError != null && reference) {
@@ -371,6 +390,11 @@ export function isotopeTile({ family, missing, abundanceError, reference = false
   }
   if (absent) parts.push(`${absent} not found`)
   if (untested) parts.push(`${untested} not tested`)
+  if (Array.isArray(asked) && Number.isFinite(asksShare)) {
+    return askedTile({ asked, missing: missing ?? [], asksShare, unasked, parts, captionTooltip })
+  }
+  const found = Math.max(0, (family?.length ?? 0) - 1)
+  const predicted = found + (missing ?? []).length
   if (!predicted) {
     return {
       value: 'M0 only',
@@ -388,6 +412,44 @@ export function isotopeTile({ family, missing, abundanceError, reference = false
     tooltip: `${found} of ${predicted} predicted isotope line${predicted === 1 ? '' : 's'} found`,
     found,
     predicted
+  }
+}
+
+const gateShareFormat = new Intl.NumberFormat('en-US', {
+  style: 'percent',
+  maximumFractionDigits: 1
+})
+
+// The isotope tile of a row whose run recorded the lines it asked.
+function askedTile({ asked, missing, asksShare, unasked, parts, captionTooltip }) {
+  const found = asked.length - missing.length
+  const under = `Lines predicted under ${gateShareFormat.format(asksShare)} of M0 were not asked: this peak is too faint to show them. The run does not record how many there are.`
+  const extra = unasked
+    ? `\n${unasked} more line${unasked === 1 ? ' was' : 's were'} found that the run did not ask for.`
+    : ''
+  if (!asked.length) {
+    return {
+      value: 'M0 only',
+      caption: [
+        `none asked: all under ${gateShareFormat.format(asksShare)} of M0`,
+        unasked ? `${unasked} found` : null
+      ]
+        .filter(Boolean)
+        .join(' · '),
+      captionTooltip: null,
+      tooltip: `No isotope line was asked for. ${under}${extra}`,
+      found: 0,
+      predicted: 0
+    }
+  }
+  if (unasked) parts.push(`${unasked} found, not asked`)
+  return {
+    value: `${found} of ${asked.length}`,
+    caption: parts.length ? parts.join(' · ') : 'isotope lines found of those asked',
+    captionTooltip,
+    tooltip: `${found} of ${asked.length} isotope line${asked.length === 1 ? '' : 's'} the run asked for found\n${under}${extra}`,
+    found,
+    predicted: asked.length
   }
 }
 
