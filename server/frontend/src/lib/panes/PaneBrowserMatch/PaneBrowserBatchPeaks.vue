@@ -701,17 +701,7 @@ const rows = computed(() => {
     return result
   }
   // Group by: a group line over its members, each member with its lines.
-  const index = byId.value
   for (const section of groupSections(visible, sets, (row) => row.batch_peak_id)) {
-    const set = sets.find((entry) => entry.key === section.key)
-    const best = (set?.ids ?? section.rows.map((row) => row.batch_peak_id))
-      .map((id) => index.get(id))
-      .filter(Boolean)
-      .sort(
-        (a, b) =>
-          bucketRank(a.consensus_tier, a.consensus_role) -
-          bucketRank(b.consensus_tier, b.consensus_role)
-      )[0]
     const isCollapsed = collapsed.has(section.key)
     result.push({
       batch_peak_id: `group:${section.key}`,
@@ -719,8 +709,6 @@ const rows = computed(() => {
       groupKey: section.key,
       groupName: section.name,
       groupCount: `${section.size} batch peak${section.size === 1 ? '' : 's'}`,
-      groupTier: section.ungrouped ? null : (best?.consensus_tier ?? null),
-      groupRole: section.ungrouped ? null : (best?.consensus_role ?? null),
       collapsed: isCollapsed
     })
     if (isCollapsed) continue

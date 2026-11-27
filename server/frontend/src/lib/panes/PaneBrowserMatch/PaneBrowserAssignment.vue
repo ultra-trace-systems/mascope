@@ -782,11 +782,6 @@ const rows = computed(() => {
     return result
   }
   for (const section of groupSections(parents, sets, idOf)) {
-    const set = sets.find((entry) => entry.key === section.key)
-    const best = (set?.ids ?? [])
-      .map((id) => rowByPeak.value.get(id))
-      .filter(Boolean)
-      .sort((a, b) => a.tierRank - b.tierRank)[0]
     const isCollapsed = collapsed.has(section.key)
     result.push({
       sample_peak_id: `group:${section.key}`,
@@ -795,8 +790,6 @@ const rows = computed(() => {
       groupKey: section.key,
       groupName: section.name,
       groupCount: `${section.size} row${section.size === 1 ? '' : 's'}`,
-      groupTier: section.ungrouped ? null : (best?.tier ?? null),
-      groupRole: section.ungrouped ? null : (best?.role ?? null),
       collapsed: isCollapsed
     })
     if (!isCollapsed) section.rows.forEach(withFamily)
