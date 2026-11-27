@@ -3588,6 +3588,19 @@ describe('PaneBrowserAssignment row actions', () => {
     expect(wrapper.find('.verdict-popover-stub').text()).toBe('b')
   })
 
+  // Kept inside the window (lib/popoverFit.js): placed again when it opens, its
+  // watch dropped when it closes.
+  it('binds the fit to the verdict popover', async () => {
+    seed(FAMILY_A, FAMILY_B)
+    const wrapper = await mountPane()
+    const popover = wrapper
+      .findAllComponents(GLOBAL_STUBS.Popover)
+      .find((candidate) => candidate.attributes('aria-label') === 'Verification verdict')
+    const props = popover.vm.$.vnode.props
+    expect(typeof props.onShow).toBe('function')
+    expect(typeof props.onHide).toBe('function')
+  })
+
   it('names what the verdict cell offers', async () => {
     seed(FAMILY_A, FAMILY_B)
     const wrapper = await mountPane()

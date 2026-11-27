@@ -902,3 +902,21 @@ describe('AssignmentLedger, groups', () => {
     expect(outer).not.toHaveBeenCalled()
   })
 })
+
+// The header's menus are kept inside the window as the row popovers are
+// (lib/popoverFit.js), next to the listeners that track whether they are open.
+describe('AssignmentLedger, header menus fit the window', () => {
+  it.each(['sample', 'batch'])('binds the fit to the Show and More menus (%s)', (scope) => {
+    const wrapper = mountLedger(scope)
+    const menus = wrapper
+      .findAllComponents(STUBS.Popover)
+      .filter((menu) => ['Show', 'More ledger actions'].includes(menu.attributes('aria-label')))
+    expect(menus).toHaveLength(2)
+    for (const menu of menus) {
+      const { onShow, onHide } = menu.vm.$.vnode.props
+      // Its own open flag and the fit, both.
+      expect(Array.isArray(onShow) && onShow.length).toBe(2)
+      expect(Array.isArray(onHide) && onHide.length).toBe(2)
+    }
+  })
+})

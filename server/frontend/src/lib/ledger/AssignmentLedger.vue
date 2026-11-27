@@ -19,6 +19,7 @@ import {
   BaseTierTag
 } from '@/lib/base'
 import { num } from '@/lib/formatters'
+import { usePopoverFit } from '@/lib/popoverFit.js'
 import { tierName } from '@/lib/tiers'
 import { LEVEL_FILTER_OPTIONS } from '@/lib/levels'
 import { useApp } from '@/stores'
@@ -195,11 +196,14 @@ const VIEW_MENU_IDS = { sample: 'assignment-view-menu', batch: 'batch-peak-view-
 const viewMenu = ref()
 const viewMenuOpen = ref(false)
 const toggleViewMenu = (event) => viewMenu.value?.toggle(event)
+// Kept inside the window, as the row popovers are (lib/popoverFit.js).
+const { on: viewMenuFit } = usePopoverFit(viewMenu)
 
 const OVERFLOW_MENU_IDS = { sample: 'assignment-overflow-menu', batch: 'batch-peak-overflow-menu' }
 const overflowMenu = ref()
 const overflowMenuOpen = ref(false)
 const toggleOverflowMenu = (event) => overflowMenu.value?.toggle(event)
+const { on: overflowMenuFit } = usePopoverFit(overflowMenu)
 
 // The table, for a scope that scrolls a row into view.
 const table = ref()
@@ -362,6 +366,7 @@ const engineChipTooltip = (row) =>
             ref="viewMenu"
             :id="VIEW_MENU_IDS[scope]"
             aria-label="Show"
+            v-on="viewMenuFit"
             @show="viewMenuOpen = true"
             @hide="viewMenuOpen = false"
           >
@@ -412,6 +417,7 @@ const engineChipTooltip = (row) =>
             ref="overflowMenu"
             :id="OVERFLOW_MENU_IDS[scope]"
             aria-label="More ledger actions"
+            v-on="overflowMenuFit"
             @show="overflowMenuOpen = true"
             @hide="overflowMenuOpen = false"
           >

@@ -928,7 +928,8 @@ const selectedRow = computed({
 const {
   menu: verdictMenu,
   target: verdictTarget,
-  open: openVerdict
+  open: openVerdict,
+  fit: verdictFit
 } = useRowPopover(
   (id) => rows.value.find((row) => row.peak_assignment_id === id),
   (row) => row.peak_assignment_id
@@ -1604,7 +1605,7 @@ const HEADERS = {
     </template>
 
     <template #popovers>
-      <Popover ref="verdictMenu" aria-label="Verification verdict">
+      <Popover ref="verdictMenu" aria-label="Verification verdict" v-on="verdictFit">
         <LedgerVerdictPopover
           v-if="verdictTarget"
           scope="sample"

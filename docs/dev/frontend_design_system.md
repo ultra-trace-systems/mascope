@@ -238,6 +238,14 @@ One grammar (M2, MAS-156), a `BaseFormDialog` in `lib/dialogs/`:
   secondary *Cancel* and an accept button carrying the verb and `danger` or
   `warn`.
 
+A PrimeVue `Popover` that holds a form or a list stays inside the window:
+bind `usePopoverFit` (`lib/popoverFit.js`; `useRowPopover` hands one out as
+`fit`) with `v-on`. PrimeVue alone pins a popover taller than the room above
+its anchor to the window's top, past the bottom edge, and does not place it
+again as the form grows. With the fit it opens below its anchor, or above,
+and one too tall for either side scrolls inside, its save controls held in
+view with `position: sticky`.
+
 ## 7. Empty states, disabled controls, feedback
 
 **Empty states** are
