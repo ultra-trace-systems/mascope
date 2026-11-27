@@ -423,22 +423,22 @@ const gateShareFormat = new Intl.NumberFormat('en-US', {
 // The isotope tile of a row whose run recorded the lines it asked.
 function askedTile({ asked, missing, asksShare, unasked, parts, captionTooltip }) {
   const found = asked.length - missing.length
-  const under = `Lines predicted under ${gateShareFormat.format(asksShare)} of M0 were not asked: this peak is too faint to show them. The run does not record how many there are.`
+  const tofM2 = asked.some((line) => line?.tof_m2)
+    ? ' A TOF asks its own M+2 line whatever its height.'
+    : ''
+  const under = `Lines predicted under ${gateShareFormat.format(asksShare)} of M0 were not asked: this peak is too faint to show them.${tofM2} The run does not record how many there are.`
   const extra = unasked
     ? `\n${unasked} more line${unasked === 1 ? ' was' : 's were'} found that the run did not ask for.`
     : ''
+  // Nothing asked: M0 only, unless the scoring found a line the gate left
+  // out, which the tile counts as found.
   if (!asked.length) {
     return {
-      value: 'M0 only',
-      caption: [
-        `none asked: all under ${gateShareFormat.format(asksShare)} of M0`,
-        unasked ? `${unasked} found` : null
-      ]
-        .filter(Boolean)
-        .join(' · '),
+      value: unasked ? `${unasked} found` : 'M0 only',
+      caption: `none asked: all under ${gateShareFormat.format(asksShare)} of M0`,
       captionTooltip: null,
       tooltip: `No isotope line was asked for. ${under}${extra}`,
-      found: 0,
+      found: unasked,
       predicted: 0
     }
   }

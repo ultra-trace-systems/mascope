@@ -97,7 +97,12 @@ export function notFoundTooltip(line, provenance = null) {
       : "Not tested: only an artifact's peak sits where the line should be, which neither confirms nor refutes it."
   }
   const why = askedBecause(line, provenance?.predicted_envelope?.asks_share)
-  return `Not found: no peak sits within the run's match window of this predicted line. ${why} ${askedNumbers(line, provenance)} It holds the row at candidate at most.`
+  // A TOF's M+2 line was asked by its rule, which `why` already gives: its
+  // numbers are its share alone.
+  const numbers = line?.tof_m2
+    ? `Predicted at ${shareFormat.format(line.predicted_share)} of M0.`
+    : askedNumbers(line, provenance)
+  return `Not found: no peak sits within the run's match window of this predicted line. ${why} ${numbers} It holds the row at candidate at most.`
 }
 
 /**
@@ -158,7 +163,9 @@ export function askedNumbers(line, provenance) {
 export function notAskedNote(provenance) {
   const gate = envelopeGate(provenance)
   if (!gate) return null
-  const under = `Not asked: any line predicted under ${shareFormat.format(gate.asksShare)} of M0.`
+  const under = `Not asked: any line predicted under ${shareFormat.format(gate.asksShare)} of M0${
+    asksTofM2(provenance) ? ', except its own M+2 line, which a TOF always asks' : ''
+  }.`
   if (gate.snr != null && gate.detectSnr != null) {
     return `${under} At this peak's signal-to-noise of ${snrFormat.format(gate.snr)}, such a line would show under ${snrFormat.format(gate.detectSnr)}, the least the run asks a line to show.`
   }
@@ -166,8 +173,20 @@ export function notAskedNote(provenance) {
 }
 
 /**
- * The words a pattern with no line beyond M0 is summed up in, where the run
- * asked and found every line under its gate: that is why nothing was asked.
+ * Whether the run asked a line by a TOF's M+2 rule, whatever the gate said:
+ * the one line under the gate's share that can be listed.
+ *
+ * @param {object|null} provenance - the row's provenance
+ * @returns {boolean}
+ */
+export function asksTofM2(provenance) {
+  return predictedLines(provenance).some((line) => line.tof_m2)
+}
+
+/**
+ * Why a pattern with no line asked has nothing asked, in full: every line is
+ * under its gate. The section's folded line is too narrow for it, so it gives
+ * this as its hover text.
  *
  * @param {object|null} provenance - the row's provenance
  * @returns {string|null} null where the run asked nothing, or asked some line
@@ -175,7 +194,7 @@ export function notAskedNote(provenance) {
 export function noneAskedSummary(provenance) {
   const gate = envelopeGate(provenance)
   if (!gate || predictedLines(provenance).length) return null
-  return `M0 only: every other line is predicted under what this peak can show (under ${shareFormat.format(gate.asksShare)} of M0)`
+  return `None asked: every line beyond M0 is predicted under what this peak can show (under ${shareFormat.format(gate.asksShare)} of M0)`
 }
 
 /**

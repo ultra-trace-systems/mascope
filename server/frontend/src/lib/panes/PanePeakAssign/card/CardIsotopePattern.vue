@@ -42,12 +42,13 @@ const missingTooltip = (line) =>
       : 'Click to show where it was expected in the spectrum'
   }`
 
-// Where the run asked no line and found none beyond M0, the summary says why:
-// every other line of the pattern is under its gate.
+// Where the run asked no line, the summary says so in a few words, which the
+// folded line has room for, and why on hover: every line beyond M0 is under
+// its gate. A line the scoring found all the same is counted.
+const noneAsked = computed(() => noneAskedSummary(m0Provenance.value))
 const summary = computed(() => {
   const tile = isotopeMeasure.value
-  const none = familyRows.value.length <= 1 ? noneAskedSummary(m0Provenance.value) : null
-  if (none) return none
+  if (noneAsked.value) return tile.found ? `${tile.value}, none asked` : 'M0 only: none asked'
   if (!tile.predicted) return 'M0 only'
   return `${tile.value} ${notAskedText.value ? 'asked lines' : 'lines'} found`
 })
@@ -100,6 +101,7 @@ const STICK = 2.4
     v-if="familyRows.length"
     title="Isotope pattern"
     :summary="summary"
+    :summary-tooltip="noneAsked"
     testid="section-isotopes"
   >
     <div

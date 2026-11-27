@@ -131,11 +131,16 @@ describe('the gate and the lines not asked', () => {
       'no signal-to-noise for this peak'
     )
     expect(notAskedNote(null)).toBeNull()
+    // A TOF's M+2 line is asked under the gate's share, and listed
+    expect(notAskedNote(record({ lines: [line('absent', { tof_m2: true })] }))).toContain(
+      'under 37.5% of M0, except its own M+2 line, which a TOF always asks.'
+    )
+    expect(notAskedNote(record({ lines: [line('absent')] }))).not.toContain('M+2')
   })
 
   it('says why a pattern reads M0 only, where the run asked no line', () => {
     expect(noneAskedSummary(record())).toBe(
-      'M0 only: every other line is predicted under what this peak can show (under 37.5% of M0)'
+      'None asked: every line beyond M0 is predicted under what this peak can show (under 37.5% of M0)'
     )
     expect(noneAskedSummary(record({ lines: [line('absent')] }))).toBeNull()
     expect(noneAskedSummary(null)).toBeNull()
@@ -157,6 +162,10 @@ describe('the gate and the lines not asked', () => {
   it("puts the numbers in a not-found line's hover text", () => {
     const tip = notFoundTooltip(line('absent', { expected_snr: 7.78 }), record())
     expect(tip).toContain('expected signal-to-noise 7.8, asked from 3')
+    // A TOF's M+2 line says its rule once, and its share
+    const m2 = notFoundTooltip(line('absent', { tof_m2: true }), record())
+    expect(m2.match(/own M\+2 line/g)).toHaveLength(1)
+    expect(m2).toContain('Predicted at 97.3% of M0.')
   })
 
   it('finds the asked line an isotopologue row sits on, by its peak or its label', () => {

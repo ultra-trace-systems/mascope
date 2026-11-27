@@ -420,10 +420,31 @@ describe('isotopeTile on a run that recorded what it asked', () => {
     expect(tile.tooltip).toMatch(
       /^No isotope line was asked for\. Lines predicted under 37\.5% of M0/
     )
+    const found = isotopeTile({
+      family: [{}, {}],
+      missing: [],
+      asked: [],
+      asksShare: 0.375,
+      unasked: 1
+    })
+    expect(found.value).toBe('1 found')
+    expect(found.found).toBe(1)
+    expect(found.caption).toBe('none asked: all under 37.5% of M0')
+  })
+
+  it("says a TOF asks its own M+2 line whatever the gate's share", () => {
+    const tile = isotopeTile({
+      family: [{}, {}],
+      missing: [],
+      abundanceError: null,
+      asked: [{ state: 'found', tof_m2: true }],
+      asksShare: 1.2
+    })
+    expect(tile.tooltip).toContain('A TOF asks its own M+2 line whatever its height.')
     expect(
-      isotopeTile({ family: [{}, {}], missing: [], asked: [], asksShare: 0.375, unasked: 1 })
-        .caption
-    ).toBe('none asked: all under 37.5% of M0 · 1 found')
+      isotopeTile({ family: [{}, {}], missing: [], asked: [{ state: 'found' }], asksShare: 1.2 })
+        .tooltip
+    ).not.toContain('M+2')
   })
 })
 
