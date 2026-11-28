@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mount, flushPromises } from '@vue/test-utils'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { mount, flushPromises, enableAutoUnmount } from '@vue/test-utils'
 import { reactive } from 'vue'
 
 // The time series draws one line per isotopologue of the focused assignment's
@@ -13,7 +13,7 @@ let familyRows
 let peaks
 // The run in view, and the measurements the inspector card loaded, by the M0's
 // peak_assignment_id. Reactive, so a test can hand one over after the traces.
-const store = reactive({ run: null, evidence: {} })
+const store = reactive({ run: null, evidence: {}, focused: null })
 
 // Plotly's own resize, which the chart's exposed one passes on to.
 const { plotResize } = vi.hoisted(() => ({ plotResize: vi.fn() }))
@@ -22,15 +22,22 @@ vi.mock('@/stores', () => ({
   useApp: () => ({
     data: {
       sample: { focusedId: 'si-1' },
-      peak: { pending: false, list: peaks, focused: peaks[0] },
+      peak: {
+        pending: false,
+        list: peaks,
+        get focused() {
+          return store.focused ?? peaks[0]
+        }
+      },
       peakAssignment: {
         peak: {
           get run() {
             return store.run
           },
           evidenceOf: (id) => store.evidence[id] ?? null,
-          forPeak: () => familyRows[0],
-          familyOf: () => familyRows,
+          forPeak: (id) => familyRows.find((r) => r.sample_peak_id === id) ?? familyRows[0],
+          // A new array on every call, as the store's.
+          familyOf: () => [...familyRows],
           // The store's family resolution, over the rows this test holds.
           m0Of: (row) =>
             row?.role === 'iso_child'
@@ -92,11 +99,15 @@ async function traceNames() {
   return namesOf(wrapper)
 }
 
+// A chart left mounted would answer the next test's store changes.
+enableAutoUnmount(afterEach)
+
 beforeEach(() => {
   familyRows = []
   peaks = []
   store.run = null
   store.evidence = {}
+  store.focused = null
 })
 
 describe('ChartAssignmentTimeseries trace names', () => {
@@ -214,6 +225,23 @@ describe('ChartAssignmentTimeseries on a ledger-served sample', () => {
       '189.1000',
       'Sum'
     ])
+    expect(api.http.post).toHaveBeenCalledTimes(4)
+  })
+
+  // Plotly redraws on new data, and its redraw resets the user's zoom and
+  // brings back a line hidden from the legend. Focusing another line of the
+  // same family changes no series and no name, so the plot keeps its data.
+  it('hands the plot the same traces when another line of the family is focused', async () => {
+    seedLedger()
+    store.evidence = { m0: measurement }
+    const wrapper = mountChart()
+    await flushPromises()
+    const before = wrapper.findComponent(Plot).props('data')
+
+    store.focused = peaks[1]
+    await flushPromises()
+
+    expect(wrapper.findComponent(Plot).props('data')).toBe(before)
     expect(api.http.post).toHaveBeenCalledTimes(4)
   })
 
