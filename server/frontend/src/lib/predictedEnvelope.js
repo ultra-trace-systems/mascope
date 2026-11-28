@@ -97,5 +97,122 @@ export function notFoundTooltip(line, provenance = null) {
       : "Not tested: only an artifact's peak sits where the line should be, which neither confirms nor refutes it."
   }
   const why = askedBecause(line, provenance?.predicted_envelope?.asks_share)
-  return `Not found: no peak sits within the run's match window of this predicted line. ${why} It holds the row at candidate at most.`
+  // A TOF's M+2 line was asked by its rule, which `why` already gives: its
+  // numbers are its share alone.
+  const numbers = line?.tof_m2
+    ? `Predicted at ${shareFormat.format(line.predicted_share)} of M0.`
+    : askedNumbers(line, provenance)
+  return `Not found: no peak sits within the run's match window of this predicted line. ${why} ${numbers} It holds the row at candidate at most.`
+}
+
+/**
+ * The gate a row's run asked its lines at, as its record carries it: the
+ * peak's signal-to-noise, the expected signal-to-noise a line is asked from,
+ * and the share of the row's own line that comes to (`asks_share`). The record
+ * lists the lines asked and nothing of the lines under the gate, so the gate is
+ * all the card can say of those.
+ *
+ * @param {object|null} provenance - a monoisotopic row's provenance
+ * @returns {{snr: number|null, detectSnr: number|null, asksShare: number}|null}
+ *   null where the run asked nothing, or its record does not say at what
+ */
+export function envelopeGate(provenance) {
+  const record = provenance?.predicted_envelope
+  if (!record || typeof record !== 'object' || !Array.isArray(record.lines)) return null
+  const asksShare = record.asks_share
+  if (!Number.isFinite(asksShare) || asksShare <= 0) return null
+  const snr = Number.isFinite(record.snr) ? record.snr : null
+  return {
+    snr,
+    detectSnr: snr != null && Number.isFinite(record.detect_snr) ? record.detect_snr : null,
+    asksShare
+  }
+}
+
+const snrFormat = new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 })
+
+/**
+ * Why the run asked one line, in numbers: its predicted share of M0, its
+ * expected signal-to-noise and the signal-to-noise lines are asked from, or on
+ * a peak with no signal-to-noise the share lines are asked from.
+ *
+ * @param {object} line - one entry of `predictedLines`
+ * @param {object|null} provenance - the row's provenance
+ * @returns {string}
+ */
+export function askedNumbers(line, provenance) {
+  const share = `predicted at ${shareFormat.format(line.predicted_share)} of M0`
+  if (line?.tof_m2)
+    return `Asked: ${share}, and on a TOF a bromine or chlorine reading must show its own M+2 line.`
+  const gate = envelopeGate(provenance)
+  if (Number.isFinite(line?.expected_snr) && gate?.detectSnr != null) {
+    return `Asked: ${share}, expected signal-to-noise ${snrFormat.format(line.expected_snr)}, asked from ${snrFormat.format(gate.detectSnr)}.`
+  }
+  if (gate) return `Asked: ${share}, asked from ${shareFormat.format(gate.asksShare)} of M0.`
+  return `Asked: ${share}.`
+}
+
+/**
+ * What the card says of the lines the run did not ask: every line of the
+ * pattern predicted under the gate's share of M0, too faint for this peak to
+ * show. The record does not list them, so they are named by the gate alone.
+ *
+ * @param {object|null} provenance - the row's provenance
+ * @returns {string|null} null where the run asked nothing
+ */
+export function notAskedNote(provenance) {
+  const gate = envelopeGate(provenance)
+  if (!gate) return null
+  const under = `Not asked: any line predicted under ${shareFormat.format(gate.asksShare)} of M0${
+    asksTofM2(provenance) ? ', except its own M+2 line, which a TOF always asks' : ''
+  }.`
+  if (gate.snr != null && gate.detectSnr != null) {
+    return `${under} At this peak's signal-to-noise of ${snrFormat.format(gate.snr)}, such a line would show under ${snrFormat.format(gate.detectSnr)}, the least the run asks a line to show.`
+  }
+  return `${under} The file records no signal-to-noise for this peak, so the run asks for lines by their share of M0 alone.`
+}
+
+/**
+ * Whether the run asked a line by a TOF's M+2 rule, whatever the gate said:
+ * the one line under the gate's share that can be listed.
+ *
+ * @param {object|null} provenance - the row's provenance
+ * @returns {boolean}
+ */
+export function asksTofM2(provenance) {
+  return predictedLines(provenance).some((line) => line.tof_m2)
+}
+
+/**
+ * Why a pattern with no line asked has nothing asked, in full: every line is
+ * under its gate. The section's folded line is too narrow for it, so it gives
+ * this as its hover text.
+ *
+ * @param {object|null} provenance - the row's provenance
+ * @returns {string|null} null where the run asked nothing, or asked some line
+ */
+export function noneAskedSummary(provenance) {
+  const gate = envelopeGate(provenance)
+  if (!gate || predictedLines(provenance).length) return null
+  return `None asked: every line beyond M0 is predicted under what this peak can show (under ${shareFormat.format(gate.asksShare)} of M0)`
+}
+
+/**
+ * Whether the run asked for the line an isotopologue row sits on: a found
+ * line of its record on the row's peak, or of the row's label.
+ *
+ * @param {object} row - an isotopologue row of the family
+ * @param {object|null} provenance - the M0's provenance
+ * @returns {object|null} the record's line, or null where the run did not ask
+ *   for it (or asked nothing)
+ */
+export function askedLineOf(row, provenance) {
+  const found = predictedLines(provenance).filter((line) => line.state === LINE_FOUND)
+  return (
+    found.find(
+      (line) => line.peak_id != null && String(line.peak_id) === String(row?.sample_peak_id)
+    ) ??
+    found.find((line) => row?.isotope_label && line.line === row.isotope_label) ??
+    null
+  )
 }

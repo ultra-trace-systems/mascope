@@ -14,6 +14,8 @@ import { useSectionOpen } from './useCard.js'
 const props = defineProps({
   title: { type: String, required: true },
   summary: { type: String, default: '' },
+  // The summary in full, on hover, where the folded line is too narrow for it.
+  summaryTooltip: { type: String, default: null },
   testid: { type: String, default: null }
 })
 
@@ -33,7 +35,7 @@ const bodyId = useId()
     >
       <span :class="['pi', 'ph', open ? 'ph-caret-down' : 'ph-caret-right', 'section-caret']" />
       <span class="section-title">{{ title }}</span>
-      <span class="section-summary"
+      <span class="section-summary" v-tooltip.top="summaryTooltip"
         ><slot name="summary">{{ summary }}</slot></span
       >
     </button>

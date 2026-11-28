@@ -4073,6 +4073,129 @@ describe('PanePeakAssign lines the run did not find', () => {
     expect(wrapper.findAll('.isotopologues .iso-row')).toHaveLength(2)
   })
 
+  // MAS-1341: every line has an outcome and its reason - found, not found, or
+  // not asked, the last named by the gate since the record does not list it.
+  it('states each line its outcome and reason: found, not found and not asked', async () => {
+    const { m0, child } = bromide()
+    focusedAssignment = m0
+    familyRows = [m0, child]
+    detailRecord = {
+      provenance: {
+        predicted_envelope: {
+          snr: 100,
+          detect_snr: 3,
+          asks_share: 0.03,
+          lines: [{ ...C13, expected_snr: 6.54 }, BR81]
+        }
+      }
+    }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    const rows = wrapper.findAll('.isotopologues .iso-row')
+    // The M0 is the line the others are asked against: it has no outcome
+    expect(rows[0].attributes('data-tooltip')).not.toContain('Found')
+    expect(rows[1].attributes('data-tooltip')).toContain(
+      'Found. Asked: predicted at 6.5% of M0, expected signal-to-noise 6.5, asked from 3.'
+    )
+    expect(rows[2].attributes('data-tooltip')).toContain('Not found:')
+    expect(rows[2].attributes('data-tooltip')).toContain(
+      'Asked: predicted at 97.3% of M0, expected signal-to-noise 97.3, asked from 3.'
+    )
+    const note = wrapper.find('[data-testid="iso-not-asked"]')
+    expect(note.text()).toContain('Not asked: any line predicted under 3% of M0.')
+    expect(note.text()).toContain("At this peak's signal-to-noise of 100")
+    expect(wrapper.find('[data-testid="section-isotopes"] .section-summary').text()).toBe(
+      '1 of 2 asked lines found'
+    )
+    expect(wrapper.find('[data-testid="tile-isotopes"] .tile-value').text()).toBe('1 of 2')
+  })
+
+  it('says a line found under the gate was not asked for', async () => {
+    const { m0, child } = bromide()
+    focusedAssignment = m0
+    familyRows = [m0, { ...child, isotope_label: '18O', sample_peak_id: 'p-9' }]
+    detailRecord = {
+      provenance: {
+        predicted_envelope: { snr: 100, detect_snr: 3, asks_share: 0.03, lines: [BR81] }
+      }
+    }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(wrapper.findAll('.isotopologues .iso-row')[1].attributes('data-tooltip')).toContain(
+      'Found, though the run did not ask for it'
+    )
+    expect(wrapper.find('[data-testid="tile-isotopes"] .tile-caption').text()).toBe(
+      '1 not found · 1 found, not asked'
+    )
+  })
+
+  it('says why a faint bromide reads M0 only: no line clears its gate', async () => {
+    // At a signal-to-noise of 8 the gate asks lines from 3 / 8 of M0: the 81Br
+    // line, 97 % of it, clears that, but a peak at 2.5 asks from 120 %.
+    const { m0 } = bromide()
+    focusedAssignment = m0
+    familyRows = [m0]
+    detailRecord = {
+      provenance: {
+        predicted_envelope: { snr: 2.5, detect_snr: 3, asks_share: 1.2, lines: [] }
+      }
+    }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    // Short enough for the folded line at the card's default width; the
+    // reason in full on hover
+    const summary = wrapper.find('[data-testid="section-isotopes"] .section-summary')
+    expect(summary.text()).toBe('M0 only: none asked')
+    expect(summary.attributes('data-tooltip')).toBe(
+      'None asked: every line beyond M0 is predicted under what this peak can show (under 120% of M0)'
+    )
+    expect(wrapper.find('[data-testid="tile-isotopes"] .tile-value').text()).toBe('M0 only')
+    expect(wrapper.find('[data-testid="tile-isotopes"] .tile-caption').text()).toBe(
+      'none asked: all under 120% of M0'
+    )
+    expect(wrapper.find('[data-testid="iso-not-asked"]').text()).toContain(
+      'such a line would show under 3'
+    )
+  })
+
+  it('counts a line found where the run asked none, not M0 only', async () => {
+    // The scoring's envelope match does not use the gate, so a faint bromide's
+    // 81Br line can be found though nothing was asked
+    const { m0, child } = bromide()
+    focusedAssignment = m0
+    familyRows = [m0, { ...child, sample_peak_id: 'p-9' }]
+    detailRecord = {
+      provenance: {
+        predicted_envelope: { snr: 2.5, detect_snr: 3, asks_share: 1.2, lines: [] }
+      }
+    }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(wrapper.find('[data-testid="section-isotopes"] .section-summary').text()).toBe(
+      '1 found, none asked'
+    )
+    expect(wrapper.find('[data-testid="tile-isotopes"] .tile-value').text()).toBe('1 found')
+    expect(wrapper.find('[data-testid="tile-isotopes"] .tile-caption').text()).toBe(
+      'none asked: all under 120% of M0'
+    )
+    expect(wrapper.findAll('.isotopologues .iso-row')[1].attributes('data-tooltip')).toContain(
+      'Found, though the run did not ask for it'
+    )
+  })
+
+  it('says nothing of lines not asked where the run asked nothing', async () => {
+    const { m0, child } = bromide()
+    focusedAssignment = m0
+    familyRows = [m0, child]
+    detailRecord = { provenance: { tier_reasons: [] } }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(wrapper.find('[data-testid="iso-not-asked"]').exists()).toBe(false)
+    expect(wrapper.findAll('.isotopologues .iso-row')[1].attributes('data-tooltip')).not.toContain(
+      'Found'
+    )
+  })
+
   it('lists nothing for a derived row, whose family no run asked', async () => {
     runRecord = { engine: 'batch' }
     const { m0, child } = bromide()

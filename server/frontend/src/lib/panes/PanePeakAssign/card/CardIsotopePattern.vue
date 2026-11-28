@@ -3,7 +3,7 @@ import { computed } from 'vue'
 
 import { num } from '@/lib/formatters'
 import { formatIsotopeLabel } from '@/lib/chem'
-import { notFoundTooltip, notFoundWord } from '@/lib/predictedEnvelope'
+import { noneAskedSummary, notFoundTooltip, notFoundWord } from '@/lib/predictedEnvelope'
 import CardLedgerNote from './CardLedgerNote.vue'
 import CardSection from './CardSection.vue'
 import { useCard } from './useCard.js'
@@ -18,6 +18,7 @@ const {
   focusedAssignment,
   familyRows,
   missingLines,
+  notAskedText,
   m0Provenance,
   isoLabel,
   theoreticalRel,
@@ -41,9 +42,15 @@ const missingTooltip = (line) =>
       : 'Click to show where it was expected in the spectrum'
   }`
 
+// Where the run asked no line, the summary says so in a few words, which the
+// folded line has room for, and why on hover: every line beyond M0 is under
+// its gate. A line the scoring found all the same is counted.
+const noneAsked = computed(() => noneAskedSummary(m0Provenance.value))
 const summary = computed(() => {
   const tile = isotopeMeasure.value
-  return tile.predicted ? `${tile.value} lines found` : 'M0 only'
+  if (noneAsked.value) return tile.found ? `${tile.value}, none asked` : 'M0 only: none asked'
+  if (!tile.predicted) return 'M0 only'
+  return `${tile.value} ${notAskedText.value ? 'asked lines' : 'lines'} found`
 })
 
 // The plot's sticks: every line at its m/z, its predicted share as the
@@ -94,6 +101,7 @@ const STICK = 2.4
     v-if="familyRows.length"
     title="Isotope pattern"
     :summary="summary"
+    :summary-tooltip="noneAsked"
     testid="section-isotopes"
   >
     <div
@@ -116,6 +124,10 @@ const STICK = 2.4
             expected and found no peak for reads <b>not found</b> and holds the
             assignment at <i>candidate</i> at most; one only an artifact's peak
             sits on, or beyond the ends of the spectrum, reads <b>not tested</b>.
+            A line predicted too faint for this peak to show, under what the
+            run asks a line to show, is <b>not asked</b>: its absence says
+            nothing, and the note under the list gives the share of M0 lines
+            were asked from.
             </p>`,
         doc: app.ui.help.docUrl('how-it-works/peak-assignment/#the-fit-score-a-pure-measurement')
       }"
@@ -205,6 +217,11 @@ const STICK = 2.4
           <span class="iso-rel">{{ formatRel(missingRel(line)) }}</span>
         </div>
       </div>
+      <!-- The lines under the run's gate: its record does not list them, so
+           they are named by the share of M0 it asked lines from. -->
+      <p v-if="notAskedText" class="iso-not-asked" data-testid="iso-not-asked">
+        {{ notAskedText }}
+      </p>
       <!-- A row the batch ledger serves: its numbers are measured for the view,
            and no run asked which lines it expected, so none reads not found. -->
       <CardLedgerNote
@@ -218,6 +235,11 @@ const STICK = 2.4
 </template>
 
 <style scoped>
+.iso-not-asked {
+  margin: 0.3rem 0.3rem 0;
+  color: var(--p-text-muted-color);
+  font-size: var(--card-text-sm);
+}
 .iso-ledger-note {
   margin-top: 0.3rem;
 }
