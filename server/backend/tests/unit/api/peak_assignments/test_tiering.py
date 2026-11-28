@@ -176,6 +176,17 @@ def tier_of(rows: list[dict], row_id: str) -> str:
     return next(r["tier"] for r in rows if r["peak_assignment_id"] == row_id)
 
 
+def inherited_caps(rows: list[dict], row_id: str) -> bool:
+    """The ``caps`` of a row's one ``inherited_from_owner`` reason."""
+    entry = next(r for r in rows if r["peak_assignment_id"] == row_id)
+    (reason,) = [
+        reason
+        for reason in entry["provenance"]["tier_reasons"]
+        if reason["rule"] == REASON_INHERITED
+    ]
+    return reason["caps"]
+
+
 def rules_on(rows: list[dict], row_id: str) -> set[str]:
     entry = next(r for r in rows if r["peak_assignment_id"] == row_id)
     return {reason["rule"] for reason in entry["provenance"]["tier_reasons"]}
@@ -369,7 +380,20 @@ class TestAClusterWithNothingToHoldOnTo:
         summary = run(rows, notation_by_id=CHANNELS)
         assert tier_of(rows, "pa-kid") == "candidate"
         assert rules_on(rows, "pa-kid") == {REASON_INHERITED}
+        assert inherited_caps(rows, "pa-kid") is True
         assert summary["capped_isotopologues"] == 1
+
+    def test_an_uncapped_owner_s_isotopologue_says_it_is_not_capped(self):
+        # The line's reason reads the owner's verdict either way (MAS-1325):
+        # an owner left at the top tier leaves a reason that caps nothing.
+        rows = [
+            cluster("pa-1", mechanism="m-unknown"),
+            cluster("pa-kid", role="iso_child", owner="pa-1", mz=182.07),
+        ]
+        run(rows, notation_by_id=CHANNELS)
+        assert tier_of(rows, "pa-kid") == "assigned"
+        assert rules_on(rows, "pa-kid") == {REASON_INHERITED}
+        assert inherited_caps(rows, "pa-kid") is False
 
     def test_the_reason_names_the_neutral_and_the_channel(self):
         rows = [cluster("pa-1", mechanism="m-labelled")]
@@ -458,6 +482,7 @@ class TestAPolyhalideTheSourceCanMakeToo:
         summary = run(rows, notation_by_id=CHANNELS)
         assert tier_of(rows, "pa-kid") == "candidate"
         assert rules_on(rows, "pa-kid") == {REASON_INHERITED}
+        assert inherited_caps(rows, "pa-kid") is True
         assert summary["capped_isotopologues"] == 1
 
     def test_the_reason_names_the_neutral_and_the_channel(self):
