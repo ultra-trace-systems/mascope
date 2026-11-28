@@ -53,7 +53,13 @@ readings as a run's named ones are (``given_rivals``, MAS-1045).
 Which candidates a reading competes against is still the search's to say: it
 names a rival where its own ranking could not separate the two, at the v1
 model it ranks at (MAS-982 keeps the ranking at v1). What each of them
-measures, and so whether the run's evidence separates it, is the set's.
+measures, and so whether the run's evidence separates it, is the set's. The
+block says both: ``named_at_version``, the model its members were named at,
+and ``model_version``, the one they were measured at. Where the run took its
+refit the two differ, and the membership is older than the measurement: a
+candidate the search separated at v1 is in no set, though it may tie at v2
+(#3497). How often that happens is what ``rival_count`` counts, behind a run
+option that is off by default.
 """
 
 from __future__ import annotations
@@ -142,12 +148,15 @@ class SeededFrame:
     :param fit_only: Of those, the peaks each seed was named for by its fit
         alone (:func:`fit_tied_seeds`): a rival there that the arbitration
         does not read, recorded under :data:`FIT_TIED`.
+    :param seconds: How long the pass that scored it took, where it was
+        timed (``judging_loop._seeded_rescore``).
     """
 
     scored: pd.DataFrame
     ion_by_seed: dict[tuple[str, str], str]
     placed_for: Mapping[tuple[str, str], frozenset[str]] = field(default_factory=dict)
     fit_only: Mapping[tuple[str, str], frozenset[str]] = field(default_factory=dict)
+    seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -364,6 +373,9 @@ class RivalFrames:
         fit is the one its frame holds.
     :param shortlists: The peaks whose 4.15 shortlist the run measured, each
         with the formulas it measured; empty where the pass did not run.
+    :param named_at: The model the readings were named at, the one the search
+        ranked at; ``base`` where not given, as a run's search ranks at the
+        model its frames were first scored at.
     """
 
     def __init__(
@@ -373,12 +385,14 @@ class RivalFrames:
         *,
         base: MeasurementModel | None,
         shortlists: Mapping[str, tuple[str, ...]] | None = None,
+        named_at: MeasurementModel | None = None,
     ):
         lines = [_known_lines(stage_a)] + [
             _seeded_lines(frame) for frame in seeded if frame is not None
         ]
         self._lines = [found for found in lines if found is not None]
         self._base = base
+        self.named_at = named_at or base
         self._at: list[tuple[MeasurementModel, dict[str, list[Reading]]]] = []
         self.shortlists = dict(shortlists or {})
 
@@ -551,21 +565,23 @@ def measure_rival_sets(
     its peak: the rivals on that peak (:class:`RivalFrames`), each ion once,
     arbitrated with the row's reading by ``arbitration``'s one tie rule. The
     row's ``candidate_density`` is read off that arbitration and
-    :data:`RIVAL_SET` records the set. Its ``confidence``, ``n_candidates``
-    and ``is_tie`` are read off it too where the set is the peak's whole
-    field: on a list's row, and on a search winner the 4.15 pass reached,
-    which also records its shortlist (``engine.MEASURED_SHORTLIST``). A Stage A isotopologue row
-    takes its peak's confidence and tie as Stage A gave it one; it carries no
-    density. A row no frame measured keeps what its stage recorded.
+    :data:`RIVAL_SET` records the set, with the model its members were named
+    at beside the one they were measured at. Its ``confidence``,
+    ``n_candidates`` and ``is_tie`` are read off it too where the set is the
+    peak's whole field: on a list's row, and on a search winner the 4.15 pass
+    reached, which also records its shortlist (``engine.MEASURED_SHORTLIST``).
+    A Stage A isotopologue row takes its peak's confidence and tie as Stage A
+    gave it one; it carries no density. A row no frame measured keeps what its stage recorded.
 
     :param rows: The round's rows, modified in place.
     :param frames: The frames the run measured its readings in.
     :param model: The model the round's caps read.
     :return: What the run records: the rows measured, those whose reading no
-        frame measured, the model's version, and what the 4.15 shortlist
-        placed.
+        frame measured, the model's version and the one the members were
+        named at, and what the 4.15 shortlist placed.
     """
     by_peak = frames.readings_at(model)
+    named_at = None if frames.named_at is None else frames.named_at.version
     measured = unmeasured = placed = ties = 0
     for row in rows:
         role, source = row.get("role"), row.get("source")
@@ -608,6 +624,7 @@ def measure_rival_sets(
         provenance[CANDIDATE_DENSITY] = max(1, len(counted))
         provenance[RIVAL_SET] = {
             "model_version": model.version,
+            "named_at_version": named_at,
             "fit_score": round(own.fit, 4),
             "rivals": [_entry(r, counted) for r in rivals[:RIVALS_KEPT]],
             "rivals_unlisted": max(0, len(rivals) - RIVALS_KEPT),
@@ -630,6 +647,7 @@ def measure_rival_sets(
             ties += bool(mine.is_tie)
     return {
         "model_version": model.version,
+        "named_at_version": named_at,
         "measured": measured,
         "unmeasured": unmeasured,
         "shortlist_placed": placed,

@@ -229,6 +229,25 @@ class TestAKeptReading:
         }
         assert "held_against" not in rows[0]["provenance"][GRID_RIVALS]
 
+    def test_what_the_grid_scored_beside_it_is_handed_on_by_peak(self):
+        # MAS-1184: with the run counting its scored rivals, every grid
+        # formula scored beside a kept reading, by its peak; none without.
+        rows = [_list_hit("a", "p1"), _list_hit("b", "p3")]
+        scored = ({"formula": "C9H8O3", "tie_gaps": 3.5},)
+        matches = pd.DataFrame(
+            [
+                _kept_marker(181.0707, replace(_rivals("C7H16O5"), scored=scored)),
+                _kept_marker(199.0, _rivals("C8H8O4")),
+            ]
+        )
+
+        election = settle_list_election(
+            rows, matches, {"a": _reading(181.0707), "b": _reading(199.0)}
+        )
+
+        assert election.scored_by_peak == {"p1": scored}
+        assert "scored" not in rows[0]["provenance"][GRID_RIVALS]
+
     def test_its_fit_tied_rivals_are_handed_on_by_peak(self):
         # MAS-975: the grid's formulas only plausibility separated from the
         # reading are measured into its rival set apart, by its peak.

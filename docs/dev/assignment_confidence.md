@@ -434,6 +434,60 @@ no backend or DB, only `mascope_tools` + tests.
   pass took in `search_scope.winner_confidence`, which is where the gate-set measurement
   reads the cost.
 
+  **Who is in a rival set, and at which model (MAS-1184, #3497).** A row's rival set
+  measures its members at the model the caps read, but the members are the search's: the
+  candidates its ranking could not separate from the reading at the model it ranked at,
+  the first one (`finder.CANDIDATE_RIVALS`, `ReadingRivals.rivals`). The block says both,
+  `named_at_version` beside `model_version`. Where the run took its refit the two differ,
+  and a candidate the search separated at the first model is in no set, though it may tie
+  at the second: the set can lose a rival at the refitted model, never gain one. The run
+  option `count_scored_rivals`, off by default and for the bench alone, counts how often.
+  With it on, the search hands over every other formula it scored for a committed reading
+  (`finder.SCORED_RIVALS`, `ReadingRivals.scored`), each with how far it had the reading
+  in tie gaps (`arbitration.tie_gaps`: the evidence below the reading's over the gap the
+  one tie rule allows). Once the run is judged, `rival_count` scores the ones the run had
+  not seeded in one pass of its own, at the model the frames were first scored at, reads
+  them at the caps' model as the set reads its members, and records in
+  `search_scope.scored_rivals`, for the whole run: whether it took its refit and the two
+  versions; per kind of reading (`list` for a list compound, `search` for a formula the
+  search found) the readings counted, the candidates scored for them, those today's set
+  holds (`held`), those placed on the peak outside it (`outside`) and those not placed;
+  how many outside candidates tie the reading by the one tie rule, binned by how far the
+  search had them (`within_1`, `1_to_2`, `2_to_3`, `3_to_5`, `over_5` tie gaps); the rows
+  whose `candidate_density` would rise, those it would take to `tiering.DENSITY_LIMIT` by
+  their tier today, and of those the ones the density rule would cap (`would_cap`); and
+  the seconds the pass took beside the seconds of the seeded re-score as it is. The pass
+  feeds nothing: no candidate joins a set, and every row is what it is with the option
+  off. The card shows the counts per set (`tooling/assignment_bench/README.md`).
+
+  Measured on the bench's six sets (2026-11-28, the card of PR #3722 with the option on;
+  0 of 308 readings moved against develop's baseline, as on the control card at the
+  defaults; a second run gave every count the same, and only the seconds differ). The
+  four TOF sets' runs took their refit, the two Orbitrap sets' kept their first model:
+
+  | pooled over the sets | refit taken (24 runs) | first model kept (161 runs) |
+  |---|---|---|
+  | committed readings counted: list compounds, search formulas | 952, 9,185 | 9,239, 21,936 |
+  | candidates scored for them | 63,611 | 102,063 |
+  | held by the set today | 6,164 | 14,626 |
+  | outside the set, placed on the peak | 57,447 | 87,437 |
+  | tie at the caps' model: list compounds | 268 | 160 |
+  | tie at the caps' model: search formulas | 9,126 | 1,939 |
+  | of all ties, by the search's distance: 1-2, 2-3, 3-5, over 5 gaps | 1,851, 1,107, 1,728, 4,708 | 390, 227, 478, 1,004 |
+  | rows whose density would rise | 4,533 | 1,434 |
+  | of them reaching the density limit: assigned, candidate, other tiers today | 7, 2,546, 480 | 14, 656, 431 |
+  | seconds of the extra pass, beside the seeded pass as it is: two runs | 176 and 146, beside 56 and 46 | 819 and 630, beside 787 and 558 |
+
+  No candidate tied within one gap outside a set, and every candidate was placed on its
+  peak. Two readings follow. The gap is not only the refit: runs that kept their first
+  model tie outside their sets too, so the search's ranking (its fit against the peak
+  list) and the run's measurement (the seeded re-score) separate candidates differently
+  at one model. And most ties come from candidates the search had more than five gaps
+  off, so a band near the tie would hold few of them. Seeding every scored candidate
+  cost 1.2 to 1.3 times the seeded pass's seconds over the sets in the two runs (3.2
+  times on the refit runs), not tens. Whether to widen the membership is the plan
+  owner's decision (MAS-1184's Decision issue).
+
   **`p_correct` stays null on Stage B rows.** The scale objection is gone: both stages'
   fit is the seeded `ion_score_v2` re-score (milestone 2), so the curve would no longer be
   read across the v1/v2 gap. What still does not match is the population: the provisional

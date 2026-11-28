@@ -106,6 +106,11 @@ class CompositionSearchConfig:
     element_count_ranges: str = config.DEFAULT_SEARCH_ELEMENT_COUNT_RANGES
     mass_range_ppm: float = config.DEFAULT_MASS_RANGE_THRESHOLD_PPM
     peak_height_threshold: float = 0.0
+    #: Hand over, on each committed reading, every other formula the search
+    #: scored for its peak (``finder.SCORED_RIVALS``, ``ReadingRivals.scored``),
+    #: not only those it could not separate. A measurement's input (MAS-1184):
+    #: nothing the search ranks or commits reads it.
+    scored_rivals: bool = False
 
 
 @dataclass(frozen=True)

@@ -214,6 +214,126 @@ def run_config(runs: pd.DataFrame | None, run_id: str | None) -> dict:
 MEASUREMENT_MODEL_KEY = "measurement_model"
 
 
+#: What a run's search scope calls the count of the candidates its search
+#: scored outside its rival sets, where the run was asked for it
+#: (``count_scored_rivals``, the backend's ``peak_assignments.rival_count``).
+SCORED_RIVALS_KEY = "scored_rivals"
+
+#: The card's groups of those runs: the runs that took their refitted model,
+#: whose sets were named at an older model than they were measured at, and
+#: the runs that kept their first model, whose were not.
+SCORED_RIVALS_GROUPS = (
+    ("refit_taken", "Runs that took their refitted model"),
+    ("first_model", "Runs that kept their first model"),
+)
+
+#: The count's numbers the card sums, as dotted keys of the run's record, with
+#: the label of each row. A reading's kind is ``list`` (a list compound) or
+#: ``search`` (a formula the search found).
+SCORED_RIVALS_ROWS = (
+    ("runs", "runs"),
+    *(
+        (f"{kind}.{key}", f"{what}: {label}")
+        for kind, what in (("list", "list compounds"), ("search", "search formulas"))
+        for key, label in (
+            ("readings", "readings counted"),
+            ("scored", "candidates scored"),
+            ("held", "held by the set today"),
+            ("outside", "placed outside the set"),
+            ("not_placed", "not placed on the peak"),
+            ("ties.within_1", "tie at the caps' model, within 1 gap"),
+            ("ties.1_to_2", "tie, 1 to 2 gaps off at the search"),
+            ("ties.2_to_3", "tie, 2 to 3 gaps off"),
+            ("ties.3_to_5", "tie, 3 to 5 gaps off"),
+            ("ties.over_5", "tie, over 5 gaps off"),
+        )
+    ),
+    ("density_rises", "rows whose density would rise"),
+    ("reach_limit.assigned", "of them to the density limit, assigned today"),
+    ("reach_limit.candidate", "to the limit, candidate today"),
+    ("reach_limit.other", "to the limit, another tier today"),
+    ("would_cap", "of those the density rule would cap"),
+    ("seconds", "seconds of the extra pass"),
+    ("seeded_seconds", "seconds of the seeded pass as it is"),
+)
+
+
+def scored_rivals_counts(config: dict | None) -> tuple[str, dict[str, float]] | None:
+    """A run's count of the candidates its search scored outside its rival
+    sets, flattened to :data:`SCORED_RIVALS_ROWS`' keys, with its group of
+    :data:`SCORED_RIVALS_GROUPS`; None for a run that did not count them."""
+    record = ((config or {}).get(SEARCH_SCOPE_KEY) or {}).get(SCORED_RIVALS_KEY)
+    if not isinstance(record, dict):
+        return None
+    counts: dict[str, float] = {"runs": 1}
+    for key, _label in SCORED_RIVALS_ROWS[1:]:
+        if key.startswith("reach_limit."):
+            continue
+        value = record
+        for part in key.split("."):
+            value = value.get(part) if isinstance(value, dict) else None
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            counts[key] = value
+    for tier, n in (record.get("reach_limit") or {}).items():
+        key = f"reach_limit.{tier if tier in ('assigned', 'candidate') else 'other'}"
+        counts[key] = counts.get(key, 0) + n
+    group = "refit_taken" if record.get("refit_taken") else "first_model"
+    return group, counts
+
+
+def summed_scored_rivals(groups: Iterable[dict]) -> dict[str, dict[str, float]]:
+    """Columns' or runs' counts by group (:func:`scored_rivals_counts`), summed."""
+    out: dict[str, dict[str, float]] = {}
+    for one in groups:
+        for group, counts in (one or {}).items():
+            into = out.setdefault(group, {})
+            for key, n in counts.items():
+                into[key] = round(into.get(key, 0) + n, 3)
+    return out
+
+
+def scored_rivals_lines(card: dict, names: list[str]) -> list[str]:
+    """The card's section of the scored rivals' count, for the sets of
+    ``names``: per group of runs, a row per number and a column per set.
+    Nothing where no run of those sets counted them, so a card without the
+    option is the card it always was."""
+    shown = [name for name in names if card["columns"][name].get(SCORED_RIVALS_KEY)]
+    if not shown:
+        return []
+    lines = ["", "## The candidates outside the rival sets", "", SCORED_RIVALS_NOTE]
+    for group, title in SCORED_RIVALS_GROUPS:
+        sets = [
+            name for name in shown if group in card["columns"][name][SCORED_RIVALS_KEY]
+        ]
+        if not sets:
+            continue
+        lines += [
+            "",
+            f"### {title}",
+            "",
+            "| count | " + " | ".join(sets) + " |",
+            "|---|" + "---|" * len(sets),
+        ]
+        for key, label in SCORED_RIVALS_ROWS:
+            cells = [
+                card["columns"][name][SCORED_RIVALS_KEY][group].get(key, 0)
+                for name in sets
+            ]
+            lines.append(
+                f"| {label} | " + " | ".join(f"{cell:g}" for cell in cells) + " |"
+            )
+    return lines
+
+
+#: What the scored rivals' section reads.
+SCORED_RIVALS_NOTE = (
+    "Runs with `count_scored_rivals` on. Every candidate the search scored for a "
+    "committed reading, measured at the model the run's caps read; one that ties "
+    "the reading there by the one tie rule, though its rival set does not hold it, "
+    "is counted by how far the search had it, in tie gaps. No row changes by it."
+)
+
+
 def model_version(config: dict | None) -> str:
     """The measurement model a run scored and capped at, as the card counts it:
     ``v1``, ``v2`` (``v<n>`` for any version the record states), or
@@ -2009,6 +2129,7 @@ def card_markdown(card: dict, names: list[str] | None = None) -> str:
     if metrics.SERIES_LIFTED_METRICS[0][0] in keys:
         lines += ["", SERIES_NOTE]
     lines += batch_arm_lines(card, names)
+    lines += scored_rivals_lines(card, names)
     baseline = card.get("baseline")
     if baseline is not None:
         moved = [one for one in baseline["moved"] if one["set"] in names]
@@ -2341,6 +2462,7 @@ class _Column:
         self.rules: set[int] = set()
         self.level_rules: set[int] = set()
         self.models: dict[str, int] = {}
+        self.scored_rivals: dict[str, dict[str, float]] = {}
 
     def add(self, sample_id: str, one: dict, version_b: str | None) -> None:
         self.frames.append(one["joined"])
@@ -2355,6 +2477,12 @@ class _Column:
             self.level_rules.add(one["level"])
         model = model_version(one["config"])
         self.models[model] = self.models.get(model, 0) + 1
+        counted = scored_rivals_counts(one["config"])
+        if counted is not None:
+            group, counts = counted
+            self.scored_rivals = summed_scored_rivals(
+                [self.scored_rivals, {group: counts}]
+            )
 
     def result(self) -> dict:
         return {
@@ -2365,6 +2493,7 @@ class _Column:
             "tiering_rules": sorted(self.rules),
             "level_rules": sorted(self.level_rules),
             "model_versions": dict(sorted(self.models.items())),
+            SCORED_RIVALS_KEY: self.scored_rivals,
         }
 
 
@@ -2702,6 +2831,11 @@ def build_card(collected: dict[str, dict], manifest: dict, args) -> dict:
             "tiering_rules": one["tiering_rules"],
             "level_rules": one.get("level_rules", []),
             "decoys_not_read": _not_read_arms(one["decoy"]),
+            **(
+                {SCORED_RIVALS_KEY: one[SCORED_RIVALS_KEY]}
+                if one.get(SCORED_RIVALS_KEY)
+                else {}
+            ),
             "readings": (
                 metrics.card_readings(
                     frame,
@@ -2727,6 +2861,15 @@ def build_card(collected: dict[str, dict], manifest: dict, args) -> dict:
         "tiering_rules": sorted({v for one in read for v in one["tiering_rules"]}),
         "level_rules": sorted({v for one in read for v in one.get("level_rules", [])}),
         "decoys_not_read": {},
+        **(
+            {SCORED_RIVALS_KEY: pooled_rivals}
+            if (
+                pooled_rivals := summed_scored_rivals(
+                    one.get(SCORED_RIVALS_KEY) for one in read
+                )
+            )
+            else {}
+        ),
         "readings": metrics.card_readings(
             pooled_frame,
             skipped=sum(one["skipped"] for one in collected.values()),

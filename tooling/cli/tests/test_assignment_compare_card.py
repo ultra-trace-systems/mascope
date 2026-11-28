@@ -2992,3 +2992,125 @@ def test_a_baseline_without_the_model_rows_reads_them_as_new_and_fails_nothing(
     # The gate against the baseline reads no new miss off them.
     assert card["gate"]["against"]["new"] == []
     assert card["gate"]["verdict"] == "pass" and code == 0
+
+
+def _scored_rivals(refit, ties=1, reach=None):
+    """A run's count of the candidates its search scored outside its rival
+    sets, as ``rival_count`` records it in the search scope (MAS-1184)."""
+    kind = {
+        "readings": 4,
+        "scored": 40,
+        "held": 6,
+        "outside": 30,
+        "not_placed": 4,
+        "ties": {
+            "within_1": 0,
+            "1_to_2": ties,
+            "2_to_3": 0,
+            "3_to_5": 0,
+            "over_5": 0,
+        },
+    }
+    return {
+        "list": {**kind, "readings": 1, "ties": {**kind["ties"], "1_to_2": 0}},
+        "search": kind,
+        "density_rises": ties,
+        "reach_limit": reach or {},
+        "would_cap": sum((reach or {}).values()),
+        "density_limit": 2,
+        "refit_taken": refit,
+        "named_at_version": 1,
+        "measured_at_version": 2 if refit else 1,
+        "seeds_measured": 30,
+        "seconds": 1.5,
+        "seeded_seconds": 0.5,
+    }
+
+
+def test_a_run_s_count_is_flattened_by_its_group():
+    group, counts = compare_runs.scored_rivals_counts(
+        {
+            "search_scope": {
+                "scored_rivals": _scored_rivals(
+                    True, reach={"assigned": 1, "x": 2, "y": 1}
+                )
+            }
+        }
+    )
+    assert group == "refit_taken"
+    assert counts["runs"] == 1
+    assert counts["search.ties.1_to_2"] == 1
+    assert counts["list.readings"] == 1
+    assert counts["reach_limit.assigned"] == 1
+    assert counts["reach_limit.other"] == 3
+    assert counts["would_cap"] == 4
+    assert counts["seconds"] == 1.5
+    assert compare_runs.scored_rivals_counts({"search_scope": {}}) is None
+    assert compare_runs.scored_rivals_counts(None) is None
+
+
+def test_runs_counts_are_summed_by_their_group():
+    summed = compare_runs.summed_scored_rivals(
+        [
+            {"refit_taken": {"runs": 1, "seconds": 0.25}},
+            {"refit_taken": {"runs": 1, "seconds": 0.5}, "first_model": {"runs": 1}},
+            None,
+        ]
+    )
+    assert summed == {
+        "refit_taken": {"runs": 2, "seconds": 0.75},
+        "first_model": {"runs": 1},
+    }
+
+
+def test_the_card_shows_the_scored_rivals_per_set_apart_by_the_refit(served, tmp_path):
+    # s1, set A, took its refit and has a candidate tie at v2 that takes an
+    # assigned row to the density limit; s2, set G, kept its first model.
+    for sample, record in (
+        ("s1", _scored_rivals(True, reach={"assigned": 1})),
+        ("s2", _scored_rivals(False, ties=0)),
+    ):
+        run = _Client.runs[sample][0]
+        run["config"] = {
+            **run["config"],
+            "search_scope": {**run["config"]["search_scope"], "scored_rivals": record},
+        }
+    out = tmp_path / "card"
+    compare_runs.main(["--sets", str(served), "--card", str(out)])
+    card = json.loads((out / "card.json").read_text())
+    columns = card["columns"]
+    assert set(columns["A"]["scored_rivals"]) == {"refit_taken"}
+    assert set(columns["G"]["scored_rivals"]) == {"first_model"}
+    assert columns["A"]["scored_rivals"]["refit_taken"]["search.ties.1_to_2"] == 1
+    assert columns["A"]["scored_rivals"]["refit_taken"]["reach_limit.assigned"] == 1
+    assert columns["G"]["scored_rivals"]["first_model"]["search.ties.1_to_2"] == 0
+    # The pooled column adds each group over the sets.
+    assert columns["pooled"]["scored_rivals"] == {
+        "refit_taken": columns["A"]["scored_rivals"]["refit_taken"],
+        "first_model": columns["G"]["scored_rivals"]["first_model"],
+    }
+    text = (out / "card.md").read_text()
+    assert "## The candidates outside the rival sets" in text
+    refit = text.index("### Runs that took their refitted model")
+    first = text.index("### Runs that kept their first model")
+    assert "| count | A | pooled |" in text[refit:first]
+    assert "| count | G | pooled |" in text[first:]
+    assert (
+        "| search formulas: tie, 1 to 2 gaps off at the search | 1 | 1 |"
+        in (text[refit:first])
+    )
+    assert (
+        "| of them to the density limit, assigned today | 1 | 1 |"
+        in (text[refit:first])
+    )
+    assert "| seconds of the extra pass | 1.5 | 1.5 |" in text[first:]
+    # The count is no reading: it moves no metric and no gate reads it.
+    assert not any("scored" in key for key in columns["A"]["readings"])
+
+
+def test_a_card_of_runs_without_the_option_shows_no_count(served, tmp_path):
+    out = tmp_path / "card"
+    compare_runs.main(["--sets", str(served), "--card", str(out)])
+    card = json.loads((out / "card.json").read_text())
+    assert all("scored_rivals" not in column for column in card["columns"].values())
+    assert "outside the rival sets" not in (out / "card.md").read_text()

@@ -2354,6 +2354,9 @@ class ListElection:
         alone could not separate and its evidence did, by its peak
         (``finder.ReadingRivals.fit_tied``): measured into its rival set
         apart, for the identification level (``rival_set.fit_tied_seeds``).
+    :param scored_by_peak: With the run option ``count_scored_rivals`` on,
+        every grid formula scored beside each kept list hit, by its peak
+        (``finder.ReadingRivals.scored``), which only ``rival_count`` reads.
     """
 
     stage_a: list[dict]
@@ -2363,6 +2366,7 @@ class ListElection:
     summary: dict
     rivals_by_peak: dict[str, tuple[dict, ...]] = field(default_factory=dict)
     fit_tied_by_peak: dict[str, tuple[dict, ...]] = field(default_factory=dict)
+    scored_by_peak: dict[str, tuple[dict, ...]] = field(default_factory=dict)
 
 
 def settle_list_election(
@@ -2444,6 +2448,11 @@ def settle_list_election(
             str(row["sample_peak_id"]): found.fit_tied
             for row, found in zip(kept_rows, kept_measured, strict=True)
             if found is not None and found.fit_tied
+        },
+        scored_by_peak={
+            str(row["sample_peak_id"]): found.scored
+            for row, found in zip(kept_rows, kept_measured, strict=True)
+            if found is not None and found.scored
         },
         summary={
             "measured": recorded["measured"] + len(displaced),
