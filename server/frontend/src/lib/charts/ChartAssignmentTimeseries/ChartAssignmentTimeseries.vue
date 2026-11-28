@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, shallowRef, computed, watch, nextTick } from 'vue'
 
 import ToggleSwitch from 'primevue/toggleswitch'
 
@@ -28,7 +28,8 @@ const props = defineProps({
 })
 
 const plot = ref(null)
-const traces = ref([])
+// The fetched time series, one per member peak: { peakId, response }.
+const series = shallowRef([])
 const loading = ref(false)
 const log = ref(true)
 
@@ -39,6 +40,45 @@ const focusedAssignment = computed(() =>
   app.data.peakAssignment.peak.forPeak(app.data.peak.focused?.peak_id)
 )
 const family = computed(() => app.data.peakAssignment.peak.familyOf(focusedAssignment.value))
+
+// A sample the batch ledger serves: its rows store no isotope labels or
+// formulas, so read alone they name each line by its m/z. The inspector card
+// measures the family's composition against this sample's peaks on focus
+// (`loadEvidence`, through the M0) and names the lines from that measurement;
+// the chart reads the same record from the store and asks for none of its own.
+// Until it arrives the lines keep their m/z.
+const ledgerServed = computed(() => app.data.peakAssignment.peak.run?.engine === 'batch')
+const familyM0 = computed(() => app.data.peakAssignment.peak.m0Of(focusedAssignment.value))
+const measured = computed(() =>
+  ledgerServed.value && familyM0.value
+    ? (app.data.peakAssignment.peak.evidenceOf(familyM0.value.peak_assignment_id) ?? null)
+    : null
+)
+// The measured isotopologues by the peak each paired to.
+const measuredByPeak = computed(() => {
+  const map = new Map()
+  for (const iso of measured.value?.isotopologues ?? []) {
+    if (iso.sample_peak_id != null) map.set(String(iso.sample_peak_id), iso)
+  }
+  return map
+})
+// A family row with the measured label filled in where it has none of its own.
+// The stored label always wins, so a run's own row reads exactly as it did.
+const withMeasured = (iso) => {
+  const record = measured.value
+  if (!record || iso.isotope_formula || iso.isotope_label) return iso
+  if (iso.peak_assignment_id === familyM0.value?.peak_assignment_id) {
+    return { ...iso, isotope_label: 'M0' }
+  }
+  const found = measuredByPeak.value.get(String(iso.sample_peak_id))
+  return found
+    ? {
+        ...iso,
+        isotope_label: found.isotope_label ?? null,
+        isotope_formula: found.isotope_formula ?? null
+      }
+    : iso
+}
 
 // Compact substitution label (e.g. "[13C]") from the isotopologue formula, with
 // the offset label ("M0", "M+1") as the fallback for untargeted isotopologues.
@@ -68,6 +108,7 @@ const members = computed(() => {
   if (fam.length) {
     return fam
       .filter((iso) => iso.sample_peak_id != null && inSample.has(String(iso.sample_peak_id)))
+      .map(withMeasured)
       .map((iso) => ({
         peakId: iso.sample_peak_id,
         mz: iso.sample_peak_mz,
@@ -86,6 +127,9 @@ const sampleId = computed(() => app.data.sample.focusedId)
 
 // A stable key over (sample, peak-id set): focusing a different member of the
 // same family leaves it unchanged, so we don't refetch identical time series.
+// A label that changes (the ledger's measurement arriving) leaves it unchanged
+// too: the traces take their names from `members` when they are drawn, not
+// when they are fetched.
 const membersKey = computed(() =>
   JSON.stringify([sampleId.value, members.value.map((m) => m.peakId)])
 )
@@ -97,7 +141,7 @@ async function load() {
   const mem = members.value
   const token = ++requestToken
   if (!sid || !mem.length) {
-    traces.value = []
+    series.value = []
     loading.value = false
     return
   }
@@ -117,47 +161,59 @@ async function load() {
     // A newer focus superseded this request while it was in flight.
     if (token !== requestToken) return
 
-    const built = results
+    series.value = results
       .filter(({ response }) => response?.time?.length)
-      .map(({ member, response }, index) => ({
-        name: member.label,
-        type: 'scatter',
-        mode: 'lines',
-        line: { color: palette[index % palette.length], width: index === 0 ? 2 : 1.3 },
+      .map(({ member, response }) => ({
+        peakId: member.peakId,
+        mz: member.mz,
         x: new Float32Array(response.time),
-        y: new Float32Array(response.height),
-        hovertemplate:
-          [`<i>${member.label}</i>`, 't: <b>%{x:.1f} s</b>', 'intensity: <b>%{y:.3e}</b>'].join(
-            '<br>'
-          ) + '<extra></extra>'
+        y: new Float32Array(response.height)
       }))
-
-    // Sum trace (total for the family) when every member shares a time axis.
-    if (built.length > 1) {
-      const len = built[0].y.length
-      if (built.every((trace) => trace.y.length === len)) {
-        const sum = new Float32Array(len)
-        for (const trace of built) {
-          for (let i = 0; i < len; i += 1) sum[i] += trace.y[i]
-        }
-        built.push({
-          name: 'Sum',
-          type: 'scatter',
-          mode: 'lines',
-          line: { color: '#9aa2b1', width: 1, dash: 'dot' },
-          x: built[0].x,
-          y: sum,
-          hovertemplate:
-            ['<i>Sum</i>', 't: <b>%{x:.1f} s</b>', 'intensity: <b>%{y:.3e}</b>'].join('<br>') +
-            '<extra></extra>'
-        })
-      }
-    }
-    traces.value = built
   } finally {
     if (token === requestToken) loading.value = false
   }
 }
+
+// The fetched series as Plotly traces, each named by its member's current
+// label, plus the family's sum when every member shares a time axis.
+const traces = computed(() => {
+  const labels = new Map(members.value.map((m) => [String(m.peakId), m.label]))
+  const built = series.value.map(({ peakId, mz, x, y }, index) => {
+    const label = labels.get(String(peakId)) ?? num.mz.format(mz)
+    return {
+      name: label,
+      type: 'scatter',
+      mode: 'lines',
+      line: { color: palette[index % palette.length], width: index === 0 ? 2 : 1.3 },
+      x,
+      y,
+      hovertemplate:
+        [`<i>${label}</i>`, 't: <b>%{x:.1f} s</b>', 'intensity: <b>%{y:.3e}</b>'].join('<br>') +
+        '<extra></extra>'
+    }
+  })
+  if (built.length > 1) {
+    const len = built[0].y.length
+    if (built.every((trace) => trace.y.length === len)) {
+      const sum = new Float32Array(len)
+      for (const trace of built) {
+        for (let i = 0; i < len; i += 1) sum[i] += trace.y[i]
+      }
+      built.push({
+        name: 'Sum',
+        type: 'scatter',
+        mode: 'lines',
+        line: { color: '#9aa2b1', width: 1, dash: 'dot' },
+        x: built[0].x,
+        y: sum,
+        hovertemplate:
+          ['<i>Sum</i>', 't: <b>%{x:.1f} s</b>', 'intensity: <b>%{y:.3e}</b>'].join('<br>') +
+          '<extra></extra>'
+      })
+    }
+  }
+  return built
+})
 
 watch(membersKey, load, { immediate: true })
 
