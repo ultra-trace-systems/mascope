@@ -565,6 +565,10 @@ async def test_the_fold_anchors_its_gate_on_the_source_s_lines_as_a_run_does(
     """Five library lines are too few to fit a calibration; with the source's
     three ladder ions they are enough, here as in a run, and the row off
     calibration is capped on this ledger as the run that replaces it caps it.
+
+    Each library line has the 13C line that tracks it, which is what makes it
+    an anchor (MAS-1250). The row off calibration is one a reference list names
+    too, so that only the gate is asked of it, not the lone-peak rule.
     """
     from mascope_backend.api.new.peak_assignments.batch_fold import (
         fold_sample_peaks_without_run,
@@ -581,8 +585,21 @@ async def test_the_fold_anchors_its_gate_on_the_source_s_lines_as_a_run_does(
             "target_compound_id": f"compound-{row_id}",
         }
 
-    rows = [stage_a_row(f"anchor-{i}", 0.1 if i % 2 else -0.1) for i in range(5)]
-    rows.append(stage_a_row("off", 5.0))
+    rows = []
+    for i in range(5):
+        anchor = stage_a_row(f"anchor-{i}", 0.1 if i % 2 else -0.1)
+        rows += [
+            anchor,
+            stage_a_row(f"anchor-{i}-13C", anchor["mz_error_ppm"])
+            | {
+                "role": "iso_child",
+                "isotope_label": "13C",
+                "owner_peak_assignment_id": f"anchor-{i}",
+            },
+        ]
+    off = stage_a_row("off", 5.0)
+    off["provenance"] = {"p_correct": 0.9, "reference_identities": [{"name": "x"}]}
+    rows.append(off)
     ladder = {cluster.label: cluster.mz for cluster in reagent_library("UR")}
     labels = ("[CH4N2O+H]+", "[(CH4N2O)2+H]+", "[(CH4N2O)3+H]+")
     stack, mocks = _patched()

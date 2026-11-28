@@ -5157,7 +5157,15 @@ fix; and the per-range publish above.
     recorded is lifted, as the rule fails open on a row with no channel
     record. The series stays an escape from the density and context-prior
     caps at any S/N. Two batches of one instrument type: the floor is read
-    again when a third chemistry is measured.
+    again when a third chemistry is measured. Amended 2026-11-26 by the
+    plan owner (MAS-1250): the list that lifts a row is a reference list. A
+    row only the target library names is asked as a search row is, since a
+    target library is written by the user and can hold anything (MAS-885);
+    a target row a reference list names too is the list's. Beside it the
+    target library's word no longer corroborates a row in the mass gate
+    nor holds it against an assigned neighbour's envelope claim; it keeps
+    its peak against the finder's rivals, the reagent ladder and the
+    batch's claims (MAS-1089).
 26. **One margin, read both ways, and the declared channel keeps its
     formula** (taken 2026-09-25 by the plan owner, on the pass-8 reading of
     step 3.1c). A reading through the mode's own channel is settled by its

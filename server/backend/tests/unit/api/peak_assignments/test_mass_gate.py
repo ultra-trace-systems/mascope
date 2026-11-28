@@ -19,7 +19,6 @@ import pytest
 from mascope_backend.api.new.peak_assignments.envelope_claims import ENVELOPE_CLAIM
 from mascope_backend.api.new.peak_assignments.mass_gate import (
     BELOW_ASSIGNABILITY_Z,
-    CORROBORATED_CURATED,
     CORROBORATED_ISOTOPOLOGUE,
     OFF_CALIBRATION_Z,
     OVERLAP_PUSH_FWHM,
@@ -139,27 +138,46 @@ def _mirror(row_id, **fields):
     return _row(row_id, source="database", **fields)
 
 
-def _anchors(count, *, ppm=0.0, spread=0.1, start=0):
-    """`count` corroborated commits scattered evenly about `ppm`."""
+def _tracked(row_id, *, ppm=0.0, **fields):
+    """A target library row and its isotopologue, which tracks it: an anchor of
+    the run's calibration. The library's word alone is none (MAS-1250)."""
     return [
-        _library(f"anchor-{start + i}", ppm=ppm + (spread if i % 2 else -spread))
+        _library(row_id, ppm=ppm, **fields),
+        _library(f"{row_id}-13C", ppm=ppm, role="iso_child", owner=row_id, **fields),
+    ]
+
+
+def _monoisotopic(rows) -> int:
+    """How many of ``rows`` are monoisotopic, the rows a centre's line is
+    drawn over."""
+    return sum(1 for row in rows if row["role"] == "M0")
+
+
+def _anchors(count, *, ppm=0.0, spread=0.1, start=0):
+    """`count` corroborated commits scattered evenly about `ppm`, each with the
+    isotopologue that corroborates it."""
+    return [
+        row
         for i in range(count)
+        for row in _tracked(
+            f"anchor-{start + i}", ppm=ppm + (spread if i % 2 else -spread)
+        )
     ]
 
 
 class TestWhatCorroboratesACommit:
     """Which rows the run has more than a mass fit for."""
 
-    def test_a_curated_row_is_corroborated_by_its_library(self):
+    def test_a_target_library_row_alone_is_corroborated_by_nothing(self):
+        # A target library is written by the user and can hold anything
+        # (MAS-885): its word names a compound, not a second place in the
+        # spectrum, so it is no corroboration (MAS-1250).
         rows = [_library("a")]
 
-        assert corroboration_of(rows, precision_ppm=PRECISION) == {
-            "a": CORROBORATED_CURATED
-        }
+        assert corroboration_of(rows, precision_ppm=PRECISION) == {"a": None}
 
-    def test_a_confirmed_envelope_is_answered_ahead_of_curation(self):
-        # Both are true of a library row whose isotopologue tracks it, and the
-        # envelope is the answer the cap reads.
+    def test_a_target_library_row_an_isotopologue_tracks_is_corroborated(self):
+        # The second place in the spectrum that corroborates a search result.
         rows = [
             _library("m0", ppm=0.4),
             _library("child", ppm=0.5, role="iso_child", owner="m0"),
@@ -170,15 +188,15 @@ class TestWhatCorroboratesACommit:
             "child": CORROBORATED_ISOTOPOLOGUE,
         }
 
-    def test_a_library_isotopologue_that_does_not_track_is_only_curated(self):
+    def test_a_library_isotopologue_that_does_not_track_corroborates_nothing(self):
         rows = [
             _library("m0", ppm=0.0),
             _library("child", ppm=2.5, role="iso_child", owner="m0"),
         ]
 
         assert corroboration_of(rows, precision_ppm=PRECISION) == {
-            "m0": CORROBORATED_CURATED,
-            "child": CORROBORATED_CURATED,
+            "m0": None,
+            "child": None,
         }
 
     def test_a_reference_mirror_row_is_not_corroborated_by_its_list(self):
@@ -264,8 +282,8 @@ class TestTheRunsOwnCalibration:
         assert with_wild.anchors == without.anchors == 12
 
     def test_a_reference_mirror_row_does_not_anchor_the_calibration(self):
-        # Counted as curated, a loaded seed's chance lines anchored this fit and
-        # widened it: on the gate's three TOF sets from 3.0, 4.3 and 2.1 ppm to
+        # Counted as corroborated, a loaded seed's chance lines anchored this
+        # fit and widened it: on the gate's three TOF sets from 3.0, 4.3 and 2.1 ppm to
         # 7.0, 7.3 and 6.7.
         anchors = _anchors(12)
         chance = [_mirror(f"seed-{i}", ppm=-6.0 + i * 12.0 / 11) for i in range(12)]
@@ -280,6 +298,35 @@ class TestTheRunsOwnCalibration:
 
         assert with_chance.sigma_ppm == pytest.approx(without.sigma_ppm)
         assert with_chance.anchors == without.anchors == 12
+
+    def test_a_target_library_row_anchors_it_only_with_a_tracking_line(self):
+        # The library's word alone anchored this fit once (MAS-1250 took it
+        # away): twelve of its rows off the run's axis, with no isotopologue
+        # behind them, now move it no more than a mirror's would.
+        anchors = _anchors(12)
+        named = [_library(f"named-{i}", ppm=-6.0 + i * 12.0 / 11) for i in range(12)]
+        rows = anchors + named
+
+        alone = fit_run_mass_accuracy(
+            rows, corroboration_of(rows, precision_ppm=PRECISION)
+        )
+        without = fit_run_mass_accuracy(
+            anchors, corroboration_of(anchors, precision_ppm=PRECISION)
+        )
+
+        assert alone.sigma_ppm == pytest.approx(without.sigma_ppm)
+        assert alone.anchors == without.anchors == 12
+        # With a line that tracks each, the same rows anchor it.
+        tracked = anchors + [
+            row
+            for i in range(12)
+            for row in _tracked(f"named-{i}", ppm=-6.0 + i * 12.0 / 11)
+        ]
+        lined = fit_run_mass_accuracy(
+            tracked, corroboration_of(tracked, precision_ppm=PRECISION)
+        )
+        assert lined.anchors == 24
+        assert lined.sigma_ppm > without.sigma_ppm
 
     def test_too_few_corroborated_commits_measure_nothing(self):
         rows = _anchors(3)
@@ -374,9 +421,8 @@ class TestTheGate:
     def test_a_library_row_off_calibration_is_capped_like_a_mirrors(self):
         # The same error on the target library's row and on a mirror's. A list
         # names a compound, not where each of its lines has to sit, so neither
-        # identity is evidence the mass error does not overrule. The library's
-        # row still anchors the calibration it is judged against; the mirror's
-        # does not.
+        # identity is evidence the mass error does not overrule, and neither
+        # anchors the calibration it is judged against (MAS-1250).
         rows = _anchors(12, spread=0.1) + [
             _library("library", ppm=5.0),
             _mirror("seed", ppm=5.0),
@@ -384,25 +430,18 @@ class TestTheGate:
 
         summary, model = _gate(rows)
 
-        library, seed = rows[-2], rows[-1]
-        assert library["tier"] == TIER_BELOW_ASSIGNABILITY
-        assert library["provenance"]["mass_gate"] == {
-            "corroborated_by": CORROBORATED_CURATED,
-            "ceiling": TIER_BELOW_ASSIGNABILITY,
-            "capped": TIER_BELOW_ASSIGNABILITY,
-            "reason": REASON_OFF_CALIBRATION,
-        }
-        assert seed["tier"] == TIER_BELOW_ASSIGNABILITY
-        assert seed["provenance"]["mass_gate"] == {
-            "corroborated_by": None,
-            "ceiling": TIER_BELOW_ASSIGNABILITY,
-            "capped": TIER_BELOW_ASSIGNABILITY,
-            "reason": REASON_OFF_CALIBRATION,
-        }
+        for row in rows[-2:]:
+            assert row["tier"] == TIER_BELOW_ASSIGNABILITY
+            assert row["provenance"]["mass_gate"] == {
+                "corroborated_by": None,
+                "ceiling": TIER_BELOW_ASSIGNABILITY,
+                "capped": TIER_BELOW_ASSIGNABILITY,
+                "reason": REASON_OFF_CALIBRATION,
+            }
         assert summary["capped"] == 2
         assert summary["below_assignability"] == 2
-        assert summary["capped_curated"] == 1
-        assert _anchor_counts(summary) == (13, 0)
+        assert "capped_curated" not in summary
+        assert _anchor_counts(summary) == (12, 0)
 
     def test_a_library_row_an_isotopologue_tracks_is_kept(self):
         rows = _anchors(12, spread=0.1) + [
@@ -419,7 +458,7 @@ class TestTheGate:
         assert summary["capped"] == 0
 
     def test_a_library_isotopologue_off_its_own_line_is_capped(self):
-        # What the curation's exemption held at the top tier on the gate: an
+        # What a curation's exemption once held at the top tier on the gate: an
         # isotopologue line three widths off while its monoisotopic row sits on
         # calibration - a weak line, or one half of a partly resolved pair.
         rows = _anchors(12, spread=0.1) + [
@@ -433,13 +472,13 @@ class TestTheGate:
         assert m0["tier"] == TIER_ASSIGNED
         assert child["tier"] == TIER_CANDIDATE
         assert child["provenance"]["mass_gate"] == {
-            "corroborated_by": CORROBORATED_CURATED,
+            "corroborated_by": None,
             "tracking": TRACKING_UNTRACKED,
             "ceiling": TIER_CANDIDATE,
             "capped": TIER_CANDIDATE,
             "reason": REASON_OFF_CALIBRATION,
         }
-        assert (summary["capped"], summary["capped_curated"]) == (1, 1)
+        assert summary["capped"] == 1
 
     def test_it_only_ever_demotes(self):
         # A row the bands already put below the cap keeps the tier they gave it,
@@ -500,8 +539,10 @@ class TestTheGate:
         assert model.mu_source == "fitted"
         assert model.sigma_source == "fitted"
         assert _anchor_counts(summary) == (12, 0)
-        assert summary["committed"] == 13
-        assert summary["corroborated"] == 12
+        # Each anchor and the isotopologue that corroborates it, and the row
+        # off calibration.
+        assert summary["committed"] == 25
+        assert summary["corroborated"] == 24
         assert summary["cap_z"] == OFF_CALIBRATION_Z
         assert summary["floor_z"] == BELOW_ASSIGNABILITY_Z
         assert summary["capped"] == 1
@@ -611,7 +652,7 @@ class TestTheStageAOnlyLedger:
         summary, model = _gate(rows)
 
         assert summary["applied"] is True
-        assert (summary["capped"], summary["capped_curated"]) == (2, 2)
+        assert summary["capped"] == 2
         assert [rows[0]["tier"], rows[1]["tier"]] == [TIER_BELOW_ASSIGNABILITY] * 2
         assert all(row["tier"] == TIER_ASSIGNED for row in rows[2:-1])
         assert rows[-1]["tier"] == TIER_ASSIGNED
@@ -856,7 +897,7 @@ class TestTheSourcesOwnLines:
         without = fit_run_mass_accuracy(rows, corroboration)
 
         assert with_lines.trend == without.trend
-        assert with_lines.trend_rows == without.trend_rows == len(rows)
+        assert with_lines.trend_rows == without.trend_rows == _monoisotopic(rows)
         assert with_lines.reagent_anchors == 40
 
     def test_the_gate_judges_at_them_and_leaves_them_as_they_were(self):
@@ -868,8 +909,9 @@ class TestTheSourcesOwnLines:
 
         assert summary["applied"]
         assert _anchor_counts(summary) == (16, 9)
-        # The commits are still the commits: a source line is not judged.
-        assert (summary["committed"], summary["corroborated"]) == (8, 7)
+        # The commits are still the commits, the anchors' isotopologues among
+        # them: a source line is not judged.
+        assert (summary["committed"], summary["corroborated"]) == (15, 14)
         assert rows[-1]["tier"] == TIER_CANDIDATE
         assert summary["capped"] == 1
         assert lines == before
@@ -1011,8 +1053,11 @@ def _trend_run(probe_ppm, probe_mz=61.0, *, located=True):
         return mz if located else None
 
     anchors = [
-        _library(f"anchor-{i}", ppm=_centre(mz) + (0.05 if i % 2 else -0.05), mz=at(mz))
+        row
         for i, mz in enumerate(250.0 + 150.0 * i / 11 for i in range(12))
+        for row in _tracked(
+            f"anchor-{i}", ppm=_centre(mz) + (0.05 if i % 2 else -0.05), mz=at(mz)
+        )
     ]
     commits = [
         _row(f"commit-{i}", ppm=_centre(mz) + (0.05 if i % 2 else -0.05), mz=at(mz))
@@ -1098,7 +1143,7 @@ class TestTheCentreFollowsTheMassRange:
         assert alone.trend is None
         assert alone.trend_refused == TREND_TOO_FEW_POINTS
         assert calibration.trend.offset_mda == pytest.approx(TREND_OFFSET_MDA, abs=0.01)
-        assert calibration.trend_rows == len(rows)
+        assert calibration.trend_rows == _monoisotopic(rows)
         assert (calibration.mu_ppm, calibration.sigma_ppm, calibration.anchors) == (
             alone.mu_ppm,
             alone.sigma_ppm,
@@ -1530,13 +1575,18 @@ class TestHowAnIsotopologueFollowsItsParent:
             _row("lost", ppm=0.1, role="iso_child", owner="nobody"),
         ]
 
-        assert isotopologue_tracking(rows, precision_ppm=PRECISION, lines=lines) == {
+        def read(**kwargs):
+            # Less the anchors' own lines, which track.
+            tracking = isotopologue_tracking(rows, precision_ppm=PRECISION, **kwargs)
+            return {k: v for k, v in tracking.items() if not k.startswith("anchor-")}
+
+        assert read(lines=lines) == {
             "child": TRACKING_IN_DOUBT,
             "lost": TRACKING_UNTRACKED,
         }
         # Without the spectrum every line is one the class describes, and a
         # miss the faint line's noise explained is a miss.
-        assert isotopologue_tracking(rows, precision_ppm=PRECISION) == {
+        assert read() == {
             "child": TRACKING_UNTRACKED,
             "lost": TRACKING_UNTRACKED,
         }
@@ -1707,7 +1757,8 @@ class TestTheGateOnAnIsotopologue:
         summary, model = _gate(rows, lines=lines)
 
         assert summary["isotopologues"] == {
-            TRACKING_TRACKS: 1,
+            # The twelve anchors' lines, and this one.
+            TRACKING_TRACKS: 12 + 1,
             TRACKING_IN_DOUBT: 1,
             TRACKING_UNTRACKED: 1,
         }
@@ -1717,7 +1768,7 @@ class TestTheGateOnAnIsotopologue:
         bare, _ = _gate(_anchors(12))
         assert (bare["lines"]["noise"], bare["lines"]["resolution"]) == (False, False)
         assert bare["isotopologues"] == {
-            TRACKING_TRACKS: 0,
+            TRACKING_TRACKS: 12,
             TRACKING_IN_DOUBT: 0,
             TRACKING_UNTRACKED: 0,
         }

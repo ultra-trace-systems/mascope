@@ -1070,15 +1070,20 @@ What caps a row at candidate:
 - **one peak only** — the formula search found the formula on one peak, and nothing
   else in the run saw it: no line of its own isotope pattern is committed beside it, no
   second ionization channel committed the same neutral, no homologous series of the
-  batch names it, and it was not matched from a list. However well it fits, one line is one observation. A faint line matches its
+  batch names it, and no reference list names it. However well it fits, one line is one
+  observation. A faint line matches its
   isotope pattern perfectly by having no other line to match, and on a TOF its mass
   error is judged against a width of several ppm, so the top tier asks for a second
   one: the isotope or adduct evidence [Schymanski et al. 2014][sch14] ask of a formula
   before calling it unequivocal. An isotope line whose mass error does not follow the
   row's (*off its M0*, below) does not count, since it is more likely another peak
-  inside the matching window; a line *in doubt* does. A formula matched from your
-  target library or a reference list is not asked: the list is its second
-  observation. A series counts only on a peak with a signal-to-noise of 4 or more.
+  inside the matching window; a line *in doubt* does. A formula a reference list names
+  is not asked: the list is its second observation. A compound only your own target
+  library names is asked, as a formula of the search is: your library is yours to
+  write and can hold anything, so naming a compound there is not a second observation
+  of it. It still shows its match, and keeps its peak against the search's rivals
+  (*The two stages*, above), the source's ladders and the batch's claims. A series
+  counts only on a peak with a signal-to-noise of 4 or more.
   Under 4 the formulas a series lifted agreed with the reference engine clearly less
   often than the run's own *assigned* formulas, on both the demo's bromide and uronium
   batches. Such a row stays a *candidate*, and the reason names the series, the floor
@@ -1189,10 +1194,11 @@ What caps a row at candidate:
   run's calibration. The formula it held before is the
   first of its close alternatives, so assigning it by hand puts it back. The peak stays
   what it was, with the reason saying why, where the neighbour is at *candidate*, where
-  the peak is a compound of your own target library, where another ionization channel
-  of the run committed its neutral, where the neighbour already has a line there, or
+  another ionization channel of the run committed its neutral, where the neighbour already has a line there, or
   where the peak's mass error does not follow the neighbour's even allowing for what the
-  line can deliver (next item). The peak's own isotope lines go with it where the
+  line can deliver (next item). A compound of your own target library is read as the
+  neighbour's line too: your library names a compound, not which of two readings a
+  peak is. The peak's own isotope lines go with it where the
   neighbour's pattern predicts them too, and are left unassigned where it does not.
   Every check then runs again over what the run now holds, so the calibration is no
   longer measured with the peak as a compound of its own.
@@ -1257,12 +1263,13 @@ What caps a row at candidate:
   search's results, no second channel and no list behind it, however many isotope lines
   it has; for a list's reading through a channel the run opened, no isotope line and no
   second channel. The calibration check
-  exempts only a line one of whose isotopologues tracks its mass error: your library's
-  lines help measure the calibration, but a list names a compound rather than where each
-  of its lines has to sit, so a line of it far off calibration with no isotopologue
-  behind it is capped like any other. A formula from a loaded reference list is a prior
-  matched against every sample rather than a list assembled for your data, and its
-  matches play no part in measuring the sample's own mass accuracy. The source's own
+  exempts only a line one of whose isotopologues tracks its mass error. A list names a
+  compound rather than where each of its lines has to sit, so a line of your target
+  library or of a loaded reference list far off calibration with no isotopologue behind
+  it is capped like any other. For the same reason such a line helps measure the
+  calibration only where an isotopologue tracks it, as a line the formula search found
+  does. Your target library is yours to write and can hold anything, so its word alone
+  is not a second observation of where the axis sits. The source's own
   ions do: the monoisotopic lines the run set aside as *reagent* peaks (*The ions a
   source makes of itself*, above) are the best-known masses in the file, and they
   measure the calibration beside the run's corroborated assignments. On a
@@ -1286,9 +1293,9 @@ What a row that keeps its tier kept it on: **second channel** (the same neutral 
 through two or more of the run's ionization channels), **second line** (a line of its own
 isotope pattern committed with it, named with its m/z), **in a series** (a homologous
 series of the batch proposed the formula: *Detecting series*, below, which the reason
-names with its step and the assigned compound the series starts at), **on a list** (matched from your
-target library or a reference list, named with the list's compound; the formula search
-did not elect it), **same ion, settled** (the ion
+names with its step and the assigned compound the series starts at), **on a list** (matched from a
+reference list, named with the list's compound; the formula search did not elect it. A
+compound only your target library names has no such reason), **same ion, settled** (the ion
 reads as another molecule too, and something settled which: a second channel - for a
 reading through one of the mode's own channels, even where the sample shows the other
 molecule too, short of ten times as brightly - the sample showing this molecule

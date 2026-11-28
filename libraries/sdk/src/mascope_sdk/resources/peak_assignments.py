@@ -694,7 +694,7 @@ class PeakAssignmentsResource(BaseResource):
         a demote an earlier pass made. A row with no such reason lists what it
         kept its tier ON instead, what saw it a second time first: a second
         channel (``corroborated``), a line of its own isotope pattern
-        (``second_line``) or the list it was matched from (``on_a_list``).
+        (``second_line``) or the reference list that names it (``on_a_list``).
         A search row the run read as a chlorine or bromine formula from its
         twin line carries ``provenance.halogen_twin``: the ``halogen``, the
         twin's ``twin_mz``, its ``ratio`` to the row's peak beside one atom's
