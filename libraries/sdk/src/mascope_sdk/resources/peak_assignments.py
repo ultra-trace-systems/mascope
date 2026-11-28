@@ -675,8 +675,9 @@ class PeakAssignmentsResource(BaseResource):
         a reason that would take the top tier - a radical neutral, a nitrate
         cluster around a neutral with no oxygen (rule ``oxygen_free_cluster``),
         a peak whose evidence left rivals standing with nothing else
-        corroborating it, a formula the search found on one peak that nothing
-        else in the run saw (rule ``lone_peak``), a formula the run's chemistry
+        corroborating it, a formula the search found on one peak, or one only
+        the target library names, that nothing else in the run saw (rule
+        ``lone_peak``), a formula the run's chemistry
         context holds only on corroboration - sulfur, or two or more nitrogens
         with fewer than two oxygens per nitrogen, with no second channel, series
         or line of that element's own heavy isotope seeing it (rule
@@ -694,7 +695,7 @@ class PeakAssignmentsResource(BaseResource):
         a demote an earlier pass made. A row with no such reason lists what it
         kept its tier ON instead, what saw it a second time first: a second
         channel (``corroborated``), a line of its own isotope pattern
-        (``second_line``) or the list it was matched from (``on_a_list``).
+        (``second_line``) or the reference list that names it (``on_a_list``).
         A search row the run read as a chlorine or bromine formula from its
         twin line carries ``provenance.halogen_twin``: the ``halogen``, the
         twin's ``twin_mz``, its ``ratio`` to the row's peak beside one atom's

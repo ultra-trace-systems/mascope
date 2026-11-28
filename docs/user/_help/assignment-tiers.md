@@ -7,7 +7,8 @@ molecule does not reach the top tier on the match alone.
   is a *composition*, not a confirmed compound: isomers share it, and telling
   them apart needs MS/MS or a reference standard. Something besides the one
   peak has seen it too: a line of its isotope pattern, a second ionization
-  channel, or a list it was matched from.
+  channel, or a reference list it was matched from. Your own target library
+  naming it does not count.
 - **candidate** &mdash; a plausible formula with weaker support.
 - **below assignability** (*below*) &mdash; a formula was found, but the
   evidence is too weak to trust.

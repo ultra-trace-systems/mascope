@@ -1178,22 +1178,49 @@ async def test_a_reading_measured_on_a_member_is_judged_as_its_search_judges_it(
 @pytest.mark.parametrize(
     "compound, identities, detail",
     [
-        (
-            "tc-br2",
-            None,
-            "matched from the target library, which somebody named for this data",
-        ),
         (None, [{"name": "bromine"}], "matched from a reference list, as bromine"),
+        ("tc-br2", [{"name": "bromine"}], "matched from a reference list, as bromine"),
     ],
-    ids=["target library", "reference list"],
+    ids=["reference list", "target library a list names too"],
 )
 async def test_a_member_reading_an_ion_its_lists_hold_is_that_lists_row(
     compound, identities, detail
 ):
     # A run of the sample commits an ion its lists hold through Stage A, as
-    # that list's row, which the rules for the search's rows do not ask: the
-    # lone reading the test above holds stands at the tier its evidence bands,
-    # on the list.
+    # that list's row, which the lone-peak rule does not ask: the lone reading
+    # the test above holds stands at the tier its evidence bands, on the list.
+    # A target library's row a reference list names too is the list's.
+    row = await _list_member(compound, identities)
+
+    assert row["source"] == "database"
+    assert row["target_compound_id"] == compound
+    assert row["tier"] == TIER_ASSIGNED
+    assert not [rule for rule, caps in _reasons(row) if caps]
+    (listed,) = [
+        reason
+        for reason in row["provenance"]["tier_reasons"]
+        if reason["rule"] == "on_a_list"
+    ]
+    assert listed["detail"] == detail
+
+
+@pytest.mark.asyncio
+async def test_a_member_reading_only_the_target_library_names_is_asked_lone_peak():
+    # The target library is the user's and can hold anything (MAS-885): a row
+    # only it names is asked as the search's are, and on its one peak it is
+    # held at candidate with no list reason (MAS-1250).
+    row = await _list_member("tc-br2", None)
+
+    assert row["source"] == "database"
+    assert row["target_compound_id"] == "tc-br2"
+    assert row["tier"] == TIER_CANDIDATE
+    assert [rule for rule, caps in _reasons(row) if caps] == ["lone_peak"]
+    assert "on_a_list" not in [rule for rule, _ in _reasons(row)]
+
+
+async def _list_member(compound, identities) -> dict:
+    """The row a run of the sample commits on Br2H- through Stage A, from a
+    known set whose one compound carries ``compound`` and ``identities``."""
     known = pd.DataFrame(
         [
             {
@@ -1211,18 +1238,7 @@ async def test_a_member_reading_an_ion_its_lists_hold_is_that_lists_row(
         [("bp-1", "Br2", "Br2H-", "im-h", ["p1"])],
         known=known,
     )
-
-    row = measured["p1"]
-    assert row["source"] == "database"
-    assert row["target_compound_id"] == compound
-    assert row["tier"] == TIER_ASSIGNED
-    assert not [rule for rule, caps in _reasons(row) if caps]
-    (listed,) = [
-        reason
-        for reason in row["provenance"]["tier_reasons"]
-        if reason["rule"] == "on_a_list"
-    ]
-    assert listed["detail"] == detail
+    return measured["p1"]
 
 
 def _claiming(claim, peak_ids):

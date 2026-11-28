@@ -29,7 +29,6 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     HELD_CORROBORATED,
     HELD_LINE_TAKEN,
     HELD_NEIGHBOUR_NOT_ASSIGNED,
-    HELD_TARGET_LIBRARY,
     HELD_UNTRACKED,
     LINE_ABSENT,
     LINE_FOUND,
@@ -905,7 +904,14 @@ class TestOnePeakIsNotEnough:
         "escape, kept_on",
         [
             ({"channels": SEEN_TWICE}, REASON_CORROBORATED),
-            ({"source": "database", "compound": "compound-7"}, REASON_ON_A_LIST),
+            (
+                {
+                    "source": "database",
+                    "compound": "compound-7",
+                    "provenance": {"reference_identities": [{"name": "glucose"}]},
+                },
+                REASON_ON_A_LIST,
+            ),
             ("line", REASON_SECOND_LINE),
         ],
     )
@@ -914,6 +920,8 @@ class TestOnePeakIsNotEnough:
         if escape == "line":
             rows = [row("pa-1", provenance=provenance), line_of("pa-1")]
         else:
+            escape = dict(escape)
+            provenance |= escape.pop("provenance", {})
             rows = [row("pa-1", provenance=provenance, **escape)]
         run(rows)
         assert tier_of(rows, "pa-1") == "assigned"
@@ -970,12 +978,51 @@ class TestOnePeakIsNotEnough:
         assert tier_of(rows, "pa-1") == "candidate"
         assert REASON_ODD_ELECTRON in rules_on(rows, "pa-1")
 
-    def test_the_target_library_keeps_it(self):
+    def test_the_target_library_alone_does_not_keep_it(self):
+        # A target library is the user's and can hold anything (MAS-885): a
+        # row only it names is asked as a search row is (MAS-1250).
         rows = [row("pa-1", source="database", compound="compound-7")]
+        summary = run(rows)
+        assert tier_of(rows, "pa-1") == "candidate"
+        assert summary["capped_by_rule"] == {REASON_LONE_PEAK: 1}
+        assert REASON_ON_A_LIST not in rules_on(rows, "pa-1")
+        assert self.reason(rows, REASON_LONE_PEAK)["detail"] == (
+            "one peak is all that saw C6H12O6: no other line of its isotope "
+            "pattern is committed, no second channel of this run committed the "
+            "same neutral, no series of its batch anchors it, and only the target "
+            "library names it, which is no second observation"
+        )
+
+    @pytest.mark.parametrize(
+        "escape, kept_on",
+        [
+            ({"channels": SEEN_TWICE}, REASON_CORROBORATED),
+            ({"provenance": {SERIES: SERIES_BLOCK}}, REASON_SERIES_ANCHOR),
+            ("line", REASON_SECOND_LINE),
+        ],
+    )
+    def test_a_target_library_row_escapes_as_a_search_row_does(self, escape, kept_on):
+        target = {"source": "database", "compound": "compound-7"}
+        if escape == "line":
+            rows = [row("pa-1", **target), line_of("pa-1")]
+        else:
+            rows = [row("pa-1", **target, **escape)]
         run(rows)
         assert tier_of(rows, "pa-1") == "assigned"
+        assert REASON_LONE_PEAK not in rules_on(rows, "pa-1")
+        assert kept_on in rules_on(rows, "pa-1")
+        assert REASON_ON_A_LIST not in rules_on(rows, "pa-1")
+
+    def test_a_target_library_row_a_list_names_too_is_the_list_s(self):
+        provenance = {"reference_identities": [{"name": "glucose"}]}
+        rows = [
+            row("pa-1", source="database", compound="compound-7", provenance=provenance)
+        ]
+        run(rows)
+        assert tier_of(rows, "pa-1") == "assigned"
+        assert REASON_LONE_PEAK not in rules_on(rows, "pa-1")
         assert self.reason(rows, REASON_ON_A_LIST)["detail"] == (
-            "matched from the target library, which somebody named for this data"
+            "matched from a reference list, as glucose"
         )
 
     @pytest.mark.parametrize(
@@ -1749,11 +1796,11 @@ class TestTheRunsRecord:
     def test_the_rule_version_is_recorded(self):
         assert run([row("pa-1")])["version"] == TIERING_RULES_VERSION
 
-    def test_the_rule_set_is_17(self):
+    def test_the_rule_set_is_18(self):
         # The number, not the imported constant: a tier is comparable across
         # runs only under the same rules, so the set moves on purpose and this
         # test moves with it.
-        assert run([row("pa-1")])["version"] == 17
+        assert run([row("pa-1")])["version"] == 18
 
     def test_the_formula_shape_table_is_1(self):
         # The table the caps read their bands and exemptions from (MAS-979).
@@ -2452,12 +2499,17 @@ class TestReadingALineAsTheNeighbours:
         assert tier_of(rows, "pa-owner") == "candidate"
         assert (claims, held) == ([], {HELD_NEIGHBOUR_NOT_ASSIGNED: 1})
 
-    def test_a_compound_of_the_target_library_stays_what_it_is(self):
+    def test_a_compound_of_the_target_library_is_read_as_the_line(self):
+        # A target library is the user's and can hold anything: it keeps its
+        # peak against rivals, not its word against a neighbour's line
+        # (MAS-1250).
         rows = [
             claiming_owner(),
             on_the_line("pa-child", source="database", compound="compound-7"),
         ]
-        assert claims_in(rows) == ([], {HELD_TARGET_LIBRARY: 1})
+        claims, held = claims_in(rows)
+        assert [claim.row_id for claim in claims] == ["pa-child"]
+        assert held == {}
 
     def test_a_reference_list_s_match_can_be_read_as_the_line(self):
         rows = [claiming_owner(), on_the_line("pa-child", source="database")]

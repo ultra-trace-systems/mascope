@@ -220,20 +220,39 @@ STAND_IN = MeasurementModel.v1(SampleMassAccuracy(), 0.3)
 
 
 def anchors() -> list[dict]:
-    """Twelve target library lines on calibration, away from every envelope."""
-    return [
-        commit(
-            f"anchor-{i}",
-            "C9H10O2",
-            "anchor+",
-            300.0 + i,
-            5000.0,
-            source="database",
-            compound=f"compound-{i}",
-            ppm=0.1 if i % 2 else -0.1,
-        )
-        for i in range(12)
-    ]
+    """Twelve target library lines on calibration, away from every envelope,
+    each with the 13C line that tracks it: what makes a row an anchor of the
+    run's calibration and a second observation, which the library's word alone
+    is not (MAS-1250)."""
+    rows = []
+    for i in range(12):
+        ppm = 0.1 if i % 2 else -0.1
+        rows += [
+            commit(
+                f"anchor-{i}",
+                "C9H10O2",
+                "anchor+",
+                300.0 + i,
+                5000.0,
+                source="database",
+                compound=f"compound-{i}",
+                ppm=ppm,
+            ),
+            commit(
+                f"anchor-{i}-13C",
+                "C9H10O2",
+                "anchor+",
+                301.00336 + i,
+                500.0,
+                role="iso_child",
+                owner=f"anchor-{i}",
+                source="database",
+                compound=f"compound-{i}",
+                ppm=ppm,
+                label="13C",
+            ),
+        ]
+    return rows
 
 
 def seen_again(row: dict, mz: float) -> dict:

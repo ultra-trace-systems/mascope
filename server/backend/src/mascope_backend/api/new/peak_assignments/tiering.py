@@ -96,18 +96,18 @@ together (:func:`predicted_envelope`).
 read as its line (:func:`find_envelope_claims`, :mod:`envelope_claims`): an
 isotopologue of the neighbour at ``candidate``, or at the tier the run held the
 row at where that is lower, by its evidence or by a cap such as the mass gate's,
-with the reading it displaced first among its alternatives. Not where the row is
-a compound of the target
-library, where a second channel committed its neutral, where the neighbour
-already holds a line there, or where the peak's mass error does not follow the
-neighbour's even allowing for what the line can deliver; the row then stays as
-it was and its envelope reason says which.
+with the reading it displaced first among its alternatives. Not where a second
+channel committed its neutral, where the neighbour already holds a line there,
+or where the peak's mass error does not follow the neighbour's even allowing
+for what the line can deliver; the row then stays as it was and its envelope
+reason says which. A compound of the target library is not held (MAS-1250).
 
 ``lone_peak`` - decision 25: the assigned tier needs a second observation. A row
-the formula search elected on one peak, with no line of its own isotope pattern
-committed beside it, no second channel committing its neutral, no homologous
-series of its batch anchoring it and no list it was matched from, is a
-candidate at most, whatever its fit (:func:`lone_peak_reason`). The bands cannot ask this: a lone line at the noise
+the formula search elected, or only the target library names (MAS-1250), on one
+peak, with no line of its own isotope pattern committed beside it, no second
+channel committing its neutral, no homologous series of its batch anchoring it
+and no reference list naming it, is a candidate at most, whatever its fit
+(:func:`lone_peak_reason`). The bands cannot ask this: a lone line at the noise
 floor scores a perfect abundance error, because M0 is the only line the pattern
 had to match, and on a TOF the mass error is judged against a width of
 several ppm. Measured on the chamber sets before the rule, such rows were 5 to
@@ -334,7 +334,7 @@ from mascope_tools.composition.utils import formula_identity
 #: run, because a tier is only comparable across runs together with the rules
 #: that produced it - the same statement the tier BANDS carry, for the same
 #: reason.
-TIERING_RULES_VERSION = 17
+TIERING_RULES_VERSION = 18
 
 #: The row's evidence is under the band its tier would need. Not a rule of
 #: this pass: the band is the floor every rule here lowers from, and naming it
@@ -362,7 +362,6 @@ REASON_ENVELOPE_CLAIM = "envelope_claim"
 
 #: Why a row on an assigned neighbour's line was not read as that line.
 HELD_NEIGHBOUR_NOT_ASSIGNED = "neighbour_not_assigned"
-HELD_TARGET_LIBRARY = "target_library"
 HELD_CORROBORATED = "corroborated"
 HELD_LINE_TAKEN = "line_taken"
 HELD_UNTRACKED = "untracked"
@@ -370,7 +369,6 @@ HELD_UNTRACKED = "untracked"
 #: What each of those says on the row, after the envelope reason's own sentence.
 _HELD_SENTENCES = {
     HELD_NEIGHBOUR_NOT_ASSIGNED: "that reading is not held at assigned",
-    HELD_TARGET_LIBRARY: "this row is a compound of the target library",
     HELD_CORROBORATED: "another channel of this run committed its neutral",
     HELD_LINE_TAKEN: "that reading already holds a line there",
     HELD_UNTRACKED: (
@@ -480,8 +478,8 @@ REASON_INHERITED = "inherited_from_owner"
 
 #: The second observations a row keeps the top tier on besides a second
 #: channel, which ``corroborated`` names: a line of its own isotope pattern
-#: committed with it, a homologous series of its batch, and the list it was
-#: matched from.
+#: committed with it, a homologous series of its batch, and the reference list
+#: that names it, which the target library alone is not (MAS-1250).
 REASON_SECOND_LINE = "second_line"
 REASON_SERIES_ANCHOR = "series_anchor"
 REASON_ON_A_LIST = "on_a_list"
@@ -1080,8 +1078,8 @@ def lone_peak_reason(row: dict, lines: Sequence[dict]) -> dict | None:
     row's own isotope pattern the run committed with it; a second channel of
     the run committing the same neutral, read off the cross-channel pass's
     record as the density rule reads it; a homologous series of the batch
-    (:func:`series_anchor`); and a list, so a row Stage A matched
-    from the target library or a reference list is not asked. Unlike the density
+    (:func:`series_anchor`); and a reference list, so a row a list names is not
+    asked (:func:`on_a_list_reason`). Unlike the density
     rule this one counts an isotopologue, because it asks a different question:
     density asks whether the envelope can break a tie the fit left, which it
     cannot, and this asks whether anything besides the one line was seen at all,
@@ -1091,16 +1089,18 @@ def lone_peak_reason(row: dict, lines: Sequence[dict]) -> dict | None:
     (:func:`series_under_floor`): the reason then names it, and the row
     keeps its series record.
 
-    Asks only the formula search's rows, and fails open on a row whose channels
-    were never recorded, since without that record the rule cannot tell a lone
-    peak from one a second channel saw.
+    Asks the formula search's rows and those only the target library names
+    (MAS-1250), and fails open on a row whose channels were never recorded,
+    since without that record it cannot tell a lone peak from one a second
+    channel saw.
 
     :param row: A committed monoisotopic row.
     :param lines: Its committed isotopologue rows (:func:`isotope_lines`).
     :return: The reason, or None where the row has a second observation or is
-        not the search's.
+        neither the search's nor only the target library's.
     """
-    if row.get("source") != SOURCE_UNTARGETED:
+    target = is_target_library_row(row) and not named_by_a_list(row)
+    if row.get("source") != SOURCE_UNTARGETED and not target:
         return None
     cross_channel = _provenance(row).get("cross_channel")
     if not isinstance(cross_channel, dict) or not isinstance(
@@ -1132,11 +1132,13 @@ def lone_peak_reason(row: dict, lines: Sequence[dict]) -> dict | None:
         )
     else:
         seen = "no other line of its isotope pattern is committed"
+    listed = "it was not matched from a list"
+    if target:
+        listed = "only the target library names it, which is no second observation"
     return _reason(
         REASON_LONE_PEAK,
-        f"one peak is all that saw {row.get('assigned_formula')}: {seen}, no "
-        f"second channel of this run committed the same neutral, {series}, and "
-        "it was not matched from a list",
+        f"one peak is all that saw {row.get('assigned_formula')}: {seen}, no second "
+        f"channel of this run committed the same neutral, {series}, and {listed}",
         caps=True,
     )
 
@@ -2062,27 +2064,28 @@ def series_anchor_reason(row: dict) -> dict | None:
 
 
 def on_a_list_reason(row: dict) -> dict | None:
-    """The list a Stage A row was matched from, which the search did not elect.
+    """The reference list a Stage A row was matched from, which the search did
+    not elect. None on a row only the target library names, which a user wrote
+    and which can hold anything (MAS-885, MAS-1250).
 
     :param row: A committed monoisotopic row.
-    :return: The reason, or None for a row Stage A did not match.
+    :return: The reason, or None for a row no reference list names.
     """
     if row.get("source") != SOURCE_DATABASE:
         return None
-    if is_target_library_row(row):
-        detail = "matched from the target library, which somebody named for this data"
-    else:
-        names = [
-            str(identity.get("name"))
-            for identity in _provenance(row).get("reference_identities") or []
-            if isinstance(identity, dict) and identity.get("name")
-        ]
-        named = ""
-        if len(names) == 1:
-            named = f", as {names[0]}"
-        elif names:
-            named = f", as {names[0]} and {len(names) - 1} more"
-        detail = f"matched from a reference list{named}"
+    if is_target_library_row(row) and not named_by_a_list(row):
+        return None
+    names = [
+        str(identity.get("name"))
+        for identity in _provenance(row).get("reference_identities") or []
+        if isinstance(identity, dict) and identity.get("name")
+    ]
+    named = ""
+    if len(names) == 1:
+        named = f", as {names[0]}"
+    elif names:
+        named = f", as {names[0]} and {len(names) - 1} more"
+    detail = f"matched from a reference list{named}"
     return _reason(REASON_ON_A_LIST, detail, caps=False)
 
 
@@ -2848,15 +2851,15 @@ def find_envelope_claims(
     A row is read as the neighbour's line when the neighbour holds ``assigned``
     - or would but for its one peak (:func:`held_for_its_one_peak`), since the
     line the claim reads is the second observation it lacked, which the next
-    round's passes find on it - and none of these holds it back: the row is a
-    compound of the workspace's
-    own target library, which somebody named for this data; a second channel of
-    the run committed its neutral, which is evidence from outside the peak; the
-    neighbour already holds a line within the window of the predicted one; or
-    the peak's mass error does not follow the neighbour's even allowing for what
-    its line can deliver (``mass_gate.tracking_of``), which is the tracking
-    test's own word for a peak that is not this ion's line. A row held back
-    keeps its reading, and its envelope reason says which of these held it.
+    round's passes find on it - and none of these holds it back: a second
+    channel of the run committed its neutral, which is evidence from outside
+    the peak; the neighbour already holds a line within the window of the
+    predicted one; or the peak's mass error does not follow the neighbour's
+    even allowing for what its line can deliver (``mass_gate.tracking_of``),
+    which is the tracking test's own word for a peak that is not this ion's
+    line. A row held back keeps its reading, and its envelope reason says which
+    of these held it. A target library's row is not held for being one
+    (MAS-1250).
 
     Where two rows sit on one predicted line, the nearer one is read as it. The
     row's own isotopologues go with it where the neighbour's envelope predicts
@@ -2910,8 +2913,6 @@ def find_envelope_claims(
         line = None
         if owner.get("tier") != TIER_ASSIGNED and not held_for_its_one_peak(owner):
             why = HELD_NEIGHBOUR_NOT_ASSIGNED
-        elif is_target_library_row(row):
-            why = HELD_TARGET_LIBRARY
         elif is_corroborated(row):
             why = HELD_CORROBORATED
         else:

@@ -157,6 +157,34 @@ in the ion half is asked of every row; a row only the target library names is sp
 nothing, and still shows its match. The tiering pass and the cross-channel election read
 it; a target no longer settles a same-ion reading.
 
+**Outside the caps** (decision MAS-1250, 2026-11-26): a row only the target library names
+keeps its peak, not its word. It keeps its peak against the finder's rivals
+(`finder.ListReading.keeps_peak`), the reagent ladder (`reagent_pass`, `held.target_library`)
+and the batch's claims, a run's claim on the batch's word included
+(`known_species.claim_keeps`, `KEPT_TARGET_LIBRARY`; the keep rule of MAS-1089). It loses
+what only a curated source earns:
+
+- **Corroboration in the mass gate.** `mass_gate.corroboration_of` answers no list's row
+  `curated` any more: a target row anchors the run's refitted model, and escapes the
+  distance cap, only where an isotopologue tracks it, as a reference mirror's row and a
+  search row do. The summary's `capped_curated` count is gone; a stored run that says
+  `curated` reads as a named corroboration, as it always did.
+- **The list reason.** `tiering.on_a_list_reason` gives no reason to a row only the target
+  library names, and `tiering.lone_peak_reason` asks it as a search row: one peak with no
+  second line, second channel or series (a series on a peak of S/N 4 or more) holds it
+  at candidate. A target row a
+  reference list names too keeps the reason, worded as the list's.
+- **The envelope claim's hold.** `tiering.find_envelope_claims` holds no row back for being
+  the target library's (`HELD_TARGET_LIBRARY` is gone): on an assigned neighbour's line it
+  is read as that line unless another hold applies.
+
+Left as they are, since the decision names three: Stage A's own fit (the v1 model) is over
+the target library's lines alone (`engine.target_library_rows`); the second-channel cap
+counts the target library among the lists behind a search reading
+(`engine.listed_formula_identities`); the partner gate keeps a Stage A reading, the target
+library's included (`PARTNER_GATE_LIST`); and the envelope-tolerance fit reads Stage A's
+envelopes, the target library's included (`envelope_fit`). Tiering rules version 18.
+
 **Radicals** meet one rule: the tiering pass holds no radical at assigned, whoever names it,
 so a radical is no rival to a molecule. The same-ion election prefers the molecule, a list
 hit's grid rivals leave radicals out (`closed_shell_rivals`), a rival set leaves them out of

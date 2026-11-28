@@ -227,6 +227,8 @@ class TestTheRuleRecordsOnTheLedger:
             return _provenance_scalars({"mass_gate": gate})["mass_gate_corroborated"]
 
         assert read({"corroborated_by": "list"}) is True
+        # What a run before MAS-1250 recorded on a target library's row.
+        assert read({"corroborated_by": "curated"}) is True
         assert read({"corroborated_by": ["second_channel"]}) is True
         assert read({"corroborated_by": None, "capped": True}) is False
         assert _provenance_scalars({})["mass_gate_corroborated"] is None

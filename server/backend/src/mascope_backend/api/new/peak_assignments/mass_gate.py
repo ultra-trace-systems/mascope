@@ -22,12 +22,13 @@ second place in the spectrum agreeing with the formula, and that is evidence
 the mass error does not overrule. Every other commit beyond
 :data:`OFF_CALIBRATION_Z` is capped at ``candidate``, and beyond
 :data:`BELOW_ASSIGNABILITY_Z` at ``below_assignability`` - a compound of the
-workspace's own target library among them. The library's rows anchor the
-calibration, because a list assembled for this data names compounds the
-sample holds, but a list does not say where each of their lines has to sit.
-A reference mirror's rows do not even anchor it: a mirror is a prior matched
-against every sample rather than a library somebody assembled for this data.
-The formula stays on the row either way: what the run is withdrawing is its
+workspace's own target library among them. No list's rows anchor the
+calibration on the list's word: a list names a compound, not where each of its
+lines has to sit, so a row of the target library or a reference mirror anchors
+it where an isotopologue tracks it, as a search result does. The target
+library's rows once anchored it on their curation alone (MAS-1250 took that
+away: a target library is written by the user and can hold anything). The
+formula stays on the row either way: what the run is withdrawing is its
 confidence, not its reading.
 
 An isotopologue that does not track its parent is not ``assigned`` either,
@@ -65,7 +66,6 @@ import numpy as np
 import pandas as pd
 
 from mascope_backend.api.models.calibration.config import calibrants_over_cap
-from mascope_backend.api.new.peak_assignments.engine import is_target_library_row
 from mascope_backend.api.new.peak_assignments.envelope_claims import is_claimed
 from mascope_backend.api.new.peak_assignments.row_terms import (
     ROLE_ISO_CHILD,
@@ -145,28 +145,23 @@ REASON_OFF_CALIBRATION = "off_calibration"
 REASON_ISOTOPOLOGUE_IN_DOUBT = "isotopologue_in_doubt"
 REASON_ISOTOPOLOGUE_UNTRACKED = "isotopologue_untracked"
 
-#: A curated identity: the row won its peak for a compound of the workspace's
-#: own target library, so a library somebody assembled for this data - not this
-#: run's own search - proposed the formula. It anchors the run's calibration.
+#: No list's word corroborates a row here: neither the workspace's target
+#: library nor a reference mirror. A list names a compound, not where each line
+#: of it has to sit, so a row Stage A matched from either is corroborated the way
+#: a search result is, by an isotopologue that tracks it
+#: (:data:`CORROBORATED_ISOTOPOLOGUE`).
 #:
-#: It does not exempt the row from the cap. A list names a compound, not where
-#: each line of it has to sit, and the lines such an exemption held at the top
-#: tier were exactly the ones a mass error has reason to doubt: on the
-#: assignment gate, three isotopologues more than three widths off a
-#: monoisotopic row within one width - a weak M+2 at 1e-5 to 1e-4 of the base
-#: peak, and both lines of a partly resolved 13C2/18O pair that push each other
-#: apart, which the gate now reads as in doubt rather than as off calibration. A
-#: library row an isotopologue tracks is corroborated by that
-#: (:data:`CORROBORATED_ISOTOPOLOGUE`), recorded ahead of its curation.
-#:
-#: A reference mirror's row does not qualify, although Stage A matches it in the
-#: same frame. A mirror is a prior matched against every sample, so on a TOF most
-#: of its pairings are lines the match window happened to reach. Counted as
-#: corroborated, those lines anchored the calibration and widened it: on the
-#: gate's three TOF sets with the default seed loaded, this fit's own width went
-#: from 3.0, 4.3 and 2.1 ppm to 7.0, 7.3 and 6.7. A mirror's row is corroborated
-#: the way a search result is, by an isotopologue that tracks it.
-CORROBORATED_CURATED = "curated"
+#: A target library's row was once corroborated by its curation (``"curated"``),
+#: which anchored the run's refit and spared it nothing else. A target library is
+#: written by the user and can hold anything - five of the demo's eight uronium
+#: targets named the wrong neutral (MAS-885) - so the plan owner took that away
+#: with the list reason and the envelope claim's hold (MAS-1250). A stored run
+#: written before still says ``"curated"``, and every reader takes it as it
+#: always has: a named corroboration, which is truthy. A reference mirror's row
+#: never qualified: on the gate's three TOF sets with the default seed loaded,
+#: counting its rows as corroborated widened this fit from 3.0, 4.3 and 2.1 ppm
+#: to 7.0, 7.3 and 6.7, because most of a mirror's pairings on a TOF are lines
+#: the match window happened to reach.
 
 #: A confirmed envelope: the ion committed a monoisotopic peak AND at least one
 #: isotopologue of the same reading whose own mass error TRACKS its parent's, so
@@ -580,8 +575,8 @@ def corroboration_of(
 ) -> dict[str, str | None]:
     """Per committed row: what this run has for it beyond the mass fit.
 
-    Three answers. The first two anchor the run's calibration; only the first
-    exempts a row from the gate's cap:
+    Two answers. The first anchors the run's calibration and exempts the row
+    from the gate's cap:
 
     - :data:`CORROBORATED_ISOTOPOLOGUE` - the reading committed a monoisotopic
       peak and at least one isotopologue of the same ion WHOSE MASS ERROR
@@ -590,15 +585,10 @@ def corroboration_of(
       pair are corroborated by it; a child that does not track corroborates
       nothing, including itself. Nor does a line a claim read as the ion's
       (:mod:`envelope_claims`), even where it tracks: the run committed it as
-      something else first, which is the doubt the claim records. Answered
-      ahead of curation, since it is the answer the cap reads.
-    - :data:`CORROBORATED_CURATED` - Stage A matched it to a compound of the
-      workspace's target library (:func:`engine.is_target_library_row`), so the
-      formula was proposed by a library assembled for this data rather than by
-      this run's own search over the mass. A reference mirror's Stage A row is
-      not curated in this sense.
-    - ``None`` - the row rests on the mass fit alone. A reference mirror's row
-      that no isotopologue tracks is one of these.
+      something else first, which is the doubt the claim records.
+    - ``None`` - the row rests on the mass fit alone. A Stage A row that no
+      isotopologue tracks is one of these, the target library's as a reference
+      mirror's: a list's word is no corroboration here (MAS-1250).
 
     :param assignments: Every row built for this sample, in any order.
     :param precision_ppm: The instrument class's precision. The bar a child's
@@ -633,8 +623,6 @@ def corroboration_of(
         row_id = str(row["peak_assignment_id"])
         if row_id in tracking_children or row_id in confirmed_owners:
             corroboration[row_id] = CORROBORATED_ISOTOPOLOGUE
-        elif is_target_library_row(row):
-            corroboration[row_id] = CORROBORATED_CURATED
         else:
             corroboration[row_id] = None
     return corroboration
@@ -768,9 +756,9 @@ def fit_run_mass_accuracy(
     isotopologues, which on a sample whose library holds two targets is nothing;
     this is over everything the run committed and had a second reason for, which
     on the same sample is hundreds of rows. That is what makes the calibration
-    the run's own rather than the library's. A reference mirror's monoisotopic
-    row anchors it only when an isotopologue tracks it, because its curation is
-    not a second reason (:data:`CORROBORATED_CURATED`).
+    the run's own rather than the library's. A Stage A row, of the target
+    library or a reference mirror, anchors it only when an isotopologue tracks
+    it: a list's word is not a second reason (:func:`corroboration_of`).
 
     The source's own monoisotopic lines anchor it beside the commits
     (:func:`reagent_line_errors`), pooled with them. The reagent-line offset
@@ -793,9 +781,9 @@ def fit_run_mass_accuracy(
     limitation: fitting over every commit would measure the spread of the rows
     being judged, so the distribution would widen to accommodate whatever sits
     in its tail and the gate would be unable to find anything by construction.
-    A target library's row anchors it and is still judged against it, which a
-    median and a scaled MAD allow: a line of the list off calibration is one
-    anchor among the run's corroborated commits, and it moves neither.
+    An anchor is still judged against the fit it is part of, which a median and
+    a scaled MAD allow: a line off calibration is one anchor among the run's
+    corroborated commits, and it moves neither.
 
     Monoisotopic rows only. An isotopologue is the same ion measured on a weaker
     peak, so it is the wider row wherever it is real - 0.35 ppm against 0.12 for
@@ -937,11 +925,10 @@ def measure_mass_gate(
     no stage can answer it alone.
 
     It reads no tier, and no formula beyond whether a row commits one: the
-    rows' mass errors, which rows are whose isotopologues, which a claim read
-    as a line and which the target library matched. So a pass that only
-    changes which molecule a row's ion is read as (the partner gate) changes
-    nothing it measured, and can run after it and read its ceilings, before
-    any cap is applied.
+    rows' mass errors, which rows are whose isotopologues and which a claim
+    read as a line. So a pass that only changes which molecule a row's ion is
+    read as (the partner gate) changes nothing it measured, and can run after
+    it and read its ceilings, before any cap is applied.
 
     The rows are judged at the model they were scored at. Where the refit
     moves the centre or the width beyond the bound
@@ -1023,9 +1010,6 @@ def measure_mass_gate(
         # Rows capped for their distance from the centre.
         "capped": 0,
         "below_assignability": 0,
-        # Of the capped rows, the target library's: its rows anchor the fit
-        # above, and this is what judging them against it cost.
-        "capped_curated": 0,
         # How the committed isotopologues follow their parents, what the run
         # read their lines with, and the ones held at candidate for it alone.
         "isotopologues": {
@@ -1095,11 +1079,6 @@ def cap_mass_gate(assignments: list[dict], summary: dict | None = None) -> dict:
         reason = gate.get("reason")
         if reason == REASON_OFF_CALIBRATION:
             _count(summary, "capped")
-            _count(
-                summary,
-                "capped_curated",
-                gate.get("corroborated_by") == CORROBORATED_CURATED,
-            )
             _count(summary, "below_assignability", ceiling == TIER_BELOW_ASSIGNABILITY)
         elif reason == REASON_ISOTOPOLOGUE_IN_DOUBT:
             _count(summary, "capped_in_doubt")
