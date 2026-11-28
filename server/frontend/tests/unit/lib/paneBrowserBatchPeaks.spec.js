@@ -901,10 +901,12 @@ describe('PaneBrowserBatchPeaks tier ordering', () => {
     })
     await wrapper.vm.$nextTick()
 
-    // The Intensity header also holds its short label, for a narrow ledger:
-    // its full label is the one it is named by.
-    const labelOf = (span) =>
-      (span.find('.intensity-label').exists() ? span.find('.intensity-label') : span).text()
+    // The Intensity header and the provisional mark also hold a short label,
+    // for a narrow ledger: the full one is what each is named by.
+    const labelOf = (span) => {
+      const full = span.find('.intensity-label, .provisional-word')
+      return (full.exists() ? full : span).text()
+    }
     const tips = wrapper
       .findAll('.column-stub [data-tooltip]')
       .map((span) => [labelOf(span), span.attributes('data-tooltip')])

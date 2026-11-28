@@ -1782,7 +1782,8 @@ As the ledger's column narrows, it drops cells in a fixed order, the least read 
 the **Level**, then **Samples**, then **Across the batch**, then the intensity's bar. The
 m/z, the compound, the ion, the intensity's number and the tier stay at every width.
 Where **Across the batch** goes, each tier chip shows its dot alone, and its hover names
-the tier; a reagent or artifact chip keeps its word. Where the bar goes, the
+the tier; a reagent or artifact chip keeps its word. The **Tier** header's *provisional* mark
+shortens to an asterisk there, its explanation still on hover. Where the bar goes, the
 **Intensity** column narrows to its number and its header reads **Int.**, the full name
 on hover.
 

@@ -23,7 +23,10 @@ vi.mock('@/lib/base', () => ({
     props: ['error', 'fallback', 'onRetry'],
     template: '<div class="load-error">{{ fallback }}</div>'
   },
-  BaseProvisionalMark: { template: '<span class="provisional" />' },
+  BaseProvisionalMark: {
+    props: { collapsible: Boolean },
+    template: '<span class="provisional" :data-collapsible="String(collapsible)" />'
+  },
   BaseTierTag: {
     props: { tier: String, tooltip: String, outlined: Boolean, cap: Object },
     template:
@@ -284,6 +287,13 @@ describe.each(Object.keys(SCOPES))('AssignmentLedger, %s scope', (scope) => {
     expect(col.props('headerClass')).toBe(cls)
     expect(col.props('bodyClass')).toBe(cls)
     expect(col.attributes('style')).toBeUndefined()
+  })
+
+  // The Tier header's provisional mark carries its short form, which the
+  // narrow rules show in place of its word (BaseProvisionalMark.spec.js).
+  it('marks the Tier header provisional, in a form that collapses', () => {
+    const head = column(mountLedger(scope), 'tierRank').find('.head')
+    expect(head.find('.provisional').attributes('data-collapsible')).toBe('true')
   })
 
   // At 560 px and below the Intensity header shows its short label, the full

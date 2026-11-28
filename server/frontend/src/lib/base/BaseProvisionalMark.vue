@@ -6,6 +6,14 @@ import { TIERING_PROVISIONAL } from '@/lib/tiers'
 // is the tier module's, so the three places cannot say it differently, and the
 // mark disappears from all of them when that constant is set to null.
 const mark = TIERING_PROVISIONAL
+
+defineProps({
+  // Also render the mark's short form, an asterisk, for a narrow ledger to
+  // show in the word's place (lib/ledger/narrow.css). The word stays on the
+  // page, the mark's accessible name, and the hover explains it. Off, the mark
+  // is the word alone, as anywhere without those rules.
+  collapsible: { type: Boolean, default: false }
+})
 </script>
 
 <template>
@@ -14,7 +22,8 @@ const mark = TIERING_PROVISIONAL
     class="provisional-mark"
     data-testid="tiering-provisional"
     v-tooltip.top="mark.tooltip"
-    >{{ mark.label }}</span
+    ><span class="provisional-word">{{ mark.label }}</span
+    ><span v-if="collapsible" class="provisional-short" aria-hidden="true">*</span></span
   >
 </template>
 

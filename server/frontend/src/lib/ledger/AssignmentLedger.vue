@@ -724,7 +724,9 @@ const engineChipTooltip = (row) =>
               }"
               >Tier</span
             >
-            <BaseProvisionalMark />
+            <!-- At a narrow width ./narrow.css shows its asterisk in place of
+                 its word, which stays the mark's name. -->
+            <BaseProvisionalMark collapsible />
           </template>
           <!-- The producing engine's own tier, beside this server's rather than
                instead of it: the tier this server measured is what the table

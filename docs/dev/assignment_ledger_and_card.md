@@ -186,6 +186,9 @@ list read. The content is a component of its own, for the batch row's card to re
     first. The Tier column's 7 rem minimum width goes with it. A role chip has no dot
     and keeps its word; the cap mark, the hand and isotopologue marks and the level's
     chips stay;
+  - at 680 px too, the Tier header's *provisional* mark shows an asterisk in place of
+    its word (the plan owner, 2026-11-28), the word kept as its accessible name and the
+    hover explaining it, so the header holds the column no wider than its cells;
   - at 560 px, with the bar, the Intensity column's 7 rem minimum width goes, and its
     header shows *Int.*, the full label kept as its accessible name and its hover, so
     the column is as narrow as its number. Measured on the demo: the minimum width held

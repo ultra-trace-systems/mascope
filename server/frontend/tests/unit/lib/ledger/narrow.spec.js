@@ -17,6 +17,7 @@ const source = (...path) =>
   readFileSync(join(import.meta.dirname, '..', '..', '..', '..', 'src', 'lib', ...path), 'utf8')
 const LEDGER = source('ledger', 'AssignmentLedger.vue')
 const TIER_TAG = source('base', 'BaseTierTag.vue')
+const PROVISIONAL = source('base', 'BaseProvisionalMark.vue')
 
 describe('the narrow ledger', () => {
   // The rules apply only where the ledger loads them and names itself the
@@ -29,10 +30,12 @@ describe('the narrow ledger', () => {
   // A scoped rule weighs as much as `.ledger .x`, or more, and comes later in
   // the bundle, so one that sets a property of a class these rules set would
   // win at every width (the intensity's bar kept its display so). That holds
-  // for the ledger's styles and for the tier chip's, whose word they hide.
+  // for the ledger's styles, the tier chip's and the provisional mark's,
+  // whose words they hide.
   it.each([
     ['the ledger', LEDGER],
-    ['the tier chip', TIER_TAG]
+    ['the tier chip', TIER_TAG],
+    ['the provisional mark', PROVISIONAL]
   ])("is not overridden by %s's own style of what it sets", (_, file) => {
     // A rule under :where() weighs nothing and is exempt: that is how the
     // ledger gives the bar its display.
@@ -60,7 +63,7 @@ describe('the narrow ledger', () => {
   })
 
   it('reads every rule it holds', () => {
-    expect(parseNarrowRules()).toHaveLength(12)
+    expect(parseNarrowRules()).toHaveLength(14)
   })
 
   it('drops the Level column first, then the samples, then the badges, then the bar', () => {
@@ -88,13 +91,15 @@ describe('the narrow ledger', () => {
   })
 
   it('keeps every cell at a wide width, and drops them in order as it narrows', () => {
-    // The Intensity header's short label is the one thing dropped at a wide
-    // width: its full label stands there.
+    // The short labels, the Intensity header's and the provisional mark's,
+    // are the things dropped at a wide width: their full words stand there.
     const short = '.ledger .intensity-label-short'
-    expect(hiddenAt(1200)).toEqual(['.ledger .tier-level', short])
-    expect(hiddenAt(901)).toEqual(['.ledger .tier-level', short])
-    expect(hiddenAt(900)).toEqual([short, '.ledger .col-level'])
-    expect(hiddenAt(850)).toEqual([short, '.ledger .col-level'])
+    const mark = '.ledger .provisional-short'
+    expect(hiddenAt(1200)).toEqual(['.ledger .tier-level', short, mark])
+    expect(hiddenAt(901)).toEqual(['.ledger .tier-level', short, mark])
+    expect(hiddenAt(900)).toEqual([short, mark, '.ledger .col-level'])
+    expect(hiddenAt(850)).toEqual([short, mark, '.ledger .col-level'])
+    expect(hiddenAt(681)).toEqual([short, mark, '.ledger .col-level', '.ledger .col-samples'])
     expect(hiddenAt(640)).toEqual([
       short,
       '.ledger .col-level',
@@ -127,6 +132,7 @@ describe('the narrow ledger', () => {
     const clipped = parseNarrowRules().filter((rule) => rule.declarations['clip-path'])
     expect(clipped.map((rule) => rule.selector)).toEqual([
       '.ledger .tier-cell .tier-word',
+      '.ledger .col-tier .provisional-word',
       '.ledger .intensity-label'
     ])
     for (const rule of clipped) {
@@ -166,6 +172,20 @@ describe('the narrow ledger', () => {
       expect(fullGone, `at ${width} px`).toBe(width <= 560)
       expect(shortShown, `at ${width} px`).toBe(fullGone)
       expect(hiddenAt(width), `at ${width} px`).not.toContain('.ledger .intensity-label')
+    }
+  })
+
+  // The Tier header's provisional mark shortens with the tier chips' words,
+  // at 680 px and below: its asterisk in sight, its word taken from sight but
+  // kept as its name, so the header no longer holds the column wider than its
+  // cells. The mark's hover explains it at every width.
+  it('shows the provisional mark short exactly where its word leaves sight', () => {
+    for (let width = 300; width <= 1600; width += 0.5) {
+      const wordGone = outOfSightAt(width).includes('.ledger .col-tier .provisional-word')
+      const shortShown = !hiddenAt(width).includes('.ledger .provisional-short')
+      expect(wordGone, `at ${width} px`).toBe(width <= 680)
+      expect(shortShown, `at ${width} px`).toBe(wordGone)
+      expect(hiddenAt(width), `at ${width} px`).not.toContain('.ledger .col-tier .provisional-word')
     }
   })
 })
