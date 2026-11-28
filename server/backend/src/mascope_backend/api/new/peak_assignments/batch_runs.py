@@ -70,6 +70,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     merged_isotopologue_of_summary,
     owner_link,
     persistence_summary,
+    resolve_candidate,
     stamped_isotopologue_of_summary,
     standing_batch_checks_record,
     standing_co_variation_record,
@@ -260,6 +261,40 @@ def anchor_snapshot_row(run_id: str, anchor: Any, members: Iterable[Any]) -> dic
     }
 
 
+def consensus_counts(provenance: Any) -> dict:
+    """How many of an anchor's members read a formula, and how many of them
+    read the consensus: ``n_assigned`` and ``n_winner``, as the consensus
+    recorded them in its provenance (``batch_peaks.vote_consensus``). Each
+    None where it records none: a consensus a source's role accounts for, or
+    one no member read a formula for and no pin names."""
+
+    def count(key: str) -> Optional[int]:
+        value = provenance.get(key) if isinstance(provenance, dict) else None
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    return {"n_assigned": count("n_assigned"), "n_winner": count("n_winner")}
+
+
+def snapshot_consensus_counts(row: Any) -> dict:
+    """:func:`consensus_counts` for a run's snapshot row, which keeps no
+    provenance: counted off its member arrays and its registry, as the vote
+    counts them. A member reads a formula where its registry entry names one,
+    and agrees where that formula is the consensus. None where the live
+    consensus records none: a source's role, or no consensus formula."""
+    if row.consensus_role or not row.consensus_formula:
+        return {"n_assigned": None, "n_winner": None}
+    arrays = row.members if isinstance(row.members, dict) else {}
+    formulas = [
+        resolve_candidate(row.candidates, index).get("formula")
+        for index in arrays.get("candidates") or []
+    ]
+    read = [formula for formula in formulas if formula]
+    return {
+        "n_assigned": len(read),
+        "n_winner": sum(1 for formula in read if formula == row.consensus_formula),
+    }
+
+
 def snapshot_anchor_meta(row: Any, sample_batch_id: str) -> dict:
     """A snapshot row in the shape the ledger route serves a live anchor in."""
     return {
@@ -275,6 +310,7 @@ def snapshot_anchor_meta(row: Any, sample_batch_id: str) -> dict:
         "best_fit_score": row.best_fit_score,
         "support_fraction": row.support_fraction,
         "n_present": row.n_present,
+        **snapshot_consensus_counts(row),
         "is_ambiguous": bool(row.is_ambiguous),
         "intensity_variable": row.intensity_variable,
         # The partition the batch peak is in, beside its mode: the instrument

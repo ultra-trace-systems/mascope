@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 
 import {
+  holdingCap,
   holdingReasons,
   holdingTooltip,
   persistenceHold,
@@ -90,6 +91,15 @@ describe('the reasons that hold a batch peak', () => {
     expect(holdingReasons(LIFTED)).toEqual([])
     expect(holdingReasons(null)).toEqual([])
     expect(holdingTooltip(LIFTED, 'assigned')).toBe('')
+  })
+
+  it("make the tier chip's cap mark of the reasons that hold it, none of the rest", () => {
+    expect(holdingCap(HELD, 'candidate')).toEqual({
+      label: 'persistence only',
+      tooltip: holdingTooltip(HELD, 'candidate')
+    })
+    expect(holdingCap(LIFTED, 'assigned')).toBeNull()
+    expect(holdingCap(null, 'assigned')).toBeNull()
   })
 
   it("word what the cap did off the batch peak's tier, as a run's reasons are", () => {

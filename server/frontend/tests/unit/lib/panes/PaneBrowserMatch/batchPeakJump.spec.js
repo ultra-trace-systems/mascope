@@ -52,7 +52,10 @@ const NO_READING = {
   consensus_role: null,
   support_fraction: null,
   n_present: null,
-  is_ambiguous: false
+  n_assigned: null,
+  n_winner: null,
+  is_ambiguous: false,
+  tier_reasons: null
 }
 
 describe('brightestMember', () => {
@@ -138,6 +141,7 @@ describe('useBatchPeakJump', () => {
   })
 
   it("keeps the batch row's reading beside the members, for the card to name", async () => {
+    const HELD = [{ rule: 'persistence_only', detail: 'searched on persistence', caps: true }]
     post.mockResolvedValue([series(['s-1', 's-2'], [10, 300], ['p1', 'p2'])])
     const jump = useBatchPeakJump()
     const row = {
@@ -149,7 +153,10 @@ describe('useBatchPeakJump', () => {
       consensus_role: null,
       support_fraction: 0.6667,
       n_present: 3,
-      is_ambiguous: true
+      n_assigned: 3,
+      n_winner: 2,
+      is_ambiguous: true,
+      tier_reasons: HELD
     }
 
     await jump.jumpToBrightest(row)
@@ -161,7 +168,10 @@ describe('useBatchPeakJump', () => {
       consensus_role: null,
       support_fraction: 0.6667,
       n_present: 3,
-      is_ambiguous: true
+      n_assigned: 3,
+      n_winner: 2,
+      is_ambiguous: true,
+      tier_reasons: HELD
     })
     expect(jump.opened.mz).toBeUndefined()
 

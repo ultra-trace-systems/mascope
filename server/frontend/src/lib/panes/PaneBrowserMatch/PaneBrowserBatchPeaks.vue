@@ -28,7 +28,7 @@ import {
 } from '@/lib/batchMergedIsotopologues'
 import { blendOf } from '@/lib/batchBlend'
 import { flatSeriesOf } from '@/lib/batchFlatSeries'
-import { holdingReasons, holdingTooltip } from '@/lib/batchPersistence'
+import { holdingCap } from '@/lib/batchPersistence'
 import { bucketOf, bucketRank, engineBucketOf, tierName } from '@/lib/tiers'
 import {
   isLevel,
@@ -1163,14 +1163,7 @@ const samplesLabel = (row) => (row.n_present == null ? '' : `${row.n_present}`)
 
 // The tier chip's cap mark: what the batch's own rules hold the tier down on,
 // named as a run's reasons are.
-const tierCap = (row) => {
-  const reasons = holdingReasons(row.tier_reasons)
-  if (!reasons.length) return null
-  return {
-    label: reasons.map((reason) => reason.label).join(', '),
-    tooltip: holdingTooltip(row.tier_reasons, row.consensus_tier)
-  }
-}
+const tierCap = (row) => holdingCap(row.tier_reasons, row.consensus_tier)
 
 // The bars of the intensity column are drawn over every batch peak shown.
 const intensities = computed(() => shown.value.map((bp) => bp.max_intensity))

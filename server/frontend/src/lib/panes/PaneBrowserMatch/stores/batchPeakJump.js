@@ -73,7 +73,8 @@ export function measuredMembers(record) {
  * @param {object} row - a batch ledger row
  * @returns {{consensus_formula: string|null, consensus_ion_formula: string|null,
  *   consensus_tier: string|null, consensus_role: string|null,
- *   support_fraction: number|null, n_present: number|null, is_ambiguous: boolean}}
+ *   support_fraction: number|null, n_present: number|null, n_assigned: number|null,
+ *   n_winner: number|null, is_ambiguous: boolean, tier_reasons: Array|null}}
  */
 export function batchReading(row) {
   return {
@@ -83,7 +84,13 @@ export function batchReading(row) {
     consensus_role: row?.consensus_role ?? null,
     support_fraction: row?.support_fraction ?? null,
     n_present: row?.n_present ?? null,
-    is_ambiguous: Boolean(row?.is_ambiguous)
+    // The samples whose run read a formula on it, and those of them that read
+    // the consensus: what `support_fraction` is the share of.
+    n_assigned: row?.n_assigned ?? null,
+    n_winner: row?.n_winner ?? null,
+    is_ambiguous: Boolean(row?.is_ambiguous),
+    // What the batch's own rules hold its tier down on, for the chip's mark.
+    tier_reasons: row?.tier_reasons ?? null
   }
 }
 

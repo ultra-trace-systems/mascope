@@ -6,7 +6,7 @@ import Button from 'primevue/button'
 import { BaseLevelTag, BaseTierTag, BaseVerdictBadge } from '@/lib/base'
 import { num } from '@/lib/formatters'
 import { formatIsotopeLabel } from '@/lib/chem'
-import { formatShare, shareDigits } from './cardReadings.js'
+import { holdingCap } from '@/lib/batchPersistence'
 import { sourceLabel, sourceLine } from '@/lib/assignmentSources'
 import {
   candidatesTooltip,
@@ -50,11 +50,13 @@ const {
 } = useCard()
 
 // Opened from the batch ledger, the line names the batch's reading first: its
-// consensus, the consensus tier as the ledger's chip, and how many samples hold
-// the peak with the share of their formulas that agree. The share is over the
-// samples whose run read a formula on the peak (the server's
-// `support_fraction`), so it is said as a share of formulas, never as a count
-// of samples it was not taken over.
+// consensus, the consensus tier as the ledger's chip with its cap mark, and
+// how many samples hold the peak with how many of them agree. Agreement is
+// counted over the samples whose run read a formula on the peak (the
+// server's `n_assigned`), of which `n_winner` read the consensus, so a
+// sample whose run read nothing there is never counted as disagreeing. Where
+// no sample's run read a formula - a pin none of them carries - or the
+// server counts none, the line gives the sample count alone.
 const batchConsensus = computed(() => {
   const batch = batchOpened.value?.batch
   if (!batch) return null
@@ -64,16 +66,25 @@ const batchCount = computed(() => {
   const batch = batchOpened.value?.batch
   if (!batch || batch.present == null) return ''
   const present = `in ${batch.present} sample${batch.present === 1 ? '' : 's'}`
-  if (!batch.formula || batch.present < 2 || batch.support == null) return present
-  const agree =
-    batch.support >= 1
-      ? 'all their formulas agree'
-      : `${formatShare(batch.support, shareDigits(batch.support, 1))} of their formulas agree`
-  return `${present}, ${agree}`
+  const { assigned, winners } = batch
+  if (!batch.formula || batch.present < 2 || !assigned || winners == null) return present
+  // Said of all the samples where every one read a formula, else of those
+  // that did.
+  const whose = assigned === batch.present ? '' : ` whose run reads a formula`
+  if (winners === assigned) {
+    const agree = assigned === 1 ? `the one${whose} agrees` : `all ${assigned}${whose} agree`
+    return `${present}, ${agree}`
+  }
+  return `${present}, ${winners} of the ${assigned}${whose} ${winners === 1 ? 'agrees' : 'agree'}`
 })
 const BATCH_COUNT_TOOLTIP =
-  "How many of the batch's samples hold this batch peak, and the share of the formulas " +
-  'their runs read on it that are the consensus'
+  "How many of the batch's samples hold this batch peak, and how many of those whose run " +
+  'reads a formula on it read the consensus. A sample whose run reads no formula there is ' +
+  'left out of the agreement'
+const batchTierCap = computed(() => {
+  const batch = batchOpened.value?.batch
+  return batch ? holdingCap(batch.tierReasons, batch.tier) : null
+})
 
 // Then the sample the card shows: the brightest of those that hold it, or the
 // one *Other samples* stepped to. Opened from a row's level, the samples are
@@ -314,6 +325,7 @@ const provisional = TIERING_PROVISIONAL
           class="batch-tier"
           :tier="batchOpened.batch.tier"
           :role="batchOpened.batch.role"
+          :cap="batchTierCap"
         /><template v-if="batchCount">
           &middot;
           <span data-testid="batch-count" v-tooltip.top="BATCH_COUNT_TOOLTIP">{{

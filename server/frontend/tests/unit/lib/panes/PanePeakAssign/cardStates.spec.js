@@ -189,7 +189,7 @@ vi.mock('@/lib/base', () => ({
   BaseClaimStructure: { template: '<div />' },
   BaseTierTag: {
     name: 'BaseTierTag',
-    props: ['tier', 'role'],
+    props: ['tier', 'role', 'cap'],
     template: '<span class="tier-tag" />'
   },
   BaseLevelTag: { props: ['level'], template: '<span />' },
@@ -701,8 +701,8 @@ describe('card states: a sample with no run of its own', () => {
 })
 
 describe('card states: opened from the batch scope', () => {
-  // The batch's reading as the ledger row has it: ROW's formula, held by two
-  // of three samples' formulas.
+  // The batch's reading as the ledger row has it: ROW's formula, read by two
+  // of the three samples, each of whose run reads a formula.
   const opened = (reading = {}) => ({
     batch_peak_id: 'bp-1',
     sample_batch_id: 'sb-1',
@@ -712,7 +712,10 @@ describe('card states: opened from the batch scope', () => {
     consensus_role: null,
     support_fraction: 0.6667,
     n_present: 3,
+    n_assigned: 3,
+    n_winner: 2,
     is_ambiguous: false,
+    tier_reasons: null,
     ...reading,
     members: [
       { sample_item_id: 'si-1', sample_peak_id: 'p-1', intensity: 900 },
@@ -728,7 +731,7 @@ describe('card states: opened from the batch scope', () => {
 
     const line = byTestId(wrapper, 'batch-opened')
     expect(textOf(wrapper, 'batch-reading')).toBe(
-      'Batch: C6H12O6 · in 3 samples, 67% of their formulas agree.'
+      'Batch: C6H12O6 · in 3 samples, 2 of the 3 agree.'
     )
     expect(byTestId(wrapper, 'batch-consensus').classes()).toContain('mono')
     // The ledger's tier chip, beside the consensus: the batch's tier, not the sample's.
@@ -746,23 +749,90 @@ describe('card states: opened from the batch scope', () => {
     expect(stepTo).toHaveBeenCalledWith(1)
   })
 
-  it('says all the formulas agree, and gives no share for one sample', async () => {
-    state.opened = opened({ support_fraction: 1 })
+  it('counts the samples that agree among those whose run reads a formula', async () => {
+    // Two of five samples' runs read no formula: they are left out, not
+    // counted as disagreeing.
+    state.opened = opened({ n_present: 5, support_fraction: 0.6667 })
     let wrapper = await mountCard()
-    expect(textOf(wrapper, 'batch-count')).toBe('in 3 samples, all their formulas agree')
+    expect(textOf(wrapper, 'batch-count')).toBe(
+      'in 5 samples, 2 of the 3 whose run reads a formula agree'
+    )
 
-    state.opened = opened({ support_fraction: 1, n_present: 1 })
+    state.opened = opened({ support_fraction: 1, n_winner: 3 })
     wrapper = await mountCard()
-    expect(textOf(wrapper, 'batch-count')).toBe('in 1 sample')
+    expect(textOf(wrapper, 'batch-count')).toBe('in 3 samples, all 3 agree')
 
-    state.opened = opened({ support_fraction: null })
+    state.opened = opened({ n_present: 5, support_fraction: 1, n_winner: 3 })
+    wrapper = await mountCard()
+    expect(textOf(wrapper, 'batch-count')).toBe(
+      'in 5 samples, all 3 whose run reads a formula agree'
+    )
+
+    state.opened = opened({ n_present: 4, support_fraction: 1, n_assigned: 1, n_winner: 1 })
+    wrapper = await mountCard()
+    expect(textOf(wrapper, 'batch-count')).toBe(
+      'in 4 samples, the one whose run reads a formula agrees'
+    )
+
+    state.opened = opened({ support_fraction: 0.3333, n_winner: 1 })
+    wrapper = await mountCard()
+    expect(textOf(wrapper, 'batch-count')).toBe('in 3 samples, 1 of the 3 agrees')
+
+    // A pin every assigned sample reads against: 0 of them is true.
+    state.opened = opened({ support_fraction: 0, n_winner: 0 })
+    wrapper = await mountCard()
+    expect(textOf(wrapper, 'batch-count')).toBe('in 3 samples, 0 of the 3 agree')
+    expect(byTestId(wrapper, 'batch-count').attributes('data-tooltip')).toContain(
+      'whose run reads a formula'
+    )
+  })
+
+  it('gives the sample count alone where no sample is counted for agreement', async () => {
+    // A pin no sample's run reads a formula for: no agreement, and no "0%".
+    state.opened = opened({ n_present: 4, support_fraction: 0, n_assigned: 0, n_winner: 0 })
+    let wrapper = await mountCard()
+    expect(textOf(wrapper, 'batch-count')).toBe('in 4 samples')
+    expect(textOf(wrapper, 'batch-reading')).not.toContain('%')
+
+    // A row whose consensus counts none: the share alone says no count.
+    state.opened = opened({ n_assigned: null, n_winner: null })
     wrapper = await mountCard()
     expect(textOf(wrapper, 'batch-count')).toBe('in 3 samples')
 
-    // A share just under all of them keeps the decimal that holds it off 100%.
-    state.opened = opened({ support_fraction: 0.996 })
+    state.opened = opened({ n_winner: null })
     wrapper = await mountCard()
-    expect(textOf(wrapper, 'batch-count')).toBe('in 3 samples, 99.6% of their formulas agree')
+    expect(textOf(wrapper, 'batch-count')).toBe('in 3 samples')
+
+    state.opened = opened({ n_present: 1, n_assigned: 1, n_winner: 1 })
+    wrapper = await mountCard()
+    expect(textOf(wrapper, 'batch-count')).toBe('in 1 sample')
+
+    // A source's ion, with no compound: nothing to agree on.
+    state.opened = opened({ consensus_formula: null })
+    wrapper = await mountCard()
+    expect(textOf(wrapper, 'batch-count')).toBe('in 3 samples')
+  })
+
+  it("marks the batch's tier chip with the cap its own rules hold it at", async () => {
+    const held = [
+      {
+        rule: 'persistence_only',
+        detail: "searched because its peak is in 11 of its partition's 12 spectra",
+        caps: true
+      }
+    ]
+    state.opened = opened({ tier_reasons: held })
+    let wrapper = await mountCard()
+    let [chip] = byTestId(wrapper, 'batch-opened').findAllComponents({ name: 'BaseTierTag' })
+    expect(chip.props('cap')).toEqual({
+      label: 'persistence only',
+      tooltip: expect.stringContaining('Holds this row at candidate')
+    })
+
+    state.opened = opened()
+    wrapper = await mountCard()
+    ;[chip] = byTestId(wrapper, 'batch-opened').findAllComponents({ name: 'BaseTierTag' })
+    expect(chip.props('cap')).toBeNull()
   })
 
   it("names the sample's own formula where its run reads another", async () => {

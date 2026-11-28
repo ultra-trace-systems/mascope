@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from mascope_backend.api.new.peak_assignments.batch_peaks import compute_consensus
 from mascope_backend.api.new.peak_assignments.batch_peaks_records import (
     _batch_peak_meta,
 )
@@ -16,6 +17,7 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     BATCH_RUN_KEEP,
     MEMBER_FIELDS,
     anchor_snapshot_row,
+    consensus_counts,
     member_arrays,
     run_record,
     runs_to_prune,
@@ -154,6 +156,105 @@ def test_a_snapshot_row_serves_every_field_the_live_ledger_does():
         SimpleNamespace(**anchor_snapshot_row("run-1", anchor, [])), "sb-1"
     )
     assert set(snap) - {"batch_peak_run_id"} == set(live)
+
+
+def _counts(meta):
+    return meta["n_assigned"], meta["n_winner"]
+
+
+def _voter(sample, formula, fit, candidate):
+    """A member as the vote reads it, beside its registry index as a
+    snapshot keeps it."""
+    return {
+        "sample_item_id": sample,
+        "sample_peak_id": f"p-{sample}",
+        "assigned_formula": formula,
+        "ion_formula": None,
+        "ionization_mechanism_id": None,
+        "fit_score": fit,
+        "intensity": 1000.0,
+        "tier": "assigned" if formula else "unassigned",
+        "role": "M0" if formula else None,
+        "p_correct": None,
+        "candidate": candidate,
+    }
+
+
+def _ledger_rows(voters, manual=None):
+    """The live ledger's row and an earlier run's, for an anchor whose
+    consensus the vote takes over ``voters``."""
+    consensus = compute_consensus(voters, "bp-1", manual=manual)
+    anchor = _anchor(
+        sample_batch_id="sb-1",
+        consensus_formula=consensus.consensus_formula,
+        consensus_role=consensus.consensus_role,
+        support_fraction=consensus.support_fraction,
+        n_present=consensus.n_present,
+        candidates=[{"formula": "C6H12O6"}, {"formula": "C7H14O6"}],
+        provenance=consensus.provenance,
+    )
+    snapshot = SimpleNamespace(**anchor_snapshot_row("run-1", anchor, voters))
+    return _batch_peak_meta(anchor), snapshot_anchor_meta(snapshot, "sb-1")
+
+
+def test_the_ledger_counts_the_members_that_read_a_formula_and_agree():
+    # Three members: two read a formula, one of them the consensus. The share
+    # is over the two, so the row serves both counts beside it.
+    live, snap = _ledger_rows(
+        [
+            _voter("s1", "C6H12O6", 0.95, 0),
+            _voter("s2", "C7H14O6", 0.2, 1),
+            _voter("s3", None, None, None),
+        ]
+    )
+    assert live["consensus_formula"] == "C6H12O6"
+    assert live["n_present"] == 3
+    assert live["support_fraction"] == 0.5
+    assert _counts(live) == (2, 1)
+    # An earlier run's ledger counts them off its member arrays and registry.
+    assert _counts(snap) == (2, 1)
+
+
+def test_a_pin_no_member_carries_counts_no_member_reading_a_formula():
+    # Its 0 % agreement is over no member at all, which the counts say.
+    live, snap = _ledger_rows(
+        [_voter("s1", None, None, None), _voter("s2", None, None, None)],
+        manual={"formula": "C6H12O6"},
+    )
+    assert live["consensus_formula"] == "C6H12O6"
+    assert live["support_fraction"] == 0.0
+    assert _counts(live) == (0, 0)
+    assert _counts(snap) == (0, 0)
+
+
+def test_the_counts_are_null_where_the_consensus_records_none():
+    # No member reads a formula and no pin names one: no consensus to count.
+    live, snap = _ledger_rows([_voter("s1", None, None, None)])
+    assert live["consensus_formula"] is None
+    assert _counts(live) == (None, None)
+    assert _counts(snap) == (None, None)
+    # A source's role accounts for the anchor: its provenance counts no
+    # formulas, and a snapshot of it counts none either.
+    role = SimpleNamespace(
+        **anchor_snapshot_row(
+            "run-1",
+            _anchor(consensus_role="reagent", provenance={"n_role": 2}),
+            [_member("s1", "p1")],
+        )
+    )
+    assert _counts(
+        _batch_peak_meta(_anchor(sample_batch_id="sb-1", provenance={"n_role": 2}))
+    ) == (
+        None,
+        None,
+    )
+    assert _counts(snapshot_anchor_meta(role, "sb-1")) == (None, None)
+    # A count the provenance does not hold as an integer is none.
+    assert consensus_counts({"n_assigned": True, "n_winner": "2"}) == {
+        "n_assigned": None,
+        "n_winner": None,
+    }
+    assert consensus_counts(None) == {"n_assigned": None, "n_winner": None}
 
 
 @pytest.mark.parametrize("reads, served", [("C6H12O6", True), ("C7H14O6", False)])

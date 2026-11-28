@@ -64,6 +64,24 @@ export function holdingTooltip(reasons, tier) {
 }
 
 /**
+ * The tier chip's cap mark for a batch peak: what the batch's own rules hold
+ * its tier down on, named as a run's reasons are. The ledger's chip and the
+ * card's batch line draw the same one.
+ *
+ * @param {Array|null} reasons - the batch peak's `tier_reasons`
+ * @param {string|null} tier - the batch peak's `consensus_tier`
+ * @returns {{label: string, tooltip: string}|null} null where none holds it
+ */
+export function holdingCap(reasons, tier) {
+  const holding = holdingReasons(reasons)
+  if (!holding.length) return null
+  return {
+    label: holding.map((reason) => reason.label).join(', '),
+    tooltip: holdingTooltip(reasons, tier)
+  }
+}
+
+/**
  * Whether the persistence rule stands on the reading the search elected:
  * nothing besides its peak has seen it. What that does to the reading is
  * `persistenceHold`'s.
