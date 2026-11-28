@@ -1833,12 +1833,13 @@ or the **×N** pill in the **Ion** column, narrows the ledger to the group's row
   lens on the sample's ledger, and **Plot them**.
 
 **Group by**, in **Show**, draws every group at once: a group line over its members,
-naming the compound or the series and how many rows it holds. The line is a header, set
-in bold on a shaded ground, and its **Tier**, **Level** and verdict cells are empty: a
-group has no tier of its own, and its members show theirs. Every row under a group line
-carries a bar on its left edge, down to the next group line. Click a line, or press
-Enter or Space on it, to fold its members and unfold them again. The rows in no group
-sit under an *Ungrouped* line at the end.
+naming the compound or the series and how many peaks it holds, counted as the ledger's
+header counts them: batch peaks in the batch scope, peaks in a sample. The line is a
+header, set in bold on a shaded ground, and its **Tier**, **Level** and verdict cells are
+empty: a group has no tier of its own, and its members show theirs. Every row under a
+group line carries a bar on its left edge, down to the next group line. Click a line, or
+press Enter or Space on it, to fold its members and unfold them again. The rows in no
+group sit under an *Ungrouped* line at the end.
 
 - *Compound* groups the channels of one neutral: in the batch's ledger the batch peaks the
   batch reads it through, in a sample's ledger the sample's own rows of it.

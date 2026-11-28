@@ -789,7 +789,7 @@ const rows = computed(() => {
       ledgerKind: 'group',
       groupKey: section.key,
       groupName: section.name,
-      groupCount: `${section.size} row${section.size === 1 ? '' : 's'}`,
+      groupCount: `${section.size} peak${section.size === 1 ? '' : 's'}`,
       collapsed: isCollapsed
     })
     if (!isCollapsed) section.rows.forEach(withFamily)
