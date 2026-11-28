@@ -120,6 +120,27 @@ describe('the narrow ledger', () => {
     }
   })
 
+  // A rule that clips an element from sight takes it out of the layout too:
+  // the absolute 1 px box is what narrows the column, so a clip without it
+  // hides the word and leaves the column as wide as before.
+  it('takes every clipped element out of the layout as well as from sight', () => {
+    const clipped = parseNarrowRules().filter((rule) => rule.declarations['clip-path'])
+    expect(clipped.map((rule) => rule.selector)).toEqual([
+      '.ledger .tier-cell .tier-word',
+      '.ledger .intensity-label'
+    ])
+    for (const rule of clipped) {
+      expect(rule.effect, rule.selector).toBe('sight')
+      expect(rule.declarations, rule.selector).toMatchObject({
+        position: 'absolute',
+        width: '1px',
+        height: '1px',
+        overflow: 'hidden',
+        'clip-path': 'inset(50%)'
+      })
+    }
+  })
+
   // Hiding the word narrows nothing while the column holds its 7 rem: its
   // minimum gives way at the same width.
   it.each([
