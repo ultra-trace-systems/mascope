@@ -174,45 +174,58 @@ async function load() {
   }
 }
 
-// The fetched series as Plotly traces, each named by its member's current
-// label, plus the family's sum when every member shares a time axis.
-const traces = computed(() => {
-  const labels = new Map(members.value.map((m) => [String(m.peakId), m.label]))
-  const built = series.value.map(({ peakId, mz, x, y }, index) => {
-    const label = labels.get(String(peakId)) ?? num.mz.format(mz)
-    return {
-      name: label,
-      type: 'scatter',
-      mode: 'lines',
-      line: { color: palette[index % palette.length], width: index === 0 ? 2 : 1.3 },
-      x,
-      y,
-      hovertemplate:
-        [`<i>${label}</i>`, 't: <b>%{x:.1f} s</b>', 'intensity: <b>%{y:.3e}</b>'].join('<br>') +
-        '<extra></extra>'
-    }
-  })
+// The fetched series' lines and the family's sum, when every member shares a
+// time axis. Built from `series` alone, so a refocus within the family adds
+// nothing up again.
+const lines = computed(() => {
+  const built = series.value.map(({ peakId, mz, x, y }) => ({ peakId, mz, x, y }))
   if (built.length > 1) {
     const len = built[0].y.length
-    if (built.every((trace) => trace.y.length === len)) {
+    if (built.every((line) => line.y.length === len)) {
       const sum = new Float32Array(len)
-      for (const trace of built) {
-        for (let i = 0; i < len; i += 1) sum[i] += trace.y[i]
+      for (const line of built) {
+        for (let i = 0; i < len; i += 1) sum[i] += line.y[i]
       }
-      built.push({
-        name: 'Sum',
-        type: 'scatter',
-        mode: 'lines',
-        line: { color: '#9aa2b1', width: 1, dash: 'dot' },
-        x: built[0].x,
-        y: sum,
-        hovertemplate:
-          ['<i>Sum</i>', 't: <b>%{x:.1f} s</b>', 'intensity: <b>%{y:.3e}</b>'].join('<br>') +
-          '<extra></extra>'
-      })
+      built.push({ sum: true, x: built[0].x, y: sum })
     }
   }
   return built
+})
+
+// Each member's current name, as a string. `members` is rebuilt on every
+// focus change, but an equal string wakes no reader: a refocus within the
+// family leaves the traces (and the user's zoom and hidden lines) alone,
+// while a name that really changes, such as the ledger's measurement
+// arriving, renames them.
+const labelsKey = computed(() =>
+  JSON.stringify(members.value.map((m) => [String(m.peakId), m.label]))
+)
+
+const trace = (name, line, x, y) => ({
+  name,
+  type: 'scatter',
+  mode: 'lines',
+  line,
+  x,
+  y,
+  hovertemplate:
+    [`<i>${name}</i>`, 't: <b>%{x:.1f} s</b>', 'intensity: <b>%{y:.3e}</b>'].join('<br>') +
+    '<extra></extra>'
+})
+
+// The lines as Plotly traces, each named by its member's current label.
+const traces = computed(() => {
+  const labels = new Map(JSON.parse(labelsKey.value))
+  return lines.value.map((line, index) =>
+    line.sum
+      ? trace('Sum', { color: '#9aa2b1', width: 1, dash: 'dot' }, line.x, line.y)
+      : trace(
+          labels.get(String(line.peakId)) ?? num.mz.format(line.mz),
+          { color: palette[index % palette.length], width: index === 0 ? 2 : 1.3 },
+          line.x,
+          line.y
+        )
+  )
 })
 
 watch(membersKey, load, { immediate: true })
