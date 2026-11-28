@@ -1067,8 +1067,8 @@ What caps a row at candidate:
   since the run never holds one at *assigned*. A list's presence is evidence for a
   formula, not a label on it, so a list compound is only held at *assigned* where
   nothing plausible competes with it.
-- **one peak only** — the formula search found the formula on one peak, and nothing
-  else in the run saw it: no line of its own isotope pattern is committed beside it, no
+- **one peak only** — the formula search found the formula on one peak, or only your
+  target library names it, and nothing else in the run saw it: no line of its own isotope pattern is committed beside it, no
   second ionization channel committed the same neutral, no homologous series of the
   batch names it, and no reference list names it. However well it fits, one line is one
   observation. A faint line matches its

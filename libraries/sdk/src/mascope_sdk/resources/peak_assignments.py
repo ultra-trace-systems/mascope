@@ -675,8 +675,9 @@ class PeakAssignmentsResource(BaseResource):
         a reason that would take the top tier - a radical neutral, a nitrate
         cluster around a neutral with no oxygen (rule ``oxygen_free_cluster``),
         a peak whose evidence left rivals standing with nothing else
-        corroborating it, a formula the search found on one peak that nothing
-        else in the run saw (rule ``lone_peak``), a formula the run's chemistry
+        corroborating it, a formula the search found on one peak, or one only
+        the target library names, that nothing else in the run saw (rule
+        ``lone_peak``), a formula the run's chemistry
         context holds only on corroboration - sulfur, or two or more nitrogens
         with fewer than two oxygens per nitrogen, with no second channel, series
         or line of that element's own heavy isotope seeing it (rule

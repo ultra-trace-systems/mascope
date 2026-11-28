@@ -1097,7 +1097,7 @@ def lone_peak_reason(row: dict, lines: Sequence[dict]) -> dict | None:
     :param row: A committed monoisotopic row.
     :param lines: Its committed isotopologue rows (:func:`isotope_lines`).
     :return: The reason, or None where the row has a second observation or is
-        not the search's.
+        neither the search's nor only the target library's.
     """
     target = is_target_library_row(row) and not named_by_a_list(row)
     if row.get("source") != SOURCE_UNTARGETED and not target:
