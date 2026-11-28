@@ -13,6 +13,7 @@ import {
   EMPTY_REASONS
 } from '@/lib/panes/PanePeakAssign/card/cardReadings.js'
 import { CAPPING_RULES, tierReasonLabel } from '@/lib/tierReasons'
+import { BATCH_CLAIM, BATCH_PEAK_LEVEL, LEVEL_ROW_CASES } from './levelRowCases.js'
 
 // The inspector card for a peak with no committed formula. Two states reach it:
 // a ledger row of tier `unassigned` (a real assignment row, just formula-less),
@@ -223,9 +224,10 @@ vi.mock('@/lib/base', async () => ({
   // Says which level it was handed, so the level row's tests can read it off;
   // the chip itself has a spec of its own (base/BaseLevelTag.spec.js).
   BaseLevelTag: {
-    props: ['level', 'role', 'evidence', 'lift', 'tooltip'],
+    props: ['level', 'role', 'evidence', 'lift', 'tooltip', 'fromBatch'],
     template:
-      '<span class="level-tag" :data-level="level" :data-role="role" :data-tooltip="tooltip" />'
+      '<span class="level-tag" :data-level="level" :data-role="role" :data-tooltip="tooltip" ' +
+      ":data-from-batch=\"fromBatch ? 'yes' : 'no'\" />"
   },
   BaseVerdictBadge: { props: ['record', 'compact'], template: '<span class="verdict-badge" />' },
   // Real: the tier row's provisional mark is read off what it draws.
@@ -2436,14 +2438,117 @@ describe('PanePeakAssign identification level', () => {
   })
 
   // A derived row's provenance is its anchor's consensus record: no run read a
-  // level for this sample's peak.
-  it('shows nothing on a row served from the batch ledger', async () => {
+  // level for this sample's peak, so nothing in it is read as the row's own.
+  it("reads nothing of a served row's provenance as its own level", async () => {
     runRecord = { engine: 'batch' }
-    focusedAssignment = { ...M0, batch_peak_id: 'bp-1' }
+    focusedAssignment = {
+      ...M0,
+      level: null,
+      level_evidence: null,
+      level_lift: null,
+      batch_peak_id: 'bp-1'
+    }
     detailRecord = { provenance: { identification_level: levelRecord() } }
     const wrapper = await mountPane()
 
     expect(section(wrapper).exists()).toBe(false)
+    expect(wrapper.find('[data-testid="section-level"]').text()).toContain(
+      'none: this sample has no run of its own'
+    )
+  })
+
+  // One rule for the level a row shows, read by the sample ledger too
+  // (rowLevel): the same rows as paneBrowserAssignment.spec.js, the same level
+  // and the same mark, in the chip beside the tier and in the section.
+  describe('the one level rule', () => {
+    afterEach(() => {
+      anchorVerdictRecord = null
+    })
+    for (const testCase of LEVEL_ROW_CASES) {
+      it(`shows ${testCase.name} as the ledger does`, async () => {
+        runRecord = testCase.served ? { engine: 'batch' } : null
+        focusedAssignment = { ...M0, ...testCase.row, batch_peak_id: 'bp-1' }
+        verdictRecord = null
+        anchorVerdictRecord = testCase.batchVerdict
+        detailRecord = {
+          // A served row's is its anchor's record, which is not its own.
+          provenance: { identification_level: levelRecord() },
+          batch_level: testCase.detailBatchLevel ?? testCase.row.batch_level ?? null
+        }
+        const wrapper = await mountPane()
+
+        if (!testCase.shows) {
+          expect(section(wrapper).exists()).toBe(false)
+          expect(wrapper.findAll('.level-tag')).toHaveLength(0)
+          return
+        }
+        const chip = section(wrapper).find('.level-tag')
+        expect(chip.attributes('data-level')).toBe(testCase.shows.level)
+        expect(chip.attributes('data-from-batch')).toBe(testCase.shows.fromBatch ? 'yes' : 'no')
+        // The answer's chip reads the same.
+        const answer = wrapper.findAll('.level-tag')[0]
+        expect(answer.attributes('data-level')).toBe(testCase.shows.level)
+        expect(answer.attributes('data-from-batch')).toBe(chip.attributes('data-from-batch'))
+        expect(wrapper.vm.identificationLevel.source).toBe(testCase.shows.source)
+      })
+    }
+
+    it("shows the batch peak's own lines, whose it is, and no rivals", async () => {
+      runRecord = { engine: 'batch' }
+      focusedAssignment = {
+        ...M0,
+        level: null,
+        level_evidence: null,
+        level_lift: null,
+        batch_level: BATCH_PEAK_LEVEL
+      }
+      detailRecord = { provenance: { identification_level: levelRecord() } }
+      const wrapper = await mountPane()
+
+      expect(wrapper.find('[data-testid="level-source"]').text()).toContain(
+        "the batch: its batch peak's own level"
+      )
+      expect(wrapper.find('[data-testid="level-evidence"]').text()).toContain(
+        BATCH_PEAK_LEVEL.evidence
+      )
+      expect(wrapper.find('[data-testid="level-lift"]').text()).toContain(BATCH_PEAK_LEVEL.lift)
+      expect(wrapper.find('[data-testid="level-served-note"]').text()).toBe(
+        "The level is the batch's; this sample has no run of its own."
+      )
+      expect(section(wrapper).find('.level-tag').attributes('data-tooltip')).toContain(
+        "Source: the batch - its batch peak's own level"
+      )
+      // The batch's rivals are another sample's, not this one's.
+      expect(rivals(wrapper)).toHaveLength(0)
+    })
+
+    it("gives an isotope line of a served row its M0's batch peak level", async () => {
+      runRecord = { engine: 'batch' }
+      const served = {
+        ...M0,
+        level: null,
+        level_evidence: null,
+        level_lift: null,
+        batch_level: BATCH_PEAK_LEVEL
+      }
+      focusedAssignment = { ...isotopologue(served), level: null, batch_level: null }
+      const wrapper = await mountPane()
+
+      expect(section(wrapper).find('.level-tag').attributes('data-level')).toBe('4a')
+      expect(wrapper.vm.identificationLevel.source).toBe('batch')
+    })
+
+    it("names a batch-level verdict's claim as the batch's", async () => {
+      focusedAssignment = M0
+      verdictRecord = null
+      anchorVerdictRecord = BATCH_CLAIM
+      const wrapper = await mountPane()
+
+      expect(wrapper.find('[data-testid="level-source"]').text()).toContain(
+        "claim, the batch's verdict, the engine read 4a"
+      )
+      expect(wrapper.find('[data-testid="level-served-note"]').exists()).toBe(false)
+    })
   })
 
   it('opens the identification level help', async () => {

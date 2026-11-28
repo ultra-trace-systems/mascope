@@ -29,9 +29,12 @@ import {
   readableLift,
   unstatedLines,
   readerLevel,
+  rowLevel,
+  BATCH_SOURCE_LINE,
   rivalTestLabel,
   unlistedRivalsLine
 } from '@/lib/levels'
+import { BATCH_CLAIM, BATCH_PEAK_LEVEL, LEVEL_ROW_CASES } from './levelRowCases.js'
 
 // The one place the identification level's scale is named. The inspector, two
 // ledgers, a chip and two filters read it; the failures it guards against are
@@ -281,6 +284,7 @@ describe('readerLevel and claimLevelOf', () => {
     expect(readerLevel({ verdict: claim(), ...ENGINE })).toEqual({
       level: '2b',
       source: 'claim',
+      fromBatch: false,
       evidence: 'two fragments',
       lift: 'a standard',
       engineLevel: '4a'
@@ -296,6 +300,7 @@ describe('readerLevel and claimLevelOf', () => {
       expect(readerLevel({ verdict, ...ENGINE })).toEqual({
         ...ENGINE,
         source: 'engine',
+        fromBatch: false,
         engineLevel: '4a'
       })
     }
@@ -321,6 +326,73 @@ describe('readerLevel and claimLevelOf', () => {
     expect(readerLevel({ verdict: claim() })).toMatchObject({ level: '2b', engineLevel: null })
     expect(readerLevel({ level: '6' })).toBeNull()
     expect(readerLevel()).toBeNull()
+  })
+
+  it("marks a batch-level verdict's claim as the batch's", () => {
+    expect(readerLevel({ verdict: claim(), verdictFromBatch: true, ...ENGINE })).toMatchObject({
+      level: '2b',
+      source: 'claim',
+      fromBatch: true
+    })
+  })
+})
+
+// One rule for the level a sample's row shows, which the sample ledger and the
+// card both read (docs/dev/assignment_ledger_and_card.md, section 4.2).
+describe('rowLevel', () => {
+  // The detail's borrowed overlay, where a case has one, as a row carrying it.
+  const read = ({ row, batchVerdict, detailBatchLevel }) =>
+    rowLevel({ ...row, batch_level: detailBatchLevel ?? row.batch_level ?? null }, { batchVerdict })
+
+  for (const testCase of LEVEL_ROW_CASES) {
+    it(`reads ${testCase.name}`, () => {
+      const shown = read(testCase)
+      if (!testCase.shows) expect(shown).toBeNull()
+      else expect(shown).toMatchObject(testCase.shows)
+    })
+  }
+
+  it("carries the batch peak's own lines, as the batch recorded them", () => {
+    expect(rowLevel({ level: null, batch_level: BATCH_PEAK_LEVEL })).toEqual({
+      level: '4a',
+      source: 'batch',
+      fromBatch: true,
+      evidence: BATCH_PEAK_LEVEL.evidence,
+      lift: BATCH_PEAK_LEVEL.lift,
+      engineLevel: null
+    })
+  })
+
+  it("prefers the row's own verdict, unmarked, to the batch's level", () => {
+    const own = { ...BATCH_CLAIM, level: 2, level_letter: 'b' }
+    const shown = rowLevel(
+      { level: null, batch_level: BATCH_PEAK_LEVEL },
+      { ownVerdict: own, batchVerdict: BATCH_CLAIM }
+    )
+    expect(shown).toMatchObject({ level: '2b', source: 'claim', fromBatch: false })
+  })
+
+  it("reads an isotope line's batch peak level off its M0", () => {
+    const m0 = { level: null, batch_level: BATCH_PEAK_LEVEL }
+    expect(rowLevel({ level: null, role: 'iso_child' }, { m0 })).toMatchObject({
+      level: '4a',
+      source: 'batch'
+    })
+  })
+
+  it("never puts a run's borrowed overlay in place of its level", () => {
+    const borrowed = { level: '4a', borrowed: true }
+    expect(rowLevel({ level: null, batch_level: borrowed })).toBeNull()
+  })
+
+  it("reads the row's own level where the slim row has none (the card's detail)", () => {
+    expect(rowLevel({}, { fallback: { level: '4b', evidence: 'e', lift: 'l' } })).toMatchObject({
+      level: '4b',
+      source: 'engine',
+      evidence: 'e',
+      lift: 'l'
+    })
+    expect(rowLevel(null)).toBeNull()
   })
 })
 
@@ -369,6 +441,27 @@ describe('levelTooltip source line', () => {
   it("says an engine's level is the engine's", () => {
     expect(levelTooltip({ level: '4a', source: 'engine' })).toContain(
       'Source: engine - no live verdict states a level'
+    )
+  })
+
+  it("says a batch-level verdict's level is the batch's", () => {
+    const lines = levelTooltip({
+      level: '1',
+      source: 'claim',
+      engineLevel: '5a',
+      fromBatch: true
+    }).split('\n')
+    expect(lines).toContain(
+      'Source: the batch - the batch-level verdict states this level; the engine read 5a'
+    )
+  })
+
+  it("says the batch peak's own level is the batch's, read on the batch ledger", () => {
+    expect(levelTooltip({ level: '4a', source: 'batch', fromBatch: true })).toContain(
+      BATCH_SOURCE_LINE
+    )
+    expect(BATCH_SOURCE_LINE).toContain(
+      "this row is the batch ledger's reading, not a run of this sample's"
     )
   })
 })
@@ -504,6 +597,9 @@ describe('readableLift', () => {
 
   it("reads the engine's level, a batch peak's and a borrowed one in the new words", () => {
     expect(readerLevel({ level: '5a', lift: OLD }).lift).toBe(LIFT_RIVALS_UNMEASURED)
+    expect(readerLevel({ batchLevel: { level: '5a', lift: OLD } }).lift).toBe(
+      LIFT_RIVALS_UNMEASURED
+    )
     expect(batchLevelOf({ level: '5a', level_lift: OLD }).lift).toBe(LIFT_RIVALS_UNMEASURED)
     expect(batchLevelTooltip({ level: '5a', level_lift: OLD })).toContain(
       `Would lift it: ${LIFT_RIVALS_UNMEASURED}`

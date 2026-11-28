@@ -279,6 +279,7 @@ const provisional = TIERING_PROVISIONAL
         :level="identificationLevel.level"
         :role="chipRole"
         :tooltip="identificationLevel.tooltip"
+        :fromBatch="identificationLevel.fromBatch"
       />
       <!-- The producing engine's own level, beside the run's as its tier is
            beside the tier. An imported row has no level of this server's, so

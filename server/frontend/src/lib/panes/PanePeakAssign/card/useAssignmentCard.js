@@ -20,7 +20,7 @@ import {
   levelMeta,
   borrowedLevelOf,
   levelTooltip,
-  readerLevel,
+  rowLevel,
   unlistedRivalsLine
 } from '@/lib/levels'
 import { sourceLabel } from '@/lib/assignmentSources'
@@ -1083,9 +1083,9 @@ export function useAssignmentCard({ showSearch }) {
     "No run of its own: this is the batch's reading for this sample, from the batch ledger."
   const NO_OWN_RUN_TOOLTIP =
     'The formula, ion, tier and fit are what the batch holds for this peak in this sample. ' +
-    "The tier's reasons, the other channels of the neutral, the identification level and " +
-    'the isotope lines not found come from an assignment run of the sample. Assign sample ' +
-    'runs one.'
+    "The tier's reasons, the other channels of the neutral and the isotope lines not found " +
+    "come from an assignment run of the sample; an identification level shown is the batch's. " +
+    'Assign sample runs one.'
   // The bar's Assign sample needs an editor (the server answers a viewer 403);
   // the reason is written as what enables it.
   const assignRefusal = computed(() =>
@@ -1106,7 +1106,19 @@ export function useAssignmentCard({ showSearch }) {
   const LEDGER_ISOTOPE_NOTE =
     "Measured now against this sample's peaks. Lines expected and not found come from an " +
     'assignment run of the sample.'
-  const LEDGER_LEVEL_NOTE = 'The identification level comes from an assignment run of the sample.'
+  // The line under a level the batch peak states for a row the batch ledger
+  // serves, and the reason a row it serves shows none: true whether or not the
+  // sample also has a run, read on the ledger by choice (runNotice).
+  const servedLevelNote = computed(() =>
+    noOwnRun.value
+      ? "The level is the batch's; this sample has no run of its own."
+      : "The level is the batch's: this row is the batch ledger's, not the sample's run's."
+  )
+  const servedNoLevel = computed(() =>
+    noOwnRun.value
+      ? 'none: this sample has no run of its own'
+      : "none: this row is the batch ledger's, not the sample's run's"
+  )
 
   // --- Measuring a batch identity before it is pinned (step 3.4c) ------------
   // A derived row's alternatives are the batch peak's other identities, each
@@ -1283,8 +1295,14 @@ export function useAssignmentCard({ showSearch }) {
   // The level and its two lines are on the slim ledger row, so they show before
   // the detail lands; the rivals are only in the detail's provenance. A row with
   // no level - one that commits no formula, an imported row, a run from before
-  // the level - shows nothing. Nor does a derived row, whose provenance is its
-  // anchor's consensus record: no run read a level for this sample's peak.
+  // the level - shows nothing.
+  //
+  // A row the batch ledger serves shows its batch peak's own level, marked as
+  // the batch's, with the lines the batch recorded (rowLevel; docs/dev/
+  // assignment_ledger_and_card.md, section 4.2): the row is the batch's reading
+  // of this sample's peak, so the batch's level is about the same reading. Its
+  // provenance is its anchor's consensus record, so nothing in it is read as
+  // the row's own, and it lists no rivals: no run measured any in this sample.
   //
   // An isotopologue carries its M0's level and no rivals of its own (its record
   // names the M0 it inherits from); the card says whose level it is.
@@ -1296,21 +1314,25 @@ export function useAssignmentCard({ showSearch }) {
   // claim's window leaves out, so that sample reads the engine's. The rivals
   // are the engine's reading, what its level was read against; under a claim
   // they are not the level's, so the card lists them only for the engine's.
-  const liveVerdict = computed(() => {
+  const ownVerdict = computed(() => {
     const target = verifyTarget.value
     if (!target?.assigned_formula) return null
-    return app.data.peakAssignment.verification.forAssignment(target) ?? anchorVerdict.value
+    return app.data.peakAssignment.verification.forAssignment(target) ?? null
   })
   const identificationLevel = computed(() => {
     const row = focusedAssignment.value
-    if (!row || derivedRun.value) return null
-    const record = provenance.value?.identification_level ?? null
-    const shown = readerLevel({
-      verdict: liveVerdict.value,
-      level: row.level ?? focusedDetail.value?.level ?? record?.level ?? null,
-      evidence:
-        row.level_evidence ?? focusedDetail.value?.level_evidence ?? record?.evidence ?? null,
-      lift: row.level_lift ?? focusedDetail.value?.level_lift ?? record?.lift ?? null
+    if (!row) return null
+    const detail = focusedDetail.value
+    const record = derivedRun.value ? null : (provenance.value?.identification_level ?? null)
+    const shown = rowLevel(row, {
+      m0: verifyTarget.value,
+      ownVerdict: ownVerdict.value,
+      batchVerdict: ownVerdict.value ? null : anchorVerdict.value,
+      fallback: {
+        level: detail?.level ?? record?.level ?? null,
+        evidence: detail?.level_evidence ?? record?.evidence ?? null,
+        lift: detail?.level_lift ?? record?.lift ?? null
+      }
     })
     if (!shown) return null
     const engine = shown.source === 'engine'
@@ -2206,7 +2228,8 @@ export function useAssignmentCard({ showSearch }) {
     assignSample,
     LEDGER_WHY_NOTE,
     LEDGER_ISOTOPE_NOTE,
-    LEDGER_LEVEL_NOTE,
+    servedLevelNote,
+    servedNoLevel,
     peakStore,
     sampleBatchId,
     derivedCandidates,

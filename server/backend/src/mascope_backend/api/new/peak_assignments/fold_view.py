@@ -49,6 +49,9 @@ from fastapi import status
 from sqlalchemy import and_, case, false, func, select
 
 from mascope_backend.api.lib.exceptions.api_exceptions import CodedHTTPException
+from mascope_backend.api.new.peak_assignments.batch_level import (
+    standing_batch_level_record,
+)
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     ROLE_M0,
     TIER_CODES,
@@ -167,6 +170,39 @@ def member_engine_level(member: Any, anchor: Any, identity: dict) -> Optional[st
     )
 
 
+def member_batch_level(member: Any, anchor: Any, identity: dict) -> Optional[dict]:
+    """The batch peak's own level on a member's row (step 5.8c), as the
+    batch recorded it: ``level``, ``evidence`` and ``lift``, with the batch
+    peak's id and ``batch_level``, the names a run's row carries the batch's
+    overlay under (``batch_level.row_batch_level``). On the member that is the
+    consensus reading in its sample, under :func:`member_engine_tier`'s rule;
+    None on every other row, and where no level of the batch stands for the
+    consensus (``batch_level.standing_batch_level_record``).
+
+    The row is the batch's reading of this sample's peak, so the batch's level
+    is a statement about that same reading. It is not the row's own: the row's
+    ``level`` stays None, as a derived row states none of its own, and a
+    reader shows this one marked as the batch's. Not marked ``borrowed``: that
+    is the batch's facts read on a run's own record, beside the run's level.
+
+    :param member: The sample's ``BatchPeakOccurrence``.
+    :param anchor: The ``BatchPeak`` it sits in.
+    :param identity: The registry entry the member's index names.
+    """
+    if not _reads_engine_verdict(member, anchor, identity):
+        return None
+    record = standing_batch_level_record(anchor)
+    if record is None:
+        return None
+    return {
+        "level": record["level"],
+        "evidence": record.get("evidence"),
+        "lift": record.get("lift"),
+        "batch_peak_id": anchor.batch_peak_id,
+        "batch_level": record["level"],
+    }
+
+
 def _reads_engine_verdict(member: Any, anchor: Any, identity: dict) -> bool:
     """Whether the member is the reading an import's verdict on its anchor is
     about: an M0 member whose registry entry names the consensus formula
@@ -234,6 +270,9 @@ def member_row(member: Any, anchor: Any) -> dict:
         "tier": tier_name(member.tier) or TIER_UNASSIGNED,
         "engine_tier": member_engine_tier(member, anchor, identity),
         "engine_level": member_engine_level(member, anchor, identity),
+        # The batch peak's own level, beside the row's (none): what a reader
+        # shows for a sample with no run of its own, marked as the batch's.
+        "batch_level": member_batch_level(member, anchor, identity),
         "target_compound_id": None,
         "target_ion_id": None,
         "owner_peak_assignment_id": fold_assignment_id(owner) if owner else None,
@@ -503,9 +542,9 @@ async def derived_ledger(
     neither answer, as on a run-backed read: absence is not agreement. The
     source is on the identity the member's registry entry names, which is
     where ``member_row`` reads it from and where the export writes it, so a
-    row that shows one has to be findable by it. A derived row states no
-    identification level, which a run states of its own rows, so a filter on
-    one matches none of them.
+    row that shows one has to be findable by it. A derived row states no level
+    of its own (its ``batch_level`` is the batch's), so a filter on one
+    matches none of them.
 
     :param session: An open session.
     :param sample: The sample view row.
