@@ -24,12 +24,28 @@ const declarationsOf = (body) =>
       })
   )
 
+// The visually-hidden recipe, whole. The clip takes the element from sight;
+// the absolute 1 px box takes it out of the layout, so the column it sat in
+// narrows. A rule that clips but keeps the element's box hides it and narrows
+// nothing, so it does not count as taking it from sight.
+const OUT_OF_SIGHT = {
+  position: 'absolute',
+  width: '1px',
+  height: '1px',
+  overflow: 'hidden',
+  'clip-path': 'inset(50%)',
+  'white-space': 'nowrap'
+}
+
 // What a rule does to what it selects: `drop` takes it out of the layout
 // (display: none), `sight` takes it from sight but leaves it on the page and in
-// the accessibility tree (clipped to nothing), `size` changes its size alone.
+// the accessibility tree (the whole recipe above), `size` changes its size
+// alone.
 const effectOf = (declarations) => {
   if (declarations.display === 'none') return 'drop'
-  if (declarations['clip-path'] === 'inset(50%)') return 'sight'
+  if (Object.entries(OUT_OF_SIGHT).every(([prop, value]) => declarations[prop] === value)) {
+    return 'sight'
+  }
   return 'size'
 }
 
@@ -93,9 +109,9 @@ export const outOfSightAt = (width, css = rules) =>
 /**
  * The value the narrow rules give `property` on `selector` in a ledger of
  * `width` px, or undefined: the last rule that sets it, as the cascade picks
- * between rules of one weight. The rules are read in the order the file has
- * them, queries first, so a query's rule must come after a plain one it
- * overrides - which the file's own order gives, the plain rules at its top.
+ * between rules of one weight. The plain rules are read first, as the file has
+ * them at its top, and the query rules after, so a query's rule overrides the
+ * plain one it lowers.
  */
 export const styleAt = (selector, property, width, css = rules) => {
   const all = parseNarrowRules(css)
