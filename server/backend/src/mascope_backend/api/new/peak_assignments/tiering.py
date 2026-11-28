@@ -976,6 +976,14 @@ def polyhalide_cluster_reason(row: dict, notation_by_id: dict[str, str]) -> dict
     )
 
 
+def density_escaped(row: dict) -> bool:
+    """Whether the density rule spares a row whatever its density: a second
+    channel of the run committed its neutral, or a batch series anchors it
+    (:func:`density_reason`). Both are read before the caps, so a reader can
+    ask it before the rival set is measured (``given_rivals``)."""
+    return is_corroborated(row) or series_anchor(row) is not None
+
+
 def density_reason(row: dict) -> dict | None:
     """The evidence left rivals standing, and nothing else saw the neutral.
 
@@ -992,7 +1000,7 @@ def density_reason(row: dict) -> dict | None:
     density = _provenance(row).get(CANDIDATE_DENSITY)
     if not isinstance(density, int) or density < DENSITY_LIMIT:
         return None
-    if is_corroborated(row) or series_anchor(row) is not None:
+    if density_escaped(row):
         return None
     searched = ""
     rival_set = _provenance(row).get(RIVAL_SET)

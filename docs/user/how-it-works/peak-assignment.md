@@ -3087,7 +3087,10 @@ are the ones a run weighs: the formulas the search's element ranges hold for the
 peak's mass are scored beside the reading, and those the sample's evidence cannot
 separate from it are measured with it and counted (*rivals left standing*). So on a
 crowded mass the reading is held at *candidate* in every sample, as in the sample the
-search read it in. Where one of the sample's lists holds the ion, its level also
+search read it in. Only a tier is kept of this measurement, so a search's reading is
+put to the element ranges only where the rivals can still lower one: where it reads
+*assigned* before the caps, or one of its isotope lines does, and no second channel or
+series of the batch already spares it the rivals' rule. Where one of the sample's lists holds the ion, its level also
 lists those rivals. The search's reading still reads 5a with *rivals not measured*
 there, as a search's winner does in a run that does not measure its shortlist. A run finds
 such a reading by searching, so it is judged as the search's reading in each sample,
