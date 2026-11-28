@@ -1114,7 +1114,16 @@ What caps a row at candidate:
   is in the sample, and cannot put a missing line into the spectrum. A formula you
   assign by hand is asked when you assign it, at the threshold and window its run
   asked the run's own rows at; this is the one rule a hand assignment is asked, since
-  the others weigh how the run chose between readings. A peak you assign by hand as
+  the others weigh how the run chose between readings. The lines it finds are
+  claimed for the main line where their peaks are unassigned and no person or
+  earlier change left them so: each becomes a line under it, as a run writes
+  one, with the line's own mass and height errors, the main line's level and no
+  higher a tier. Finding a line asks less than a run's match does, which wants
+  the line within its mass window of where the formula puts it and its height
+  within the line model's band about its predicted share, so a found line that
+  misses either is named and left, as is one on a peak another row holds. An
+  override of the main line unassigns the lines it claimed with it, and the
+  undo puts them back. A peak you assign by hand as
   one of a compound's isotopologues, such as its 81Br line, is not asked: the rule
   reads a formula's lines from its main one. Such a peak is stored as the line, its
   ion the line's own formula as an untargeted run stores a line. When the run holds

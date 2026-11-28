@@ -30,8 +30,16 @@ under its tier above the ledger, and the message says which case it was. A
 main line you assign later takes the run's isotope lines of its formula and
 adduct that you assigned by hand and that belong to no main line. A rebuild of
 the batch ledger reads such a peak as a line of its batch peak's compound, not
-as the compound itself at the line's m/z. The replaced compound's isotopologues
-are unassigned with it and come back with it, except any assigned by hand
+as the compound itself at the line's m/z. A main line you assign also claims
+the isotope lines the spectrum shows for it, on peaks the run left unassigned:
+each becomes a line under it, as a run writes one, at no higher a tier and
+with its level. A line is claimed only as a run would take it: its peak within
+the run's mass window of the line, at a height the line's predicted share
+allows. A line on a peak another row holds is not taken: another formula, a
+reagent, or a peak you or an earlier change left unassigned. The message lists
+the lines it claimed and the ones it left, with what each peak reads now. The
+replaced compound's isotopologues are unassigned with it and come back with
+it, the lines a main line claimed included, except any assigned by hand
 since. An isotope line you assigned by hand is not unassigned with it: it keeps
 its formula, stands on its own, and is linked again when the compound comes
 back.
