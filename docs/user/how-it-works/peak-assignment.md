@@ -1962,9 +1962,14 @@ In a narrow column the four measurements stand one above another, and the chips 
 - **Opened from the batch.** The button on a *Batch peaks* row that opens the brightest
   sample opens the batch peak in its brightest sample. A line under the chips then names
   the batch's reading first, then the sample, then whether the sample agrees:
-  *Batch: C3H6O3 · candidate · in 3 samples, 67% of their formulas agree. Showing sample
-  A, the brightest. This sample agrees.* The share is over the samples whose run reads a
-  formula on the peak. The formula that heads the card is the sample's own run's, which
+  *Batch: C3H6O3 · candidate · in 5 samples, 2 of the 3 whose run reads a formula agree.
+  Showing sample A, the brightest. This sample agrees.* The agreement counts only the
+  samples whose run reads a formula on the peak: a sample whose run reads none there is
+  not counted against the batch. Where every sample's run reads one, the line says *2 of
+  the 3 agree*, or *all 3 agree*. Where no sample's run reads a formula, as on a formula
+  pinned by hand that no sample's run reads, the line gives the number of samples alone.
+  The tier chip on the line carries the same cap mark as the ledger's chip, where the
+  batch's own rules hold the tier down. The formula that heads the card is the sample's own run's, which
   may not be the batch's: the line then says *This sample's run reads* that formula. It
   says when the sample's run reads no formula there, and where the batch's consensus is
   not settled it says so instead of *agrees*. Where the sample's run claims the peak as a

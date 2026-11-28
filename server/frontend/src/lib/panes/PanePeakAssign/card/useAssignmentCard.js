@@ -201,7 +201,10 @@ export function useAssignmentCard({ showSearch }) {
         role: opened.consensus_role ?? null,
         support: opened.support_fraction ?? null,
         present: opened.n_present ?? null,
-        ambiguous: Boolean(opened.is_ambiguous)
+        assigned: opened.n_assigned ?? null,
+        winners: opened.n_winner ?? null,
+        ambiguous: Boolean(opened.is_ambiguous),
+        tierReasons: opened.tier_reasons ?? null
       },
       // The level the members were chosen by, when the level's popover
       // opened them; null for the brightest of every member.

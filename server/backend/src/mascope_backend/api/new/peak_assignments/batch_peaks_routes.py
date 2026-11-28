@@ -287,6 +287,10 @@ async def get_batch_peak_ledger_route(
     per-sample series, so a large ledger loads cheaply. The chart fetches series
     only for the batch peaks the user selects. A batch peak an import landed on
     also carries the importing engine's own ``engine_tier`` and ``engine_claim``.
+    ``n_assigned`` and ``n_winner`` count the samples whose run read a formula
+    on the batch peak and those of them that read the consensus, the counts
+    ``support_fraction`` is the share of; null where the consensus records
+    none (a source's role, or no member reading a formula and no pin).
 
     :param sample_batch_id: The unique identifier of the sample batch.
     :param tier: Optional filter by consensus tier.

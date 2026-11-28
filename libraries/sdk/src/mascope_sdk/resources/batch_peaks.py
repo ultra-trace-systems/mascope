@@ -141,6 +141,11 @@ class BatchPeaksResource(BaseResource):
                  source accounts for, whose ion ``consensus_ion_formula`` then
                  names; null otherwise),
                  ``best_fit_score``, ``support_fraction``, ``n_present``,
+                 ``n_assigned`` and ``n_winner`` (the members whose run read
+                 a formula, and those of them that read the consensus:
+                 ``support_fraction`` is the second over the first; null
+                 where the consensus records neither, and absent from a
+                 server that predates them),
                  ``is_ambiguous``, ``max_intensity`` (in
                  ``intensity_variable``), ``instrument_type`` (``orbi`` or
                  ``tof``: a batch of both keeps each type's batch peaks

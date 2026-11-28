@@ -44,6 +44,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     water_ladder_summary,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
+    consensus_counts,
     engine_tier_filters,
     resolve_run,
     snapshot_anchor_meta,
@@ -85,13 +86,14 @@ def _empty_series() -> dict:
 def _batch_peak_meta(bp) -> dict:
     """The scalar consensus metadata of a batch peak (no per-sample series).
 
-    ``max_intensity`` and ``isotopologue_of`` are member aggregates materialized on
-    the row at fold time, so the ledger can offer an intensity column and fold
-    isotopologues under their M0 without joining the occurrence table.
-    ``intensity_variable`` names the unit ``max_intensity`` is in (heights or
-    areas, per instrument type). ``reference_listing`` is what a list calls the consensus
-    formula, read off the registry entries the members brought
-    (:func:`~mascope_backend.api.new.peak_assignments.listing.consensus_listing`).
+    ``max_intensity`` and ``isotopologue_of`` are member aggregates materialized on the
+    row at fold time, so the ledger can offer an intensity column and fold isotopologues
+    under their M0 without joining the occurrence table. ``intensity_variable`` names
+    the unit ``max_intensity`` is in (heights or areas, per instrument type).
+    ``n_assigned`` and ``n_winner``: the members that read a formula, and those of them
+    reading the consensus (``batch_runs.consensus_counts``). ``reference_listing`` is
+    what a list calls the consensus formula, read off the registry entries the members
+    brought (:func:`~mascope_backend.api.new.peak_assignments.listing.consensus_listing`).
     ``engine_tier``, ``engine_claim`` and ``engine_level``: what an importing
     engine said of the consensus identity (``batch_import``); None elsewhere.
     ``seeded`` says the anchor was minted at a target ion's m/z rather than at
@@ -121,14 +123,13 @@ def _batch_peak_meta(bp) -> dict:
     reading still stands (``batch_checks``,
     ``batch_peaks.standing_batch_checks_record``); None where none does.
     ``level`` and its lines are the batch's own (``batch_level.level_columns``).
-    ``known_species`` is the batch's verdict on the species the anchor is, where
-    the known-species decision read one: the species, whether the batch
-    decided it present and on what evidence, what its claim wrote and which
-    samples it kept, each with its reading (``batch_known_species``); None
-    where no decision stands. ``blend`` says the anchor is a probable blend:
-    its two leading formulas' members separate cleanly along intensity or
-    acquisition time, with the two formulas, the axis and each axis' reading
-    (``batch_blend``); None where they do not.
+    ``known_species`` is the batch's verdict on the species the anchor is, where the
+    known-species decision read one: the species, whether the batch decided it present
+    and on what evidence, what its claim wrote and which samples it kept, each with its
+    reading (``batch_known_species``); None where no decision stands. ``blend`` says the
+    anchor is a probable blend: its two leading formulas' members separate cleanly along
+    intensity or acquisition time, with the two formulas, the axis and each axis'
+    reading (``batch_blend``); None where they do not.
     ``persistence`` is the batch search's admission of the anchor on its
     peak's persistence, where its height did not admit it: the share of its
     partition's spectra the peak was in, the counts, the split it cleared and
@@ -138,12 +139,11 @@ def _batch_peak_meta(bp) -> dict:
     in a run's vocabulary (``rule``, ``detail``, ``caps``): the persistence
     rule's cap, or the second observations that lift it
     (``batch_peaks.hold_persistence_only``); None where no rule asked it.
-    ``flat_series`` is *Read co-variation*'s reading of the anchor's trace
-    against its partition's normaliser: the verdict, the cv over the
-    normaliser, the spectra and their share, the normaliser, and on a flat
-    reading the ion of the batch's own source list its ion is
-    (``batch_coherence.flat_series_record``); an origin flag, display-only;
-    None where none was read for the reading the anchor names.
+    ``flat_series`` is *Read co-variation*'s reading of the anchor's trace against its
+    partition's normaliser: the verdict, the cv over the normaliser, the spectra and
+    their share, the normaliser, and on a flat reading the ion of the batch's own source
+    list its ion is (``batch_coherence.flat_series_record``); an origin flag,
+    display-only; None where none was read for the reading the anchor names.
     ``water_ladder`` is the rung of a reagent ion's water ladder the anchor
     sits at, where the batch's series passed it in an acquisition segment: the
     rung, its reading per segment, what its claim wrote and the samples it kept
@@ -164,6 +164,7 @@ def _batch_peak_meta(bp) -> dict:
         "best_fit_score": bp.best_fit_score,
         "support_fraction": bp.support_fraction,
         "n_present": bp.n_present,
+        **consensus_counts(bp.provenance),
         "is_ambiguous": bool(bp.is_ambiguous),
         "intensity_variable": bp.intensity_variable,
         # The partition the batch peak is in, beside its mode: the instrument

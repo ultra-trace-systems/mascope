@@ -176,6 +176,10 @@ async def test_the_first_fold_mints_the_current_fold_run(guest_client, folded):
     )
     assert by_run == live
     assert len(live) == 2
+    # Each row counts the samples whose run read a formula, and those of them
+    # that read the consensus; an anchor with no consensus counts none.
+    counts = {r["consensus_formula"]: (r["n_assigned"], r["n_winner"]) for r in live}
+    assert counts == {"C6H12O6": (2, 2), None: (None, None)}
 
 
 async def test_a_new_run_snapshots_the_current_one_and_takes_over_when_complete(
@@ -239,6 +243,10 @@ async def test_a_new_run_snapshots_the_current_one_and_takes_over_when_complete(
         guest_client, batch_id, batch_peak_run_id=fold_run["batch_peak_run_id"]
     )
     assert {r["consensus_formula"] for r in before} == {"C6H12O6", None}
+    # An earlier run's rows count them off the snapshot's members.
+    assert {
+        r["consensus_formula"]: (r["n_assigned"], r["n_winner"]) for r in before
+    } == {"C6H12O6": (2, 2), None: (None, None)}
     assert all(r["batch_peak_run_id"] == fold_run["batch_peak_run_id"] for r in before)
     assert [r["mz"] for r in before] == sorted(r["mz"] for r in before)
     # ... and so does the series.
