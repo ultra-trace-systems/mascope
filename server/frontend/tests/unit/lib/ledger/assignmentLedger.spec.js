@@ -906,7 +906,7 @@ describe('AssignmentLedger, groups', () => {
       id: 'g',
       ledgerKind: 'group',
       groupName: 'C6H10O4',
-      groupCount: '2 rows',
+      groupCount: '2 peaks',
       // What an older pane put on the line: drawn nowhere now.
       groupTier: 'assigned',
       groupRole: 'reagent',
