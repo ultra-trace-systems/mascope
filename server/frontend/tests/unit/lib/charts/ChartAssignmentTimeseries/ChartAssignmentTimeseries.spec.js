@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
+import { reactive } from 'vue'
 
 // The time series draws one line per isotopologue of the focused assignment's
 // family, each named by its label and m/z. The label counts from the family's
@@ -10,6 +11,9 @@ import { mount, flushPromises } from '@vue/test-utils'
 
 let familyRows
 let peaks
+// The run in view, and the measurements the inspector card loaded, by the M0's
+// peak_assignment_id. Reactive, so a test can hand one over after the traces.
+const store = reactive({ run: null, evidence: {} })
 
 // Plotly's own resize, which the chart's exposed one passes on to.
 const { plotResize } = vi.hoisted(() => ({ plotResize: vi.fn() }))
@@ -21,6 +25,10 @@ vi.mock('@/stores', () => ({
       peak: { pending: false, list: peaks, focused: peaks[0] },
       peakAssignment: {
         peak: {
+          get run() {
+            return store.run
+          },
+          evidenceOf: (id) => store.evidence[id] ?? null,
           forPeak: () => familyRows[0],
           familyOf: () => familyRows,
           // The store's family resolution, over the rows this test holds.
@@ -55,6 +63,7 @@ vi.mock('@/lib/charts/BaseChartPlotly.vue', () => ({
 const { default: ChartAssignmentTimeseries } =
   await import('@/lib/charts/ChartAssignmentTimeseries/ChartAssignmentTimeseries.vue')
 const { default: Plot } = await import('@/lib/charts/BaseChartPlotly.vue')
+const { api } = await import('@/api')
 
 /** One family row, as the ledger serves it. */
 function row(id, mz, isotopeFormula, { role = 'iso_child', ionFormula = 'C9H16O7^N-' } = {}) {
@@ -69,17 +78,25 @@ function row(id, mz, isotopeFormula, { role = 'iso_child', ionFormula = 'C9H16O7
   }
 }
 
-async function traceNames() {
-  const wrapper = mount(ChartAssignmentTimeseries, {
+function mountChart() {
+  return mount(ChartAssignmentTimeseries, {
     global: { stubs: { ToggleSwitch: true }, directives: { help: {} } }
   })
+}
+
+const namesOf = (wrapper) => wrapper.findAll('.trace').map((trace) => trace.text())
+
+async function traceNames() {
+  const wrapper = mountChart()
   await flushPromises()
-  return wrapper.findAll('.trace').map((trace) => trace.text())
+  return namesOf(wrapper)
 }
 
 beforeEach(() => {
   familyRows = []
   peaks = []
+  store.run = null
+  store.evidence = {}
 })
 
 describe('ChartAssignmentTimeseries trace names', () => {
@@ -115,6 +132,114 @@ describe('ChartAssignmentTimeseries trace names', () => {
     ])
 
     expect(await traceNames()).toEqual(['M0 328.6817', '[81Br]2 332.6776', 'Sum'])
+  })
+})
+
+// A sample the batch ledger serves: its rows carry no isotope label or formula,
+// so the lines are named from the measurement the inspector card took of the
+// family on this sample, as the card's Isotope pattern names them.
+describe('ChartAssignmentTimeseries on a ledger-served sample', () => {
+  /** A ledger row: no isotope label, no isotope formula. */
+  function ledgerRow(id, mz, role = 'iso_child') {
+    return {
+      peak_assignment_id: id,
+      sample_peak_id: `p-${id}`,
+      sample_peak_mz: mz,
+      role,
+      owner_peak_assignment_id: role === 'iso_child' ? 'm0' : null,
+      ion_formula: 'C10H17N2O^+',
+      isotope_formula: null,
+      isotope_label: null
+    }
+  }
+
+  /** The measurement of the family's composition against this sample's peaks. */
+  const measurement = {
+    peak_assignment_id: 'm0',
+    isotopologues: [
+      { sample_peak_id: 'p-m1', isotope_label: 'M+1', isotope_formula: '[13C]C9H17N2O+' },
+      { sample_peak_id: 'p-m2', isotope_label: 'M+2', isotope_formula: null },
+      { sample_peak_id: null, isotope_label: 'M+3', isotope_formula: '[18O]C10H17N2+' }
+    ]
+  }
+
+  function seedLedger() {
+    familyRows = [
+      ledgerRow('m0', 185.1172, 'M0'),
+      ledgerRow('m1', 186.1206),
+      ledgerRow('m2', 187.1214),
+      ledgerRow('m4', 189.1)
+    ]
+    peaks = familyRows.map((r) => ({ peak_id: r.sample_peak_id, mz: r.sample_peak_mz }))
+    store.run = { engine: 'batch' }
+  }
+
+  beforeEach(() => api.http.post.mockClear())
+
+  it('names the lines from the measurement the store holds', async () => {
+    seedLedger()
+    store.evidence = { m0: measurement }
+
+    // The M0, a substitution label, an offset label without a formula, and a
+    // row the measurement paired to no line, which keeps its m/z.
+    expect(await traceNames()).toEqual([
+      'M0 185.1172',
+      '[13C] 186.1206',
+      'M+2 187.1214',
+      '189.1000',
+      'Sum'
+    ])
+  })
+
+  it('keeps the m/z without a measurement', async () => {
+    seedLedger()
+
+    expect(await traceNames()).toEqual(['185.1172', '186.1206', '187.1214', '189.1000', 'Sum'])
+  })
+
+  it('relabels when the measurement arrives, without fetching the traces again', async () => {
+    seedLedger()
+    const wrapper = mountChart()
+    await flushPromises()
+    expect(api.http.post).toHaveBeenCalledTimes(4)
+    expect(namesOf(wrapper)[1]).toBe('186.1206')
+
+    store.evidence = { m0: measurement }
+    await flushPromises()
+
+    expect(namesOf(wrapper)).toEqual([
+      'M0 185.1172',
+      '[13C] 186.1206',
+      'M+2 187.1214',
+      '189.1000',
+      'Sum'
+    ])
+    expect(api.http.post).toHaveBeenCalledTimes(4)
+  })
+
+  // The card loads a measurement only for a ledger-served sample; one left in
+  // the store from such a view does not rename a run's own lines.
+  it("reads no measurement on a run's own rows", async () => {
+    seedLedger()
+    store.run = { engine: 'run' }
+    store.evidence = { m0: measurement }
+
+    expect(await traceNames()).toEqual(['185.1172', '186.1206', '187.1214', '189.1000', 'Sum'])
+  })
+
+  it("lets a row's own label win over the measurement", async () => {
+    seedLedger()
+    familyRows[1].isotope_formula = '[15N]C10H17NO+'
+    familyRows[2].isotope_label = 'M+2*'
+    store.evidence = { m0: measurement }
+
+    expect(await traceNames()).toEqual([
+      'M0 185.1172',
+      '[15N] 186.1206',
+      'M+2* 187.1214',
+      '189.1000',
+      'Sum'
+    ])
   })
 })
 
