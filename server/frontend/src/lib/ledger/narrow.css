@@ -49,6 +49,15 @@
   }
 }
 
+/* The Tier header's provisional mark in short, an asterisk, shown only where
+   its word goes from sight (below), at the step that takes the tier chips'
+   words: the header then holds the column no wider than its cells. */
+@container ledger (width > 680px) {
+  .ledger .provisional-short {
+    display: none;
+  }
+}
+
 @container ledger (max-width: 900px) {
   .ledger .col-level {
     display: none;
@@ -78,6 +87,16 @@
   }
   .ledger .col-tier {
     min-width: 0;
+  }
+  /* The header's provisional mark keeps its box and its hover, its word
+     its name, and shows an asterisk. */
+  .ledger .col-tier .provisional-word {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 }
 

@@ -1444,7 +1444,7 @@ describe('PaneBrowserAssignment a tiering still in progress', () => {
 
     const mark = tier.find('.stub-head [data-testid="tiering-provisional"]')
     expect(mark.exists()).toBe(true)
-    expect(mark.text()).toBe(TIERING_PROVISIONAL.label)
+    expect(mark.find('.provisional-word').text()).toBe(TIERING_PROVISIONAL.label)
     // Only the tier column says it.
     expect(wrapper.findAll('[data-testid="tiering-provisional"]')).toHaveLength(1)
   })
