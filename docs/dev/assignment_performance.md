@@ -1,9 +1,10 @@
 # Assignment performance: folding a sample in and assigning a batch
 
 - **Status:** building
-- **As of:** 2026-11-24
+- **As of:** 2026-11-28
 - **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c)
-  (Linear, MAS-1179 the measurement; the fold-in design was the Decision
+  (Linear, MAS-1179 the first measurement, MAS-1199 the second, on
+  develop after MAS-1172; the fold-in design was the Decision
   MAS-1187, decided 2026-11-24, and is section 8, MAS-1224, with its steps
   MAS-1231 to MAS-1233 and the Decision MAS-1230 on its defaults; the
   findings are GitHub issues, section 6)
@@ -49,36 +50,54 @@ holding batch, and an arrival moves the next one in.
   consistent (`assign_batch()`, which runs from the first stale stage, here
   every stage).
 - **Arrivals:** from a batch of 4 made consistent, arrivals one after
-  another in three copies: a pass after every arrival (5 arrivals), after
-  every 5th and after the 16th (16 arrivals); and in a fourth, 47 arrivals
-  with the fold alone. The box's load cut the first and the last short.
+  another. In the first measurement, in three copies: a pass after every
+  arrival (5 arrivals), after every 5th and after the 16th (16 arrivals);
+  and in a fourth, 47 arrivals with the fold alone. The box's load cut the
+  first and the last short. In the second, 36 arrivals up to N = 40 in six
+  copies: a pass after every arrival, after every 5th, 10th and 20th
+  arrival and after the last, and a single pass after the 36th in two
+  copies (section 7.3).
 
 Per step, stage, judging and pipeline stage it records the wall time, the
 CPU time beside it (CPU over wall is the cores busy), the SQL time and
 statement count with the reads that repeat an earlier read of the same
-span, and the process's peak memory. A py-spy profile of each second run
-(`profile_report.py`) names the functions.
+span, and the process's peak memory. A py-spy profile (`profile_report.py`)
+names the functions: of each second run in the first measurement, of the
+curve's runs in the second.
 
-**The box.** The agent box, 12 cores (24 threads), shared with other workers;
-develop at `0ffcef511`. The runs went side by side, at a load of
-7 to 47 on the 12 cores. Above 12, two runs share a core, and every
-number here is about a third to a half higher than on an idle box: the same
-N = 4 pass took 372 s at load 7 and 569 s at load 14, its CPU time rising
-with it. Shares, ratios and growth with N hold either way; seconds are
-upper bounds.
+**Two measurements.** The first (MAS-1179, 2026-11-23) on develop at
+`0ffcef511`; the second (MAS-1199, 2026-11-27 and 28) on develop at
+`7e7a8f8dc`, the timing script's own commit on top of it (`55eb0f231`)
+for the curve. Every build ran on a copy of the same demo env, migrated to
+that build's schema. The env holds the twelve compound reference lists the
+demo ships with (783 compounds, every list active) and no spectral library:
+the lists are what a fold and a first judging read of the reference
+sources (MAS-1274, MAS-1282). Sections 3 to 5 are the second measurement's,
+with the first's beside it; 2.2 says what changed between the two, and 2.3
+that the work stayed the same.
+
+**The box.** The agent box, 12 cores (24 threads), shared with other
+workers. Above 12, two runs share a core, and every number is higher than
+on an idle box: develop's whole pass at N = 4 took 126 s at load 1 and
+185 s at load 17, its CPU time rising with it. The first measurement's runs
+went side by side, at a load of 7 to 47. The second's curve and builds ran
+one after the other, each in an env of its own; the arrivals ran beside
+them, and the assignment bench and other workers' tests came and went, so
+the load was 4 to 25 and once higher. Each table gives its runs' load.
+Shares, ratios and growth with N hold either way; seconds are upper bounds.
 
 ### 2.1 Repeat agreement, per step
 
-The brief asks that two runs in a row agree within 10 % per step. Two pairs
-were run one after the other at N = 4, each fold-in in its own copy of the
-same consistent batch, and both meet it:
+The bar: two runs in a row agree within 10 % per step. In the first
+measurement two pairs were run one after the other at N = 4, each fold-in
+in its own copy of the same consistent batch, and both meet it:
 
 | pair | build | load | arrival fold | pass | stages over 2 s | ledgers |
 | -- | -- | -- | -- | -- | -- | -- |
 | the reviewer's, round 1 | the branch's base then | 15, 12 | 18.1 / 17.9 s (0.9 %) | 263.3 / 262.8 s (0.2 %) | all within 6 % | 0 members differ |
 | round 2 | develop of round 2 | 10, 7 | 9.2 / 8.7 s (4.5 %) | 99.6 / 97.0 s (2.6 %) | all within 3.7 % | 0 members differ |
 
-The pairs of sections 3 and 4 ran side by side instead, two copies at once
+The first measurement's curve ran its pairs side by side instead, two copies at once
 under different loads, the second under py-spy. Their totals agree within
 0.2 to 7 %, but per step they miss the bar where the load moved between
 them:
@@ -100,195 +119,428 @@ the short steps: the arrival fold, and stages of a few seconds. The
 fold-in's ranking in section 6 rests on the pass, which agrees within 6 %
 in every pair; the arrival fold is quoted as its range, 17 to 28 s.
 
-The two pairs ran on newer builds than the note's `0ffcef511`. Both have
-MAS-1172 (#3483), and the round-2 develop four changes more, one of them on
-the settings a batch's sample runs read. The round-2 pass took 100 s where
-the reviewer's took 263 s at a like load, and its whole pass at N = 4 took
-151 s against 372 s at load 7. What made the difference was not measured
-apart, so the note's numbers stay those of `0ffcef511`; measuring the curve
-again on today's develop is [#3519](https://github.com/ultra-trace-systems/mascope/issues/3519).
+The two pairs of the first measurement ran on newer builds than its
+`0ffcef511`: the reviewer's on that branch's base, `e5e807efb`, which does
+not have MAS-1172 (#3483), and round 2 on `945e9f000`, which has it and
+three more changes. Their 263 s and 100 s are 2.6 times apart, but under
+loads of 12 to 15 and 7 to 10; under a like load the same two builds are
+1.9 times apart (2.2). The second measurement's pairs:
+
+| pair | build | load: whole, fold-in | arrival fold | fold-in's pass | whole pass | ledgers |
+| -- | -- | -- | -- | -- | -- | -- |
+| steady, back to back | develop `7e7a8f8dc`, the script's `55eb0f231` | 6, 10 and 9, 7 | 7.1 / 6.9 s (3.5 %) | 95.6 / 93.2 s (2.6 %), stages within 5 % | 132.9 / 134.0 s (0.8 %), stages within 3 % | 15 and 19 members differ, all in the records |
+| the ends of the chain of 2.2 | develop `7e7a8f8dc` | 7, 11 and 10, 14 | 6.8 / 8.8 s (30 %) | 92.6 / 104.2 s (12.5 %), the series 14 % | 134.3 / 150.2 s (11.9 %), the series 28 % | 29 and 32 members differ, all in the records |
+| the curve's first two | develop `7e7a8f8dc` | 1, 17 and 4, 20 | 7.8 / 9.0 s (16 %) | 125.3 / 115.9 s (8.1 %), the search 16 % | 126.4 / 185.3 s (47 %), the search 60 % | 17 and 0 members differ, all in the records |
+
+The pair run back to back at a steady load meets the bar of 10 % per
+step, with 3.5 % on the arrival's fold and under 3 % on the passes. The
+other two pairs miss it where the load moved between their runs: by 4 in
+the chain's, by 16 in the curve's first, which ran as other workers'
+tests started. The ledgers of every pair differ in 0 to 32 members of
+6,694 and 8,363, all in the records: the floor of 7.1 holds on develop.
+
+### 2.2 What changed between the two
+
+Each build below ran whole and fold-in at N = 4 in an env of its own, one
+after the other; develop ran first and last, so the two develop rows show
+how far the load moved over the chain. Between two rows, a step under
+about 10 % is within what the load moves (2.1). A row named "before" is
+the commit just before the change below it, so the step between the two
+is that change's alone. Between other rows lie other commits, fixes and
+features among them.
+
+| build | the change | load | whole pass | fold-in: fold, pass |
+| -- | -- | -- | -- | -- |
+| `0ffcef511` | the first measurement | 11, 13 | 343 s | 14.0 s, 218 s |
+| `e5e807efb` | round 1's base, 36 changes later | 6, 5 | 313 s | 13.5 s, 216 s |
+| `a3ea8b968` | MAS-1172: the election without pandas per peak | 8, 5 | 266 s | 8.8 s, 179 s |
+| `1f522d513` | MAS-1172: a pass reads a sample's inputs and envelopes once | 7, 10 | 144 s | 8.9 s, 117 s |
+| `945e9f000` | round 2: two changes to the app's settings dialog | 14, 11 | 159 s | 14.2 s, 114 s |
+| `791bfeed1` | two fixes: each batch member keeps its own target | 15 | 180 s | - |
+| `4da8d0fc8` | before MAS-1144's change | 15 | 174 s | - |
+| `6bdbb3d2a` | MAS-1144: an isotope-line record stands on the ion, a change of decisions (2.3) | 20 | 196 s | - |
+| `a42c085ba` | before MAS-1072 | 34, 21 | 202 s | 12.4 s, 137 s |
+| `064f55564` | MAS-1072: one tie rule | 18, 21 | 192 s | 10.8 s, 130 s |
+| `dacd01feb` | MAS-1072: one rival set per peak | 10, 12 | 214 s | 14.0 s, 139 s |
+| `0d8e414ec` | MAS-1072: the rival frames read off their columns | 13, 17 | 179 s | 10.4 s, 119 s |
+| `74225768b` | before MAS-1189 | 19, 12 | 165 s | 11.4 s, 114 s |
+| `a86c59e8e` | MAS-1189 (#3505): the search leaves out a peak it searched in vain | 10, 8 | 148 s | 8.9 s, 93 s |
+| `f857da9cf` | before MAS-1190 | 7, 6 | 147 s | 8.5 s, 108 s |
+| `2ac1a3842` | MAS-1190 (#3506): `resolve_lines` without reading each line alone | 11, 21 | 146 s | 18.1 s, 88 s |
+| `c6387bf1c` | before MAS-1274 | 14, 25 | 163 s | 10.3 s, 94 s |
+| `d95b376db` | MAS-1274: the lists' ions, not their lines, where nothing matches them | 15, 15 | 124 s | 8.9 s, 74 s |
+| `e98786650` | MAS-1274: group only the ions a claim can take | 13, 8 | 116 s | 8.2 s, 71 s |
+| `496e19738` | before MAS-1282 | 14, 8 | 109 s | 8.1 s, 66 s |
+| `66ecd2d15` | MAS-1282: Stage A resolves only the reference ions that can reach a peak | 11, 7 | 108 s | 6.7 s, 65 s |
+| `4a336df46` | before MAS-1045's fix | 15, 15 | 128 s | 8.9 s, 80 s |
+| `d294f9726` | MAS-1045 (#3347): a measured batch decision weighs its rivals as a run does | 7, 4 | 168 s | 6.7 s, 108 s |
+| `a142cd7bc` | MAS-1045: the grid's answer kept through a pass | 5, 6 | 128 s | 6.8 s, 105 s |
+| `7e7a8f8dc` | develop, first and last in the chain | 7, 10 and 11, 14 | 134 s, 150 s | 6.8 s, 93 s and 8.8 s, 104 s |
+
+**What made round 2 faster.** MAS-1172, both of its commits, and nothing
+else: the fold-in's pass went from 216 to 117 s and the whole pass from
+313 to 144 s under like load. The election without pandas per peak
+(`a3ea8b968`) took 37 s off the fold-in's pass and halved the arrival's
+fold (13.5 to 8.8 s); reading a sample's inputs and envelopes once per pass
+(`1f522d513`) took 62 s more, and 122 s off the whole pass. Round 2's
+two other changes are in the app's settings dialog and moved nothing. The
+2.6 times of the brief was 1.9 times and the load: round 1 ran at 12 to
+15, round 2 at 7 to 10.
+
+**What each change since took off, at N = 4** (the fold-in's pass, then the
+whole pass):
+
+- MAS-1186 (#3500) built nothing: no two demo samples share a
+  resolving-power function, so a first judging had nothing to share.
+- From round 2 to MAS-1072's perf commit the passes rose to 130 to 139 s
+  and 180 to 214 s and came back to 119 s and 179 s with it, while the
+  load went from 11 to 34 and back. These steps are not told apart from
+  the load; together, round 2 to `0d8e414ec` moved the fold-in's pass 5 s
+  and the whole pass 20 s.
+- MAS-1189 (#3505) took 21 s off the fold-in's pass and nothing off the
+  whole pass, as expected: a pass from nothing has searched nothing before.
+- MAS-1190 (#3506) took 20 s off the fold-in's pass; the whole pass moved
+  less than the load does.
+- MAS-1274 (#3631) took 23 s and 47 s: with the lists loaded, a fold and a
+  judging read the lists' ions without resolving their lines.
+- MAS-1282 moved nothing measurable at N = 4: after MAS-1274, few
+  reference ions are resolved at all.
+- MAS-1045's fix (#3347) added 28 to 43 s and 40 to 60 s: the batch's
+  judging now asks the formula grid for the rivals of every reading it
+  elects (`given_rivals.given_readings_rivals`). Its second commit kept the
+  grid's answer through a pass and took back 3 s and 40 s.
+- So, from `0ffcef511` to develop: the fold-in's pass 218 s to 93 to
+  104 s (2.1 to 2.3 times faster), the arrival's fold 14 s to 7 to 9 s,
+  and the whole pass 343 s to 134 to 150 s (2.3 to 2.6 times).
+
+**At N = 20**, before and after each change from round 2 on, one build
+after the other in an env of its own:
+
+| build | the change | load: whole, fold-in | whole pass | fold-in: fold, pass | the fold-in's ledger against the row before: members (tiers, formulas) |
+| -- | -- | -- | -- | -- | -- |
+| `0ffcef511` | the first measurement | 12, 47 | 2,753 s | 26.7 s, 1,333 s |  |
+| `945e9f000` | round 2: has MAS-1172 | 16, 22 | 805 s | 13.5 s, 558 s | 124 (0 tiers, 0 formulas) |
+| `74225768b` | before MAS-1189 | 18, 18 | 947 s | 13.4 s, 460 s | 781 (449 tiers, 315 formulas) |
+| `a86c59e8e` | MAS-1189 (#3505) | 16, 18 | 819 s | 11.0 s, 406 s | 101 (0 tiers, 0 formulas) |
+| `f857da9cf` | before MAS-1190 | 1, 8 | 690 s | 9.9 s, 350 s | 180 (0 tiers, 0 formulas) |
+| `2ac1a3842` | MAS-1190 (#3506) | 21, 7 | 576 s | 8.7 s, 272 s | 144 (0 tiers, 0 formulas) |
+| `c6387bf1c` | before MAS-1274 | 4, 4 | 548 s | 8.6 s, 273 s | 135 (51 tiers, 0 formulas) |
+| `e98786650` | MAS-1274, both commits | 5, 5 | 499 s | 8.5 s, 217 s | 134 (0 tiers, 0 formulas) |
+| `4a336df46` | before MAS-1045's fix | 9, 9 | 487 s | 8.1 s, 225 s | 128 (0 tiers, 0 formulas) |
+| `d294f9726` | MAS-1045 (#3347): a measured batch decision weighs its rivals as a run does | 5, 4 | 829 s | 7.4 s, 393 s | 132 (0 tiers, 0 formulas) |
+| `a142cd7bc` | MAS-1045: the grid's answer kept through a pass | 9, 8 | 639 s | 7.8 s, 378 s | 181 (0 tiers, 0 formulas) |
+| `7e7a8f8dc` | develop, at the chain's load | 7, 9 | 658 s | 8.0 s, 381 s | 142 (0 tiers, 0 formulas) |
+
+The first measurement's runs ran at a load of 12 to 47, round 2 to
+MAS-1189 at 16 to 22, the rest at 1 to 9 but for one whole pass at 21.
+Against the build just before it, at N = 20:
+
+- **MAS-1189** took 54 s off the fold-in's pass (460 to 406 s) and 128 s
+  off the whole pass (947 to 819 s), where the search runs over each
+  sample twice (40 searches at N = 20).
+- **MAS-1190** took 78 s off the fold-in's pass (350 to 272 s, 22 %) and
+  114 s off the whole pass, the second of them at a load of 21.
+- **MAS-1274** took 56 s and 49 s (273 to 217 s, 548 to 499 s).
+- **MAS-1045's fix** added 168 s to the fold-in's pass (225 to 393 s,
+  75 %) and 342 s to the whole pass (487 to 829 s, 70 %). Its second
+  commit took back 15 s and 190 s.
+- **Develop** at the chain's load: 381 s and 658 s. The curve's run at a
+  load of 19 to 22 took 525 s and 769 s: at N = 20 the load alone moves a
+  pass by a third.
+- **From `0ffcef511` to develop**, at N = 20: the fold-in's pass from
+  1,333 s to 381 s (3.5 times faster) and the whole pass from 2,753 s to
+  658 s (4.2 times), most of it MAS-1172's; MAS-1045's fix gave back about
+  150 s of each.
+
+### 2.3 The same work
+
+Every build of 2.2 ran the same stages, and judged the same samples in
+each: in the whole pass at N = 4, 4 samples after each of known species,
+the search, the isotope lines and the series; in the fold-in's pass, 3, 3
+and 5. At N = 20 every build of the chain did the same: the whole pass
+judged 18, 20, 20 and 20 samples, the fold-in's 11 in the search, 1 in the
+isotope lines and 21 in the series. Develop runs one stage more, last: the
+batch level (MAS-940), which judges nothing again.
+
+The ledgers, member by member (the digest of 7.1), against the build
+before:
+
+- **Two identical passes** differ in 29 of 6,694 members at N = 4 (0.4 %,
+  develop first and last in the chain, the whole pass) and 32 of 8,363 in
+  the fold-in, all in the series and records: the floor.
+- **Every perf change** stays within it: 9 to 38 members a step, all in
+  the records. One other step moves 6 to 8 tiers beside its records: from
+  MAS-1190 to the build before MAS-1274, which holds no perf change but
+  fixes and features, the series' S/N 4 floor among them.
+- **One change moves more: MAS-1144** (`6bdbb3d2a`, #3442), on purpose:
+  the plan owner decided that an isotope-line record stands on the ion,
+  so the series may take a proposal of the same ion through another
+  mechanism. At N = 4 it moves 121 members of the whole pass against the
+  build just before it (`4da8d0fc8`, whose own step moved 20), and 161 of
+  the fold-in's from round 2 to the build before MAS-1072: 67 members a
+  consensus tier from candidate to assigned, and 51 members, on 13 batch
+  peaks, a consensus formula. Every one of the 13 keeps its ion and takes
+  another neutral, the one the series proposed through another mechanism.
+  That is a decision the change made, not the same work done differently,
+  so it is no finding.
+- **MAS-1072** (one rival set per peak, `064f55564` to `0d8e414ec`) moves
+  7 to 23 members a commit, within the floor.
+- **Develop against `0ffcef511`**, at N = 4: 124 members of the whole
+  pass and 176 of the fold-in's, nearly all of them MAS-1144's.
+- **At N = 20, 40 and 80 the pattern is the same, and the share no
+  larger.** The whole pass's decisions but the records, which the first
+  measurement's digest read differently, differ in 92 of 6,694 members at
+  N = 4 (1.4 %), 543 of 36,632 at N = 20 (1.5 %), 1,063 of 72,463 at
+  N = 40 (1.5 %) and 2,297 of 142,433 at N = 80 (1.6 %). The fold-in's,
+  the whole digest, in 804 of 38,443 at N = 20 (2.1 %), 1,627 of 74,207 at
+  N = 40 (2.2 %) and 3,356 of 144,160 at N = 80 (2.3 %). Every formula
+  that moved, 299 to 1,233 members, is one of the same 21 or 22 pairs of
+  formulas, each keeping its ion and taking another neutral; and most
+  tiers that moved went from candidate to assigned. That is MAS-1144's
+  decision. The chain at N = 20 (2.2) puts it in the same place as at
+  N = 4: 781 members of the fold-in (449 tiers, 315 formulas) between round
+  2 and the build before MAS-1189. Every other step at N = 20 moves 94 to
+  181 members, 0.3 to 0.5 %, at the floor's 0.4 % (145 at N = 20, 7.1), all
+  in the records but 47 to 51 tiers in the step to the build before
+  MAS-1274, the one that moved 6 to 8 tiers at N = 4.
+- **So the batch stages do the same work**, but for MAS-1144's change of
+  decisions, which the plan owner made: no finding, and no GitHub issue
+  filed.
+
 
 ## 3. Fold-in
 
 One sample arrives into a batch of N that a pass left consistent: its fold
-as ingest does it, then the pass that makes the batch consistent again. Two
-runs per N, in separate copies, side by side (run 2 under py-spy):
+as ingest does it, then the pass that makes the batch consistent again.
+Develop at `7e7a8f8dc`, one run after the other; at N = 4, the two ends of
+the chain of 2.2 and a third under py-spy; at N = 20, the curve's run
+under py-spy and the N = 20 chain's last, at about half its load. The last column is the first
+measurement's total, run 1 of each N at `0ffcef511` under a load of 10 to
+47:
 
-| N | run | load | arrival fold | pass | total | judgings | SQL | cores | peak memory |
-| -- | -- | -- | -- | -- | -- | -- | -- | -- | -- |
-| 4 | 1 | 12 | 16.9 s | 294 s | **311 s** | 11 | 11 s | 0.99 | 692 MB |
-| 4 | 2 | 24 | 21.3 s | 312 s | **334 s** | 11 | 11 s | 0.99 | 705 MB |
-| 20 | 1 | 47 | 26.7 s | 1,333 s | **1,360 s** | 33 | 41 s | 0.96 | 1,414 MB |
-| 20 | 2 | 40 | 28.2 s | 1,366 s | **1,394 s** | 33 | 41 s | 0.95 | 1,574 MB |
-| 40 | 1 | 26 | 25.6 s | 2,719 s | **2,745 s** | 108 | 63 s | 1.00 | 1,775 MB |
-| 40 | 2 | 17 | 23.2 s | 2,616 s | **2,639 s** | 108 | 60 s | 1.00 | 1,734 MB |
-| 80 | 1 | 10 | 17.5 s | 5,355 s | **5,373 s** | 206 | 103 s | 0.99 | 2,961 MB |
-| 80 | 2 | 19 | 26.5 s | 5,483 s | **5,510 s** | 206 | 109 s | 0.99 | 3,014 MB |
+| N | run | load | arrival fold | pass | total | judgings | SQL | CPU over wall | peak memory | at `0ffcef511` |
+| -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- |
+| 4 | 1 | 10 | 6.8 s | 93 s | **99 s** | 11 | 7 s | 1.41 | 682 MB | 311 s |
+| 4 | 2 | 14 | 8.8 s | 104 s | **113 s** | 11 | 9 s | 1.38 | 718 MB | 311 s |
+| 4 | 3 | 16 | 7.6 s | 113 s | **121 s** | 11 | 9 s | 1.35 | 705 MB | 311 s |
+| 20 | 1 | 22 | 10.8 s | 525 s | **536 s** | 33 | 25 s | 1.26 | 1,055 MB | 1,360 s |
+| 20 | 2 | 9 | 8.0 s | 381 s | **389 s** | 33 | 21 s | 1.38 | 1,120 MB | 1,360 s |
+| 40 | 1 | 14 | 8.6 s | 926 s | **935 s** | 108 | 45 s | 1.34 | 1,630 MB | 2,745 s |
+| 80 | 1 | 5 | 8.4 s | 1,478 s | **1,486 s** | 206 | 67 s | 1.38 | 2,731 MB | 5,373 s |
 
-**Against the bar.** The 30 s line, and the 20 s goal, are crossed before
-the smallest batch measured: at N = 4 one arrival costs ten times the
-acceptable time, and the cost grows with N. The arrival's fold alone stays
-under 30 s at every N (16.9 to 28.2 s here, and 18 to 35 s over 47 arrivals
-in a row up to N = 51, flat in N; section 7.1); the pass is the cost.
+**Against the bar.** The 30 s line, and the 20 s goal, are still crossed
+before the smallest batch measured: at N = 4 one arrival costs three to
+four times the acceptable time, and the cost grows with N. The arrival's
+fold alone stays under 20 s at every N (6.8 to 10.8 s here, 3.7 to 13.2 s over the 215 arrivals of 7.3); the pass is the cost.
 
 **Which stages run again, and which only needed the new sample.** The fold
 marks all nine stages stale, so the pass runs them all, over the whole
-batch. Per stage (seconds, and the samples it judged again):
+batch, and the batch level after them. Per stage (seconds, and the samples
+it judged again):
 
-| stage | N = 4 | N = 20 | N = 40 | N = 80 | what the arrival needed of it |
-| -- | -- | -- | -- | -- | -- |
-| water ladders, known species | 1 s, 0 | 3 s, 0 each | 5 s, 0; 15 s, 1 | 7 s, 0; 10 s, 1 | almost nothing: one verdict moved at N = 40 and at N = 80 |
-| search | 118 s, 3 | 512 s, 11 | 841 s, 25 | 1,353 s, 43 | the new sample's new peaks (32 at N = 4, 4 at N = 20, 2 at N = 40, 8 at N = 80); it searched every sample again, and 4 of 5, 20 of 21, 39 of 40 and 69 of 70 found nothing (#3505) |
-| isotope lines | 62 s, 3 | 38 s, 1 | 836 s, 41 | 1,697 s, 81 | the new sample's members, and where a strip or stamp turned, the samples it turned in: every sample was judged again, for 108 isotope lines moved at N = 40 and 226 at N = 80 |
-| series | 109 s, 5 | 766 s, 21 | 1,009 s, 41 | 2,268 s, 81 | few: 252 series or check records moved of 36,632 members at N = 20, 441 of 72,463 at N = 40, 803 of 142,433 at N = 80; every sample was judged again (#3504) |
-| co-variation, ratio stability, checks, blends | 3 s | 9 s | 8 s | 15 s | batch-wide readings, cheap |
+| stage | N = 4 | N = 20 | N = 40 | N = 80 |
+| -- | -- | -- | -- | -- |
+| water ladders | 1 s, 0 | 3 s, 0 | 4 s, 0 | 5 s, 0 |
+| known species | 1 s, 0 | 2 s, 0 | 9 s, 1 | 7 s, 1 |
+| search | 51 s, 3 | 234 s, 11 | 394 s, 25 | 544 s, 43 |
+| isotope lines | 19 s, 3 | 13 s, 1 | 274 s, 41 | 500 s, 81 |
+| series | 37 s, 5 | 264 s, 21 | 235 s, 41 | 407 s, 81 |
+| co-variation, ratio stability, checks, blends, batch level | 4 s | 8 s | 9 s | 10 s |
 
-**What grows with N.** The judgings: the series stage judges every sample
-(#3504), so its cost is N times a judging. The search searches every sample
-(#3505). A judging itself costs about the same at every N (a later judging
-15 s at N = 4, 25 s at N = 20 under twice the load; the readings it judges
-grow 6 %). The fold grows with the members it reads (#3231), slightly here.
-So a fold-in is about N judgings plus N searches: linear in N, about 67 s
-for every sample already in the batch (1,360 to 1,394 s at N = 20, 2,639 to
-2,745 s at N = 40, 5,373 to 5,510 s at N = 80, 1.5 hours). The two runs agree
-within 2.5 % at N = 80 and at N = 20, 4 % at N = 40 and 7 % at N = 4 in
-total; per step, section 2.1. Peak memory grows with N too: 3.0 GB at
-N = 80, against 1.9 GB for the whole pass at the same N. About 0.2 GB of the
-fold-in's figure is the script's own copy of the ledger's decisions, which
-these runs held through the pass (233 MB of resident memory to load the
-N = 80 one, against 31 MB without it); the backend's own peak is about
-2.8 GB. The script now writes that copy to disk while the pass runs.
+The series stage still judges every sample again (#3504 was closed with
+MAS-1188 cancelled: every arrival moves series corroborations in every
+sample, MAS-1229). The search searches only the new sample now (MAS-1189,
+#3505): 1 to 2 s of searching at every N. The search stage still takes
+a third to a half of a pass, in the judgings it starts: it judges again
+every sample whose members its decisions moved (3, 11, 25 and 43 at
+N = 4, 20, 40 and 80).
 
+**What grows with N.** The judgings, as before: the series stage judges
+every sample, so its cost is N times a judging. A later judging is cheap
+now (MAS-1172: 2.1 to 2.8 s median at every N, section 5); a first
+judging in a fold-in's pass is not (10 to 16 s). So a fold-in is still about N judgings, in the
+series and in the isotope lines once the batch is past 20, plus a search
+stage that judges again the samples its decisions moved: linear in N,
+about 18 s for every sample already in the batch from N = 4 to 80, 14 to
+27 s between neighbouring N as the load moved (389 to 536 s at N = 20,
+935 s at N = 40, 1,486 s at N = 80), against about 67 s on the first
+measurement's build. That is 2.5 to 3.6 times less at each N, the N = 80
+run at a lower load than its first counterpart. Peak memory grows with
+N: 2.7 GB at N = 80, against 3.0 GB before.
 
 ## 4. Whole batch
 
 **Assign batch** from nothing on a batch of N: every sample folded without
-a run, then the nine stages.
+a run, then the nine stages and the batch level. The runs are those of
+section 3. The last column is the first measurement's total at
+`0ffcef511` (run 1, load 7 to 13):
 
-| N | run | load | fold | stages | total | per sample | judgings | of the time judging | SQL | cores | peak memory |
-| -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- |
-| 4 | 1 | 7 | 47 s | 325 s | **372 s** | 93 s | 16 | 56 % | 7 s | 1.03 | 651 MB |
-| 4 | 2 | 14 | 62 s | 507 s | **569 s** | 142 s | 16 | 60 % | 9 s | 0.93 | 759 MB |
-| 4 | 3 | 13 | 57 s | 515 s | **572 s** | 143 s | 16 | 60 % | 9 s | 0.93 | 775 MB |
-| 20 | 1 | 12 | 287 s | 2,466 s | **2,753 s** | 138 s | 78 | 63 % | 34 s | 0.97 | 1,406 MB |
-| 20 | 2 | 15 | 373 s | 2,514 s | **2,887 s** | 144 s | 78 | 64 % | 36 s | 0.96 | 1,292 MB |
-| 40 | 1 | 12 | 607 s | 4,994 s | **5,601 s** | 140 s | 153 | 65 % | 63 s | 0.97 | 1,524 MB |
-| 40 | 2 | 15 | 702 s | 4,915 s | **5,617 s** | 140 s | 153 | 62 % | 67 s | 0.96 | 1,585 MB |
-| 80 | 1 | 13 | 1,237 s | 8,170 s | **9,407 s** | 118 s | 311 | 59 % | 108 s | 0.98 | 1,919 MB |
-| 80 | 2 | 15 | 1,331 s | 8,099 s | **9,429 s** | 118 s | 311 | 58 % | 109 s | 0.97 | 1,958 MB |
+| N | run | load | fold | stages | total | per sample | judgings | of the time judging | SQL | CPU over wall | peak memory | at `0ffcef511` |
+| -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- |
+| 4 | 1 | 7 | 14 s | 120 s | **134 s** | 34 s | 16 | 43 % | 6 s | 1.39 | 672 MB | 372 s |
+| 4 | 2 | 11 | 15 s | 135 s | **150 s** | 38 s | 16 | 45 % | 7 s | 1.36 | 696 MB | 372 s |
+| 4 | 3 | 14 | 16 s | 148 s | **164 s** | 41 s | 16 | 44 % | 7 s | 1.34 | 667 MB | 372 s |
+| 20 | 1 | 19 | 74 s | 695 s | **769 s** | 38 s | 78 | 51 % | 22 s | 1.37 | 964 MB | 2,753 s |
+| 20 | 2 | 7 | 63 s | 595 s | **658 s** | 33 s | 78 | 50 % | 19 s | 1.38 | 1,050 MB | 2,753 s |
+| 40 | 1 | 18 | 160 s | 1,443 s | **1,603 s** | 40 s | 153 | 51 % | 44 s | 1.32 | 1,500 MB | 5,601 s |
+| 80 | 1 | 1 | 228 s | 2,210 s | **2,438 s** | 30 s | 311 | 51 % | 68 s | 1.40 | 2,088 MB | 9,407 s |
 
-Per stage, run 1 (seconds, samples judged):
+Per stage, the last run at each N (seconds, samples judged):
 
 | stage | N = 4 | N = 20 | N = 40 | N = 80 |
 | -- | -- | -- | -- | -- |
-| fold (every sample, without a run) | 47 | 287 | 607 | 1,237 |
-| known species | 22, 4 | 129, 18 | 308, 33 | 598, 71 |
-| search | 163, 4 | 1,083, 20 | 2,221, 40 | 4,382, 80 |
-| isotope lines | 59, 4 | 520, 20 | 1,043, 40 | 1,553, 80 |
-| series | 76, 4 | 723, 20 | 1,405, 40 | 1,622, 80 |
-| the other five | 4 | 10 | 17 | 15 |
+| fold (every sample, without a run) | 16 | 74 | 160 | 228 |
+| known species | 14, 4 | 80, 18 | 198, 33 | 254, 71 |
+| search | 98, 4 | 434, 20 | 887, 40 | 1366, 80 |
+| isotope lines | 10, 4 | 54, 20 | 99, 40 | 166, 80 |
+| series | 22, 4 | 118, 20 | 247, 40 | 409, 80 |
+| the other five and the batch level | 4 | 9 | 11 | 14 |
 
-**How it grows.** Linear in N: 138 to 144 s a sample at N = 4 (under like
-load), 20 and 40, and 93 s a sample at N = 4 on a quieter box (load 7). The
-two runs at N = 80 agree within 0.2 %, at N = 40 within 0.3 %, at N = 20
-within 5 %. Every stage
-grows in step with N; none grows faster. At N = 80 the pass took 2.6 hours,
-118 s a sample, the box's load having fallen during the run (from about 40
-to 10).
+**How it grows.** Linear in N, as before: 33 to 41 s a sample at N = 4 to 40 under a load of
+7 to 19, and 30 s at N = 80 at a load of 1 to 5, against 93 to 144 s a
+sample on the first measurement's build: 2.7 to 3.9 times less. From
+nothing to a consistent batch of 80 took 41 minutes, against 2.6 hours. Every stage grows in
+step with N; none grows faster.
 
-**A sample judged more than once.** Each sample is judged about four times
-in a pass: after known species (cheap, few members), after the search,
-after the isotope lines and after the series. Judging is 56 to 64 % of
-the pass; the three later judgings of a sample, each of every member, are
-50 to 56 % of it (1,536 s of 2,753 at N = 20). MAS-1172 (#3483, in
-flight) makes a later judging cheaper.
-
-**Against PR #3484's 52 minutes.** That pass and this one start from different
-places, and the difference is the search. PR #3484 timed a pass from the water
-ladders over the 81 samples after each had its own engine run (35 minutes of
-runs before it, not in the 52), so each sample's untargeted search had been
-done by its run and the batch search had two samples left: 136 s. Assign
-batch from nothing has no runs: its fold stands in for them (1,237 s at
-N = 80) and the batch search does every sample's (4,382 s). The stages the
-two share agree within the box's load: known species, isotope lines, series
-and the rest took 3,788 s here and 2,979 s there, 27 % more under a load of
-10 to 40. In all, from nothing to a consistent batch: 2.6 hours here, about
-1.5 hours there counting its runs.
-
+**A sample judged more than once.** Each sample is still judged about four
+times in a pass: after known species, after the search, after the isotope
+lines and after the series. Judging is 43 to 51 % of the pass. Since
+MAS-1172 a later judging reuses what the pass measured of the sample, so
+the first judging after the search costs the most; the grid's rivals of
+the readings it elects (MAS-1045) are most of that (section 5).
 
 ## 5. Where the time goes, both uses
 
-A py-spy profile of each second run (`profile_report.py`), counted over
-every thread's busy samples: since MAS-947 the engine's steps run in
-`to_thread` workers while the event loop waits. Shares of the busy time
-(py-spy under this load misses some samples, so its seconds run short of the
-timed ones; the shares hold):
+A py-spy profile of the curve's runs on develop (`profile_report.py`),
+counted over every thread's busy samples. Shares of the busy time (py-spy
+misses some samples under load, so its seconds run short of the timed ones;
+the shares hold):
 
-| | fold-in, N = 4 | whole batch, N = 4 | whole batch, N = 20 | whole batch, N = 80 | fold-in, N = 80 |
-| -- | -- | -- | -- | -- | -- |
-| `line_model.resolve_lines`, all callers | 50.0 % | 50.8 % | 51.8 % | 50.1 % | 55.0 % |
-| the tiering caps' envelopes (`tiering.predicted_envelope`, under `Judging.cap`), mostly `resolve_lines` | 37.4 % | 39.6 % | 41.4 % | 37.8 % | 44.5 % |
-| the target library's lines at the file (`target_ions_compute.lines_at_file`, in propose), mostly `resolve_lines` | 18.4 % | 16.9 % | 17.2 % | 18.3 % | 17.9 % |
-| the election (`engine.invert_matches_to_peak_assignments`) | 9.0 % | 10.7 % | 12.7 % | 13.6 % | 9.6 % |
-| pandas row access (`.loc`/`.iloc` on rows, `iterrows`, `apply` by row) | 3.2 % | 3.7 % | 4.5 % | 4.5 % | 3.6 % |
-| the rest of pandas | 9.6 % | 10.6 % | 11.9 % | 13.0 % | 9.1 % |
-| SQL (driver and SQLAlchemy) | 4.6 % | 2.4 % | 2.3 % | 2.1 % | 2.7 % |
-| cores busy on average | 0.98 | 0.99 | 0.99 | 0.99 | 0.99 |
+| | fold-in, N = 4 | whole, N = 4 | fold-in, N = 20 | whole, N = 20 | fold-in, N = 40 | whole, N = 40 | fold-in, N = 80 | whole, N = 80 |
+| -- | -- | -- | -- | -- | -- | -- | -- | -- |
+| the grid's rivals of the readings a batch decision weighs (`given_rivals.given_readings_rivals`) | 21.8 % | 19.9 % | 31.7 % | 23.5 % | 29.4 % | 25.1 % | 28.5 % | 26.1 % |
+| `line_model.resolve_lines`, all callers | 15.4 % | 17.5 % | 18.4 % | 18.1 % | 16.6 % | 18.9 % | 16.6 % | 17.7 % |
+| the tiering caps (`Judging.cap`) | 14.5 % | 14.7 % | 13.1 % | 15.0 % | 14.4 % | 15.2 % | 14.9 % | 14.8 % |
+| the reference lists' ions (`target_ions_compute.generate_target_ions_from_composition`) | 13.7 % | 13.6 % | 14.3 % | 12.6 % | 12.2 % | 12.9 % | 12.1 % | 11.9 % |
+| pandas row access | 0.8 % | 1.4 % | 1.2 % | 2.1 % | 1.4 % | 2.1 % | 1.0 % | 1.7 % |
+| the rest of pandas | 4.5 % | 5.0 % | 5.0 % | 6.3 % | 5.7 % | 6.2 % | 5.0 % | 6.2 % |
+| SQL (driver and SQLAlchemy) | 11.2 % | 5.9 % | 5.9 % | 4.9 % | 5.8 % | 5.0 % | 6.0 % | 5.5 % |
+| Python threads busy on average | 0.96 | 1.00 | 0.98 | 1.00 | 0.97 | 1.00 | 0.99 | 1.00 |
+| of the busy time, on the event loop's thread | 22 % | 13 % | 14 % | 13 % | 15 % | 12 % | 15 % | 12 % |
 
-The answers to the brief's three questions:
+Against the first measurement's profile:
 
-- **Reading the same thing from the database again** is not where the time
-  goes. SQL is 2 to 5 % of a pass; the reads that repeat an earlier read of
-  the same step, same statement and same parameters, are about half of that
-  (16.6 s of 33.6 s in the whole pass at N = 20): under 1 % of the pass.
-- **pandas row access** is 3 to 5 %, most of it in the election
-  (`engine.monoisotopic_row`, `invert_matches_to_peak_assignments`), which
-  #3483 takes up.
-- **One core works while the others stand idle.** Every run keeps one core
-  busy, 0.93 to 1.03 cores on average: the pass does one sample at a time,
-  and the engine's steps go to one worker thread at a time. On the 12-core
-  box, 11 stand idle for the length of a pass.
+- **`resolve_lines` fell from half the busy time to under a fifth.** MAS-1172
+  measures a sample's envelopes once a pass, MAS-1190 made each call about
+  twice as fast, MAS-1274 and MAS-1282 resolve fewer reference ions. The
+  caps fell from 37 to 45 % to 13 to 15 %, the reference lists' lines at the
+  file from 17 to 18 % to the ions' 12 to 14 %.
+- **The election left the profile** (1 % at N = 40, against 9 to 14 %):
+  MAS-1172's election without pandas per peak.
+- **The grid's rivals are the largest single cost now**, a fifth to a third
+  of the busy time. MAS-1045 (#3347) has a batch decision weigh its rivals
+  as a run does: for every reading it elects, the composition finder scores
+  the formulas the grid holds near it (`finder.rivals_of_readings`,
+  `_score_reading`). It grows with the judgings, and so weighs most in a
+  fold-in's pass, which judges each sample after the series once more.
+- **SQL and pandas stay small**: SQL 5 to 6 % (11 % in the N = 4 fold-in,
+  whose pass is short), pandas 6 to 8 % with its row access 1 to 2 %.
 
-Half of all the time is one library function, `resolve_lines`, which turns
-an ion's fine structure into the lines a file shows: pure Python per line
-(`group_unresolved_lines`, `_line_of`). Its two callers are #3483's (the
-caps predict each ion's envelope again in every round) and #3500's (the
-library's lines resolved anew for every sample). Those issues call it
-less; making each call cheaper is a finding of its own (section 6).
+**The first judging of a sample in a pass, and the later ones** (median,
+from the curve's runs): a later judging, which reuses what the pass
+measured of the sample (MAS-1172), takes 2.1 to 2.8 s at every N, against
+15 to 25 s before. A first judging takes 3 to 6 s in the whole pass, where
+it is the known-species stage's and judges few members, and 10 to 16 s in a
+fold-in's pass, where it judges every member. The fold-in's first judgings
+are most of its judging time (#3500).
 
-**The single run's first judging (10 to 15 s).** In a pass the first
-judging of a sample is the known-species stage's, and it is cheap here,
-5 to 8 s, because the stage wrote few members (median 5 to 7 judged). The
-expensive judgings are the later ones, after the search, the isotope lines
-and the series, which judge about 1,150 members over about 1,300 readings:
-median 15 s at N = 4 and 25 s at N = 20, of it the caps 8 to 15 s, the
-election 4 to 6 s, propose 2 to 3 s, the score 0.3 to 0.8 s (the kept
-measurement of MAS-1073). A fold-in's first judging of the new sample, which
-scores every reading, took 23.5 s at N = 4: caps 11 s, score 5 s, election
-4.5 s, propose 2 s. #3500 has the first judging, #3483 the later ones.
+### 5.1 The cores, and what a worker would be handed (MAS-1191, MAS-1161)
 
+**CPU over wall, per step.** The process's CPU time is 1.3 to 1.4 times its
+wall time in every pass (1.26 to 1.41 in the tables of sections 3 and 4),
+and 0.95 to 0.99 in a fold. py-spy sees one Python thread busy at a time
+(0.96 to 1.00 above), so what exceeds one core is native code running
+beside it, numpy's among it; the first measurement read 0.93 to 1.03. Per
+kind of step, in the curve's runs: a judging 1.28 to 1.41, the search of a
+sample 1.2 to 1.5, a fold of a sample 0.95 to 0.97, the batch-wide rest
+0.8 to 0.9. On the 12-core box, about 11 cores stand idle for the length
+of a pass. The event loop's own thread is busy 12 to 22 % of the busy time
+(section 5's last row): the rest is the engine's steps in `to_thread`
+workers, one at a time (MAS-1161).
+
+**The share of a pass in per-sample work.** The steps that do not depend on
+the other samples of their stage: the fold of a sample (in a whole pass), a
+judging, the batch search's search of a sample, and the engine's steps a stage
+runs on one sample outside a judging (its election, score and caps, in the
+search and the series stages: "measure on a sample" below). Against it,
+the batch-wide rest: the stages' own decisions over the pooled samples,
+the series walk, the readings, the writes.
+
+| use | N | pass (CPU over wall) | fold of a sample | judging | search of a sample | measure on a sample | per-sample, all | batch-wide rest |
+| -- | -- | -- | -- | -- | -- | -- | -- | -- |
+| whole | 4 | 164 s (1.34) | 16 s (10 %, 0.97) | 72 s (44 %, 1.36) | 27 s (17 %, 1.46) | 38 s (23 %, 1.52) | **93.1 %** (1.38) | 11 s (6.9 %, 0.81) |
+| whole | 20 | 769 s (1.37) | 73 s (9 %, 0.95) | 389 s (51 %, 1.37) | 54 s (7 %, 1.35) | 227 s (30 %, 1.55) | **96.6 %** (1.38) | 26 s (3.4 %, 0.88) |
+| whole | 40 | 1,603 s (1.32) | 157 s (10 %, 0.95) | 824 s (51 %, 1.31) | 86 s (5 %, 1.21) | 496 s (31 %, 1.52) | **97.5 %** (1.33) | 40 s (2.5 %, 0.88) |
+| whole | 80 | 2,438 s (1.40) | 226 s (9 %, 0.95) | 1,246 s (51 %, 1.40) | 94 s (4 %, 1.18) | 820 s (34 %, 1.56) | **97.8 %** (1.41) | 53 s (2.2 %, 0.89) |
+| fold-in | 4 | 113 s (1.35) | - | 74 s (65 %, 1.41) | 1 s (1 %, 1.07) | 25 s (22 %, 1.44) | **87.4 %** (1.42) | 14 s (12.6 %, 0.85) |
+| fold-in | 20 | 525 s (1.26) | - | 387 s (74 %, 1.28) | 2 s (0 %, 0.81) | 99 s (19 %, 1.36) | **93.0 %** (1.29) | 37 s (7.0 %, 0.88) |
+| fold-in | 40 | 926 s (1.34) | - | 696 s (75 %, 1.36) | 1 s (0 %, 0.93) | 181 s (20 %, 1.38) | **94.8 %** (1.36) | 48 s (5.2 %, 0.92) |
+| fold-in | 80 | 1,478 s (1.38) | - | 1,097 s (74 %, 1.41) | 1 s (0 %, 0.98) | 312 s (21 %, 1.38) | **95.4 %** (1.40) | 68 s (4.6 %, 0.92) |
+
+Each cell: the seconds, their share of the pass and their CPU over wall time.
+
+So 87 to 98 % of a pass is per-sample work, and the share grows with N:
+the batch-wide rest stays at 10 to 70 s. A pool of k workers could take up
+to (k - 1)/k of it, if the samples of a stage were handed out (#3507). Within
+a stage, the samples' work does not depend on each other; between stages it
+does, so a pool would run one stage's samples at a time.
+
+**What would cross a process boundary for one judging.** `perf.py
+crossing`, one arrival and its pass at N = 20 on develop (`55eb0f231`), at
+a load of 56 at its start. Each of the pass's 33 judgings, pickled with the
+highest protocol: what goes in (the context `batch_rejudge.rejudge_sample`
+hands the stages: the path, the sample, the config, the run, the given
+readings, the held peaks, the floors; and the sample's kept-measurement
+entry), and what comes back (the result rows and the kept entry):
+
+| part | median | largest | pickle and read back, median | largest |
+| -- | -- | -- | -- | -- |
+| the inputs, in | 107 kB | 132 kB | 0.003 s | 0.005 s |
+| the kept entry, in | empty (a first judging) | 10.6 MB | 0.000 s | 0.072 s |
+| the result, out | 2.0 MB | 2.6 MB | 0.044 s | 0.068 s |
+| the kept entry, out | 8.3 MB | 10.6 MB | 0.062 s | 0.351 s |
+| a judging, in and out | 10.8 MB | 23.9 MB | 0.13 s | 0.46 s |
+
+The median judging took 13.5 s in that pass: the crossing is about 1 % of
+a judging, 5.8 s over the pass's 333 s of judging (1.7 %), before the pipe
+itself. The kept entry is most of it, and it crosses twice: a worker that
+kept its samples' entries between judgings would hand back the result
+alone, 2 MB. The peaks a judging reads from the database are 95 kB
+pickled; a worker would read them itself. No pool was built.
 
 ## 6. Findings, ranked
 
 Each finding with its measurement, the code, and a first guess at the fix
-and its size, in its GitHub issue. Ranked by the seconds it would save,
-fold-in first: the fold-in at N = 20 (1,360 s, load 47) and the whole batch
-at N = 20 (2,753 s, load 12). The estimates are upper bounds on what each
-removes, taken from the measured spans; several act on the same time, so
-the fold-in column takes them in order, each on what the ones above left.
+and its size, in its GitHub issue. Ranked by the seconds it would save at
+N = 20 on develop, fold-in first: the fold-in (536 s, load 22) and the
+whole batch (769 s, load 19). The estimates are upper bounds taken from
+the measured spans and the profile's shares; several act on the same time,
+so the fold-in column takes them in order, each on what the ones above
+left. Merged or cancelled since the first measurement, and so out of the
+ranking: #3483 (MAS-1172), #3505 (MAS-1189) and #3506 (MAS-1190), merged;
+#3504 (MAS-1188), cancelled (MAS-1229). What each took off is in 2.2.
 
 **Fold-in**, against 30 s and then 20 s:
 
 | rank | finding | what it removes at N = 20 | fold-in after it and the ranks above it | low-hanging |
 | -- | -- | -- | -- | -- |
-| 1 | Not running the batch stages on every arrival: the design choice of section 7, MAS-1187 (Decision) | the pass, 1,333 s | the fold alone, 27 s here and 18 to 35 s over 47 arrivals: **under 30 s at every N measured, about the 20 s goal on a quieter box** (16.9 s at load 12) | a decision, then a brief |
-| 2 | [#3504](https://github.com/ultra-trace-systems/mascope/issues/3504) the series stage judges every sample again, its records rewritten with the pass's version | most of the series stage's 596 s of judging | about 760 s | yes, S |
-| 3 | [#3506](https://github.com/ultra-trace-systems/mascope/issues/3506) `resolve_lines` is half the CPU, pure Python per line | a quarter of what is left if made 2x faster (half of the half it takes) | about 570 s | M |
-| 4 | [#3505](https://github.com/ultra-trace-systems/mascope/issues/3505) the search searches again what the last pass searched and found nothing for | the search's own 164 s, but the new sample's | about 410 s | yes, S to M |
-| 5 | [#3507](https://github.com/ultra-trace-systems/mascope/issues/3507) a pass runs on one core | with 4 workers, three quarters of the per-sample work | about 100 s | M to L |
-| - | already filed: [#3483](https://github.com/ultra-trace-systems/mascope/issues/3483) (MAS-1172, merged since these runs) a later judging's caps and election, [#3500](https://github.com/ultra-trace-systems/mascope/issues/3500) a first judging's lines and fits, [#3231](https://github.com/ultra-trace-systems/mascope/issues/3231) the fold reads every member it joins, [#3468](https://github.com/ultra-trace-systems/mascope/issues/3468) (MAS-1161) worker threads hold the loop, [#3488](https://github.com/ultra-trace-systems/mascope/issues/3488) the kept measurement's memory | the judgings' caps, 40 % of the CPU (#3483); the first judging (#3500) | | |
+| 1 | Not running the batch stages on every arrival: decided (MAS-1187), section 8, being built (MAS-1224) | the pass, 525 s | the fold alone, 10.8 s here and 3.7 to 13.2 s (median 5.0 s) over the 215 arrivals of 7.3: **under the 20 s goal at every N measured** | built in MAS-1231 to MAS-1233 |
+| 2 | [#3697](https://github.com/ultra-trace-systems/mascope/pull/3697) (MAS-1346, in review) and [#3707](https://github.com/ultra-trace-systems/mascope/issues/3707): the grid's rivals of every reading a batch decision is measured with | up to 170 s, 32 % of the pass's busy time (`given_rivals.given_readings_rivals`); #3697 measured a first judging 30 % faster, #3707 holds the rest | about 370 s | #3697 is built |
+| 3 | [#3507](https://github.com/ultra-trace-systems/mascope/issues/3507) (MAS-1191) a pass runs one sample at a time | 93 % of the pass is per-sample work that does not depend on the other samples of its stage (5.1); with 4 workers, three quarters of it | about 110 s | M to L |
+| 4 | [#3500](https://github.com/ultra-trace-systems/mascope/issues/3500) the first judging of a sample in a pass | the fold-in's first judgings, 12 to 16 s each (median), most of the judging time left | | M |
+| - | already filed: [#3231](https://github.com/ultra-trace-systems/mascope/issues/3231) the fold reads every member it joins, [#3468](https://github.com/ultra-trace-systems/mascope/issues/3468) (MAS-1161) worker threads hold the loop, [#3488](https://github.com/ultra-trace-systems/mascope/issues/3488) the kept measurement's memory | | | |
 
-Even with ranks 2 to 5 together, a full pass on every arrival stays over
+Even with ranks 2 to 4 together, a full pass on every arrival stays over
 30 s at N = 20, and it still grows with N: the stages are batch-wide by
 nature (section 7.2). Only rank 1 brings a fold-in under the bar.
 
@@ -296,22 +548,19 @@ nature (section 7.2). Only rank 1 brings a fold-in under the bar.
 
 | rank | finding | what it removes at N = 20 |
 | -- | -- | -- |
-| 1 | [#3507](https://github.com/ultra-trace-systems/mascope/issues/3507) one core | with k workers, up to (k-1)/k of the fold, the search and the judgings, nearly all of the pass |
-| 2 | [#3506](https://github.com/ultra-trace-systems/mascope/issues/3506) `resolve_lines` | half of 52 % of the CPU if made 2x faster: about 700 s |
-| 3 | [#3483](https://github.com/ultra-trace-systems/mascope/issues/3483) the later judgings (filed) | of the 1,536 s of later judgings, the caps' part, about 60 % |
-| 4 | [#3500](https://github.com/ultra-trace-systems/mascope/issues/3500) the first judging (filed) | the fold's and the first judging's lines at the file |
+| 1 | [#3507](https://github.com/ultra-trace-systems/mascope/issues/3507) one sample at a time | 97 % of the pass is per-sample work (5.1): with k workers, up to (k-1)/k of nearly all of it |
+| 2 | [#3697](https://github.com/ultra-trace-systems/mascope/pull/3697) and [#3707](https://github.com/ultra-trace-systems/mascope/issues/3707) the grid's rivals | 24 % of the busy time, about 180 s |
+| 3 | [#3500](https://github.com/ultra-trace-systems/mascope/issues/3500) the first judging | part of the judging, 51 % of the pass |
 
-#3504 and #3505 do not act on a pass from nothing: there, every record is
-new and nothing was searched before.
+**`resolve_lines` is still 18 %** of the busy time at N = 20, in both uses,
+after MAS-1190 made each call 1.9 times faster. Its callers are the caps'
+envelopes, the reference lists' lines at the file and the grid's scoring.
+No issue is open for it; one more cut would be a finding of its own.
 
-**Not findings.** SQL is 2 to 5 % of a pass, and the reads that repeat an
-earlier read are under 1 %: reading the same thing again from the database
-is not worth an issue. pandas row access is 3 to 5 %, inside the election,
-which #3483 covers. Peak memory grows with N: 0.7 GB at N = 4, 1.4 GB at
-N = 20, 1.5 to 1.6 GB at N = 40 in a whole pass and 1.8 GB in a fold-in, 1.9 to 2.0 GB at N = 80 in a whole pass and 3.0 GB in a fold-in
-(about 2.8 GB without the script's copy of the ledger, section 3);
-#3488 holds the kept measurement's share of it.
-
+**Not findings.** SQL is 5 to 11 % of a pass's busy time (4.9 to 5.9 % at
+N = 20), pandas row access 1 to 2 %: reading from the database, and
+pandas, are not where the time goes. Peak memory grows with N:
+0.7 GB at N = 4, 1.0 GB at N = 20, 1.5 to 1.6 GB at N = 40, 2.1 GB at N = 80 in a whole pass and 2.7 GB in a fold-in (1.9 to 3.0 GB before); #3488 holds the kept measurement's share of it.
 
 ## 7. Fold-in as a design question
 
@@ -424,7 +673,84 @@ Two facts of the code bear on the options:
 
 ### 7.3 What skipping costs
 
-Three sequences from the same start, in three copies: a pass after every
+**On develop, up to N = 40** (MAS-1199, `7e7a8f8dc`). From the same
+consistent batch of 4, 36 arrivals one at a time, each folded as ingest
+folds it, in six copies: a pass after every arrival; a pass after every
+k-th arrival and after the last, for k = 5, 10 and 20; and a single pass
+after the 36th, in two copies. Each ran in an env of its own, the six side
+by side and beside the curve, at a load of 4 to 25. Every pass ended
+`success`.
+
+The floor: the two single passes at N = 40 leave ledgers that differ in
+109 of 72,463 members (0.15 %), all in the records.
+
+**How far each ledger stands from the pass-per-arrival one**, after each of
+its passes, over the members both hold:
+
+| after arrival | N | k = 5 | k = 10 | k = 20 | one pass at the end |
+| -- | -- | -- | -- | -- | -- |
+| 5 | 9 | 749 of 16,540 (4.5 %): 145 tiers, 140 formulas | | | |
+| 10 | 14 | 1,372 of 25,806 (5.3 %): 194, 202 | 1,627 (6.3 %): 221, 225 | | |
+| 15 | 19 | 1,798 of 34,820 (5.2 %): 232, 242 | | | |
+| 20 | 24 | 2,300 of 43,866 (5.2 %): 277, 291 | 2,716 (6.2 %): 309, 334 | 3,478 (7.9 %): 371, 382 | |
+| 25 | 29 | 2,773 of 52,812 (5.3 %): 309, 300 | | | |
+| 30 | 34 | 3,191 of 61,712 (5.2 %): 351, 328 | 4,009 (6.5 %): 401, 411 | | |
+| 35 | 39 | 3,663 of 70,657 (5.2 %): 390, 353 | | | |
+| 36 | 40 | **3,419 of 72,463 (4.7 %)**: 376, 357 | **4,511 (6.2 %)**: 441, 449 | **5,806 (8.0 %)**: 629, 616 | **6,845 (9.4 %)**: 725, 664 |
+
+- **The distance is set by k, and passes do not close it.** At every pass
+  of its own, k = 5 stands 4.5 to 5.3 % from the pass-per-arrival ledger,
+  k = 10 6.2 to 6.5 %, k = 20 7.9 to 8.0 %, and one pass at the end 9.4 %,
+  against a floor of 0.15 %. The gap does not shrink as passes add up: a
+  ledger made by fewer passes is not the one made by more, and the
+  difference is in the order of the decisions, not in samples left
+  unjudged.
+- **Most of it is in the records.** Of the members that differ, a tenth
+  differ in their tier and a tenth in their batch peak's formula; the rest
+  in the series and the other records only. The formulas that differ are
+  0.5 to 0.9 % of the batch's members.
+- **The first measurement read 3.5 % for k = 5** at N = 9 (below); develop
+  reads 4.5 % there, under the fuller digest of 7.1.
+
+**What a pass moves of the waiting samples' decisions, and what the passes
+cost.** The waiting samples are those folded since the last pass, the last
+arrival aside: its members are new at that pass and have no decision
+before it. The older members are those the batch held at the last pass.
+Per pass, median and range:
+
+| k | passes | the waiting members a pass moves | of them, tiers and formulas | older members a pass moves | the passes' wall time | their CPU time | against one pass at the end |
+| -- | -- | -- | -- | -- | -- | -- | -- |
+| 1, a pass after every arrival | 36 | none wait | | 1.8 % | about 15,800 s | about 22,400 s | about 11.5 x |
+| 5 | 8 | 65 % (64 to 73 %) | 63 %, 0.3 % | 5.5 % | 4,457 s | 6,218 s | 3.2 x |
+| 10 | 4 | 66 % (65 to 77 %) | 63 %, 0.4 % | 9.3 % | 2,764 s | 3,763 s | 2.0 x |
+| 20 | 2 | 72 % (66 to 78 %) | 63 %, 3.9 % | 26 % | 1,851 s | 2,478 s | 1.3 x |
+| one pass at the end | 1 | 78 % | 63 %, 6.1 % | 44 % | 1,381 s | 1,807 s | 1.0 x |
+
+- **A pass moves about two thirds of the waiting samples' decisions,
+  whatever k**, and nearly all of it in their tiers (63 % at every k). The
+  fold judges a sample against the batch's standing decisions; the stages
+  that would claim, strip, stamp and corroborate its members have not run.
+  The waiting samples' formulas move little at k = 5 and 10 (0.3 to
+  0.4 %), more when the first pass comes late: 3.9 % at k = 20 and 6.1 %
+  for one pass, whose waiting samples include the batch's first ten,
+  where new batch peaks still appear (7.1).
+- **The older members move more the longer a pass waits:** 1.8 % at a
+  pass after every arrival, 5.5 % at k = 5, 44 % for one pass at N = 40.
+- **Compute.** Against one pass at the end, k = 5 costs 3.2 times, k = 10
+  2.0 times, k = 20 1.3 times, a pass after every arrival about 11.5
+  times. The 33rd of its passes was stopped with the session that ran it
+  and finished on a restart (section 9); its time is taken as its
+  neighbours', 750 s. Its passes took 123 s at N = 5, 690 to 780 s at
+  N = 33 to 36 and 620 to 660 s at N = 38 to 40, the last three on the
+  next day at about half the load.
+- **The light fold** took 5.0 s median, 3.7 to 13.2 s, over the 215
+  arrivals of the six sequences, flat in N.
+- **Machine time.** The six sequences took 8.5 hours of process time,
+  side by side over about 4.5 hours of wall clock; their passes 10.6 CPU
+  hours.
+
+**On the first measurement's build** (MAS-1179, `0ffcef511`). Three
+sequences from the same start, in three copies: a pass after every
 arrival, after every 5th, and after the 16th alone. Each arrival's ledger
 compared with the every-arrival one (members both hold):
 
@@ -734,34 +1060,39 @@ flowchart TD
 
 ### 8.4 The defaults, and what the data says
 
-The data of section 7 does not settle the defaults. What it says:
+The data does not pick the defaults, and this note picks none. MAS-1230
+(Decision) was decided on 2026-11-27 as a hold: it waits for the pass's
+curve on develop (section 3), the arrivals run of 7.3 and a site's arrival
+gaps (MAS-1344), and takes no number before them. The first two are here,
+measured on develop at `7e7a8f8dc`:
 
-- **The count barely moves where the ledger ends up.** After a pass at
-  every 5th arrival, the ledger is within 3.5 % of the one a pass after every
-  arrival makes; at the 16th arrival, a pass every 5th and one single pass
-  leave ledgers 2.7 % apart, against a floor of 0.2 to 0.4 % between two
-  identical passes (7.3).
-- **The count sets how many samples are provisional, and the cost.** Over
-  the 16 arrivals from N = 5 to 20, passes at every 5th arrival cost 4,812 s,
-  one pass at the end 2,547 s, a pass after every arrival about 14,000 s.
-- **During fast acquisition the count does not bite.** A pass at N = 20
-  took 1,333 s on the measured build. MAS-1172 (#3483) has merged since, and
-  cut the N = 4 pass from 263 s to 100 s (2.1); the curve over N was not
-  measured again (#3519). MAS-1188 (#3504) saves nothing in a fold-in: every
-  arrival moves series corroborations in every sample (MAS-1229). MAS-1189
-  (#3505) saves at most the search's 164 s at N = 20. So a pass at N = 20
-  likely takes 500 to 1,300 s on today's develop, and with a sample once a
-  minute, 8 to 22 samples arrive during one pass.
-- **Nothing was measured for the timer or the quiet period:** no site's
-  arrival intervals.
+- **What a pass costs against N.** The fold-in's pass took 93 to 113 s at
+  N = 4, 381 to 525 s at N = 20, 926 s at N = 40 and 1,478 s at N = 80
+  (section 3): about 18 s for every sample already in the batch, about a quarter of
+  the first measurement's 67 s. Under the arrivals run's load, a pass after
+  every arrival took 123 s at N = 5 and 620 to 780 s at N = 33 to 40
+  (7.3).
+- **How many samples arrive during one pass, at a sample a minute:** as
+  many as the pass takes minutes. About 2 at N = 4, 6 to 9 at N = 20, 15 at
+  N = 40 and 25 at N = 80. It replaces this section's estimate of 8
+  to 22 at N = 20, made before MAS-1172 and the changes after it.
+- **The count moves where the ledger ends up, a little.** After each of
+  its passes, a pass every 5th arrival leaves a ledger 4.5 to 5.3 % from
+  the one a pass after every arrival makes, every 10th 6.2 to 6.5 %, every
+  20th 7.9 to 8.0 %, and one pass at the end 9.4 %, at N = 40. Two
+  identical passes differ in 0.15 % (7.3). More passes do not close the
+  gap: a ledger made by fewer passes is not the one made by more.
+- **The count sets how many samples are provisional, and the cost.** A
+  pass moves about two thirds of the waiting samples' member decisions,
+  nearly all of them tiers, whatever the count (64 to 78 %, 7.3). Over the
+  36 arrivals from N = 5 to 40, passes every 5th arrival cost 3.2 times
+  one pass at the end, every 10th 2.0 times, every 20th 1.3 times, and a
+  pass after every arrival about 11.5 times.
+- **Nothing was measured for the timer or the quiet period:** they wait
+  for a site's arrival gaps (MAS-1344, a prod job).
 
-**Proposed:** k = 5, the one cadence measured, which converged; T = 30
-minutes; Q = 15 minutes; on wherever peak assignment is on at ingest. The
-choice is the owner's: MAS-1230 (Decision), which lists a larger k and a
-measurement first as the other options. What would settle the numbers:
-#3519, the pass's curve on today's develop; an arrivals run at k = 5, 10 and
-20 up to N = 40, read as 7.3 reads its runs; and the arrival intervals of a
-site, which only a prod job can read.
+Before these numbers, this section proposed k = 5, T = 30 minutes and
+Q = 15 minutes; MAS-1230 holds those open.
 
 ### 8.5 Where the settings live
 
@@ -863,14 +1194,15 @@ site, which only a prod job can read.
   lock.
 - **A batch that never ends, or grows faster than its pass.** An acquisition
   batch ends at the instrument's midnight. Inside the day, a pass's cost
-  grows with N: about 67 s for every sample already in the batch on the
-  measured build (section 3). With a sample once a minute, the passes run
-  back to back from about N = 10, and the waiting set grows with the pass:
-  about 90 samples at N = 80 on that build. One core is then busy all day,
-  and a pass at N = 80 holds about 2.8 GB in the worker that runs it. The
-  findings that shorten a pass are #3507 (one core) and #3506
-  (`resolve_lines`). Whether a pass should stop starting on its own past a
-  size is open (8.9).
+  grows with N: about 18 s for every sample already in the batch on
+  develop (section 3; 67 s on the first measurement's build). With a sample
+  once a minute and k = 5, the passes run back to back from about N = 12,
+  where a pass takes five minutes, and the waiting set grows with the pass:
+  about 25 samples at N = 80. One core is then busy all day, and a
+  pass at N = 80 holds about 2.7 GB in the worker that runs it. The
+  findings that shorten a pass are #3507 (one sample at a time) and the
+  grid's rivals (#3697, #3707). Whether a pass should stop starting on its
+  own past a size is open (8.9).
 - **A person curating while passes start on their own.** A pin made during a
   pass is kept and marks the stages stale (`batch_curation.py`), but the
   pass moves tiers under the person reading them, and the batch-level routes
@@ -900,8 +1232,9 @@ once MAS-1231 is in.
 
 1. **The defaults** of 8.4: MAS-1230 (Decision).
 2. **A ceiling on the size** past which a pass no longer starts on its own,
-   while #3507 and #3506 are open (8.7). Proposed: none now; the batch's own
-   switch turns it off where a pass is too long, and #3519 says how long.
+   while #3507 and #3707 are open (8.7). Proposed: none now; the batch's own
+   switch turns it off where a pass is too long, and section 3 says how
+   long.
 3. **Run history.** Whether passes started on their own count against the
    five runs a batch keeps, or are kept apart so a person's pass stays in the
    history. Proposed: they count, as any pass does; revisit if users miss
@@ -913,23 +1246,28 @@ once MAS-1231 is in.
 
 ## 9. Not measured
 
-- **An idle box.** Every run shared the box with other workers (section 2).
-  The seconds are upper bounds; a run on a quiet box would take about a third
-  less.
+- **An idle box.** Every run shared the box with other workers (section 2):
+  the first measurement's at a load of 7 to 47, the second's at 1 to 25.
+  The seconds are upper bounds; develop's whole pass at N = 4 took 126 s at
+  load 1 and 185 s at load 17.
 - **Another batch or instrument.** One batch, the demo's uronium Orbitrap
   batch. The bromide batch, TOF data and batches of hundreds of samples were
   not run. #3231 has the fold on batches grown to 5,000 samples.
+- **What MAS-1186 saves.** No two samples of the demo share a
+  resolving-power function, so a first judging had nothing to share (2.2).
+  A batch whose samples share one would show it.
+- **Each change at N = 20.** The chain of 2.2 at N = 20 covers MAS-1189,
+  MAS-1190, MAS-1274 and MAS-1045; MAS-1172, MAS-1186 and MAS-1282 were
+  timed at N = 4 alone.
+- **MAS-1346** (#3697, in review), which makes the grid's rivals cheaper,
+  is not on develop and was not timed here.
 - **A sample's own engine run.** Ingest folds without a run, and so does the
   whole pass from nothing. The explicit run on one sample, with its
   untargeted search, was not timed here; the bench's control card times it.
 - **The kept measurement's memory** alone (#3488): peak memory is measured
   for the whole process only.
-- **A pass after every arrival beyond the 5th.** The box's load made each
-  such pass take 5 to 22 minutes, so the every-arrival sequence stopped at
-  5 arrivals, and the comparisons at the 10th to 16th arrival are between
-  the every-5th and once-at-the-end sequences.
-- **MAS-1172** (#3483) has merged since these runs, and changes a later
-  judging's cost; these numbers are develop's before it. A pair on the
-  develop that has it took 100 s for the N = 4 fold-in's pass against 263 s
-  (section 2.1); the curve over N was not measured again on it
-  ([#3519](https://github.com/ultra-trace-systems/mascope/issues/3519)).
+- **The 33rd pass of the pass-per-arrival sequence** (7.3) was stopped
+  with the session that ran it and finished on a restart, so its time is
+  left out of the compute; its ledger is the finished pass's.
+- **A worker pool.** 5.1 measures what a pool could take and what it would
+  hand a worker; no pool was built.
