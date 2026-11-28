@@ -37,6 +37,7 @@ Usage (from a checkout, ``MASCOPE_ENV`` naming a copy of the demo env)::
     uv run python tooling/assignment_perf/perf.py arrivals BATCH OUT.json --count C --every K
     uv run python tooling/assignment_perf/perf.py table OUT.json
     uv run python tooling/assignment_perf/perf.py digest BATCH OUT.json
+    uv run python tooling/assignment_perf/perf.py crossing BATCH OUT.json
 
 ``README.md`` beside this file has the whole recipe.
 """
@@ -299,6 +300,20 @@ def instrument() -> None:
             return await real_rebuild(*args, **kw)
 
     batch_stages.rebuild_batch_ledger = timed_rebuild
+
+    # The batch search's search of one sample (MAS-1191 reads its share). A
+    # build without the function runs untimed there, not refused: the share
+    # is a reading beside the run's, not what the run is checked by.
+    from mascope_backend.api.new.peak_assignments import batch_untargeted
+
+    real_search = getattr(batch_untargeted, "_search_sample", None)
+    if real_search is not None:
+
+        async def timed_search(sample_item_id, *args, **kw):
+            with METER.scope("sample_search", sample_item_id):
+                return await real_search(sample_item_id, *args, **kw)
+
+        batch_untargeted._search_sample = timed_search
 
     for module, name in FOLD_TARGETS:
         module = {"batch_fold": batch_fold, "service": service}[module]
@@ -921,6 +936,125 @@ async def arrivals(sample_batch_id: str, out: str, count: int, every: int) -> No
     _write(out, result)
 
 
+#: What of a judging's context a worker process would be handed to start it:
+#: the fields ``batch_rejudge.rejudge_sample`` sets. The rest the stages read
+#: themselves, from the database, as they do in this process.
+CROSSING_INPUTS = (
+    "path",
+    "sample",
+    "config",
+    "run_id",
+    "given",
+    "held_peak_ids",
+    "floors",
+)
+
+
+def pickled(value: Any) -> dict:
+    """A value's size pickled, and the seconds to pickle it and read it back:
+    what sending it to another process and back would cost, the pipe aside."""
+    import pickle
+
+    try:
+        t0 = time.perf_counter()
+        blob = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+        t1 = time.perf_counter()
+        pickle.loads(blob)
+        t2 = time.perf_counter()
+    except Exception as exc:  # noqa: BLE001 - an unpicklable part is the reading
+        return {"error": f"{type(exc).__name__}: {exc}"[:200]}
+    return {"bytes": len(blob), "dumps_s": t1 - t0, "loads_s": t2 - t1}
+
+
+def kept_entry(kept: Any, sample_item_id: str) -> dict:
+    """The kept measurement's entry for one sample: its kept readings, what
+    the pass read of its inputs, and its envelope memo."""
+    if kept is None:
+        return {}
+    return {
+        "samples": kept.samples.get(sample_item_id),
+        "reads": kept.reads.get(sample_item_id),
+        "envelopes": kept.envelopes.get(sample_item_id),
+    }
+
+
+async def crossing(sample_batch_id: str, out: str) -> None:
+    """What would cross a process boundary for each judging of a fold-in's
+    pass, pickled (MAS-1191): the judging's inputs and the sample's kept
+    measurement going in, and its result and kept measurement coming back.
+    Times nothing else: the pickling would distort a timed run, so this is a
+    run of its own, on a copy that ``whole`` left consistent."""
+    from mascope_backend.api.new.peak_assignments import batch_rejudge
+    from mascope_backend.db import configure_database_engine
+
+    await configure_database_engine()
+    real = batch_rejudge.run_stages
+    judgings: list[dict] = []
+
+    async def measured(ctx):
+        sid = str(getattr(ctx.sample, "sample_item_id", ""))
+        entry = {"sample": sid, "in": {}, "out": {}}
+        entry["in"]["inputs"] = pickled({k: getattr(ctx, k) for k in CROSSING_INPUTS})
+        entry["in"]["kept"] = pickled(kept_entry(ctx.kept, sid))
+        t0 = time.perf_counter()
+        done = await real(ctx)
+        entry["judging_s"] = time.perf_counter() - t0
+        entry["out"]["result"] = pickled(done.result)
+        entry["out"]["kept"] = pickled(kept_entry(done.kept, sid))
+        entry["rows"] = len(done.result or [])
+        # Beside them, for scale: the peaks the stages read from the
+        # database, which a worker would read itself or be handed.
+        entry["peaks_frame"] = pickled(done.peaks_df)
+        judgings.append(entry)
+        return done
+
+    batch_rejudge.run_stages = measured
+    n = await _batch_size(sample_batch_id)
+    result = {"use": "crossing", "n": n, **_environment()}
+    sample, landed = await arrive(sample_batch_id)
+    result["sample"], result["landing"] = sample, landed
+    result["pass"] = await run_pass(sample_batch_id, fold="auto")
+    result["judgings"] = judgings
+    Path(out).write_text(json.dumps(result, indent=1, default=str))
+    print(crossing_table(result), flush=True)
+    if why := refusal(result):
+        raise SystemExit(f"Not a measurement: {why}.")
+
+
+def crossing_table(result: dict) -> str:
+    """The median judging's crossing, per part, and the range over all."""
+    rows = result.get("judgings") or []
+    lines = [
+        f"**crossing**, N = {result.get('n')}, commit `{result.get('commit')}`, "
+        f"{len(rows)} judgings",
+        "",
+        "| part | median bytes | max bytes | median pickle + unpickle s | max s |",
+        "| -- | -- | -- | -- | -- |",
+    ]
+    parts = [
+        ("inputs, in", "in", "inputs"),
+        ("kept entry, in", "in", "kept"),
+        ("result, out", "out", "result"),
+        ("kept entry, out", "out", "kept"),
+    ]
+    for label, side, key in parts:
+        got = [r[side][key] for r in rows if "bytes" in r[side][key]]
+        errors = {r[side][key]["error"] for r in rows if "error" in r[side][key]}
+        if not got:
+            lines.append(f"| {label} | {'; '.join(sorted(errors)) or '-'} | | | |")
+            continue
+        sizes = sorted(g["bytes"] for g in got)
+        secs = sorted(g["dumps_s"] + g["loads_s"] for g in got)
+        lines.append(
+            f"| {label} | {sizes[len(sizes) // 2]:,} | {sizes[-1]:,} | "
+            f"{secs[len(secs) // 2]:.3f} | {secs[-1]:.3f} |"
+        )
+    walls = sorted(r["judging_s"] for r in rows)
+    if walls:
+        lines.append(f"\nmedian judging {walls[len(walls) // 2]:.2f} s")
+    return "\n".join(lines)
+
+
 async def write_digest(sample_batch_id: str, out: str) -> None:
     """The ledger's decisions as they stand, as a run's output ``diff``
     reads: to compare two envs' ledgers without a run in either."""
@@ -1142,7 +1276,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     p = sub.add_parser("limit", help="keep the batch's first N samples")
     p.add_argument("batch")
     p.add_argument("n", type=int)
-    for name in ("whole", "foldin"):
+    for name in ("whole", "foldin", "crossing"):
         p = sub.add_parser(name)
         p.add_argument("batch")
         p.add_argument("out")
@@ -1201,6 +1335,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         asyncio.run(write_digest(args.batch, args.out))
     elif args.command == "foldin":
         asyncio.run(fold_in(args.batch, args.out))
+    elif args.command == "crossing":
+        asyncio.run(crossing(args.batch, args.out))
     else:
         asyncio.run(arrivals(args.batch, args.out, args.count, args.every))
     METER.stop_sampler()

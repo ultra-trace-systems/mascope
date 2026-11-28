@@ -548,6 +548,7 @@ def _fake_backend(monkeypatch, **service_attrs):
         ),
         "batch_fold": types.ModuleType("batch_fold"),
         "service": types.ModuleType("service"),
+        "batch_untargeted": types.SimpleNamespace(_search_sample=fn),
     }
     mods["batch_fold"].fold_sample_into_batch_peaks = fn
     mods["batch_fold"].fold_sample_peaks_without_run = fn
@@ -573,6 +574,83 @@ def test_instrument_wraps_every_fold_and_refuses_a_missing_one(monkeypatch):
         SystemExit, match="service.fold_sample_peaks_without_run is gone"
     ):
         perf.instrument()
+
+
+def test_instrument_times_each_samples_search_and_runs_without_it(monkeypatch):
+    import asyncio
+
+    seen = []
+
+    async def search(sample_item_id, *a, **k):
+        seen.append(sample_item_id)
+        return ["rows"]
+
+    async def fold(*a, **k):
+        return {}
+
+    mods = _fake_backend(monkeypatch, fold_sample_peaks_without_run=fold)
+    mods["batch_untargeted"]._search_sample = search
+    monkeypatch.setattr(perf, "METER", perf.Meter())
+    perf.instrument()
+    got = asyncio.run(mods["batch_untargeted"]._search_sample("s1", {"p"}, None))
+    assert got == ["rows"] and seen == ["s1"]
+    (record,) = perf.METER.records
+    assert (record["kind"], record["name"]) == ("sample_search", "s1")
+    # A build without the function is timed without the span, not refused.
+    mods = _fake_backend(monkeypatch, fold_sample_peaks_without_run=fold)
+    del mods["batch_untargeted"]._search_sample
+    perf.instrument()
+    assert not hasattr(mods["batch_untargeted"], "_search_sample")
+
+
+# --- what would cross a process boundary ------------------------------------------
+
+
+def test_pickled_gives_the_size_and_the_seconds_or_why_not():
+    got = perf.pickled({"a": list(range(100))})
+    assert got["bytes"] > 100 and got["dumps_s"] >= 0 and got["loads_s"] >= 0
+    assert "error" in perf.pickled(lambda: None)
+
+
+def test_the_kept_entry_is_the_samples_three_parts():
+    import types
+
+    kept = types.SimpleNamespace(
+        samples={"s1": "kept", "s2": "other"},
+        reads={"s1": "read"},
+        envelopes={"s1": "memo"},
+    )
+    assert perf.kept_entry(kept, "s1") == {
+        "samples": "kept",
+        "reads": "read",
+        "envelopes": "memo",
+    }
+    assert perf.kept_entry(kept, "s3") == {
+        "samples": None,
+        "reads": None,
+        "envelopes": None,
+    }
+    assert perf.kept_entry(None, "s1") == {}
+
+
+def test_the_crossing_table_reads_the_median_judging_and_names_a_refusal():
+    def part(n):
+        return {"bytes": n, "dumps_s": 0.01, "loads_s": 0.02}
+
+    judgings = [
+        {
+            "in": {"inputs": part(n), "kept": part(10 * n)},
+            "out": {"result": part(2 * n), "kept": {"error": "TypeError: no"}},
+            "judging_s": float(n),
+        }
+        for n in (100, 300, 200)
+    ]
+    table = perf.crossing_table({"n": 20, "commit": "abc", "judgings": judgings})
+    assert "| inputs, in | 200 | 300 | 0.030 | 0.030 |" in table
+    assert "| kept entry, in | 2,000 | 3,000 |" in table
+    assert "| result, out | 400 | 600 |" in table
+    assert "| kept entry, out | TypeError: no |" in table
+    assert "median judging 200.00 s" in table
 
 
 # --- the digests kept on disk ---------------------------------------------------
