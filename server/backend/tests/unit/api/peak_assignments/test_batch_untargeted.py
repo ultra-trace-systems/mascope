@@ -43,7 +43,11 @@ from mascope_backend.api.new.peak_assignments.row_terms import (
     ROLE_REAGENT,
 )
 from mascope_backend.api.new.peak_assignments.sample_inputs import StageAKnown
-from mascope_backend.api.new.peak_assignments.tiers import TIER_ASSIGNED, TIER_CANDIDATE
+from mascope_backend.api.new.peak_assignments.tiers import (
+    TIER_ASSIGNED,
+    TIER_BELOW_ASSIGNABILITY,
+    TIER_CANDIDATE,
+)
 from mascope_match.params import OrbiMatchParams
 from mascope_tools.composition.mass_accuracy import PRED_SIGMA_PPM
 from mascope_tools.composition.profiles import CHAMBER, INSTRUMENT_FALLBACK_SIGMA_PPM
@@ -3086,3 +3090,58 @@ async def test_a_member_is_judged_with_the_neutrals_its_lists_name_out_of_the_wi
     assert row["provenance"]["plausibility"] == formula_plausibility("C6H4N2O5")
     assert row["provenance"]["reference_identities"] == [{"name": "2,4-dinitrophenol"}]
     assert row["tier"] == TIER_ASSIGNED
+
+
+#: The known set of a sample whose dinitrophenol only the target library names.
+_TARGETED = pd.DataFrame(
+    {
+        "target_compound_formula": ["C6H4N2O5"],
+        "ionization_mechanism_id": ["im-h"],
+        "target_compound_id": ["tc-dnp"],
+        "reference_identities": [None],
+    }
+)
+
+
+@pytest.mark.asyncio
+async def test_a_member_is_judged_in_the_windows_on_a_neutral_only_the_target_library_names():
+    # Decision MAS-1280's other half: the target library names a compound
+    # for the data, but it lists no neutral out of the windows. A run of the
+    # member's sample grades its dinitrophenol in ambient air's windows and
+    # holds it below assignability; the propagation judges it the same, from
+    # the election of one reading per peak on.
+    from mascope_backend.api.new.peak_assignments import pipeline
+    from mascope_tools.composition.formula_shape import graded_in, graded_run
+    from mascope_tools.composition.heuristic_filter import formula_plausibility
+    from mascope_tools.composition.profiles import AMBIENT_AIR
+
+    windows = AMBIENT_AIR.ratio_windows()
+    with graded_in(windows):
+        graded = formula_plausibility("C6H4N2O5")
+    assert graded < 0.5 < formula_plausibility("C6H4N2O5")
+
+    seen = []
+    judge = pipeline.STAGE_FUNCTIONS[pipeline.Stage.JUDGE]
+
+    async def watched(ctx):
+        seen.append(graded_run())
+        await judge(ctx)
+
+    with (
+        patch.dict(pipeline.STAGE_FUNCTIONS, {pipeline.Stage.JUDGE: watched}),
+        patch.object(ResolvedProfile, "graded", lambda self: graded_in(windows)),
+    ):
+        rows, _ = await _measure(
+            _sample(),
+            _peaks([("p1", 183.0047, 1.0e6)]),
+            [_mechanism("[M-H]-", "im-h")],
+            [("bp-1", "C6H4N2O5", "C6H3N2O5-", "im-h", ["p1"])],
+            known=_TARGETED,
+        )
+
+    assert seen
+    assert {graded.listed for graded in seen} == {frozenset()}
+    row = rows["p1"]
+    assert row["target_compound_id"] == "tc-dnp"
+    assert row["provenance"]["plausibility"] == pytest.approx(graded, abs=1e-4)
+    assert row["tier"] == TIER_BELOW_ASSIGNABILITY
